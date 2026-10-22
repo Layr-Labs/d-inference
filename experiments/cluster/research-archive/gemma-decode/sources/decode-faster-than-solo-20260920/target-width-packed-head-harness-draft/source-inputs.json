@@ -1,0 +1,85 @@
+{
+  "schema": "gemma4_packed_head_width_physical_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3414,
+      "sha256": "940cfd3709371d037c0b3a0e5d73148965c2aa4f7266ed5fa7d9e50c99595995"
+    },
+    {
+      "path": "Tests/test_width_contract.py",
+      "bytes": 7943,
+      "sha256": "ce8ba6465cd0333dc7b215ceb1a8da664199c78f9370e368fcc9dd9af10a71cc"
+    },
+    {
+      "path": "binding-spec.json",
+      "bytes": 5283,
+      "sha256": "754581f1dff3a2903740b561f94f3a9c81d70bdf053b22697049f2df8057aa33"
+    },
+    {
+      "path": "physical.patch",
+      "bytes": 15297,
+      "sha256": "0a8f3b028cb19718eae54df632b67a764b13d236a7b934115306520f2cd7c9ac"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 6498,
+      "sha256": "8b58c3e48639c32a9b79337e3bcf95dee11ae83beaa426e24ac9e42dae54e219"
+    },
+    {
+      "path": "proposed/compare.py",
+      "bytes": 14444,
+      "sha256": "929b31156b2d7499d869f77a2c23087deed9b560ca4bfde6272bc9a8cc28a058"
+    },
+    {
+      "path": "proposed/deploy.py",
+      "bytes": 5061,
+      "sha256": "0cae43a7f0daad7ebe77de952679b732d8b7f7845d1fde20dac30bd9f2288e4c"
+    },
+    {
+      "path": "proposed/package/gemma_inputs.py",
+      "bytes": 579,
+      "sha256": "2846ea3a35d0663c0b40e3464d01c6efc6b3393cbe0e02b071dd4272722794c4"
+    },
+    {
+      "path": "proposed/package/native_gate.py",
+      "bytes": 4901,
+      "sha256": "42f6dbc1e0b677968eb5aec49fb79dfe03ff53cde5695cb08f099bd358907899"
+    },
+    {
+      "path": "proposed/package/run_benchmark.py",
+      "bytes": 9722,
+      "sha256": "7e80eb9c29235bcc0154281b7e2fcc134bd10019fc1ca14783aebce1f85a94ee"
+    },
+    {
+      "path": "proposed/package/target_width_contract.py",
+      "bytes": 12045,
+      "sha256": "ce529b2635bc56fe2eb5c428d61f23e5e76d2a7d5b29a81ffd3a397b8dac8dcf"
+    },
+    {
+      "path": "proposed/remote_metadata.py",
+      "bytes": 4300,
+      "sha256": "55461bb488afb3d99f6a75703db5381c6dd0a21a6b360ee1710415543f8999dd"
+    },
+    {
+      "path": "proposed/root_run.py",
+      "bytes": 4599,
+      "sha256": "dbbc3ab9a03e33de76c5c4c539df3a35bcaeb0d639c32401151267835f06ca86"
+    },
+    {
+      "path": "proposed/run_case.py",
+      "bytes": 15055,
+      "sha256": "86514d807710e55f73768c0e7981c717f706e2d55d8ec5db1ddf1e88e41e5340"
+    },
+    {
+      "path": "required-native-sources.template.json",
+      "bytes": 28351,
+      "sha256": "1268af3ee0a7f6775de7d028498f5cf4a4d6da56f4c3ca482337e9513f22e3f7"
+    },
+    {
+      "path": "transformations.json",
+      "bytes": 3882,
+      "sha256": "f4446a5670fca32fd8f7a6a9f7104c568d11a4444f27e88a014d854e00e881e5"
+    }
+  ]
+}

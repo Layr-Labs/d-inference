@@ -1,0 +1,69 @@
+--- a/originals/worker_contract.py
++++ b/package/worker_contract.py
+@@ -5,8 +5,8 @@
+ import re
+ 
+ SCHEMA = "qwen_resident_benchmark_worker_v1"
+-MAX_LINE = 32 * 1024 * 1024
+-MAX_OUTPUT = 160 * 1024 * 1024
++MAX_LINE = 1_048_576
++MAX_OUTPUT = 2 * 1024 * 1024
+ SUFFIXES = (":warmup:0", ":measured:0", ":measured:1", ":measured:2")
+ 
+ 
+--- a/package/worker_processes.py
++++ b/ssh_processes.py
+@@ -26,7 +26,7 @@
+ 
+ class PipeWorkers:
+     def __init__(self, specs, directory, timeout_seconds, resource_gate):
+-        require(type(timeout_seconds) is int and 1 <= timeout_seconds <= 315, "Worker lifetime must be1...315seconds")
++        require(type(timeout_seconds) is int and 1 <= timeout_seconds <= 360, "Worker lifetime must be1...360seconds")
+         require(callable(resource_gate), "Resource gate is required")
+         self.specs, self.directory = specs, Path(directory)
+         self.timeout, self.resource_gate = timeout_seconds, resource_gate
+--- a/originals/target_processes.py
++++ b/package/target_processes.py
+@@ -10,7 +10,7 @@
+ COMMAND = ['/bin/ps', '-Aww', '-o', 'pid=,uid=,comm=']
+ OUTPUT_LIMIT = 1024 * 1024
+ NATIVE_OR_OWNER_NAMES = frozenset({'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
+-    'collectiveallocationcheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
++    'collectiveallocationcheck', 'gemmashortcorrectnesscheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
+ 
+ 
+ def parse_processes(raw):
+--- a/originals/parent_settings.py
++++ b/parent_settings.py
+@@ -1 +1 @@
+-SSH = ['/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts', '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
++SSH = ['/usr/bin/ssh', '-T', '-S', 'none', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts', '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
+--- a/originals/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,7 +17,7 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'window_state_native_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'gemma_short_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+     require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+     require(sum(x['bytes'] for x in files.values()) < 400_000_000, 'Deployment exceeded bound')
+@@ -76,7 +76,7 @@
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+     (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='window_state_native_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    print(json.dumps(dict(schema='gemma_short_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()

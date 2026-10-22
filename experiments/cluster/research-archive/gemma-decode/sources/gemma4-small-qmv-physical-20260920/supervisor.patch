@@ -1,0 +1,369 @@
+--- a/activation.py
++++ b/activation.py
+@@ -17,6 +17,7 @@
+     assert all(p.is_absolute() for p in (binary,build_path,sources_path)) and binary.name == 'GemmaResidentBenchmark'
+     assert all(p.is_file() and not p.is_symlink() for p in (binary, build_path, sources_path))
+     required = json.loads((ROOT/'required-native-sources.json').read_bytes())
++    assert sha(Path(required['kernelManifest']['path']))==required['kernelManifest']['sha256']
+     assert str(build_path)==required['actualBuildReceipt']['path'] and sha(build_path)==required['actualBuildReceipt']['sha256']
+     assert str(sources_path)==required['actualSources']['path'] and sha(sources_path)==required['actualSources']['sha256']
+     build = json.loads(build_path.read_bytes())
+@@ -33,13 +34,12 @@
+     assert len(files) == len(source['files'])
+     required = json.loads((ROOT/'required-native-sources.json').read_bytes())
+     for row in required['requiredFiles']: assert files[row['path']] == row, row['path']
+-    value = dict(schema='gemma_mtp_state_actual_activation_v1', binary=str(binary),
++    value = dict(schema='gemma_small_qmv_actual_activation_v1', binary=str(binary),
+         nativeSHA256=build['nativeSHA256'], nativeBytes=build['nativeBytes'],
+         buildReceipt=str(build_path), buildReceiptSHA256=sha(build_path),
+         sourceReceipt=str(sources_path), sourcesSHA256=sha(sources_path),
+         requiredSourceSHA256=sha(ROOT/'required-native-sources.json'),
+-        stateSourceManifestSHA256=required['stateManifestSHA256'],
+-        outerCheckSourceManifestSHA256=required['outerCheckManifestSHA256'],
++        kernelSourceManifestSHA256=required['kernelManifest']['sha256'],
+         physicalExecuted=False, gemmaWeightsExecuted=False)
+     with (ROOT/'activation.json').open('x') as stream:
+         json.dump(value, stream, indent=2); stream.write('\n')
+--- a/compare.py
++++ b/compare.py
+@@ -1,15 +1,15 @@
+-"""Accept one actual tiny-state run after source, process and resource joins."""
++"""Accept an actual closed primitive run after source, process and resource joins."""
+ import argparse
+ import hashlib
+ import json
+ from pathlib import Path
+ from activation import recheck
+ from evidence import Inputs, ROOT, action, journal, processes, resources
+-from root_run import verify_source, CASE
++from root_run import verify_source, case_for, names_for
+ from binding_common import parse, require
+-from state_contract import validate_result
++from qmv_contract import validate_result, mode_for_run
+ 
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1'
+ 
+ 
+ def completion_join(completion, terminal_raw, remote):
+@@ -20,7 +20,8 @@
+         'Collected terminal does not match original SSH completion')
+ 
+ 
+-def compare():
++def compare(mode):
++    CASE=case_for(mode); NAMES=names_for(mode)
+     source_sha=verify_source();activation=recheck();inputs=Inputs()
+     activation_pin=inputs.pin(ROOT/'activation.json');activation_sha=activation_pin['sha256']
+     require(inputs.read(ROOT/'activation.json')==activation,'Activation changed')
+@@ -37,7 +38,7 @@
+     required=inputs.read(ROOT/'required-native-sources.json')
+     for row in required['requiredFiles']:require(native_sources[row['path']]==row,'Native control/entry source differs')
+     for name,kind in [('deploy-prepare-1','deploy-prepare'),('install-48-1','install'),
+-                      ('prepare-state-1','case-prepare'),('describe-full-1','metadata'),('run-state-1','run')]:
++                      (NAMES['case-prepare'],'case-prepare'),(NAMES['metadata'],'metadata'),(NAMES['run'],'run')]:
+         action(inputs,name,kind,source_sha,activation_sha)
+ 
+     package=inputs.read(ROOT/'deployment/package.json');package_pin=inputs.pin(ROOT/'deployment/package.json')
+@@ -68,7 +69,7 @@
+     require((job['mode'],job['promptCount'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+         ==('full',4096,64,16,7,'serial') and job['captureEvidence'] is False
+         and job['buildIdentitySHA256']==activation['nativeSHA256'],'Metadata workload changed')
+-    description_lines=inputs.raw(ROOT/'root-actions/describe-full-1/stdout').splitlines()
++    description_lines=inputs.raw(ROOT/'root-actions'/NAMES['metadata']/'stdout').splitlines()
+     require(description_lines and all(x.startswith(b'owned-child pid ') for x in description_lines[:-1]),'Metadata output framing')
+     metadata=parse(description_lines[-1]);description=metadata['description']
+     require(metadata['status']=='passed' and metadata['exitCode']==0 and metadata['reaped'] is True
+@@ -102,7 +103,8 @@
+     require(len(native_lines)==1 and parse(native_lines[0])==terminal['result']
+         and inputs.raw(returned/'native/worker-0.stderr')==b'' and inputs.raw(returned/'native/worker-0.stdin')==b'',
+         'Native output/transcript differs')
+-    result=validate_result(terminal['result'],job,description['scopeSHA256'])
++    require(terminal['qualificationMode']==mode==mode_for_run(remote),'Terminal qualifier mode differs')
++    result=validate_result(terminal['result'],mode)
+     before=inputs.read(returned/'journal-before.json');after=inputs.read(returned/'journal-after.json')
+     journal(before);journal(after,before)
+     final=launch['quiescence'][0]['observed'];journal(final['journal'],before);processes(final['processes'])
+@@ -111,6 +113,7 @@
+     require(native_launch['binary']==REMOTE+'/bundle/GemmaResidentBenchmark'
+         and native_launch['job']==remote+'/job.json'
+         and native_launch['jobSHA256']==terminal['jobSHA256']
++        and native_launch['qualificationMode']==mode
+         and len(native_launch['binaryIdentity'])==6 and native_launch['binaryIdentity'][3]==activation['nativeBytes'],
+         'Collected same-PID exec identity differs')
+     require(len(terminal['nativePIDs'])==1 and owner['nativePIDs']==terminal['nativePIDs']
+@@ -122,22 +125,25 @@
+         'Original same-PID inherited lease/owner identity differs')
+     processes(gate['processObservation'])
+     resource=resources(inputs.raw(returned/'resources.jsonl',8*1024**2))
+-    require(not (returned/'sidecars').exists(),'Tiny mode unexpectedly created model captures')
++    require(not (returned/'sidecars').exists(),'Primitive qualifier unexpectedly created model captures')
+     inputs.recheck();require(verify_source()==source_sha,'Harness source changed')
+-    return dict(schema='gemma4_owned_mtp_state_physical_acceptance_v1',status='passed',
++    return dict(schema='gemma_small_qmv_physical_acceptance_v1',status='passed',
+         nativeSHA256=activation['nativeSHA256'],sourceSHA256=activation['sourcesSHA256'],
+         buildReceiptSHA256=activation['buildReceiptSHA256'],activationSHA256=activation_sha,
+         sourceManifestSHA256=source_sha,packageSHA256=package_pin['sha256'],
+-        nativeScopeSHA256=result['scopeSHA256'],nativeGroups=result['passed'],actualPrefixCases=56,
++        qualificationMode=mode,actualPrimitiveCases=result['caseCount'],
++        actualWeightedOriginalSlotChecks=96 if mode=='gathered' else 0,
++        malformedRouteRefusals=result['gatheredDeviceRefusalControls'],
+         physicalResources=resource,originalProcessRetired=True,sameEmptyLeaseInode=True,
+         aliasUsed=False,protocolReleaseACKClaimed=False,gemmaWeightsExecuted=False,
+         modelNumericalCorrectnessQualified=False,assistantOrDistributedQualified=False,
+-        throughputMeasured=False,retainedInputPins=[x[3] for x in inputs.saved])
++        modelThroughputMeasured=False,primitiveTimingMeasured=True,retainedInputPins=[x[3] for x in inputs.saved])
+ 
+ 
+ if __name__=='__main__':
+     parser=argparse.ArgumentParser(allow_abbrev=False);parser.add_argument('--output',type=Path,required=True)
++    parser.add_argument('--mode',choices=['dense','gathered'],required=True)
+     args=parser.parse_args();require(args.output.parent.resolve()==args.output.parent and not args.output.exists(),'Fresh canonical output required')
+-    value=compare()
++    value=compare(args.mode)
+     with args.output.open('x') as f:json.dump(value,f,indent=2,allow_nan=False);f.write('\n')
+     print(json.dumps(dict(status='passed',output=str(args.output))))
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/evidence.py
++++ b/evidence.py
+@@ -93,7 +93,7 @@
+ def action(inputs, name, expected, source_sha, activation_sha):
+     directory=ROOT/'root-actions'/name
+     record=inputs.read(directory/'receipt.json')
+-    require(record['schema']=='gemma4_mtp_state_root_action_v1' and record['action']==expected
++    require(record['schema']=='gemma_small_qmv_root_action_v1' and record['action']==expected
+         and record['status']=='passed' and record['exitCode']==0 and record['reaped'] is True
+         and record['groupAbsent'] is True and record['killedOwnedGroup'] is False
+         and record['sourceManifestSHA256']==source_sha and record['activationSHA256']==activation_sha,'Root action did not complete')
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -14,7 +14,7 @@
+ REMOTE_BODY = r'''
+ import hashlib,json,os,pathlib,stat,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,job_sha,name,operation=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1'
+ assert operation in ('--describe','--check-arguments')
+ assert name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+--- a/root_run.py
++++ b/root_run.py
+@@ -1,4 +1,4 @@
+-"""Root-owned actions: one fresh 48 GiB tiny-state qualification, no model run."""
++"""Root-owned actions: two closed 48 GiB primitive modes, no model run."""
+ import argparse
+ import json
+ from pathlib import Path
+@@ -7,10 +7,15 @@
+ from owned_process import invoke_controller
+ 
+ ROOT = Path(__file__).resolve().parent
+-CASE = 'tiny-state-1'
+-NAMES = {'deploy-prepare':'deploy-prepare-1', 'install':'install-48-1',
+-         'case-prepare':'prepare-state-1', 'metadata':'describe-full-1',
+-         'run':'run-state-1', 'compare':'compare-state-1'}
++def case_for(mode):
++    assert mode in ('dense','gathered')
++    return 'small-qmv-'+mode+'-1'
++
++def names_for(mode):
++    return {'deploy-prepare':'deploy-prepare-1','install':'install-48-1',
++            'case-prepare':'prepare-'+mode+'-1','metadata':'describe-'+mode+'-1',
++            'run':'run-'+mode+'-1','compare':'compare-'+mode+'-1'}
++
+ 
+ 
+ def verify_source():
+@@ -26,15 +31,16 @@
+ 
+ def main():
+     p = argparse.ArgumentParser(allow_abbrev=False)
+-    p.add_argument('action', choices=list(NAMES))
++    p.add_argument('action', choices=list(names_for('dense')))
+     p.add_argument('--binary', type=Path)
+     p.add_argument('--build-receipt', type=Path)
+     p.add_argument('--sources', type=Path)
+-    args = p.parse_args()
++    p.add_argument('--mode',choices=['dense','gathered'],default='dense')
++    args = p.parse_args(); CASE=case_for(args.mode); NAMES=names_for(args.mode)
+     source_sha = verify_source()
+     actions = ROOT/'root-actions'; actions.mkdir(mode=0o700, exist_ok=True)
+     output = actions/NAMES[args.action]; output.mkdir(mode=0o700)
+-    receipt = dict(schema='gemma4_mtp_state_root_action_v1', action=args.action,
++    receipt = dict(schema='gemma_small_qmv_root_action_v1', action=args.action,
+                    sourceManifestSHA256=source_sha)
+     started = time.monotonic()
+     try:
+@@ -56,10 +62,10 @@
+                 command=['remote_metadata.py','--case',CASE,'--mode','full','--operation','describe']; timeout=50
+             elif args.action == 'run':
+                 from evidence import Inputs, action
+-                action(Inputs(),'describe-full-1','metadata',source_sha,sha(ROOT/'activation.json'))
++                action(Inputs(),NAMES['metadata'],'metadata',source_sha,sha(ROOT/'activation.json'))
+                 command=['run_case.py','solo','--name',CASE]; timeout=1020
+             else:
+-                command=['compare.py','--output',str(ROOT/'comparison-1.json')]; timeout=180
++                command=['compare.py','--mode',args.mode,'--output',str(ROOT/('comparison-'+args.mode+'-1.json'))]; timeout=180
+         argv=['/usr/bin/python3','-B',str(ROOT/command[0]),*command[1:]]
+         receipt['argv']=argv
+         with (output/'stdout').open('xb') as stdout, (output/'stderr').open('xb') as stderr:
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,13 +26,13 @@
+ CREATE=r'''
+ import json,os,pathlib,sys
+ job=json.load(sys.stdin);root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ (root/'job.json').write_text(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n')
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -43,7 +43,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+@@ -54,6 +54,7 @@
+ '''
+ 
+ def prepare(name,count,cut,capture,chunk,policy,match):
++    assert name in ('small-qmv-dense-1','small-qmv-gathered-1')
+     assert (count,cut,capture,chunk,policy,match)==(4096,7,False,64,'serial',None)
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+     requests=[str(uuid.uuid4()) for _ in range(4)]
+@@ -129,6 +130,7 @@
+ 
+ def run(name,kind):
+     assert kind=='solo', 'Tiny state qualification is full/48 only'
++    assert name in ('small-qmv-dense-1','small-qmv-gathered-1')
+     directory=ROOT/'cases'/name;out=directory/kind;out.mkdir(mode=0o700)
+     selected=[('full','darkbloom-48')] if kind=='solo' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
+     package_sha=digest(ROOT/'deployment/package.json')
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -14,7 +14,7 @@
+ from target_processes import observe as processes
+ from worker_contract import WorkerSpec
+ from worker_processes import PipeWorkers, cleanup_error_text
+-from state_contract import validate_result
++from qmv_contract import validate_result, mode_for_run
+ 
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+@@ -26,18 +26,19 @@
+     require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+     run=args.job.parent
+     require(run.resolve()==run and digest(args.job)==args.job_sha256,'Job identity')
++    mode=mode_for_run(run)
+     package=verify(args.package_sha256)
+     job=parse(args.job.read_bytes())
+     require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full', 'Job schema/mode')
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+     require((job['promptCount'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+-            ==(4096,64,16,7,'serial') and job['captureEvidence'] is False, 'Tiny state metadata scope')
++            ==(4096,64,16,7,'serial') and job['captureEvidence'] is False, 'Small QMV metadata-only carrier scope')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B','Model path')
+     require(job['buildIdentitySHA256']==digest(REMOTE/'bundle'/PRODUCT),'Native/job identity')
+     record={'schema':'gemma4_benchmark_terminal_v1','status':'failed','mode':job['mode'],
+-            'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,
++            'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,'qualificationMode':mode,
+             'encryptedRDMAEstablished':False,'externalHTTPTTFTMeasured':False,
+             'primaryFailure':None,'cleanupErrors':[]}
+     pipes=None; before=None
+@@ -70,7 +71,7 @@
+         binary=REMOTE/'bundle'/PRODUCT;s=binary.lstat()
+         launch=dict(binary=str(binary),job=str(args.job),environment=env,
+                     binaryIdentity=[s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns],
+-                    jobSHA256=args.job_sha256)
++                    jobSHA256=args.job_sha256,qualificationMode=mode)
+         write_json(run/'launch.json',launch)
+         spec=WorkerSpec(('/usr/bin/python3','-B',str(REMOTE/'native_gate.py'),'--launch',str(run/'launch.json'),
+                          '--launch-sha256',digest(run/'launch.json')),
+@@ -85,7 +86,7 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            validate_result(value, job)
++            validate_result(value, mode)
+             return value
+         record['result']=pipes.collect('benchmark',result)[0]
+         pipes.finish()
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-small-qmv-check-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -10,6 +10,7 @@
+ from binding_inputs import snapshot
+ from gemma_inputs import PRODUCT, REMOTE, write_json
+ from mtp_journal import device_directory
++from qmv_contract import mode_for_run
+ from target_processes import observe
+ 
+ 
+@@ -42,13 +43,14 @@
+     a=p.parse_args(); path=Path(a.launch)
+     require(path.parent.parent.parent == REMOTE and path.name=='launch.json','Wrong launch path')
+     info=snapshot(path,16384);same(info['sha256'],a.launch_sha256,'launch pin');launch=parse(info['raw'])
+-    require(set(launch)=={'binary','job','environment','binaryIdentity','jobSHA256'},'Launch fields')
++    require(set(launch)=={'binary','job','environment','binaryIdentity','jobSHA256','qualificationMode'},'Launch fields')
+     binary=Path(launch['binary']);same(binary,REMOTE/'bundle'/PRODUCT,'Exact executable')
+     require(binary.parent.resolve()==binary.parent,'Executable parent link')
+     s=binary.lstat();same(list((s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns)),launch['binaryIdentity'],'Verified binary changed')
+     require(stat.S_ISREG(s.st_mode) and s.st_nlink==1 and s.st_uid==os.geteuid(),'Unsafe executable')
+     job=Path(launch['job']);same(job,path.parent/'job.json','Exact job path')
+     same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before gate')
++    same(mode_for_run(job.parent),launch['qualificationMode'],'Closed qualifier mode')
+     fd, record=acquire(device_directory())
+     try:
+         processes=observe(time.monotonic()+4)
+@@ -59,7 +61,8 @@
+         os.set_inheritable(fd,True);require(os.get_inheritable(fd),'Lease descriptor is not inheritable')
+         write_json(path.parent/'gate.json',record)
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+-        os.execve(str(binary),[str(binary),'--qualify-mtp-state',str(job)],launch['environment'])
++        same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
++        os.execve(str(binary),[str(binary),'--qualify-small-qmv',launch['qualificationMode']],launch['environment'])
+     finally: os.close(fd)
+ 
+ 

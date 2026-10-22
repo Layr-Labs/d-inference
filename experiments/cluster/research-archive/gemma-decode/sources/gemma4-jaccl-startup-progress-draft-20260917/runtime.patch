@@ -1,0 +1,245 @@
+--- original/install_new_tree.py
++++ source/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma4-short-jaccl-progress-20260917')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+--- original/package/gemma_inputs.py
++++ source/package/gemma_inputs.py
+@@ -5,7 +5,7 @@
+ from binding_common import canonical, fields, integer, parse, pin, require, same
+ from binding_inputs import snapshot
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-short-jaccl-progress-20260917')
+ MODES = ('full', 'stage0', 'stage1')
+ PRODUCT = 'GemmaShortCorrectnessCheck'
+ MODEL = '/Users/developer/DarkbloomDev/models/Gemma4-26B'
+--- original/package/gemma_supervision.py
++++ source/package/gemma_supervision.py
+@@ -6,6 +6,7 @@
+ from gemma_inputs import write_json
+ from gemma_result import result as validate_result
+ from worker_processes import PipeWorkers, cleanup_error_text
++from jaccl_startup_stderr import JacclStartupProgress, validate_retained
+ 
+ 
+ def group_observations(children):
+@@ -36,13 +37,17 @@
+         for n in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM):previous[n]=signal.getsignal(n);signal.signal(n,interrupted)
+         guard('prelaunch');seconds=int(deadline-time.monotonic())
+         require(seconds>=301,'No room for native 300s alarm plus cleanup within original parent')
+-        pipes=PipeWorkers((spec,),run/'native',seconds,guard);pipes.start()
++        stderr_policy=JacclStartupProgress() if mode=='stage1' else None
++        pipes=PipeWorkers((spec,),run/'native',seconds,guard,stderr_policy=stderr_policy);pipes.start()
+         write_json(run/'owner.json',dict(nativePIDs=[p.pid for p in pipes.children],nativePGIDs=[p.pid for p in pipes.children],
+             supervisorPID=os.getpid(),nativeArgv=list(spec.argv),nativeEnvironment=spec.env,
+             nativeAlarmSeconds=300,nativeAlarmEndsBeforeFinalStdout=True,parentDeadlineMonotonic=deadline,
+             remainingGroupWatchdogSeconds=seconds,absoluteFenceCoversFinalStdout=True))
+         record['nativeResult']=pipes.collect('native-report',lambda _,raw:validate_result(raw,mode,expected))[0]
+-        pipes.finish();guard('native-completed');record['status']='completed'
++        pipes.finish()
++        record['stderrProgress']=(stderr_policy.summary() if stderr_policy is not None
++            else validate_retained(b'',mode))
++        guard('native-completed');record['status']='completed'
+     except BaseException as error:
+         primary=error;record['status']='failed';record['primaryFailure']=cleanup_error_text(error)[0]
+     finally:
+--- original/package/run_gemma.py
++++ source/package/run_gemma.py
+@@ -72,7 +72,7 @@
+         env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=str(Path.home()),LANG='C',
+             DARKBLOOM_CBV2_ATTN_QUERY_BLOCK='128',DARKBLOOM_BF16_WEIGHTS='1',MLX_ENABLE_TF32='1')
+         if a.mode!='full':env.update(JACCL_RANK='0' if a.mode=='stage0' else '1',
+-            JACCL_IBV_DEVICES=str(REMOTE/'matrix.json'),JACCL_COORDINATOR='169.254.70.46:51361')
++            JACCL_IBV_DEVICES=str(REMOTE/'matrix.json'),JACCL_COORDINATOR='192.0.2.250:51361')
+         binary=REMOTE/'bundle'/PRODUCT;s=binary.lstat()
+         launch=dict(binary=str(binary),job=str(run/'job.json'),environment=env,
+             binaryIdentity=[s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns],jobSHA256=sha(canonical(job)+b'\n'))
+--- original/package/worker_processes.py
++++ source/package/worker_processes.py
+@@ -25,9 +25,11 @@
+ 
+ 
+ class PipeWorkers:
+-    def __init__(self, specs, directory, timeout_seconds, resource_gate):
++    def __init__(self, specs, directory, timeout_seconds, resource_gate, stderr_policy=None):
+         require(type(timeout_seconds) is int and 1 <= timeout_seconds <= 315, "Worker lifetime must be1...315seconds")
+         require(callable(resource_gate), "Resource gate is required")
++        require(stderr_policy is None or len(specs) == 1, "Private stderr policy requires one native child")
++        self.stderr_policy = stderr_policy
+         self.specs, self.directory = specs, Path(directory)
+         self.timeout, self.resource_gate = timeout_seconds, resource_gate
+         self.selector = selectors.DefaultSelector()
+@@ -188,10 +190,15 @@
+             self.eof.add((index, stream))
+             if stream == 'stdout':
+                 require(not self.buffers[index], 'Worker stdout ended without final LF')
++            elif self.stderr_policy is not None:
++                self.stderr_policy.finish()
+             return
+         if stream == 'stderr':
+             self._retain(index, stream, raw)
+-            raise ValueError('Unexpected worker stderr')
++            if self.stderr_policy is None:
++                raise ValueError('Unexpected worker stderr')
++            self.stderr_policy.feed(raw)
++            return
+         # Retain only the exact bounded prefix if a stream violates a cap.
+         pieces = raw.split(b'\n')
+         for part, piece in enumerate(pieces):
+--- original/remote_evidence.py
++++ source/remote_evidence.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ import time
+-REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-short-identity-corrected-20260917')
++REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-short-jaccl-progress-20260917')
+ sys.path.insert(0,str(REMOTE))
+ from binding_common import canonical, require
+ from binding_inputs import snapshot
+--- original/run_physical.py
++++ source/run_physical.py
+@@ -17,8 +17,13 @@
+ from parent_cleanup import observe_retirement
+ from alias import Alias
+ from receive_collection import receive
+-from validate_collected import validate
++from validate_collected import validate as validate_current
++from reference_binding import reference_bound, reference_run
+ from terminal_binding import describe_launch, recheck_launch, require_terminal
++
++
++def validate(bound,directory,mode):
++    return validate_current(reference_bound(bound,directory) if mode=='full' else bound,directory,mode)
+ 
+ 
+ def verify_source():
+@@ -68,7 +73,8 @@
+             require(path is not None and wanted is not None,'Pinned root run receipt required')
+             item=snapshot(path,4*1024**2);same(item['sha256'],wanted,'Root run receipt pin');value=parse(item['raw'])
+             same(value['status'],'passed','Root run success');same(value['action'],'run','Root run action');same(value['mode'],mode,'Root run mode')
+-            same(value['bindingReceiptSHA256'],a.binding_sha256,'Root run binding')
++            wanted_binding=(reference_run(a.bound,a.full_dir,path,wanted) if mode=='full' else a.binding_sha256)
++            same(value['bindingReceiptSHA256'],wanted_binding,'Root run binding')
+             require(value['launchExitCode']==0 and value['retirement']['nativeProcessesAbsent']
+                     and value['retirement']['journalsEmpty'],'Root retirement proof')
+             if mode=='stages':require(value['aliasRelease']['restored'] is True,'Alias restoration proof')
+--- original/validate_collected.py
++++ source/validate_collected.py
+@@ -8,6 +8,7 @@
+ from mtp_journal import require_empty
+ from contract import expected_description
+ from report import report
++from jaccl_startup_stderr import MAX_BYTES, validate_retained
+ 
+ 
+ def validate(bound,directory,mode):
+@@ -24,6 +25,11 @@
+         same(terminal[key],True,key)
+     for key in ('postflightErrors','cleanupErrors'):same(terminal[key],[],key)
+     same(terminal['watchdogExpired'],False,'Watchdog');require(0<terminal['elapsedSeconds']<315,'Parent lifetime')
++    stderr=snapshot(directory/'native/worker-0.stderr',MAX_BYTES,empty=True)['raw']
++    stderr_progress=validate_retained(stderr,mode)
++    if mode=='full' and 'stderrProgress' not in terminal:
++        same(stderr,b'','Historical full-reference strict stderr')
++    else:same(terminal.get('stderrProgress'),stderr_progress,'Native stderr policy/drain replay')
+     before=parse((directory/'preflight.json').read_bytes());after=parse((directory/'journal-postflight.json').read_bytes())
+     require_empty(before['journal']);require_empty(after,before['journal'])
+     require_empty(collection['observation']['journal'],before['journal'])
+--- /dev/null
++++ source/package/jaccl_startup_stderr.py
+@@ -0,0 +1,48 @@
++"""Only the pinned rank1 TCPAllGather retry progress; never success evidence."""
++from binding_common import require
++
++LINES = tuple(('[jaccl] Connection attempt %d waiting %d ms\n' %
++               (attempt, 1000 << attempt)).encode('ascii') for attempt in range(4))
++MAX_BYTES = sum(map(len, LINES))
++
++
++class JacclStartupProgress:
++    def __init__(self):
++        self.completed = 0
++        self.partial = bytearray()
++        self.closed = False
++
++    def feed(self, raw):
++        require(not self.closed and type(raw) is bytes and raw, 'Invalid stderr parser state/input')
++        for byte in raw:
++            require(self.completed < len(LINES), 'Extra JACCL stderr after bounded retries')
++            expected = LINES[self.completed]
++            require(byte == expected[len(self.partial)], 'Unknown, skipped or reordered JACCL stderr')
++            self.partial.append(byte)
++            if len(self.partial) == len(expected):
++                self.completed += 1
++                self.partial.clear()
++
++    def finish(self):
++        require(not self.closed and not self.partial, 'Partial/repeated JACCL stderr EOF')
++        self.closed = True
++
++    def summary(self):
++        require(self.closed and not self.partial, 'JACCL stderr drain incomplete')
++        return dict(policy='exact_ordered_jaccl_tcp_retry_v1', completedLines=self.completed,
++                    bytes=sum(len(x) for x in LINES[:self.completed]), completeEOF=True,
++                    connectionSuccessEstablished=False)
++
++
++def validate_retained(raw, mode):
++    require(type(raw) is bytes and mode in ('full', 'stage0', 'stage1'), 'Wrong retained stderr role')
++    if mode != 'stage1':
++        require(raw == b'', 'Unexpected strict-role native stderr')
++        return dict(policy='empty_stderr_v1', completedLines=0, bytes=0,
++                    completeEOF=True, connectionSuccessEstablished=False)
++    require(len(raw) <= MAX_BYTES, 'JACCL stderr exceeds four-line byte bound')
++    parser = JacclStartupProgress()
++    if raw:
++        parser.feed(raw)
++    parser.finish()
++    return parser.summary()
+--- /dev/null
++++ source/reference_binding.py
+@@ -0,0 +1,36 @@
++"""Reuse one exact completed full reference under its original package binding."""
++from pathlib import Path
++from binding_common import parse, same
++from binding_inputs import snapshot
++
++OLD = Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917')
++FULL_BOUND = OLD / 'actual-inputs-1/bound'
++FULL_DIRECTORY = OLD / 'physical-actions-1/collect-full/action/returned'
++FULL_RUN = OLD / 'physical-actions-1/full/action/receipt.json'
++FULL_RUN_SHA = 'cbd5d3964fb241c9e70bfba4f478dda1ba21f5b366917ff4e9c9981e40c6778a'
++FULL_BINDING_SHA = 'b1996ec96694c62e7b8a8b9a60ebd24b643e9509263fd60e3a34c1dcfc980781'
++FULL_TERMINAL_SHA = '32d64916d734efdc6758e9d729f51de3acbe5e520e82651d7d532dfb81b7e045'
++FULL_COLLECTION_SHA = '6ffe77a433384b912f041547c0a23c6c044824cc83ae73080fd1e4e243c1ebb3'
++
++
++def reference_bound(current_bound, directory):
++    same(directory, FULL_DIRECTORY, 'Fixed original full-reference directory')
++    old = snapshot(FULL_BOUND / 'binding-receipt.json', 65536)
++    same(old['sha256'], FULL_BINDING_SHA, 'Original full binding receipt')
++    binding = parse(old['raw'])['binding']
++    same(parse((FULL_BOUND / 'binding.json').read_bytes()), binding, 'Original full binding')
++    same(parse((current_bound / 'binding.json').read_bytes()), binding,
++         'Exact unchanged native/source/build/request expectation/prompt/model/dtype/comparator')
++    same(snapshot(directory / 'terminal.json', 65536)['sha256'], FULL_TERMINAL_SHA,
++         'Actual completed full terminal')
++    same(snapshot(directory.parent / 'returned-collection.json', 65536)['sha256'],
++         FULL_COLLECTION_SHA, 'Original exact full collection inventory')
++    return FULL_BOUND
++
++
++def reference_run(current_bound, directory, path, wanted):
++    reference_bound(current_bound, directory)
++    same(path, FULL_RUN, 'Fixed original full run receipt')
++    same(wanted, FULL_RUN_SHA, 'Fixed original full run pin')
++    same(snapshot(path, 4 * 1024**2)['sha256'], wanted, 'Original full run unchanged')
++    return FULL_BINDING_SHA

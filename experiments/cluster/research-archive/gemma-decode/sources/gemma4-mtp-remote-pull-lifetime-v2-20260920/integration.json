@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_mtp_pull_capture_lifetime_v2",
+  "baseManifest": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-draft-20260920/manifest.json",
+    "sha256": "38cee7c080922dadcaf73a6c1e742da35d39b1d2d763a0ff2a5eb2a504f23ee8",
+    "bytes": 2621
+  },
+  "correctionManifest": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-lifetime-20260920/manifest.json",
+    "sha256": "98f585a1d3a7a73b3d904b41280a839cfceae96ca185288448b7122f0f947032",
+    "bytes": 655
+  },
+  "before": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-lifetime-20260920/Runtime/Gemma4MTPPullTarget.swift",
+    "sha256": "0b9d5ca4c462f6f537c723e940d5097c11ca4155f6550b7c63e53bf62a3036f7",
+    "bytes": 12425
+  },
+  "after": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-mtp-remote-pull-lifetime-v2-20260920/Runtime/Gemma4MTPPullTarget.swift",
+    "sha256": "f6775c727754ea06c3156ba2c5e9526bee416ff85074eafe50e7fe2e60bab3f9",
+    "bytes": 12560
+  },
+  "runtimePath": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+  "sourceOnly": true
+}

@@ -1,0 +1,331 @@
+--- a/compare.py
++++ b/compare.py
+@@ -9,10 +9,10 @@
+ from binding_common import parse, require
+ from local_mtp_contract import validate_result
+ from solo_contract import validate_result as validate_solo_result
+-from target_width_contract import validate_result as validate_target_width_result
++from target_width_contract import POLICY,validate_result as validate_target_width_result
+ from target_width_compare import compare_sidecars
+ 
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1'
+ 
+ 
+ def completion_join(completion, terminal_raw, remote):
+@@ -71,7 +71,7 @@
+     job_raw=inputs.raw(case/'full.json');job=parse(job_raw)
+     require(job['promptCount'] in (128,4096) and (job['mode'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+         ==('full',64,16,7,'serial') and type(job['captureEvidence']) is bool
+-        and (operation in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is False)
++        and (operation in ('execute-solo','qualify-mtp-target-width-dense') or job['captureEvidence'] is False)
+         and job['buildIdentitySHA256']==activation['nativeSHA256'],'Metadata workload changed')
+     description_lines=inputs.raw(ROOT/'root-actions'/('metadata-'+CASE)/'stdout').splitlines()
+     require(description_lines and all(x.startswith(b'owned-child pid ') for x in description_lines[:-1]),'Metadata output framing')
+@@ -111,7 +111,7 @@
+     config_sha=hashlib.sha256(config_raw).hexdigest()
+     require(inputs.raw(returned/'local-mtp.json')==config_raw
+         and terminal['localMTPConfigSHA256']==config_sha and terminal['nativeOperation']==operation,'Collected local config/operation differs')
+-    if operation=='qualify-mtp-target-width':
++    if operation=='qualify-mtp-target-width-dense':
+         result=validate_target_width_result(terminal['result'],job)
+         require(result['ordinaryInputScopeSHA256']==description['scopeSHA256'],'Width ordinary input scope differs')
+     elif operation=='execute-solo':
+@@ -143,11 +143,12 @@
+     if not config['captureEvidence']:
+         require((returned/'sidecars').is_dir() and not any((returned/'sidecars').iterdir()),'Unexpected model sidecars')
+     inputs.recheck();require(verify_source()==source_sha,'Harness source changed')
+-    if operation=='qualify-mtp-target-width':
++    if operation=='qualify-mtp-target-width-dense':
+         numerical=compare_sidecars(returned,result,job)
+         inputs.recheck();require(verify_source()==source_sha,'Harness source changed after numerical replay')
+         return dict(schema='gemma4_target_width_physical_numerical_comparison_v1',
+             status='passed' if numerical['exactNumericsPassed'] else 'failed',nativeOperation=operation,
++            projectionPolicy=POLICY,gatheredOverrideEnabled=False,ordinaryAndWidthOneUnhooked=True,
+             nativeSHA256=activation['nativeSHA256'],sourceSHA256=activation['sourcesSHA256'],
+             buildReceiptSHA256=activation['buildReceiptSHA256'],activationSHA256=activation_sha,
+             sourceManifestSHA256=source_sha,packageSHA256=package_pin['sha256'],
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -51,7 +51,7 @@
+     same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before gate')
+     config=path.parent/'local-mtp.json'
+     same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before gate')
+-    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'),'Native cohort operation')
++    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense'),'Native cohort operation')
+     fd, record=acquire(device_directory())
+     try:
+         processes=observe(time.monotonic()+4)
+@@ -64,8 +64,8 @@
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+         same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before exec')
+         same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
+-        if launch['nativeOperation']=='qualify-mtp-target-width':
+-            arguments=[str(binary),'--qualify-mtp-target-width',str(job)]
++        if launch['nativeOperation']=='qualify-mtp-target-width-dense':
++            arguments=[str(binary),'--qualify-mtp-target-width-dense',str(job)]
+         elif launch['nativeOperation']=='execute-solo':
+             arguments=[str(binary),'--execute',str(job)]
+         else:
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -24,7 +24,7 @@
+     parser.add_argument('--job',type=Path,required=True)
+     parser.add_argument('--job-sha256',required=True)
+     parser.add_argument('--local-mtp-config-sha256',required=True)
+-    parser.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],required=True)
++    parser.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense'],required=True)
+     args=parser.parse_args(); os.umask(0o077)
+     started=time.monotonic(); deadline=started+315
+     require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+@@ -36,14 +36,14 @@
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+     require(job['promptCount'] in (128,4096) and (job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+             ==(64,16,7,'serial') and type(job['captureEvidence']) is bool, 'Local target workload')
+-    require(args.native_operation in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
++    require(args.native_operation in ('execute-solo','qualify-mtp-target-width-dense') or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
+     config_path=run/'local-mtp.json'
+     require(digest(config_path)==args.local_mtp_config_sha256,'Local MTP config identity')
+     config=parse(config_path.read_bytes())
+     require(config['benchmarkJob']==str(args.job) and config['benchmarkJobSHA256']==args.job_sha256,'Local MTP parent job identity')
+     require(type(config['captureEvidence']) is bool, 'Config evidence policy')
+-    require(args.native_operation not in ('execute-solo','qualify-mtp-target-width') or job['captureEvidence'] is config['captureEvidence'], 'Solo job/config evidence policy')
+-    if args.native_operation=='qualify-mtp-target-width':
++    require(args.native_operation not in ('execute-solo','qualify-mtp-target-width-dense') or job['captureEvidence'] is config['captureEvidence'], 'Solo job/config evidence policy')
++    if args.native_operation=='qualify-mtp-target-width-dense':
+         require(job['promptCount']==128 and job['captureEvidence'] is True,'Width qualifier exact capture workload')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+@@ -99,7 +99,7 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            if args.native_operation=='qualify-mtp-target-width':validate_target_width_result(value,job)
++            if args.native_operation=='qualify-mtp-target-width-dense':validate_target_width_result(value,job)
+             elif args.native_operation=='execute-solo':validate_solo_result(value,job)
+             else:validate_result(value,job,config,args.local_mtp_config_sha256,args.native_operation)
+             return value
+--- a/package/target_width_contract.py
++++ b/package/target_width_contract.py
+@@ -3,6 +3,7 @@
+ import re
+ from binding_common import require
+ 
++POLICY='gemma4_verification_packed_m1_dense_serial_head_v1'
+ MODES=('ordinary','verificationOne','verificationThreeKeepThree','verificationThreeKeepOne')
+ ROW_ORDINALS=(0,1,2,3,4,15)
+ FLAGS=dict(nativeExecuted=True,modelReleased=True,assistantLoaded=False,assistantForwardExecuted=False,
+@@ -10,14 +11,14 @@
+     targetBatchNumericsQualified=False,performanceMeasurement=False,performanceQualified=False,
+     runtimeServingEnabled=False,encryptedRDMAEstablished=False,physicalProcessOrLeaseRetirementEstablished=False,
+     collectiveCreated=False,collectiveReleased=False)
+-FIELDS=set(FLAGS)|{'schema','benchmarkJob','ordinaryInputScopeSHA256','scopeSHA256','planSHA256','sourceLoad',
++FIELDS=set(FLAGS)|{'denseProjection','schema','benchmarkJob','ordinaryInputScopeSHA256','scopeSHA256','planSHA256','sourceLoad',
+     'referenceRequestID','referenceRequestSHA256','referenceSelectedTokenIDs','referenceSelectedTokenIDsSHA256',
+     'modes','samples','resources','targetResources','files','diagnosticRequests','referenceRequests','comparisonRequests',
+     'checkpointFrontier','rowsPerRequest','stateComponentsPerRequest','allActualTargetArgmaxMatchReference',
+     'nativeCacheBytesAfterRelease','guardMetrics','guardObservationPolicy'}
+ SAMPLE_FLAGS=dict(assistantForwardExecuted=False,requestStateRetired=True,finalCommittedTokens=143,
+     checkpointCapturedBeforeRequestRetirement=True,numericalQualificationPassed=False,performanceMeasurement=False)
+-SAMPLE_FIELDS=set(SAMPLE_FLAGS)|{'ordinal','requestID','ordinaryRequestScopeSHA256','mode','requestSHA256',
++SAMPLE_FIELDS=set(SAMPLE_FLAGS)|{'projectionPolicy','ordinal','requestID','ordinaryRequestScopeSHA256','mode','requestSHA256',
+     'forcedInputSequence','actualTargetArgmax','expectedGreedyIDs','allArgmaxMatchReference','checkpointFrontier',
+     'rows','checkpointState','binding','referenceGeneratedInThisSession','teacherForcedInputs'}
+ 
+@@ -44,6 +45,13 @@
+ 
+ def validate_result(value,job):
+     require(type(value) is dict and set(value)==FIELDS,'Width result fields')
++    require(value['denseProjection']==dict(policy=POLICY,expectedDenseModules=235,expectedTiedHeads=1,
++        serialHeadLogicalBytes=4*1024**2,gatheredOverrideEnabled=False,singleRowOverrideEnabled=False,
++        wholeModelNumericsQualified=False),'Dense projection policy/actual complete module coverage')
++    dense=value['denseProjection']
++    require(all(type(dense[k]) is int for k in ('expectedDenseModules','expectedTiedHeads','serialHeadLogicalBytes'))
++        and all(dense[k] is False for k in ('gatheredOverrideEnabled','singleRowOverrideEnabled','wholeModelNumericsQualified')),
++        'Dense policy integer and false-flag types')
+     require(value['schema']=='gemma4_target_width_qualification_result_v1' and value['benchmarkJob']==job,
+         'Width result/job identity')
+     require((job['mode'],job['promptCount'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'],job['residualDType'])
+@@ -64,6 +72,8 @@
+     expected_files=[]
+     for ordinal,sample in enumerate(value['samples']):
+         require(type(sample) is dict and set(sample)==SAMPLE_FIELDS,'Width sample fields')
++        require(sample['projectionPolicy']==('ordinary_m1_bypass' if ordinal<2 else POLICY),
++            'Dense hook must leave actual ordinary reference and width1 control unmodified')
+         for k,want in SAMPLE_FLAGS.items():
+             require(sample[k] is want if type(want) is bool else type(sample[k]) is int and sample[k]==want,'Width sample flag '+k)
+         require(sample['ordinal']==ordinal and sample['mode']==MODES[ordinal]
+@@ -106,7 +116,7 @@
+         'Width aggregate actual argmax flag')
+     scope=text_hash(['gemma4_target_width_qualification_v1',value['ordinaryInputScopeSHA256'],
+         'reference='+value['referenceRequestSHA256'],'tokens='+value['referenceSelectedTokenIDsSHA256'],
+-        'checkpoint=132','assistant=false','performance=false']+list(MODES))
++        'checkpoint=132','assistant=false','performance=false']+list(MODES)+[POLICY])
+     require(value['scopeSHA256']==scope,'Width diagnostic scope')
+     require(value['files']==expected_files and len(value['files'])==384
+         and len({x['name'] for x in value['files']})==384,'Width exact ordered sidecars')
+@@ -123,7 +133,15 @@
+         and hashed(extra['budgetSHA256']) and integer(extra['observations'],1)
+         and extra['minimumActualFreeBytes']>=6*1024**3 and integer(extra['maximumObservedActiveBytes'])
+         and extra['hostBytes']==16*1024**2+32768,'Width additive target resource scope')
+-    require(len(extra['baseTerms'])==30 and extra['baseNativeBytes']==validate_terms(extra['baseTerms'])
++    require(len(extra['baseTerms'])==34 and extra['baseNativeBytes']==validate_terms(extra['baseTerms'])
+         and extra['verificationNativeBytes']==validate_terms(extra['verificationTerms'])
+         and extra['verificationTerms'] and extra['verificationNativeBytes']>0,'Width actual extra resource sums')
++    head=[x for x in extra['baseTerms'] if x['name'].startswith('serialTargetHead:')]
++    require([x['name'] for x in head]==['serialTargetHead:row'+str(i) for i in range(4)]
++        and all(x['logicalBytes']==1024**2 and x['allocationBound']>=1024**2 for x in head),
++        'Four individually allocation-rounded F32 head rows are required')
++    require(extra['budgetSHA256']==text_hash(['gemma4_mtp_remote_target_resources_v1',extra['requestSHA256'],
++        'maximumFrontier=143','depth=2','buffer=5','host='+str(extra['hostBytes'])]
++        +[x['name']+':'+str(x['logicalBytes'])+':'+str(x['allocationBound']) for x in extra['baseTerms']]),
++        'Dense head and original terms must bind the exact native resource fingerprint')
+     return value
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -14,7 +14,7 @@
+ REMOTE_BODY = r'''
+ import hashlib,json,os,pathlib,stat,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,job_sha,name,operation=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1'
+ assert operation in ('--describe','--check-arguments')
+ assert name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+--- a/root_run.py
++++ b/root_run.py
+@@ -26,7 +26,7 @@
+     p.add_argument('--case')
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=4096)
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense'],default='execute-local-mtp')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--binary',type=Path);p.add_argument('--build-receipt',type=Path);p.add_argument('--sources',type=Path)
+     args=p.parse_args()
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,7 +26,7 @@
+ CREATE=r'''
+ import hashlib,json,os,pathlib,sys
+ payload=json.load(sys.stdin);job=payload['job'];config=payload['config'];root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ raw=(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n').encode()
+ assert config['benchmarkJob']==str(root/'job.json') and config['benchmarkJobSHA256']==hashlib.sha256(raw).hexdigest()
+@@ -35,7 +35,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -46,7 +46,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-target-width-dense-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+@@ -58,8 +58,8 @@
+ 
+ def prepare(name,count,cut,capture,chunk,policy,match,depth,operation):
+     assert count in (128,4096) and (cut,chunk,policy,match)==(7,64,'serial',None)
+-    assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width')
+-    if operation=='qualify-mtp-target-width':assert count==128 and capture is True
++    assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense')
++    if operation=='qualify-mtp-target-width-dense':assert count==128 and capture is True
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+     requests=[str(uuid.uuid4()) for _ in range(4)]
+     common=dict(schema='gemma4_resident_benchmark_v1',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+@@ -67,7 +67,7 @@
+                 promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),
+                 requestIDs=requests,membershipEpoch=str(uuid.uuid4()),
+                 buildIdentitySHA256=digest(ROOT/'deployment/bundle'/PRODUCT),residualDType='bfloat16',
+-                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation in ('execute-solo','qualify-mtp-target-width') else False,cut=cut)
++                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation in ('execute-solo','qualify-mtp-target-width-dense') else False,cut=cut)
+     if match is not None:
+         assert match and all(c.isalnum() or c in '-_' for c in match)
+         prior=json.loads((ROOT/'cases'/match/'full.json').read_bytes())
+@@ -146,7 +146,7 @@
+     package_sha=digest(ROOT/'deployment/package.json')
+     config=json.loads((directory/'local-mtp.json').read_bytes())
+     operation=json.loads((directory/'operation.json').read_bytes())['operation']
+-    assert operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width')
++    assert operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense')
+     for mode,host in selected:
+         raw=(directory/(mode+'.json')).read_bytes()
+         p=ssh(host,['/usr/bin/python3','-c',CREATE],input=json.dumps(dict(job=json.loads(raw),config=config)).encode(),timeout=15)
+@@ -236,7 +236,7 @@
+     p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning','qualify-mtp-target-width-dense'],default='execute-local-mtp')
+     a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+     if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match,a.depth,a.native_operation);return 0
+--- a/target_width_compare.py
++++ b/target_width_compare.py
+@@ -6,7 +6,7 @@
+ from recorded_math import WIDTH,canonical,digest,equal,logical_bytes,parse_json,require,sha_string
+ from snapshot import snapshot
+ from target_width_binding import binding,finite,integer,ordinary_scope,request_hash,text_hash
+-from target_width_contract import MODES,ROW_ORDINALS,validate_result
++from target_width_contract import MODES,ROW_ORDINALS,POLICY,validate_result
+ 
+ HELPERS={'recorded_math.py':'f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914',
+          'snapshot.py':'46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b'}
+@@ -110,7 +110,7 @@
+             states.append(dict(globalLayer=key[0],component=key[1],dtype=dtype,shape=shape,logicalRange=logical,
+                 nativeBytes=len(raw),referenceSHA256=digest(expected[3]),candidateSHA256=digest(raw),
+                 **mismatch(expected[3],raw,dtype)))
+-        reports.append(dict(ordinal=ordinal,mode=sample['mode'],rows=rows,state=states,
++        reports.append(dict(ordinal=ordinal,mode=sample['mode'],projectionPolicy=sample['projectionPolicy'],rows=rows,state=states,
+             exactRows=sum(x['exact'] for x in rows),exactStateComponents=sum(x['exact'] for x in states),
+             allActualArgmaxMatchReference=sample['allArgmaxMatchReference']))
+     files.finish()
+@@ -118,6 +118,7 @@
+     # components. All24 rows/360 components were still read and validated.
+     exact=all(s['exactRows']==6 and s['exactStateComponents']==90 and s['allActualArgmaxMatchReference'] for s in reports)
+     return dict(schema='gemma4_target_width_exact_numerical_comparison_v1',exactNumericsPassed=exact,
++        projectionPolicy=POLICY,gatheredOverrideEnabled=False,ordinaryAndWidthOneUnhooked=True,
+         requests=4,fullRowsRead=24,fullRowsComparedToReference=18,vocabularyValuesPerRow=262144,
+         nativeStateComponentsRead=360,nativeStateComponentsComparedToReference=270,
+         nativeBytesRead=bytes_read,checkpointFrontier=132,finalStateCompared=False,

@@ -1,0 +1,293 @@
+--- a/package/benchmark_package.py
++++ b/package/benchmark_package.py
+@@ -17,7 +17,7 @@
+     require(Path(__file__).resolve().parent == REMOTE, 'Unexpected installation root')
+     require(digest(REMOTE/'package.json') == wanted, 'Package identity changed')
+     package=json.loads((REMOTE/'package.json').read_bytes())
+-    require(package['schema']=='gemma4_benchmark_install_v1','Package schema')
++    require(package['schema']=='gemma4_full_expert_install_v1','Package schema')
+     seen=set(); total=0
+     for row in package['files']:
+         relative=Path(row['path'])
+--- a/package/target_processes.py
++++ b/package/target_processes.py
+@@ -10,7 +10,7 @@
+ COMMAND = ['/bin/ps', '-Aww', '-o', 'pid=,uid=,comm=']
+ OUTPUT_LIMIT = 1024 * 1024
+ NATIVE_OR_OWNER_NAMES = frozenset({'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
+-    'gemmaresidentbenchmark', 'gemmaexpertnativecheck', 'gemmaexpertaxischeck', 'collectiveallocationcheck', 'gemmashortcorrectnesscheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
++    'gemmaexpertfullcorrectness', 'gemmaexpertrdmacheck', 'gemmaexpertmodelcheck', 'gemmaresidentbenchmark', 'gemmaexpertnativecheck', 'gemmaexpertaxischeck', 'collectiveallocationcheck', 'gemmashortcorrectnesscheck', 'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
+ 
+ 
+ def parse_processes(raw):
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,8 +3,8 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7')
+-PRODUCT = 'GemmaResidentBenchmark'
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1')
++PRODUCT = 'GemmaExpertFullCorrectness'
+ 
+ def write_json(path, value):
+     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()+b'\n'
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -27,13 +27,16 @@
+     require(run.resolve()==run and digest(args.job)==args.job_sha256,'Job identity')
+     package=verify(args.package_sha256)
+     job=parse(args.job.read_bytes())
+-    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode'] in ('full','stage0','stage1'), 'Job schema/mode')
++    require(job['schema']=='gemma4_full_expert_correctness_job_v1' and job['mode'] in ('full','expert0','expert1'), 'Job schema/mode')
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B','Model path')
+     require(job['buildIdentitySHA256']==digest(REMOTE/'bundle'/PRODUCT),'Native/job identity')
+-    record={'schema':'gemma4_benchmark_terminal_v1','status':'failed','mode':job['mode'],
++    require(job['rankBuildSHA256']==[job['buildIdentitySHA256']]*2,'First EP pair requires the same bound actual product')
++    require(job['promptFile']==str(REMOTE/'prompt.ids.json')
++            and job['promptFileSHA256']==digest(REMOTE/'prompt.ids.json'),'Bound P32 prompt')
++    record={'schema':'gemma4_full_expert_terminal_v1','status':'failed','mode':job['mode'],
+             'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,
+             'encryptedRDMAEstablished':False,'externalHTTPTTFTMeasured':False,
+             'primaryFailure':None,'cleanupErrors':[]}
+@@ -46,7 +49,7 @@
+         if cancellation.exists():
+             require(not cancellation.is_symlink() and cancellation.stat().st_size<=4096,'Unsafe cancellation record')
+             value=parse(cancellation.read_bytes())
+-            require(value=={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':args.job_sha256},
++            require(value=={'schema':'gemma4_full_expert_cancellation_v1','jobSHA256':args.job_sha256},
+                     'Cancellation identity differs')
+             raise RuntimeError('Matching peer failed; cancel this owned native group')
+         gate(phase)
+@@ -55,14 +58,14 @@
+     try:
+         guard('prelaunch')
+         memory=int(read_command(['/usr/sbin/sysctl','-n','hw.memsize']).strip())
+-        require(memory==(24 if job['mode']=='stage0' else 48)*1024**3,'Wrong physical host role')
++        require(memory==(24 if job['mode']=='expert0' else 48)*1024**3,'Wrong physical host role')
+         require(not processes(deadline)['prohibited'],'Existing native/owner process')
+         before=observe(device_directory());require_empty(before)
+         write_json(run/'journal-before.json',before)
+         env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=str(Path.home()),LANG='C',
+                  DARKBLOOM_CBV2_ATTN_QUERY_BLOCK='128',DARKBLOOM_BF16_WEIGHTS='1',MLX_ENABLE_TF32='1')
+         if job['mode']!='full':
+-            env.update(JACCL_RANK='0' if job['mode']=='stage0' else '1',
++            env.update(JACCL_RANK='0' if job['mode']=='expert0' else '1',
+                        JACCL_IBV_DEVICES=str(REMOTE/'matrix.json'),JACCL_COORDINATOR='192.0.2.250:51361')
+         binary=REMOTE/'bundle'/PRODUCT;s=binary.lstat()
+         launch=dict(binary=str(binary),job=str(args.job),environment=env,
+@@ -74,14 +77,16 @@
+                         dict(PATH=env['PATH'],HOME=env['HOME'],LANG='C'),'solo',None)
+         remaining=int(deadline-time.monotonic())
+         require(remaining>=301,'Insufficient time for native lifetime and cleanup')
+-        stderr=JacclStartupProgress() if job['mode']=='stage1' else None
++        stderr=JacclStartupProgress() if job['mode']=='expert1' else None
+         pipes=PipeWorkers((spec,),run/'native',remaining,guard,stderr_policy=stderr);pipes.start()
+         record['nativePIDs']=[child.pid for child in pipes.children]
+         write_json(run/'owner.json',dict(parentPID=os.getpid(),nativePIDs=record['nativePIDs'],
+                                         nativePGIDs=record['nativePIDs'],deadlineMonotonic=deadline))
+         def result(_,raw):
++            require(len(raw)<=1_048_576,'Native final JSON exceeds fixed report bound')
+             value=parse(raw)
+-            require(isinstance(value,dict),'Native result must be an object')
++            require(isinstance(value,dict) and value.get('schema')=='gemma4_full_expert_result_v1'
++                    and value.get('mode')==job['mode'],'Native result schema/role')
+             # Numerical/timing acceptance is performed separately against the
+             # exact description and both rank outputs, after process retirement.
+             return value
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,13 +26,13 @@
+ CREATE=r'''
+ import json,os,pathlib,sys
+ job=json.load(sys.stdin);root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ (root/'job.json').write_text(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n')
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -43,36 +43,15 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+-value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
++value={'schema':'gemma4_full_expert_cancellation_v1','jobSHA256':wanted}
+ if path.exists():assert json.loads(path.read_bytes())==value
+ else:
+  os.umask(0o077)
+  with path.open('x') as stream:json.dump(value,stream,sort_keys=True)
+ '''
+-
+-def prepare(name,count,cut,capture,chunk,policy,match):
+-    directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+-    requests=[str(uuid.uuid4()) for _ in range(4)]
+-    common=dict(schema='gemma4_resident_benchmark_v1',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+-                metadataDirectory=REMOTE+'/metadata',promptFile=REMOTE+f'/prompts/prompt-{count}.json',
+-                promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),
+-                requestIDs=requests,membershipEpoch=str(uuid.uuid4()),
+-                buildIdentitySHA256=digest(ROOT/'deployment/bundle'/PRODUCT),residualDType='bfloat16',
+-                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture,cut=cut)
+-    if match is not None:
+-        assert match and all(c.isalnum() or c in '-_' for c in match)
+-        prior=json.loads((ROOT/'cases'/match/'full.json').read_bytes())
+-        ignored={'requestIDs','membershipEpoch','mode','outputDirectory','prefillPolicy'}
+-        assert {k:v for k,v in prior.items() if k not in ignored} == {k:v for k,v in common.items() if k not in ignored}, 'Matched source workload differs'
+-        common.update(requestIDs=prior['requestIDs'],membershipEpoch=prior['membershipEpoch'])
+-    for mode in ['full','stage0','stage1']:
+-        job=dict(common,mode=mode,outputDirectory=REMOTE+'/runs/'+name+'-'+mode+'/sidecars')
+-        job['prefillPolicy']='serial' if mode=='full' else policy
+-        (directory/(mode+'.json')).write_text(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n')
+-    print(str(directory))
+ 
+ def collect(host,remote,directory):
+     archive_path=directory.with_suffix('.tar');stderr_path=directory.with_suffix('.tar.stderr')
+@@ -88,7 +67,7 @@
+                     block=os.read(key.fileobj.fileno(),1024*1024)
+                     if not block:selector.unregister(key.fileobj);continue
+                     received+=len(block)
+-                    assert received<4*1024**3+64*1024**2,'Collection receive bound exceeded'
++                    assert received<=128*1024**2,'Collection receive bound exceeded'
+                     archive.write(block)
+             assert child.wait(timeout=max(0.001,deadline-time.monotonic()))==0,'Remote archive failed'
+         finally:
+@@ -103,10 +82,16 @@
+             assert not path.is_absolute() and '..' not in path.parts and not item.issym() and not item.islnk()
+             dest=directory/path
+             if item.isdir():dest.mkdir(parents=True,exist_ok=True);continue
+-            assert item.isfile() and item.size<=64*1024**2;dest.parent.mkdir(parents=True,exist_ok=True)
++            assert item.isfile() and item.size<=16*1024**2;dest.parent.mkdir(parents=True,exist_ok=True)
+             with dest.open('xb') as output:
+                 source=tar.extractfile(item)
+                 for block in iter(lambda:source.read(1024*1024),b''):output.write(block)
++    files=[dict(path=str(p.relative_to(directory)),bytes=p.stat().st_size,sha256=digest(p))
++           for p in sorted(directory.rglob('*')) if p.is_file()]
++    assert len(files)<=128
++    with (directory/'collection.json').open('x') as stream:
++        json.dump(dict(schema='gemma4_full_expert_collection_v1',sshExitCode=child.returncode,
++            remoteDirectory=remote,archiveBytes=received,archiveSHA256=digest(archive_path),files=files),stream,sort_keys=True)
+ 
+ def await_alias_expiry(alias,started):
+     """Keep the release channel open; the original remote lease owns its expiry."""
+@@ -128,8 +113,13 @@
+ 
+ def run(name,kind):
+     directory=ROOT/'cases'/name;out=directory/kind;out.mkdir(mode=0o700)
+-    selected=[('full','darkbloom-48')] if kind=='solo' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
++    selected=[('full','darkbloom-48')] if kind=='solo' else [('expert0','darkbloom-24'),('expert1','darkbloom-48')]
++    from validate_case import validate_role
++    if kind=='pair':validate_role(directory,'full')
++    preparation=json.loads((directory/'preparation.json').read_bytes())
+     package_sha=digest(ROOT/'deployment/package.json')
++    assert preparation['packageSHA256']==package_sha
++    for mode,_ in selected:assert digest(directory/(mode+'.json'))==preparation['jobs'][mode]
+     for mode,host in selected:
+         raw=(directory/(mode+'.json')).read_bytes()
+         p=ssh(host,['/usr/bin/python3','-c',CREATE],input=raw,timeout=15)
+@@ -210,14 +200,12 @@
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False)
+     p.add_argument('action',choices=['prepare','solo','pair']);p.add_argument('--name',required=True)
+-    p.add_argument('--prompt',type=int,choices=[128,256,1024,4096,8192],default=128)
+-    p.add_argument('--cut',type=int,choices=[6,7,8,10],default=8)
+-    p.add_argument('--chunk',type=int,choices=[64,128],default=128)
+-    p.add_argument('--policy',choices=['serial','oneChunkLookahead'],default='serial')
+-    p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+-    p.add_argument('--capture',action='store_true');a=p.parse_args()
++    p.add_argument('--ownership',type=Path);a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+-    if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match);return 0
++    if a.action=='prepare':
++        from prepare_cases import prepare
++        assert a.ownership is not None;print(prepare(a.name,a.ownership));return 0
++    assert a.ownership is None
+     return run(a.name,a.action)
+ 
+ if __name__=='__main__':raise SystemExit(main())
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,8 +11,8 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7'
+-PRODUCT='GemmaResidentBenchmark'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1'
++PRODUCT='GemmaExpertFullCorrectness'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+ def digest(path):
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-resident-benchmark-20260920-v7')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-full-model-ep-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+@@ -42,7 +42,7 @@
+     block=source.read(1024*1024)
+     if not block:break
+     target.write(block)
+-  path.chmod(0o700 if item.name=='bundle/GemmaResidentBenchmark' else 0o600)
++  path.chmod(0o700 if item.name=='bundle/GemmaExpertFullCorrectness' else 0o600)
+ assert hashlib.sha256((root/'package.json').read_bytes()).hexdigest()==wanted
+ sys.path.insert(0,str(root))
+ from benchmark_package import verify
+@@ -51,28 +51,36 @@
+ '''
+ 
+ def prepare(binary):
++    from build_binding import verify
++    binding=verify()
++    assert binary==Path(binding['binaryDirectory'])/PRODUCT
++    assert binary.stat().st_size==binding['nativeBytes'] and digest(binary)==binding['nativeSHA256']
++    source_reference=binding['metadataAndPromptSources']
++    assert digest(Path(source_reference['path']))==source_reference['sha256']
+     stage=ROOT/'deployment';stage.mkdir(mode=0o700)
+     for source in (ROOT/'package').rglob('*'):
+         if source.is_file() and '__pycache__' not in source.parts:
+             dest=stage/source.relative_to(ROOT/'package');dest.parent.mkdir(parents=True,exist_ok=True)
+             shutil.copyfile(source,dest)
+-    sources=json.loads(SOURCES.read_bytes())
++    sources=json.loads(Path(source_reference['path']).read_bytes())
+     for name,row in sources.items():
+-        if not (name.startswith('metadata/') or name=='matrix.json'):continue
++        if not (name.startswith('metadata/') or name in ('matrix.json','prompt.ids.json','provenance/prompt-receipt.json')):continue
+         src=Path(row['path']);assert digest(src)==row['sha256']
+         dest=stage/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest)
+-    (stage/'prompts').mkdir()
+-    for source in (ROOT/'prompts').glob('*.json'):shutil.copyfile(source,stage/'prompts'/source.name)
++    shutil.copyfile(ROOT/'artifact-bindings.json',stage/'artifact-bindings.json')
+     (stage/'bundle').mkdir()
+     for name in [PRODUCT,'mlx.metallib','mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal']:
+         src=binary.parent/name;dest=stage/'bundle'/name;dest.parent.mkdir(parents=True,exist_ok=True)
++        if name!=PRODUCT:
++            row=next(r for r in binding['resources'] if r['path']=='bundle/'+name)
++            assert src.stat().st_size==row['bytes'] and digest(src)==row['sha256']
+         subprocess.run(['/bin/cp','-c',str(src),str(dest)],check=True)
+     rows=[]
+     for path in sorted(stage.rglob('*')):
+         if path.is_file():
+             path.chmod(0o700 if path.name==PRODUCT else 0o600)
+             rows.append(dict(path=str(path.relative_to(stage)),bytes=path.stat().st_size,sha256=digest(path)))
+-    package={'schema':'gemma4_benchmark_install_v1','files':rows}
++    package={'schema':'gemma4_full_expert_install_v1','files':rows}
+     (stage/'package.json').write_text(json.dumps(package,sort_keys=True,separators=(',',':'))+'\n')
+     archive=ROOT/'deployment.tar'
+     with tarfile.open(archive,'x') as tar:

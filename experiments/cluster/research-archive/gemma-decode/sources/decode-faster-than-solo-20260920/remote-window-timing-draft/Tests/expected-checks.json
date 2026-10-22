@@ -1,0 +1,9 @@
+[
+  "PASS window-count-bounded-by-output",
+  "PASS ordinal-width-prefix-refusals",
+  "PASS seed-tail-and-envelope-bounds",
+  "PASS exact-request-control-delta",
+  "PASS counter-regression-refused",
+  "PASS fixed-window-storage-below-32-kib",
+  "PASS bounded-encoding-and-clock-meaning"
+]

@@ -1,0 +1,863 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift
+@@ -0,0 +1,41 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++
++@_spi(ClusterTesting) public enum AttentionTargetVerificationCheck {
++    public static func run() throws -> Data {
++        try MLX.withError { native in
++            let start = DispatchTime.now().uptimeNanoseconds, baseline = Memory.activeMemory
++            func check() throws {
++                try native.check()
++                guard DispatchTime.now().uptimeNanoseconds - start < 55_000_000_000,
++                      Memory.activeMemory <= baseline + 64 * 1024 * 1024 else {
++                    throw ProbeError("Rectangular attention fixture exceeds lifetime or native-active allowance")
++                }
++                try QwenResidentResourceEnvironment.require()
++            }
++            do {
++                try check()
++                let groups = try AttentionVerificationPlanCheck.run()
++                    + AttentionVerificationChronologyCheck.run(check: check)
++                    + AttentionVerificationFailureCheck.run(check: check)
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++                Memory.clearCache(); try check()
++                return try JSONSerialization.data(withJSONObject: [
++                    "fixture": "actual-owned-rectangular-attention-v1", "passed": groups,
++                    "maximumVerificationWidth": 4, "actualPrefixCases": 56,
++                    "actualFullWindowRows": true, "actualPrefill2Decode1Probe": true,
++                    "modeledGemmaLayers": 30, "modeledSlidingLayers": 25, "modeledFullLayers": 5,
++                    "sameShapeRollbackReference": true, "syntheticSerialOutputExact": true,
++                    "maximumNativeActiveIncrementBytes": 64 * 1024 * 1024,
++                    "gemmaWeightsExecuted": false, "modelBatchShapeNumericsQualified": false,
++                    "assistantOrDistributedQualified": false, "wholeModelResourceQualified": false,
++                ], options: [.sortedKeys])
++            } catch {
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check()
++                Memory.clearCache(); try native.check(); throw error
++            }
++        }
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationChronologyCheck.swift
+@@ -0,0 +1,95 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++@_spi(OwnedTargetVerification) import MLXLMCommon
++
++enum AttentionVerificationChronologyCheck {
++    static func run(check: @escaping () throws -> Void) throws -> [String] {
++        var cases = 0
++        for base in [2, 3, 4, 9] {
++            for width in 1...4 {
++                for keep in 0...width {
++                    try autoreleasepool {
++                        let owner = try WindowedStateFixtureOwner(check: check)
++                        let plain = try WindowedStateFixtureOwner(check: check)
++                        let shaped = try WindowedStateFixtureOwner(check: check)
++                        defer { try? owner.close(); try? plain.close(); try? shaped.close() }
++                        try AttentionVerificationFixture.fill(owner, to: base)
++                        try AttentionVerificationFixture.fill(plain, to: base)
++                        try AttentionVerificationFixture.fill(shaped, to: base)
++                        let ids = owner.state.rows.map { ObjectIdentifier($0!) }
++                        try AttentionVerificationFixture.begin(owner, width: width)
++                        let output = try AttentionVerificationFixture.stage(owner, width: width)
++                        try AttentionVerificationFixture.require(owner.state.committedTokens == base,
++                            "Staged suffix was published before reconciliation")
++                        let frontier = try owner.state.reconcileAttentionVerification(keeping: keep, check: check)
++                        try AttentionVerificationFixture.require(frontier == base + keep
++                            && owner.state.rows.map { ObjectIdentifier($0!) } == ids
++                            && owner.state.backend.bytesCapacity == owner.state.geometry.kvCapacityBytes,
++                            "Reconciliation replaced rows or retained expanded capacity")
++                        let actual = try owner.snapshot()
++                        try WindowedStateChronologyCheck.assertSnapshot(actual)
++                        let sameShape = try AttentionVerificationFixture.sameShapeReference(shaped, width: width, keep: keep)
++                        try AttentionVerificationFixture.require(actual.fingerprint == sameShape.fingerprint,
++                            "Owner rollback differs from same-shape SDK transaction")
++                        if keep > 0 {
++                            let serial = try AttentionVerificationFixture.serial(plain, width: keep)
++                            let accepted = output[0..., ..<keep]
++                            try AttentionVerificationFixture.require(accepted.asData().data == serial.asData().data,
++                                "Synthetic per-query attention differs from serial baseline")
++                        }
++                        let plainState = try plain.snapshot()
++                        try AttentionVerificationFixture.require(actual.fingerprint == plainState.fingerprint,
++                            "Accepted synthetic state differs from ordinary prefix")
++                        try owner.advance(1); try plain.advance(1)
++                        let next = try owner.snapshot(), expected = try plain.snapshot()
++                        try AttentionVerificationFixture.require(next.fingerprint == expected.fingerprint,
++                            "Rejected suffix contaminated next ordinary decode")
++                        try owner.close(); try plain.close(); try shaped.close()
++                        cases += 1
++                    }
++                }
++            }
++        }
++        try AttentionVerificationFixture.require(cases == 56, "Rectangular prefix matrix is incomplete")
++        try autoreleasepool {
++            let owner = try WindowedStateFixtureOwner(check: check)
++            defer { try? owner.close() }
++            try owner.advance(7)
++            for keep in [1, 2, 3, 4] {
++                try AttentionVerificationFixture.begin(owner, width: 4)
++                _ = try AttentionVerificationFixture.stage(owner, width: 4)
++                _ = try owner.state.reconcileAttentionVerification(keeping: keep, check: check)
++                try WindowedStateChronologyCheck.assertSnapshot(owner.snapshot())
++            }
++            try owner.close()
++        }
++        try autoreleasepool {
++            let owner = try WindowedStateFixtureOwner(check: check)
++            defer { try? owner.close() }
++            try owner.advance(7)
++            let captures = owner.state.rows.map { row -> CBv2OwnedRectangularAttention.Capture in
++                let snapshot = row!.snapshot()
++                return .init(row: row!, keys: snapshot.keys, values: snapshot.values)
++            }
++            try CBv2OwnedRectangularAttention.protectCaptures(captures, backend: owner.state.backend, check: check)
++            try AttentionVerificationFixture.begin(owner, width: 4)
++            _ = try AttentionVerificationFixture.stage(owner, width: 4)
++            _ = try owner.state.reconcileAttentionVerification(keeping: 4, check: check)
++            for (index, capture) in captures.enumerated() {
++                let range = (index == 0 ? 0 : 3)..<7
++                let keys = WindowedStateChronologyCheck.expectedBytes(layer: index, range: range, values: false, constant: false)
++                let values = WindowedStateChronologyCheck.expectedBytes(layer: index, range: range, values: true, constant: false)
++                try AttentionVerificationFixture.require(capture.keys.asData().data == keys
++                    && capture.values.asData().data == values, "Pre-write capture changed after committed wrap")
++            }
++            try owner.close()
++        }
++        return ["actual-prefill2-decode1-mixed-dtype-probe", "all-56-width-prefix-boundary-cases",
++            "same-shape-sdk-rollback-reference", "synthetic-serial-query-output-exact",
++            "cpu-encoded-chronological-state-exact", "zero-partial-all-prefix-publication",
++            "rejected-suffix-next-decode-isolation", "same-owner-capacity-restoration",
++            "repeated-rounds-across-window-wraps", "pre-write-capture-survives-committed-wrap"]
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFailureCheck.swift
+@@ -0,0 +1,87 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++enum AttentionVerificationFailureCheck {
++    enum Injected: Error { case refused }
++    static func refuses(_ body: () throws -> Void) throws {
++        var refused = false
++        do { try body() } catch { refused = true }
++        try AttentionVerificationFixture.require(refused, "Invalid attention transaction was accepted")
++    }
++    static func run(check: @escaping () throws -> Void) throws -> [String] {
++        for mode in ["no-admission", "width-overrun", "wrong-forward-width", "partial-forward",
++                     "cancel-after-forward", "invalid-prefix", "replayed-stage", "ordinary-during-stage",
++                     "reentrant-stage", "reentrant-admission"] {
++            try autoreleasepool {
++                let owner = try WindowedStateFixtureOwner(check: check)
++                defer { try? owner.close(failed: true) }
++                try owner.advance(7)
++                weak var full: AnyObject? = owner.state.rows[0]
++                weak var window: AnyObject? = owner.state.rows[1]
++                try refuses {
++                    if mode == "no-admission" {
++                        try owner.state.beginAttentionVerification(steps: 4, captureLayerIndices: [0, 1],
++                            admit: { _ in throw Injected.refused }, check: check)
++                        return
++                    }
++                    if mode == "width-overrun" {
++                        try AttentionVerificationFixture.begin(owner, width: 5); return
++                    }
++                    if mode == "reentrant-admission" {
++                        try owner.state.beginAttentionVerification(steps: 4, captureLayerIndices: [],
++                            admit: { _ in try owner.state.requireOpen() }, check: check)
++                        return
++                    }
++                    try AttentionVerificationFixture.begin(owner, width: 4)
++                    if mode == "ordinary-during-stage" { try owner.state.requireOpen(); return }
++                    if mode == "wrong-forward-width" {
++                        _ = try owner.state.stageAttentionVerification(check: check, additionalTargets: { [] },
++                            forward: { try AttentionVerificationFixture.forward($0, count: 3) },
++                            validateOutput: { _ in })
++                        return
++                    }
++                    if mode == "partial-forward" {
++                        _ = try owner.state.stageAttentionVerification(check: check, additionalTargets: { [] },
++                            forward: { caches in
++                                _ = try AttentionVerificationFixture.forward(caches, count: 4, layers: 1)
++                                throw Injected.refused
++                            }, validateOutput: { _ in })
++                        return
++                    }
++                    if mode == "cancel-after-forward" {
++                        var constructed = false
++                        _ = try owner.state.stageAttentionVerification(check: {
++                            try check(); if constructed { throw Injected.refused }
++                        }, additionalTargets: { [] }, forward: { caches in
++                            let output = try AttentionVerificationFixture.forward(caches, count: 4)
++                            constructed = true; return output
++                        }, validateOutput: { _ in })
++                        return
++                    }
++                    if mode == "reentrant-stage" {
++                        _ = try owner.state.stageAttentionVerification(check: check, additionalTargets: { [] },
++                            forward: { _ in try AttentionVerificationFixture.stage(owner, width: 4) },
++                            validateOutput: { _ in })
++                        return
++                    }
++                    _ = try AttentionVerificationFixture.stage(owner, width: 4)
++                    if mode == "replayed-stage" { _ = try AttentionVerificationFixture.stage(owner, width: 4); return }
++                    _ = try owner.state.reconcileAttentionVerification(keeping: 5, check: check)
++                }
++                try AttentionVerificationFixture.require(owner.state.committedTokens == 7,
++                    "Refused transaction published speculative frontier")
++                try owner.close(failed: true)
++                try AttentionVerificationFixture.require(full == nil && window == nil
++                    && owner.state.backend.bytesCapacity == owner.state.geometry.kvCapacityBytes,
++                    "Failed transaction retained capture, row or temporary capacity")
++            }
++        }
++        return ["admission-refusal-before-staging", "width-and-forward-coverage-refusals",
++            "partial-forward-failure-retirement", "cancel-after-graph-retirement",
++            "invalid-prefix-and-replayed-stage-refusals", "ordinary-access-blocked-during-transaction",
++            "admission-and-stage-reentrancy-refused", "failed-capture-row-capacity-retirement"]
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFixture.swift
+@@ -0,0 +1,79 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++@_spi(OwnedTargetVerification) import MLXLMCommon
++
++enum AttentionVerificationFixture {
++    static func require(_ value: Bool, _ message: String) throws {
++        try WindowedStateFixtureOwner.require(value, message)
++    }
++    static func fill(_ owner: WindowedStateFixtureOwner, to frontier: Int) throws {
++        while owner.state.committedTokens < frontier {
++            try owner.advance(min(7, frontier - owner.state.committedTokens))
++        }
++    }
++    // No model GEMM here: exact representable positional KV and zero queries
++    // isolate storage/attention chronology from full-model batch-shape numerics.
++    static func forward(_ caches: [any CBv2AttendingLayerCache], count: Int,
++                        layers: Int = 2) throws -> MLXArray {
++        var columns: [MLXArray] = []
++        for index in 0..<layers {
++            let cache = caches[index], kind = WindowedStateFixtureModel.kinds[index]
++            let dtype = WindowedStateFixtureModel.dtypes[index]
++            let start = Int(cache.positionOffsets.item(Int32.self))
++            let keys = WindowedStateFixtureModel.tensor(kind: kind, start: start, count: count,
++                dtype: dtype, values: false)
++            let values = WindowedStateFixtureModel.tensor(kind: kind, start: start, count: count,
++                dtype: dtype, values: true)
++            let query = MLXArray.zeros([1, kind.queryHeads, count, kind.headDim], dtype: dtype)
++            let result = cache.updateAndAttend(queries: query, keys: keys, values: values, scale: 1, sinks: nil)
++            columns.append(result.asType(.float32).sum(axis: 3).sum(axis: 1).reshaped([1, count]))
++        }
++        return concatenated(columns, axis: 0)
++    }
++    static func validate(_ output: MLXArray, width: Int) throws {
++        try require(output.shape == [2, width] && output.dtype == .float32
++            && output.asArray(Float.self).allSatisfy({ $0.isFinite }), "Synthetic rectangular output differs")
++    }
++    static func admit(_ plan: CBv2AttentionVerificationPlan) throws {
++        try require(plan.layout.layers.count == 2 && plan.layout.maximumTokens == 32
++            && plan.layout.maximumChunkTokens == 7 && plan.additionalLogicalBytes <= 32 * 1024
++            && plan.backendCapacityBytes <= 32 * 1024, "Tiny fixture state allowance exceeded")
++    }
++    static func begin(_ owner: WindowedStateFixtureOwner, width: Int) throws {
++        try owner.state.beginAttentionVerification(steps: width, captureLayerIndices: [0, 1],
++            admit: admit, check: owner.check)
++    }
++    static func stage(_ owner: WindowedStateFixtureOwner, width: Int) throws -> MLXArray {
++        try owner.state.stageAttentionVerification(check: owner.check, additionalTargets: { [] },
++            forward: { try forward($0, count: width) }, validateOutput: { try validate($0, width: width) })
++    }
++    static func serial(_ owner: WindowedStateFixtureOwner, width: Int) throws -> MLXArray {
++        var outputs: [MLXArray] = []
++        for _ in 0..<width {
++            outputs.append(try owner.state.run(tokenCount: 1, check: owner.check,
++                forward: { caches, _ in try forward(caches, count: 1) },
++                validateOutput: { try validate($0, width: 1) }))
++        }
++        return concatenated(outputs, axis: 1)
++    }
++    static func sameShapeReference(_ owner: WindowedStateFixtureOwner, width: Int, keep: Int) throws -> CBv2OwnedStateSnapshot {
++        let state = owner.state, base = state.committedTokens
++        // Direct existing SDK transaction, independent of the new owner bridge.
++        for row in state.rows { row!.beginSpeculativeWrite() }
++        let caches = state.bank.layerCaches(rowStates: [state.rows])
++        let result = try CBv2OwnedRectangularAttention.withSerialQueries(caches: caches) {
++            try forward(caches, count: width)
++        }
++        eval([result] + CBv2OwnedRectangularAttention.stagingRoots(rows: state.rows.map { $0! }))
++        try owner.check()
++        for row in state.rows { row!.rollback(width - keep); row!.commitSpeculativeWrite() }
++        state.bank.invalidateBoundComposition()
++        let rebound = state.bank.layerCaches(rowStates: [state.rows])
++        eval(rebound.flatMap { ($0 as! any KVCache).innerState() }); try owner.check()
++        return try CBv2OwnedStateSnapshot.capture(geometry: state.geometry, rows: state.rows,
++            recurrent: state.recurrent, committedTokens: base + keep,
++            globalLayerIndices: WindowedStateFixtureModel.globals, includeBytes: true, check: owner.check)
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationPlanCheck.swift
+@@ -0,0 +1,67 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++
++enum AttentionVerificationPlanCheck {
++    static func require(_ condition: Bool, _ message: String) throws {
++        if !condition { throw ProbeError(message) }
++    }
++    static func refuses(_ body: () throws -> Void) throws {
++        var refused = false
++        do { try body() } catch { refused = true }
++        try require(refused, "Invalid rectangular plan was accepted")
++    }
++    static func run() throws -> [String] {
++        func layout(_ dtype: LayerAttentionStateLayout.Element, chunk: Int = 64) throws -> LayerAttentionStateLayout {
++            try .init(layers: (0..<30).map { index in
++                let full = index % 6 == 5
++                return .init(globalIndex: index, kvHeads: full ? 2 : 8,
++                    headDimension: full ? 512 : 256, window: full ? nil : 1024, element: dtype)
++            }, maximumTokens: 4224, maximumChunkTokens: chunk)
++        }
++        for dtype in [LayerAttentionStateLayout.Element.bfloat16, .float32] {
++            let geometry = try layout(dtype)
++            for base in [4096, 4219, 4220] {
++                for width in 1...4 {
++                    let plan = try CBv2AttentionVerificationPlan(layout: geometry, base: base, steps: width,
++                        captureLayerIndices: [28, 29])
++                    let pairPerToken = 2 * 8 * 256 * dtype.bytes
++                    let staged = 25 * width * pairPerToken
++                    let windows = 25 * (width + 1024 + width + 1024) * pairPerToken
++                    let captures = (2 * 1024 * 2 * 8 * 256 + 4224 * 2 * 2 * 512) * dtype.bytes
++                    try require(plan.stagedWindowBytes == staged
++                        && plan.backendCapacityBytes == geometry.conservativeKVCapacityBytes + staged
++                        && plan.additionalLogicalBytes == windows + captures
++                        && plan.additionalArrays.count == 156
++                        && Set(plan.additionalArrays.map(\.name)).count == 156
++                        && plan.layout == geometry, "Gemma named state ledger differs from independent formula")
++                    let same = try CBv2AttentionVerificationPlan(layout: geometry, base: base, steps: width,
++                        captureLayerIndices: [28, 29])
++                    try require(plan.fingerprint == same.fingerprint && plan.fingerprint != geometry.fingerprint,
++                        "Ordinary and verification identities were conflated")
++                }
++            }
++        }
++        let geometry = try layout(.bfloat16)
++        for tuple in [(0, 1), (4096, 0), (4096, 5), (4222, 3), (4224, 1)] {
++            try refuses { _ = try CBv2AttentionVerificationPlan(layout: geometry, base: tuple.0,
++                steps: tuple.1, captureLayerIndices: []) }
++        }
++        for indices in [[28, 28], [-1], [30], [0, 1, 2]] {
++            try refuses { _ = try CBv2AttentionVerificationPlan(layout: geometry, base: 4096,
++                steps: 4, captureLayerIndices: indices) }
++        }
++        let smallChunk = try layout(.bfloat16, chunk: 3)
++        try refuses { _ = try CBv2AttentionVerificationPlan(layout: smallChunk, base: 4096,
++            steps: 4, captureLayerIndices: []) }
++        let a = try CBv2AttentionVerificationPlan(layout: geometry, base: 4096, steps: 4, captureLayerIndices: [])
++        let b = try CBv2AttentionVerificationPlan(layout: geometry, base: 4097, steps: 4, captureLayerIndices: [])
++        let c = try CBv2AttentionVerificationPlan(layout: geometry, base: 4096, steps: 3, captureLayerIndices: [])
++        let d = try CBv2AttentionVerificationPlan(layout: geometry, base: 4096, steps: 4, captureLayerIndices: [28, 29])
++        try require(Set([a.fingerprint, b.fingerprint, c.fingerprint, d.fingerprint]).count == 4,
++            "Frontier, width or captures lost their verification identity")
++        return ["gemma-25-window-5-full-bf16-f32-ledger", "p4096-o128-width1-through4",
++            "per-array-capture-staging-commit-charge", "unchanged-context-chunk-refusals",
++            "capture-coverage-refusals", "ordinary-and-verification-identities"]
++    }
++}
++#endif
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionTargetVerification.swift
+@@ -0,0 +1,89 @@
++import MLX
++@_spi(OwnedTargetVerification) import MLXLMCommon
++
++/// One rectangular attention-only transaction over the original owned rows.
++/// Full Qwen/recurrent serial verification remains a separate unchanged class.
++final class CBv2AttentionTargetVerification {
++    let plan: CBv2AttentionVerificationPlan
++    private var captures: [CBv2OwnedRectangularAttention.Capture] = []
++    private var staged = false
++    private var failed = false
++    private var resolved = false
++    private var executing = false
++
++    init(plan: CBv2AttentionVerificationPlan, rows: [CBv2SequenceKV?],
++         backend: CBv2ContiguousKVBackend, check: () throws -> Void) throws {
++        guard rows.count == plan.layout.layers.count,
++              rows.enumerated().allSatisfy({ index, optional in
++                  guard let row = optional else { return false }
++                  let layer = plan.layout.layers[index]
++                  let concrete = layer.window.map { window in
++                      (row as? CBv2WindowedSequenceKV)?.window == window
++                  } ?? ((row as? CBv2FullSequenceKV)?.maxLength == plan.layout.maximumTokens)
++                  return concrete && row.supportsSpeculativeWrites && row.absoluteOffset == plan.base
++              }) else { throw ProbeError("Attention verification requires original bounded full/window rows") }
++        self.plan = plan
++        for index in plan.captureLayerIndices {
++            let row = rows[index]!, snapshot = row.snapshot(), layer = plan.layout.layers[index]
++            let count = try plan.layout.range(layer: index, frontier: plan.base).count
++            guard snapshot.offset == plan.base, snapshot.keys.shape == [1, layer.kvHeads, count, layer.headDimension],
++                  snapshot.values.shape == snapshot.keys.shape,
++                  String(describing: snapshot.keys.dtype) == layer.element.rawValue,
++                  snapshot.values.dtype == snapshot.keys.dtype else { throw ProbeError("Pre-write capture differs from owned geometry") }
++            captures.append(.init(row: row, keys: snapshot.keys, values: snapshot.values))
++        }
++        try CBv2OwnedRectangularAttention.protectCaptures(captures, backend: backend, check: check)
++        for row in rows { row!.beginSpeculativeWrite() }
++    }
++
++    func stage(bank: CBv2LayerCacheBank, rows: [CBv2SequenceKV?], check: () throws -> Void,
++               additionalTargets: () -> [MLXArray],
++               forward: ([any CBv2AttendingLayerCache]) throws -> MLXArray,
++               validate: (MLXArray, Int) throws -> Void) throws -> MLXArray {
++        do {
++            guard !failed, !resolved, !staged, !executing else { throw ProbeError("Rectangular target stage is replayed or retired") }
++            executing = true
++            defer { executing = false }
++            try check()
++            let caches = bank.layerCaches(rowStates: [rows])
++            let output = try CBv2OwnedRectangularAttention.withSerialQueries(caches: caches) {
++                try forward(caches)
++            }
++            try check()
++            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
++            let stagedRoots = CBv2OwnedRectangularAttention.stagingRoots(rows: rows.map { $0! })
++            eval([output] + cacheRoots + stagedRoots + captures.flatMap { [$0.keys, $0.values] } + additionalTargets())
++            try check(); try validate(output, plan.base + plan.steps); try check()
++            staged = true
++            return output
++        } catch { failed = true; throw error }
++    }
++
++    func reconcile(keeping count: Int, bank: CBv2LayerCacheBank, rows: [CBv2SequenceKV?],
++                   backend: CBv2ContiguousKVBackend, check: () throws -> Void,
++                   validate: (Int) throws -> Void) throws -> Int {
++        do {
++            guard !failed, !resolved, staged, !executing, (0...plan.steps).contains(count) else {
++                throw ProbeError("Rectangular target accepted prefix is invalid")
++            }
++            executing = true
++            defer { executing = false }
++            try check(); Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++            for row in rows { row!.rollback(plan.steps - count); row!.commitSpeculativeWrite() }
++            bank.invalidateBoundComposition()
++            let caches = bank.layerCaches(rowStates: [rows])
++            // Window commit constructs actual ring writes. Complete those roots
++            // before describing a reusable prefix or restoring the base budget.
++            eval(caches.flatMap { ($0 as! any KVCache).innerState() }); try check()
++            captures.removeAll()
++            backend.updateBytesCapacity(plan.layout.conservativeKVCapacityBytes)
++            try validate(plan.base + count); try check()
++            resolved = true
++            return plan.base + count
++        } catch { failed = true; throw error }
++    }
++
++    /// Cleanup only: the containing owner synchronizes and releases every row.
++    /// A partial forward must never be repaired into a reusable request here.
++    func discard() { failed = true; resolved = true; captures.removeAll() }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationPlan.swift
+@@ -0,0 +1,56 @@
++import Foundation
++
++/// Additional, explicitly admitted state work over an unchanged ordinary
++/// layout. This value is not memory authority or a whole-model peak bound.
++struct CBv2AttentionVerificationPlan {
++    struct ArrayTerm { let name: String; let bytes: Int }
++    let layout: LayerAttentionStateLayout
++    let base: Int
++    let steps: Int
++    let captureLayerIndices: [Int]
++    let stagedWindowBytes: Int
++    let backendCapacityBytes: Int
++    let additionalArrays: [ArrayTerm]
++    let additionalLogicalBytes: Int
++    let fingerprint: String
++
++    init(layout: LayerAttentionStateLayout, base: Int, steps: Int, captureLayerIndices: [Int]) throws {
++        guard base > 0, base <= layout.maximumTokens, (1...4).contains(steps),
++              steps <= layout.maximumChunkTokens, steps <= layout.maximumTokens - base,
++              captureLayerIndices.count <= 2, Set(captureLayerIndices).count == captureLayerIndices.count,
++              captureLayerIndices.allSatisfy({ layout.layers.indices.contains($0) }) else {
++            throw ProbeError("Attention verification exceeds the unchanged context/chunk/capture envelope")
++        }
++        self.layout = layout; self.base = base; self.steps = steps
++        self.captureLayerIndices = captureLayerIndices
++        var arrays: [ArrayTerm] = [], staged = 0
++        func add(_ name: String, _ layer: LayerAttentionStateLayout.Layer, _ tokens: Int) throws {
++            // K and V are separate allocations and must be rounded separately.
++            let bytes = try LayerAttentionStateLayout.bytes(layer, tokens: tokens, elementBytes: layer.element.bytes) / 2
++            for component in ["keys", "values"] { arrays.append(.init(name: name + ":" + component, bytes: bytes)) }
++        }
++        for (index, layer) in layout.layers.enumerated() {
++            if let window = layer.window {
++                staged = try LayerAttentionStateLayout.sum(staged,
++                    LayerAttentionStateLayout.bytes(layer, tokens: steps, elementBytes: layer.element.bytes))
++                try add("layer\(index):staged", layer, steps)
++                // Existing ordinary windowTemporaryBytes stays charged. These
++                // additional roots cover staged view assembly and commit copy;
++                // no unproved graph-lifetime discount is taken.
++                try add("layer\(index):stagedLogicalView", layer, window + steps)
++                try add("layer\(index):commitBacking", layer, window)
++            }
++            if captureLayerIndices.contains(index) {
++                try add("layer\(index):capturedBacking", layer, layer.window ?? layout.maximumTokens)
++                if let window = layer.window { try add("layer\(index):capturedChronology", layer, window) }
++            }
++        }
++        stagedWindowBytes = staged
++        backendCapacityBytes = try LayerAttentionStateLayout.sum(layout.conservativeKVCapacityBytes, staged)
++        additionalArrays = arrays
++        additionalLogicalBytes = try arrays.reduce(0) { try LayerAttentionStateLayout.sum($0, $1.bytes) }
++        fingerprint = sha256(Data((["cbv2-owned-attention-verification-v1", layout.fingerprint,
++            "base=\(base)", "steps=\(steps)", "captures=\(captureLayerIndices)"]
++            + arrays.map { "\($0.name)|\($0.bytes)" }).joined(separator: "\n").utf8))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationValidation.swift
+@@ -0,0 +1,57 @@
++import MLX
++import MLXLMCommon
++
++extension CBv2OwnedRequestState {
++    /// Pending chronology is different from the ordinary committed window.
++    /// Validate scalar/shape metadata, never snapshot/copy the entire KV here.
++    func validatePendingAttention(_ plan: CBv2AttentionVerificationPlan, frontier: Int) throws {
++        guard geometry.attentionLayout == plan.layout, geometry.recurrent.layers.isEmpty,
++              recurrent.spec.layers.isEmpty, recurrent.materializedByteCount == 0,
++              recurrent.confirmedStateSnapshot() == nil, committedTokens == plan.base,
++              frontier == plan.base + plan.steps, rows.count == plan.layout.layers.count,
++              geometry.caches.count == rows.count, backend.bytesCapacity == plan.backendCapacityBytes,
++              backend.bytesInUse <= plan.backendCapacityBytes,
++              backend.bytesReserved <= plan.backendCapacityBytes else {
++            throw ProbeError("Pending attention state exceeded its separately admitted transaction")
++        }
++        for index in rows.indices {
++            guard let row = rows[index], let source = row as? any CBv2ContiguousKVMetadataProviding,
++                  geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row,
++                  geometry.caches[index].positionOffsets.shape == [1],
++                  geometry.caches[index].positionOffsets.dtype == .int32,
++                  geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(frontier)] else {
++                throw ProbeError("Pending attention cache lost row identity or device frontier")
++            }
++            let value = source.cbv2ContiguousMetadata, layer = plan.layout.layers[index]
++            guard value.absoluteOffset == frontier, value.window == layer.window,
++                  let keys = value.keys, let values = value.values else { throw ProbeError("Pending attention lacks storage") }
++            let slots = keys.shape.count == 4 ? keys.shape[2] : -1
++            func requirePair(_ k: CBv2ContiguousKVMetadata.Tensor, _ v: CBv2ContiguousKVMetadata.Tensor,
++                             count: Int) throws {
++                guard count >= 0, k.shape == [1, layer.kvHeads, count, layer.headDimension], v.shape == k.shape,
++                      String(describing: k.dtype) == layer.element.rawValue, v.dtype == k.dtype,
++                      k.bytes == (try LayerAttentionStateLayout.bytes(layer, tokens: count, elementBytes: layer.element.bytes) / 2),
++                      v.bytes == k.bytes else { throw ProbeError("Pending attention tensor differs from observed layout") }
++            }
++            if let window = layer.window {
++                guard slots == window, value.speculativeWritePending, value.stagedBaseOffset == plan.base,
++                      value.retainedStart == max(0, plan.base - window),
++                      value.retainedCount == frontier - max(0, plan.base - window),
++                      let stagedK = value.stagedKeys, let stagedV = value.stagedValues,
++                      let chunkK = value.retainedChunkKeys, let chunkV = value.retainedChunkValues else {
++                    throw ProbeError("Pending window chronology or staged backing differs")
++                }
++                try requirePair(stagedK, stagedV, count: plan.steps)
++                try requirePair(chunkK, chunkV, count: min(plan.base, window - 1) + plan.steps)
++            } else {
++                guard (frontier...plan.layout.maximumTokens).contains(slots), !value.speculativeWritePending,
++                      value.retainedStart == 0, value.retainedCount == frontier,
++                      value.stagedBaseOffset == nil, value.stagedKeys == nil, value.stagedValues == nil,
++                      value.retainedChunkKeys == nil, value.retainedChunkValues == nil else {
++                    throw ProbeError("Pending full-attention prefix differs")
++                }
++            }
++            try requirePair(keys, values, count: slots)
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
+@@ -12,6 +12,8 @@
+     private(set) var rows: [CBv2SequenceKV?]
+     private var evaluation: CBv2RecurrentStateEvaluation?
+     private var verification: CBv2TargetVerification?
++    private var attentionVerification: CBv2AttentionTargetVerification?
++    private var attentionVerificationStarting = false
+     private var evaluationWasStaged = false
+     private(set) var committedTokens = 0
+     private(set) var isClosed = false
+@@ -44,7 +46,7 @@
+     }
+ 
+     func requireOpen() throws {
+-        guard !isClosed, !isFailed, evaluation == nil, verification == nil else {
++        guard !isClosed, !isFailed, evaluation == nil, verification == nil, attentionVerification == nil, !attentionVerificationStarting else {
+             throw ProbeError("CBv2 state is retired, failed or has unfinished work")
+         }
+     }
+@@ -119,6 +121,63 @@
+             // the outer session calls retire; never reuse partially advanced KV.
+             throw error
+         }
++    }
++
++    /// Private opt-in. The caller must admit every additional rounded state,
++    /// graph/head/capture and transport term before this same owner is mutated.
++    func beginAttentionVerification(steps: Int, captureLayerIndices: [Int],
++        admit: (CBv2AttentionVerificationPlan) throws -> Void, check: () throws -> Void
++    ) throws {
++        do {
++            try requireOpen()
++            attentionVerificationStarting = true
++            defer { attentionVerificationStarting = false }
++            try check()
++            guard let layout = geometry.attentionLayout, geometry.recurrent.layers.isEmpty,
++                  recurrent.spec.layers.isEmpty, recurrent.materializedByteCount == 0,
++                  recurrent.confirmedStateSnapshot() == nil else {
++                throw ProbeError("Rectangular target requires an attention-only owned layout")
++            }
++            try validateState(after: committedTokens); try check()
++            let plan = try CBv2AttentionVerificationPlan(layout: layout, base: committedTokens,
++                steps: steps, captureLayerIndices: captureLayerIndices)
++            try admit(plan); try check()
++            guard !isClosed, !isFailed, committedTokens == plan.base,
++                  evaluation == nil, verification == nil, attentionVerification == nil else {
++                throw ProbeError("Attention admission changed the original state owner")
++            }
++            // Temporary capacity is exact staged-window storage, separately
++            // admitted above. Context, chunk and ordinary layout stay unchanged.
++            backend.updateBytesCapacity(plan.backendCapacityBytes)
++            attentionVerification = try .init(plan: plan, rows: rows, backend: backend, check: check)
++        } catch { isFailed = true; throw error }
++    }
++
++    func stageAttentionVerification(check: () throws -> Void,
++        additionalTargets: () -> [MLXArray],
++        forward: ([any CBv2AttendingLayerCache]) throws -> MLXArray,
++        validateOutput: (MLXArray) throws -> Void
++    ) throws -> MLXArray {
++        do {
++            guard !isClosed, !isFailed, evaluation == nil, verification == nil,
++                  let attentionVerification else { throw ProbeError("No live rectangular attention transaction") }
++            return try attentionVerification.stage(bank: bank, rows: rows, check: check,
++                additionalTargets: additionalTargets, forward: forward, validate: { output, frontier in
++                    try validateOutput(output)
++                    try self.validatePendingAttention(attentionVerification.plan, frontier: frontier)
++                })
++        } catch { isFailed = true; throw error }
++    }
++
++    func reconcileAttentionVerification(keeping count: Int, check: () throws -> Void) throws -> Int {
++        do {
++            guard !isClosed, !isFailed, evaluation == nil, verification == nil,
++                  let attentionVerification else { throw ProbeError("No rectangular attention prefix can be reconciled") }
++            let frontier = try attentionVerification.reconcile(keeping: count, bank: bank, rows: rows,
++                backend: backend, check: check, validate: { try self.validateState(after: $0) })
++            committedTokens = frontier; self.attentionVerification = nil
++            return frontier
++        } catch { isFailed = true; throw error }
+     }
+ 
+     func beginVerification(maximumSteps: Int, check: () throws -> Void) throws {
+@@ -228,12 +287,14 @@
+         var cleanupError: Error?
+         do { try verification?.discard() } catch { cleanupError = error }
+         verification = nil
++        attentionVerification?.discard(); attentionVerification = nil
+         if let evaluation, evaluationWasStaged {
+             do { try evaluation.rollback() } catch { cleanupError = cleanupError ?? error }
+         }
+         evaluation = nil; evaluationWasStaged = false
+         bank.releaseBoundRows()
+         backend.release(rows); rows.removeAll()
++        backend.updateBytesCapacity(geometry.kvCapacityBytes)
+         do { try recurrent.release() } catch { cleanupError = cleanupError ?? error }
+         isClosed = true
+         guard backend.bytesInUse == 0, backend.bytesReserved == 0,
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -11,6 +11,7 @@
+         .executable(name: "GemmaExpertRDMACheck", targets: ["GemmaExpertRDMACheck"]),
+         .executable(name: "GemmaResidentBenchmark", targets: ["GemmaResidentBenchmark"]),
+         .executable(name: "GemmaShortCorrectnessCheck", targets: ["GemmaShortCorrectnessCheck"]),
++        .executable(name: "AttentionTargetVerificationCheck", targets: ["AttentionTargetVerificationCheck"]),
+         .executable(name: "WindowedRequestStateCheck", targets: ["WindowedRequestStateCheck"]),
+         .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+         .executable(name: "TargetVerificationCheck", targets: ["TargetVerificationCheck"]),
+@@ -37,6 +38,11 @@
+         .executableTarget(name: "GemmaShortCorrectnessCheck", dependencies: [
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+         ], path: "Tests/GemmaShortCorrectnessCheck"),
++        .executableTarget(name: "AttentionTargetVerificationCheck", dependencies: [
++            .product(name: "MLX", package: "mlx-swift"),
++            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/AttentionTargetVerificationCheck"),
+         .executableTarget(name: "WindowedRequestStateCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/AttentionTargetVerificationCheck/Main.swift
+@@ -0,0 +1,46 @@
++import Foundation
++import Darwin
++import MLX
++import DarkbloomClusterProcess
++@_spi(ClusterTesting) import DarkbloomClusterRuntime
++
++/// Private qualification entry. It never loads checkpoint weights or launches peers.
++@main struct AttentionTargetVerificationMain {
++    static func main() throws {
++        let arguments = Array(CommandLine.arguments.dropFirst())
++        guard arguments == ["run-attention-target-on-gpu"] || arguments == ["check-arguments"] else {
++            throw NSError(domain: "AttentionTargetVerificationCheck.arguments", code: 1)
++        }
++        // Keep the process bound through final stdout publication as well as native work.
++        alarm(60)
++        if arguments == ["check-arguments"] {
++            FileHandle.standardOutput.write(Data("{\"argumentsAccepted\":true,\"nativeExecuted\":false}\n".utf8))
++            alarm(0)
++            return
++        }
++        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".darkbloom/cluster-device")
++        let gate = try ClusterDeviceExclusion(directoryURL: directory)
++        try withExtendedLifetime(gate) {
++            let result = try Device.withDefaultDevice(.gpu) {
++                try Stream.withNewDefaultStream(device: .gpu) {
++                    try MLX.withError { native in
++                        do {
++                            let result = try AttentionTargetVerificationCheck.run()
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check()
++                            Memory.clearCache(); try native.check()
++                            return result
++                        } catch {
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                            try native.check()
++                            Memory.clearCache(); try native.check()
++                            throw error
++                        }
++                    }
++                }
++            }
++            guard result.count <= 16_384 else { throw NSError(domain: "AttentionTargetVerificationCheck.output", code: 1) }
++            FileHandle.standardOutput.write(result + Data([10]))
++        }
++        alarm(0)
++    }
++}
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2OwnedRectangularAttention.swift
+@@ -0,0 +1,54 @@
++import MLX
++
++/// Borrow the production attention/fence implementation without exposing its
++/// mutable cache flags. No model, row transaction or admission is created here.
++@_spi(OwnedTargetVerification)
++public enum CBv2OwnedRectangularAttention {
++    public enum Failure: Error { case unsupportedOrBusyCache }
++
++    public struct Capture {
++        public let row: any CBv2SequenceKV
++        public let keys: MLXArray
++        public let values: MLXArray
++        public init(row: any CBv2SequenceKV, keys: MLXArray, values: MLXArray) {
++            self.row = row; self.keys = keys; self.values = values
++        }
++    }
++
++    public static func withSerialQueries<T>(
++        caches: [any CBv2AttendingLayerCache], body: () throws -> T
++    ) throws -> T {
++        let serializing = caches.compactMap { $0 as? any CBv2MTPRectangularSerializing }
++        guard !caches.isEmpty, serializing.count == caches.count,
++              Set(caches.map { ObjectIdentifier($0) }).count == caches.count,
++              serializing.allSatisfy({ !$0.mtpSerializesRectangularAttention && !$0.mtpBatchesRectangularAttention }) else {
++            throw Failure.unsupportedOrBusyCache
++        }
++        for cache in serializing { cache.mtpSerializesRectangularAttention = true }
++        defer { for cache in serializing { cache.mtpSerializesRectangularAttention = false } }
++        return try body()
++    }
++
++    public static func stagingRoots(rows: [any CBv2SequenceKV]) -> [MLXArray] {
++        rows.flatMap { ($0 as? CBv2WindowedSequenceKV)?.cbv2SpeculativeEvaluationRoots() ?? [] }
++    }
++
++    /// Same backend decision and exact fence as mtpFreezeCaptures. Contiguous
++    /// snapshots retain their pre-write descriptors; no extra eval is needed.
++    /// A future recyclable backend must publish the edge or evaluate fallback
++    /// roots BEFORE any speculative writes are constructed.
++    public static func protectCaptures(
++        _ captures: [Capture], backend: any CBv2KVBackend, check: () throws -> Void
++    ) throws {
++        try check()
++        if backend.requiresMaterializedSnapshots {
++            let unfenceable = CBv2MTPCaptureFence.publish(captures.map {
++                (row: $0.row, keys: $0.keys, values: $0.values)
++            })
++            if !unfenceable.isEmpty {
++                eval(unfenceable); CBv2CoreInstrumentation.recordHostSync(); try check()
++            }
++        }
++        try check()
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift
+@@ -18,6 +18,10 @@
+     public let retainedChunkKeys: Tensor?
+     public let retainedChunkValues: Tensor?
+     public let speculativeWritePending: Bool
++    /// Optional staged-window metadata; inspecting it never exports a root.
++    public var stagedBaseOffset: Int? = nil
++    public var stagedKeys: Tensor? = nil
++    public var stagedValues: Tensor? = nil
+ }
+ 
+ /// Optional introspection; existing row implementations/callers are unaffected.
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift
+@@ -58,7 +58,10 @@
+             window: window, keys: keys.map(CBv2ContiguousKVMetadata.Tensor.init),
+             values: values.map(CBv2ContiguousKVMetadata.Tensor.init),
+             retainedChunkKeys: borrowableChunkViews.map { CBv2ContiguousKVMetadata.Tensor($0.keys) }, retainedChunkValues: borrowableChunkViews.map { CBv2ContiguousKVMetadata.Tensor($0.values) },
+-            speculativeWritePending: speculativeWriteArmed || staged != nil)
++            speculativeWritePending: speculativeWriteArmed || staged != nil,
++            stagedBaseOffset: staged?.basePosition,
++            stagedKeys: staged.map { CBv2ContiguousKVMetadata.Tensor($0.keys) },
++            stagedValues: staged.map { CBv2ContiguousKVMetadata.Tensor($0.values) })
+     }
+ 
+ 
+@@ -414,6 +417,13 @@
+         borrowableChunkViews = nil
+     }
+ 
++    // Explicit roots for the owned rectangular SPI, without changing the
++    // ordinary engine's innerState or constructing a chronological snapshot.
++    func cbv2SpeculativeEvaluationRoots() -> [MLXArray] {
++        (staged.map { [$0.keys, $0.values] } ?? [])
++            + (borrowableChunkViews.map { [$0.keys, $0.values] } ?? [])
++    }
++
+     func cbv2InnerState() -> [MLXArray] {
+         [keys, values].compactMap { $0 }
+     }

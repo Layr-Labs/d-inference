@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_remote_foundation_runner_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2007,
+      "sha256": "4850a2eeda2e8fe3d1705cc0da4709e9b2700d8d3b64e16cf45ffcc4208335cd"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 4466,
+      "sha256": "ab071ec901c93ae286b3916ae72ada013cecd0fc5bae0496838400e301267c2f"
+    },
+    {
+      "path": "owned_process.py",
+      "bytes": 2211,
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "path": "run.py",
+      "bytes": 4765,
+      "sha256": "5f6548dcabb24e06e1d92a14148cf71e271536a75aa8fda72cc7b954116f2d43"
+    }
+  ]
+}

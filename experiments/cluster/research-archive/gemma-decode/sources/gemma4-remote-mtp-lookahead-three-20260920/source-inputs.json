@@ -1,0 +1,150 @@
+{
+  "schema": "gemma4_remote_mtp_credit_three_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 6415,
+      "sha256": "7a5326e6200f62bc49c14a9cc4e827055c7217404aa1babac6754dad1c983331"
+    },
+    {
+      "path": "Original/AsyncMTPProposalLedger.swift",
+      "bytes": 13248,
+      "sha256": "7337c76421bd290a0eb50415367e875ede4c55b1ab65b8e68332aa424a853250"
+    },
+    {
+      "path": "Original/Gemma4MTPPullAssistant.swift",
+      "bytes": 6110,
+      "sha256": "1f7583ecd7c529d5d6bcf94883aa8932557094f486535a196a0d8dc86d84c4e6"
+    },
+    {
+      "path": "Original/Gemma4MTPPullBatchOwner.swift",
+      "bytes": 5470,
+      "sha256": "0e040adc7de79cee2ea01dbd087539b61ce090a56d0ff17c31b3dfcc38550f41"
+    },
+    {
+      "path": "Original/Gemma4MTPPullMirror.swift",
+      "bytes": 8207,
+      "sha256": "d8b9ffdfcedb81b464b927ef016f7b4a34876887c8c5a651f0804c476f40339c"
+    },
+    {
+      "path": "Original/Gemma4MTPPullTarget.swift",
+      "bytes": 13578,
+      "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPAssistantRuntime.swift",
+      "bytes": 6435,
+      "sha256": "648363cdb5ba6fa4c5ec6f6e9f47a2e0e323b6f78d7d0566036bbb8bc6960593"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPDriver.swift",
+      "bytes": 14617,
+      "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPInput.swift",
+      "bytes": 6522,
+      "sha256": "61418f1ddb568c9da112cc3e0daa5c36ea6323ab28c0aa254920968374fbeb81"
+    },
+    {
+      "path": "Runtime/AsyncMTPProposalLedger.swift",
+      "bytes": 13580,
+      "sha256": "bf20d139e1c804c1774d3fc75dbacfe63df4b4b31be8ec001ec2703cedb0f026"
+    },
+    {
+      "path": "Runtime/Gemma4MTPProducerCreditPolicy.swift",
+      "bytes": 1565,
+      "sha256": "044bbc7fe198f5387d94dd21c164383a6880cac38d6b57619b5f6130bf298842"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullAssistant.swift",
+      "bytes": 6453,
+      "sha256": "35e101bdb7421551487e6853cad478db8d9bda1d809c6efbe8f0d7360baace90"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullBatchOwner.swift",
+      "bytes": 7721,
+      "sha256": "7c8e88f193d1d0a7f3c9ec786f4f88a96c4c9c94a5c0fd7dad6bff603f1e1bac"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullMirror.swift",
+      "bytes": 8311,
+      "sha256": "af612781f738e8ffacde4df2431d4639abd2658958ef9f653573a5f314176889"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullTarget.swift",
+      "bytes": 13945,
+      "sha256": "5ce4e760c16cdfdc4c19898d65c9e3941bc3c38cee22645a4f7a62e567517f16"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPAssistantRuntime.swift",
+      "bytes": 6508,
+      "sha256": "908a63435c6db2906149bd10def1ca17f4ba702c0fec996ab691c664c575a788"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPDriver.swift",
+      "bytes": 14686,
+      "sha256": "3834c8efe2da989ea24123a3617ab12ee8e7c2cc3413e34da7e2f2db94df1264"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPInput.swift",
+      "bytes": 7309,
+      "sha256": "e060185f1c69b91940e23b76a44c9a6dd95402917cdb32800cd9685bed8b22aa"
+    },
+    {
+      "path": "Tests/Inputs/Gemma4MTPPullRecord.swift",
+      "bytes": 6561,
+      "sha256": "8dc97ae5e721f64a3e9aef25f46553714e56397ddc81b5c694c53638279475ad"
+    },
+    {
+      "path": "Tests/ProducerCreditChecks.swift",
+      "bytes": 12901,
+      "sha256": "d61256279626ebf654c964f0c7823c61cc6663a977cd678c9310a640b2d0296e"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 3388,
+      "sha256": "40c7aa58fdeacac2de939889ee3983d8caf5a8046d9339514aaeae47cd9fff97"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26982,
+      "sha256": "8f8abd1bf13695da4f98453af3e3849ff92faa59aefd5045866474bdb6090d19"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 10327,
+      "sha256": "655981091984b2fbf536d6c0134a34e4ddbb03c409fc887056ef543197808924"
+    },
+    {
+      "path": "owned_process.py",
+      "bytes": 2211,
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "path": "precheck-checker.py.txt",
+      "bytes": 3292,
+      "sha256": "467aaf69360f850f9c6412678791b9910c823a0d4c3a53db0f3fd7efbd998b89"
+    },
+    {
+      "path": "precheck-manifest.json",
+      "bytes": 4556,
+      "sha256": "77630d479ce8718e832ed7350175d23c117b6948f504f53c1be4783bf15c69ca"
+    },
+    {
+      "path": "run_controls.py",
+      "bytes": 3397,
+      "sha256": "96a41bf17d5257d24262a62f3db2bb251425dd774fe0bb7226dd018c69c28b71"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 21886,
+      "sha256": "5ec029bdf072ebd6eee7e682d15d2ade1a3a6860730f1a9dcadb33a1cb2df1d6"
+    },
+    {
+      "path": "transforms.json",
+      "bytes": 11867,
+      "sha256": "315a03ea74722ce6d9e3e96557591c60f7abbf0daff4b5f170edb0df6b4ccf4b"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "schema": "gemma4_o128_harness_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4043,
+      "sha256": "60c74c41b2d78b27a59a9452058b49e40c117ddae664ea354d864261b3a38aa5"
+    },
+    {
+      "path": "Tests/run.py",
+      "bytes": 1635,
+      "sha256": "f4765096d4061ae1a95d88474d3e4eea3dd1cb4a4ebdc6f2f8adba666f23314b"
+    },
+    {
+      "path": "Tests/test_join.py",
+      "bytes": 4098,
+      "sha256": "3ade5243697544439c479b124f254772ceaddcb73afb373ed27f259b0d370c52"
+    },
+    {
+      "path": "binding_common.py",
+      "bytes": 2452,
+      "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 849,
+      "sha256": "5fcc7b141073f9f0e994f248152c3689727fa1a7611e34156cf077ab9a81809e"
+    },
+    {
+      "path": "compare.py",
+      "bytes": 13998,
+      "sha256": "e4e847f12fb5ec8ec607a81a82f969429322fdb77955e25464a0e4242420b338"
+    },
+    {
+      "path": "control_contract.py",
+      "bytes": 2434,
+      "sha256": "5f42902ca08312667aec3174141359474f1f825b52df960d3757f00dc000f9bd"
+    },
+    {
+      "path": "correction.json",
+      "bytes": 542,
+      "sha256": "ba8c69e13c14914e317b770bfd9b092ce9fe4ecd50980851a08542f5c2b9447b"
+    },
+    {
+      "path": "correction.patch",
+      "bytes": 743,
+      "sha256": "bac282ec3193dc91ae59f819016ca0e508f7bc8cb67b9ba40e0f9bcd92f528ad"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 3869,
+      "sha256": "b5d02d5173c638bc295423aa6a38470d6230aaae3f878372eb6a1426209bdbbd"
+    },
+    {
+      "path": "numeric_reader.py",
+      "bytes": 27879,
+      "sha256": "8d49cde4fc1e5b3c6c784a3f6e0917f7ba8065845470d0fca92502351614b459"
+    },
+    {
+      "path": "o128-provenance.json",
+      "bytes": 2866,
+      "sha256": "25244591078cd3871b495515ac1f34b2063c8586645f389aa5011ba45ecb21c8"
+    },
+    {
+      "path": "recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    },
+    {
+      "path": "workload_contract.py",
+      "bytes": 1913,
+      "sha256": "61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "gemma4_tiny_dense_composition_source_v1",
+  "members": [
+    {
+      "path": "Entry/Gemma4BenchmarkEntry.swift",
+      "bytes": 8118,
+      "sha256": "27d995ac9e0e662c21fe1e0b48e540be32acc1640c1a4703ca88fe9f4bbbf62a"
+    },
+    {
+      "path": "Entry/combined.patch",
+      "bytes": 3242,
+      "sha256": "2d1ecc092125c76ad12c14eb8535293dcd6daaf4ae6ce09877e3ec2044b357a1"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2899,
+      "sha256": "ddf7fa39cfbe5f8b1f8bc92e6afe3c55267fb6f78971e1a5b3952a8f71be223e"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 6505,
+      "sha256": "80d637f3c922b9791299e6a3df4c68e17dd1d3a0c966b4ca39846fc81359ec91"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 25480,
+      "sha256": "9988a9905159f445deb97054f4406fd5b2e8b362296ee139fc5d9fa3c76e88a7"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 14927,
+      "sha256": "0aa8bfb7671a56e4e50dde019ab3000e759fce1e63716e38b0aaffcf8c9988ff"
+    }
+  ]
+}

@@ -1,0 +1,868 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
+@@ -122,6 +122,26 @@
+         }
+     }
+ 
++    /// CPU metadata projection only. No array/cache owner leaves this session.
++    func shortDiagnosticBinding() throws -> Gemma4ShortSessionBinding {
++        try state.requireOpen()
++        guard let layout = state.geometry.attentionLayout,
++              layout.layers.map(\.element.rawValue) == probe.observed.layerDTypes.map({ String(describing: $0) }) else {
++            throw ProbeError("Gemma diagnostic binding lacks actual matching native KV types")
++        }
++        return .init(target: loaded.receipt.target, planSHA256: loaded.plan.fingerprint,
++            artifactSHA256: loaded.receipt.artifactSHA256, configurationSHA256: loaded.receipt.configurationSHA256,
++            parameterLayoutSHA256: loaded.receipt.parameterLayoutSHA256, stateLayoutSHA256: layout.fingerprint,
++            readAccountingSHA256: sha256(try canonicalJSONData(loaded.receipt.readAccounting)),
++            selectedTensorCount: loaded.receipt.selectedTensorCount, selectedBytes: loaded.receipt.loadedTensorBytes,
++            maximumTokens: layout.maximumTokens, maximumChunkTokens: layout.maximumChunkTokens,
++            layers: layout.layers.enumerated().map { .init(localIndex: $0.offset, globalIndex: $0.element.globalIndex,
++                kvHeads: $0.element.kvHeads, headDimension: $0.element.headDimension,
++                window: $0.element.window ?? 0, dtype: $0.element.element.rawValue) },
++            probePrefillTokens: 2, probeDecodeTokens: 1)
++    }
++    var shortLoadReceipt: Gemma4ForwardLoadReceipt { loaded.receipt }
++
+     func snapshot(includeBytes: Bool = false, check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {
+         do {
+             return try MLX.withError { native in
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCapture.swift
+@@ -0,0 +1,47 @@
++import Foundation
++import MLX
++
++enum Gemma4ShortCapture {
++    static func row(_ array: MLXArray, ordinal: Int, sidecars: Gemma4ShortSidecars,
++                    check: () throws -> Void) throws -> Gemma4ShortRow {
++        try MLX.withError { native in
++            func checked() throws { try native.check(); try check(); try native.check() }
++            do {
++                try checked()
++                guard (0...1).contains(ordinal), array.shape == [1, 262_144],
++                      [.float16, .bfloat16, .float32].contains(array.dtype) else { throw ProbeError("Gemma full row shape/type differs") }
++                let selected = argMax(array), finite = all(isFinite(array))
++                eval(array, selected, finite); try checked()
++                guard selected.size == 1, selected.dtype == .uint32, finite.size == 1,
++                      finite.item(Bool.self) else { throw ProbeError("Gemma native finite argmax differs") }
++                let token = Int(selected.item(UInt32.self)); try checked()
++                let recorded = try QwenRecordedLogits(array, vocabularySize: 262_144, check: checked)
++                guard let maximum = recorded.record.values.max(),
++                      let first = recorded.record.values.firstIndex(of: maximum), first == token else {
++                    throw ProbeError("Gemma native argmax differs from full-row first maximum")
++                }
++                let file = try sidecars.write("row-\(ordinal).json", data: canonicalJSONData(recorded), check: checked)
++                return .init(ordinal: ordinal, frontier: 32+ordinal, tokenID: token,
++                    maximumTieCount: recorded.record.values.filter({ $0 == maximum }).count,
++                    file: file, dtype: recorded.record.dtype, logicalBytesSHA256: recorded.record.logicalBytesSHA256)
++            } catch { try native.check(); throw error }
++        }
++    }
++
++    static func state(_ session: Gemma4OwnedForwardSession, sidecars: Gemma4ShortSidecars,
++                      check: () throws -> Void) throws -> Gemma4ShortState {
++        let snapshot = try session.snapshot(includeBytes: true, check: check)
++        guard snapshot.committedTokens == 33 else { throw ProbeError("Gemma final snapshot frontier differs") }
++        var entries: [Gemma4ShortState.Entry] = []
++        for entry in snapshot.entries {
++            guard let bytes = entry.bytes, bytes.count == entry.byteCount, sha256(bytes) == entry.sha256 else {
++                throw ProbeError("Gemma actual snapshot lacks exact logical bytes")
++            }
++            let file = try sidecars.write("state-\(entry.globalLayerIndex)-\(entry.component).bin", data: bytes, check: check)
++            entries.append(.init(localLayerIndex: entry.localLayerIndex, globalLayerIndex: entry.globalLayerIndex,
++                component: entry.component, dtype: entry.dtype, sha256: entry.sha256, shape: entry.shape,
++                byteCount: entry.byteCount, logicalRange: entry.logicalRange.map { [$0.lowerBound, $0.upperBound] } ?? [], file: file))
++        }
++        return .init(frontier: snapshot.committedTokens, fingerprint: snapshot.fingerprint, entries: entries)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCheckEntry.swift
+@@ -0,0 +1,92 @@
++import Darwin
++import Foundation
++import MLX
++
++/// Private correctness SPI. This does not add a worker registration or serving path.
++@_spi(ClusterTesting) public enum GemmaShortCorrectnessCheck {
++    public static func run(arguments: [String]) throws -> Data {
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--check-local-fixtures"].contains(arguments[0]) else {
++            throw ProbeError("Use --describe|--check-arguments|--execute with one exact Gemma short job")
++        }
++        if arguments[0] == "--check-local-fixtures" { return try Gemma4ShortLocalChecks.run(directory: arguments[1]) }
++        let job = try Gemma4ShortCheckJob.read(URL(fileURLWithPath: arguments[1]))
++        let input = try Gemma4ShortCheckInput(job: job)
++        let description = try input.description()
++        if arguments[0] != "--execute" { return try canonicalJSONData(description) }
++        let start = DispatchTime.now().uptimeNanoseconds
++        let delta = UInt64(job.timeoutSeconds) * 1_000_000_000
++        let (deadline, overflow) = start.addingReportingOverflow(delta)
++        guard !overflow else { throw ProbeError("Gemma native deadline overflow") }
++        // Last resort for a blocked native call. It makes no cleanup/lease claim;
++        // the canonical root supervisor still owns process fencing and journals.
++        signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(UInt32(job.timeoutSeconds))
++        defer { alarm(0) }
++        weak var releasedGroup: Collective?
++        let result: Data = try MLX.withError { native in
++            func check() throws {
++                try native.check()
++                guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma native deadline expired") }
++                try QwenResidentResourceEnvironment.require()
++                _ = try QwenDenseStageLoadResources.requireInitial()
++                try native.check()
++            }
++            do {
++                try check()
++                let output: Data = try autoreleasepool {
++                    let group: Collective? = job.rank == nil ? nil : try Collective(transport: .jaccl)
++                    releasedGroup = group
++                    let wire = try group.map { try Gemma4ShortWire(input: input, group: $0) }
++                    let sidecars = try Gemma4ShortSidecars(directory: job.outputDirectory)
++                    do {
++                        try wire?.checkpoint("begin", check: check)
++                        let value = try withRegisteredGemma4ShortCorrectness(
++                            directory: URL(fileURLWithPath: job.modelDirectory, isDirectory: true),
++                            artifact: input.artifact, target: job.target, request: input.request,
++                            residualDType: job.dtype, deadline: deadline,
++                            probeInput: job.rank == 1 ? { phase, count in
++                                try wire!.receiveProbe(phase: phase, count: count, check: check)
++                            } : nil,
++                            observeProbeOutput: job.rank == 0 ? { phase, array in
++                                try wire!.sendProbe(array, phase: phase, check: check)
++                            } : nil,
++                            check: check, body: { session, checked in
++                                try Gemma4ShortDriver.execute(input, session: session, sidecars: sidecars,
++                                    wire: wire, check: checked)
++                            })
++                        guard let execution = try JSONSerialization.jsonObject(with: value.data) as? [String: Any],
++                              let tokens = execution["selectedTokenIDs"] as? [Int], tokens.count == 2 else {
++                            throw ProbeError("Gemma bounded body returned malformed completion metadata")
++                        }
++                        try wire?.checkpoint("model-released", tokenIDs: tokens, check: check)
++                        let report: [String: Any] = ["schema": "gemma4_short_result_v1", "mode": job.mode,
++                            "expected": try JSONSerialization.jsonObject(with: canonicalJSONData(description)),
++                            "execution": execution,
++                            "resources": try JSONSerialization.jsonObject(with: canonicalJSONData(value.resources)),
++                            "modelReleased": true, "nativeExecuted": true,
++                            "collectiveCreated": job.rank != nil,
++                            "physicalProcessOrLeaseRetirementEstablished": false,
++                            "runtimeServingEnabled": false, "numericalComparisonPerformed": false,
++                            "throughputMeasurementValid": false, "encryptedRDMAEstablished": false]
++                        return try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
++                    } catch { wire?.poison(); throw error }
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++                guard releasedGroup == nil else { throw ProbeError("Gemma collective escaped its bounded scope") }
++                Memory.clearCache(); try check()
++                guard Memory.cacheMemory == 0 else { throw ProbeError("Gemma native freed-buffer cache did not retire") }
++                guard var report = try JSONSerialization.jsonObject(with: output) as? [String: Any] else {
++                    throw ProbeError("Gemma final report object differs")
++                }
++                report["collectiveReleased"] = job.rank != nil
++                report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
++                let bytes = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
++                guard bytes.count <= 1_048_576 else { throw ProbeError("Gemma final report exceeds its fixed output bound") }
++                return bytes
++            } catch {
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache()
++                try native.check(); throw error
++            }
++        }
++        return result
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCheckInput.swift
+@@ -0,0 +1,96 @@
++import Foundation
++import MLX
++
++struct Gemma4ShortCheckJob: Codable {
++    let schema: String
++    let mode: String
++    let modelDirectory: String
++    let metadataDirectory: String
++    let promptFile: String
++    let promptFileSHA256: String
++    let outputDirectory: String
++    let requestID: String
++    let membershipEpoch: String
++    let buildIdentitySHA256: String
++    let residualDType: String
++    let timeoutSeconds: Int
++
++    var rank: Int? { mode == "stage0" ? 0 : mode == "stage1" ? 1 : nil }
++    var target: Gemma4ForwardTarget { rank.map(Gemma4ForwardTarget.stage) ?? .fullReference }
++    var dtype: DType {
++        switch residualDType { case "float16": return .float16; case "bfloat16": return .bfloat16; default: return .float32 }
++    }
++    func validate() throws {
++        guard schema == "gemma4_short_native_check_v1", ["full", "stage0", "stage1"].contains(mode),
++              (1...300).contains(timeoutSeconds), ["float16", "bfloat16", "float32"].contains(residualDType),
++              [promptFileSHA256, buildIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
++              [requestID, membershipEpoch].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
++              [modelDirectory, metadataDirectory, promptFile, outputDirectory].allSatisfy({
++                  $0.hasPrefix("/") && $0.utf8.count <= 2048 && !$0.contains("\0")
++                    && URL(fileURLWithPath: $0).standardizedFileURL.path == $0
++              }), Set([modelDirectory, metadataDirectory, outputDirectory]).count == 3 else {
++            throw ProbeError("Gemma short job differs from closed mode/identity/path/lifetime bounds")
++        }
++    }
++    static func read(_ url: URL) throws -> Self {
++        let bytes = try BoundedProbeInput.data(url, maximumBytes: 16_384)
++        try validateWorkerJSON(bytes)
++        let value = try JSONDecoder().decode(Self.self, from: bytes)
++        try value.validate()
++        try QwenLayerStageGenerationWireJSON.requireExact(
++            QwenLayerStageGenerationWireJSON.object(bytes), value)
++        return value
++    }
++}
++
++struct Gemma4ShortCheckInput {
++    let job: Gemma4ShortCheckJob
++    let artifact: Gemma4ArtifactMetadata
++    let plan: Gemma4LayerStagePlan
++    let request: QwenLayerStageGenerationRequest
++    let scopeSHA256: String
++
++    init(job: Gemma4ShortCheckJob) throws {
++        try job.validate()
++        let root = URL(fileURLWithPath: job.metadataDirectory, isDirectory: true)
++        func data(_ name: String) throws -> Data {
++            try BoundedProbeInput.data(root.appendingPathComponent(name), maximumBytes: 2_097_152)
++        }
++        let headers = try (1...3).map { index in
++            let name = String(format: "model-%05d-of-00003.safetensors", index)
++            return LayerStageCapturedTensorHeader(sourceFile: name, data: try data(name + ".header.json"))
++        }
++        let artifact = try Gemma4ArtifactMetadata.admit(configuration: data("config.json"),
++            manifest: data("manifest.json"), index: data("model.safetensors.index.json"), headers: headers)
++        let plan = try Gemma4LayerStagePlan(artifact: artifact, cut: Gemma4ShortResourceBudget.candidateCut)
++        let raw = try BoundedProbeInput.data(URL(fileURLWithPath: job.promptFile), maximumBytes: 4096)
++        guard sha256(raw) == job.promptFileSHA256 else { throw ProbeError("Gemma prompt packet changed") }
++        try validateWorkerJSON(raw)
++        let tokens = try JSONDecoder().decode([Int].self, from: raw)
++        guard tokens.count == 32 else { throw ProbeError("Gemma short check requires32 pinned IDs") }
++        let request = try Gemma4ForwardRequest.make(requestID: UUID(uuidString: job.requestID)!, tokens: tokens,
++            chunkSize: 16, outputCount: 2, stopTokenIDs: [], observedResidualDType: job.dtype)
++        self.job = job; self.artifact = artifact; self.plan = plan; self.request = request
++        scopeSHA256 = sha256(Data(["gemma4-short-correctness-v1", job.membershipEpoch, job.buildIdentitySHA256,
++            plan.fingerprint, request.fingerprint, job.promptFileSHA256,
++            "exact-bytes-before-any-numerical-qualification", "mtp=false", "cut=10"].joined(separator: "\n").utf8))
++    }
++
++    func description() throws -> Gemma4ShortDescription {
++        let targets: [(String, Gemma4ForwardTarget, [Int])] = [("full-reference", .fullReference, Array(0..<30)),
++            ("stage-0", .stage(0), Array(0..<10)), ("stage-1", .stage(1), Array(10..<30))]
++        let projections = try targets.map { name, target, globals in
++            let selected = try Gemma4ForwardSelection.make(plan: plan, target: target)
++            let layout = selected.map { "\($0.localName):\($0.loadedDType):\($0.source.layout.shape)" }.sorted().joined(separator: "\n")
++            return Gemma4ShortDescription.Target(name: name, parameterLayoutSHA256: sha256(Data(layout.utf8)),
++                selectedTensorCount: selected.count, selectedBytes: selected.reduce(0) { $0 + $1.source.layout.byteCount },
++                globalLayerIndices: globals)
++        }
++        return .init(scopeSHA256: scopeSHA256, membershipEpoch: job.membershipEpoch,
++            buildIdentitySHA256: job.buildIdentitySHA256, requestID: job.requestID,
++            requestSHA256: request.fingerprint, promptFileSHA256: job.promptFileSHA256,
++            promptTokenIDsSHA256: qwenGenerationTokenHash(request.promptTokenIDs),
++            profile: request.profile, planSHA256: plan.fingerprint,
++            stageSHA256: plan.stages.map(\.fingerprint), mappingSHA256: plan.conservation.fingerprint, targets: projections)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCorrectness.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCorrectness.swift
+@@ -14,7 +14,8 @@
+     request: QwenLayerStageGenerationRequest, residualDType: DType, deadline: UInt64,
+     probeInput: ((CBv2NativeKVTypeProbe.Phase, Int) throws -> MLXArray)? = nil,
+     observeProbeOutput: ((CBv2NativeKVTypeProbe.Phase, MLXArray) throws -> Void)? = nil,
+-    check: () throws -> Void, body: (Gemma4OwnedForwardSession) throws -> Data
++    check: () throws -> Void,
++    body: (Gemma4OwnedForwardSession, () throws -> Void) throws -> Data
+ ) throws -> Gemma4ShortCorrectnessOutput {
+     try withoutActuallyEscaping(check) { borrowedCheck in
+         try MLX.withError { native in
+@@ -45,7 +46,7 @@
+                     afterTensor: owner.afterTensor, admitLoadedProbe: owner.loaded,
+                     admitRequest: owner.request, probeInput: probeInput, observeProbeOutput: observeProbeOutput,
+                     check: checked, body: { session in
+-                        let value = try body(session)
++                        let value = try body(session, checked)
+                         guard value.count <= 1_048_576 else { throw ProbeError("Gemma correctness result exceeds bounded metadata output") }
+                         return value
+                     })
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortEvidence.swift
+@@ -0,0 +1,66 @@
++import Foundation
++
++struct Gemma4ShortDescription: Encodable {
++    struct Target: Encodable {
++        let name: String, parameterLayoutSHA256: String
++        let selectedTensorCount: Int, selectedBytes: Int
++        let globalLayerIndices: [Int]
++    }
++    let schema = "gemma4_short_expected_v1"
++    let scopeSHA256: String, membershipEpoch: String, buildIdentitySHA256: String
++    let requestID: String, requestSHA256: String, promptFileSHA256: String, promptTokenIDsSHA256: String
++    let profile: QwenLayerStageGenerationProfile
++    let planSHA256: String, stageSHA256: [String], mappingSHA256: String
++    let targets: [Target]
++    let artifactSHA256 = Gemma4ArtifactMetadata.artifactAggregateSHA256
++    let configurationSHA256 = Gemma4ArtifactMetadata.configurationSHA256
++    let manifestSHA256 = Gemma4ArtifactMetadata.manifestSHA256
++    let cut = 10, promptCount = 32, chunkSize = 16, outputCount = 2, maximumTokens = 34, finalFrontier = 33
++    let stopTokenIDs: [Int] = []
++    let metadataOnly = true, actualPayloadLoaded = false, actualKVTypeObserved = false
++    let buildIdentityRequiresParentVerification = true, runtimeExecutionAuthorized = false
++}
++
++struct Gemma4ShortSessionBinding: Codable {
++    struct Layer: Codable {
++        let localIndex: Int, globalIndex: Int, kvHeads: Int, headDimension: Int, window: Int
++        let dtype: String
++    }
++    let target: String, planSHA256: String, artifactSHA256: String, configurationSHA256: String
++    let parameterLayoutSHA256: String, stateLayoutSHA256: String, readAccountingSHA256: String
++    let selectedTensorCount: Int, selectedBytes: Int, maximumTokens: Int, maximumChunkTokens: Int
++    let layers: [Layer]
++    let probePrefillTokens: Int, probeDecodeTokens: Int
++}
++
++struct Gemma4ShortFile: Codable {
++    let name: String, bytes: Int, sha256: String
++}
++struct Gemma4ShortRow: Encodable {
++    let ordinal: Int, frontier: Int, tokenID: Int, maximumTieCount: Int
++    let file: Gemma4ShortFile
++    let dtype: String, logicalBytesSHA256: String
++}
++struct Gemma4ShortState: Encodable {
++    struct Entry: Encodable {
++        let localLayerIndex: Int, globalLayerIndex: Int
++        let component: String, dtype: String, sha256: String
++        let shape: [Int], byteCount: Int, logicalRange: [Int]
++        let file: Gemma4ShortFile
++    }
++    let frontier: Int, fingerprint: String, entries: [Entry]
++}
++struct Gemma4ShortFrame: Encodable {
++    let sequence: Int, frontier: Int, tokenIDsSHA256: String
++    let boundarySHA256: String?
++}
++struct Gemma4ShortExecution: Encodable {
++    let binding: Gemma4ShortSessionBinding
++    let sourceLoad: Gemma4ForwardLoadReceipt
++    let selectedTokenIDs: [Int], selectedTokenIDsSHA256: String
++    let frames: [Gemma4ShortFrame], rows: [Gemma4ShortRow], finalState: Gemma4ShortState
++    let files: [Gemma4ShortFile]
++    let finishReason = "length", committedTokens = 33
++    let requestStateRetired = true, modelReleaseNotYetEstablished = true
++    let mtpEnabled = false, throughputMeasurementValid = false, numericalComparisonPerformed = false
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortExecution.swift
+@@ -0,0 +1,70 @@
++import Foundation
++import MLX
++
++enum Gemma4ShortDriver {
++    static func execute(_ input: Gemma4ShortCheckInput, session: Gemma4OwnedForwardSession,
++                        sidecars: Gemma4ShortSidecars, wire: Gemma4ShortWire?,
++                        check: () throws -> Void) throws -> Data {
++        try check()
++        guard (input.job.rank != nil) == (wire != nil) else { throw ProbeError("Gemma driver transport responsibility differs") }
++        let binding = try session.shortDiagnosticBinding()
++        try wire?.checkpoint("ready", check: check)
++        var selected: [Int] = [], rows: [Gemma4ShortRow] = [], frames: [Gemma4ShortFrame] = []
++        for sequence in 0..<3 {
++            try autoreleasepool {
++                try check()
++                let frame = try Gemma4ShortFrames.frame(sequence)
++                let tokens: [Int]
++                if frame.phase == .prefill { tokens = Array(input.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)]) }
++                else {
++                    guard selected.count == 1 else { throw ProbeError("Gemma decode lacks its accepted first token") }
++                    tokens = [selected[0]]
++                }
++                let incoming = input.job.rank == 1 ? try wire!.receiveFrame(frame, tokens: tokens, check: check) : nil
++                let output: Gemma4ForwardOutput
++                if frame.phase == .prefill {
++                    output = try session.prefillChunk(tokens, offset: frame.tokenOffset,
++                        final: frame.finalPromptChunk, incoming: incoming, check: check)
++                } else { output = try session.decode(tokens[0], offset: frame.tokenOffset, incoming: incoming, check: check) }
++                guard session.committedTokens == frame.tokenOffset+frame.tokenCount else {
++                    throw ProbeError("Gemma actual state did not commit the exact frame")
++                }
++                var hash = incoming?.payloadSHA256
++                var row: Gemma4ShortRow?
++                switch output {
++                case .residual(let boundary):
++                    guard input.job.rank == 0, let wire else { throw ProbeError("Gemma residual has no actual ingress peer") }
++                    try wire.sendFrame(boundary, check: check); hash = boundary.payloadSHA256
++                case .evaluationHandle:
++                    guard sequence == 0, input.job.rank != 0 else { throw ProbeError("Gemma nonfinal evaluation appears at a token boundary") }
++                    try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
++                case .logits(let logits):
++                    guard sequence > 0, input.job.rank != 0 else { throw ProbeError("Gemma logits appear at a nonfinal boundary") }
++                    try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
++                    row = try Gemma4ShortCapture.row(logits, ordinal: sequence-1, sidecars: sidecars, check: check)
++                }
++                frames.append(.init(sequence: sequence, frontier: session.committedTokens,
++                    tokenIDsSHA256: qwenGenerationTokenHash(tokens), boundarySHA256: hash))
++                if sequence > 0 {
++                    let token: Int
++                    if let wire { token = try wire.acceptToken(row?.tokenID, ordinal: sequence-1, check: check) }
++                    else { guard let row else { throw ProbeError("Gemma full reference did not produce its row") }; token = row.tokenID }
++                    if let row { guard row.tokenID == token else { throw ProbeError("Gemma accepted token differs from actual logits") }; rows.append(row) }
++                    selected.append(token)
++                }
++                try check()
++            }
++        }
++        guard selected.count == 2, session.committedTokens == 33, rows.count == (input.job.rank == 0 ? 0 : 2) else {
++            throw ProbeError("Gemma short request lacks complete selected-token/row evidence")
++        }
++        let final = try autoreleasepool { try Gemma4ShortCapture.state(session, sidecars: sidecars, check: check) }
++        try session.finish(.length, selectedTokenCount: 2, lastTokenID: selected[1])
++        guard session.isClosed, !session.isFailed else { throw ProbeError("Gemma request did not retire cleanly") }
++        try wire?.checkpoint("request-retired", tokenIDs: selected, check: check)
++        let result = Gemma4ShortExecution(binding: binding, sourceLoad: session.shortLoadReceipt,
++            selectedTokenIDs: selected, selectedTokenIDsSHA256: qwenGenerationTokenHash(selected), frames: frames,
++            rows: rows, finalState: final, files: sidecars.files)
++        return try canonicalJSONData(result)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortLocalChecks.swift
+@@ -0,0 +1,50 @@
++import Darwin
++import Foundation
++
++enum Gemma4ShortLocalChecks {
++    static func run(directory: String) throws -> Data {
++        var accepted = 0, refused = 0
++        func require(_ value: Bool) throws {
++            guard value else { throw ProbeError("Gemma local fixture assertion failed") }; accepted += 1
++        }
++        func refuses(_ body: () throws -> Void) throws {
++            do { try body() } catch { refused += 1; return }
++            throw ProbeError("Gemma local fixture failed to refuse")
++        }
++        for (sequence, offset, count) in [(0,0,16),(1,16,16),(2,32,1)] {
++            let frame = try Gemma4ShortFrames.frame(sequence)
++            try require(frame.tokenOffset == offset && frame.tokenCount == count && frame.finalPromptChunk == (sequence == 1))
++        }
++        for sequence in [-1,3,Int.max] { try refuses { _ = try Gemma4ShortFrames.frame(sequence) } }
++        try require(try Gemma4ShortFrames.probeCount(0) == 2 && Gemma4ShortFrames.probeCount(1) == 1)
++        try refuses { _ = try Gemma4ShortFrames.probeCount(2) }
++        let scope = String(repeating: "a", count: 64), value = Gemma4ShortWireValue(event: "begin")
++        let data = try canonicalJSONData(Gemma4ShortWirePacket(schema: "gemma4_short_p2p_v1",
++            scopeSHA256: scope, senderRank: 0, ordinal: 0, value: value))
++        try require(try Gemma4ShortWireCodec.decode(data, scope: scope, sender: 0, ordinal: 0) == value)
++        try refuses { _ = try Gemma4ShortWireCodec.decode(data, scope: String(repeating: "b", count: 64), sender: 0, ordinal: 0) }
++        try refuses { _ = try Gemma4ShortWireCodec.decode(data, scope: scope, sender: 1, ordinal: 0) }
++        try refuses { _ = try Gemma4ShortWireCodec.decode(data, scope: scope, sender: 0, ordinal: 1) }
++        var object = try QwenLayerStageGenerationWireJSON.object(data); object["extra"] = 1
++        try refuses { _ = try Gemma4ShortWireCodec.decode(JSONSerialization.data(withJSONObject: object), scope: scope, sender: 0, ordinal: 0) }
++        try refuses { _ = try Gemma4ShortWireCodec.decode(Data(repeating: 32, count: 16_385), scope: scope, sender: 0, ordinal: 0) }
++        let sidecars = try Gemma4ShortSidecars(directory: directory)
++        let bytes = Data([0,1,2,255])
++        let written = try sidecars.write("state-0-kv.position_offsets.bin", data: bytes, check: {})
++        try require(written.bytes == 4 && written.sha256 == sha256(bytes)
++            && (try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(written.name))) == bytes)
++        try refuses { _ = try sidecars.write(written.name, data: bytes, check: {}) }
++        try refuses { _ = try sidecars.write("../escape", data: bytes, check: {}) }
++        try refuses { _ = try sidecars.write("empty.bin", data: Data(), check: {}) }
++        guard symlink(written.name, directory + "/link.bin") == 0 else { throw ProbeError("Gemma symlink fixture setup failed") }
++        try refuses { _ = try sidecars.write("link.bin", data: bytes, check: {}) }
++        try refuses { _ = try sidecars.write("cancel.bin", data: bytes, check: { throw ProbeError("fixture cancellation") }) }
++        try require(sidecars.files.count == 1)
++        guard rename(directory, directory + "-held") == 0, mkdir(directory, 0o700) == 0 else {
++            throw ProbeError("Gemma changed-directory fixture setup failed")
++        }
++        try refuses { _ = try sidecars.write("changed.bin", data: bytes, check: {}) }
++        return try JSONSerialization.data(withJSONObject: ["accepted": accepted, "refused": refused,
++            "nativeExecuted": false, "modelConstructed": false, "payloadRead": false], options: [.sortedKeys])
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortSidecars.swift
+@@ -0,0 +1,71 @@
++import Darwin
++import Foundation
++
++/// Exclusive durable sidecars. Failed operations leave partial evidence in place.
++final class Gemma4ShortSidecars {
++    private let directory: String, fd: Int32, identity: stat
++    private(set) var files: [Gemma4ShortFile] = []
++    private var totalBytes = 0
++
++    init(directory: String) throws {
++        let url = URL(fileURLWithPath: directory, isDirectory: true)
++        guard url.deletingLastPathComponent().resolvingSymlinksInPath().path == url.deletingLastPathComponent().path,
++              mkdir(directory, 0o700) == 0 else { throw ProbeError("Gemma evidence directory must be fresh beneath a canonical parent") }
++        let handle = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++        guard handle >= 0 else { throw ProbeError("Gemma evidence directory open failed") }
++        var info = stat()
++        guard fstat(handle, &info) == 0, info.st_uid == geteuid(), (info.st_mode & 0o777) == 0o700,
++              (info.st_mode & S_IFMT) == S_IFDIR else {
++            close(handle); throw ProbeError("Gemma evidence directory ownership/mode differs")
++        }
++        self.directory = directory; fd = handle; identity = info
++    }
++    deinit { close(fd) }
++
++    private func requireDirectory() throws {
++        var path = stat(), opened = stat()
++        guard lstat(directory, &path) == 0, fstat(fd, &opened) == 0,
++              path.st_dev == identity.st_dev, path.st_ino == identity.st_ino,
++              opened.st_dev == identity.st_dev, opened.st_ino == identity.st_ino,
++              path.st_uid == geteuid(), (path.st_mode & 0o777) == 0o700,
++              (path.st_mode & S_IFMT) == S_IFDIR else { throw ProbeError("Gemma evidence directory identity changed") }
++    }
++
++    func write(_ name: String, data: Data, check: () throws -> Void) throws -> Gemma4ShortFile {
++        try check(); try requireDirectory()
++        guard (1...128).contains(name.utf8.count), name.utf8.allSatisfy({
++            (48...57).contains($0) || (97...122).contains($0) || [45,46,95].contains($0)
++        }), !name.hasPrefix("."), !files.contains(where: { $0.name == name }), files.count < 128,
++              (1...16_777_216).contains(data.count), totalBytes <= 33_554_432 - data.count else {
++            throw ProbeError("Gemma sidecar name/count/byte bound differs")
++        }
++        let file = openat(fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
++        guard file >= 0 else { throw ProbeError("Gemma sidecar must be a new exclusive regular file") }
++        defer { close(file) }
++        var initial = stat()
++        guard fstat(file, &initial) == 0, (initial.st_mode & S_IFMT) == S_IFREG,
++              initial.st_uid == geteuid(), (initial.st_mode & 0o777) == 0o600, initial.st_nlink == 1 else {
++            throw ProbeError("Gemma sidecar owner/type/mode differs")
++        }
++        try data.withUnsafeBytes { buffer in
++            var offset = 0
++            while offset < buffer.count {
++                try check()
++                let n = Darwin.write(file, buffer.baseAddress!.advanced(by: offset), min(65_536, buffer.count-offset))
++                if n < 0 && errno == EINTR { continue }
++                guard n > 0 else { throw ProbeError("Gemma sidecar write failed") }; offset += n
++            }
++        }
++        try check()
++        guard fsync(file) == 0, fsync(fd) == 0 else { throw ProbeError("Gemma sidecar durability failed") }
++        try requireDirectory()
++        var final = stat(), path = stat()
++        guard fstat(file, &final) == 0, fstatat(fd, name, &path, AT_SYMLINK_NOFOLLOW) == 0,
++              final.st_dev == initial.st_dev, final.st_ino == initial.st_ino,
++              path.st_dev == final.st_dev, path.st_ino == final.st_ino,
++              final.st_size == data.count, final.st_nlink == 1, final.st_uid == geteuid(),
++              (final.st_mode & 0o777) == 0o600 else { throw ProbeError("Gemma sidecar identity/length changed") }
++        let receipt = Gemma4ShortFile(name: name, bytes: data.count, sha256: sha256(data))
++        files.append(receipt); totalBytes += data.count; try check(); return receipt
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortWire.swift
+@@ -0,0 +1,102 @@
++import Foundation
++import MLX
++
++/// Serial qualification transport over the existing completed P2P primitives.
++/// It supplies checksums/scope binding, not authenticated or encrypted RDMA.
++final class Gemma4ShortWire {
++    let input: Gemma4ShortCheckInput
++    let group: Collective
++    private var sent = 0, received = 0, busy = false, failed = false
++    private var pending: Gemma4ShortWireValue?
++    var rank: Int { group.rank }
++
++    init(input: Gemma4ShortCheckInput, group: Collective) throws {
++        guard group.transport == .jaccl, group.size == 2, input.job.rank == group.rank else {
++            throw ProbeError("Gemma wire requires its exact selected two-rank JACCL endpoint")
++        }
++        self.input = input; self.group = group
++    }
++    func poison() { failed = true }
++
++    func operation<T>(_ body: () throws -> T) throws -> T {
++        guard !failed, !busy else { throw ProbeError("Gemma transport failed or reentered") }
++        busy = true; defer { busy = false }
++        do { return try body() } catch { failed = true; throw error }
++    }
++
++    func send(_ value: Gemma4ShortWireValue, check: () throws -> Void) throws {
++        guard sent < 64 else { throw ProbeError("Gemma control count exceeds its short operation") }
++        try check()
++        let data = try canonicalJSONData(Gemma4ShortWirePacket(schema: "gemma4_short_p2p_v1",
++            scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
++        guard (1...16_384).contains(data.count) else { throw ProbeError("Gemma control exceeds its byte bound") }
++        _ = try group.sendCompleted(MLXArray([UInt32(data.count)]), to: 1-rank, maximumBytes: 4, check: check)
++        _ = try group.sendCompleted(MLXArray(data, [data.count], dtype: .uint8), to: 1-rank, maximumBytes: 16_384, check: check)
++        sent += 1; try check()
++    }
++
++    func receive(check: () throws -> Void) throws -> Gemma4ShortWireValue {
++        guard received < 64 else { throw ProbeError("Gemma control count exceeds its short operation") }
++        let prefix = try group.receiveCompleted(shape: [1], dtype: .uint32, from: 1-rank, maximumBytes: 4, check: check)
++        let length = Int(prefix.item(UInt32.self)); try check()
++        guard (1...16_384).contains(length) else { throw ProbeError("Gemma control prefix exceeds fixed cap") }
++        let array = try group.receiveCompleted(shape: [length], dtype: .uint8, from: 1-rank, maximumBytes: 16_384, check: check)
++        let data = array.asData(access: .copy).data; try check()
++        let value = try Gemma4ShortWireCodec.decode(data, scope: input.scopeSHA256, sender: 1-rank, ordinal: received)
++        received += 1; return value
++    }
++
++    func require(_ expected: Gemma4ShortWireValue, check: () throws -> Void) throws {
++        guard try receive(check: check) == expected else { throw ProbeError("Gemma peer control differs from local expectation") }
++    }
++
++    func checkpoint(_ event: String, tokenIDs: [Int] = [], check: () throws -> Void) throws {
++        try operation {
++            guard pending == nil, ["begin", "ready", "request-retired", "model-released"].contains(event) else {
++                throw ProbeError("Gemma checkpoint overlaps an unconsumed frame")
++            }
++            let value = Gemma4ShortWireValue(event: event, tokenIDsSHA256: qwenGenerationTokenHash(tokenIDs))
++            if rank == 0 { try send(value, check: check); try require(value, check: check) }
++            else { try require(value, check: check); try send(value, check: check) }
++        }
++    }
++
++    func acceptToken(_ token: Int?, ordinal: Int, check: () throws -> Void) throws -> Int {
++        try operation {
++            guard pending == nil, (0...1).contains(ordinal), (rank == 1) == (token != nil) else {
++                throw ProbeError("Gemma token responsibility/frontier differs")
++            }
++            var expected = Gemma4ShortWireValue(event: "token", sequence: ordinal, frontier: 32+ordinal, tokenID: token)
++            if rank == 1 { try send(expected, check: check) }
++            else {
++                let actual = try receive(check: check)
++                expected.tokenID = actual.tokenID
++                guard actual == expected else { throw ProbeError("Gemma token frame differs") }
++            }
++            guard let selected = expected.tokenID, (0..<262_144).contains(selected) else {
++                throw ProbeError("Gemma peer token is outside the admitted vocabulary")
++            }
++            let accepted = Gemma4ShortWireValue(event: "token-accepted", sequence: ordinal,
++                frontier: 32+ordinal, tokenID: selected)
++            if rank == 0 { try send(accepted, check: check) } else { try require(accepted, check: check) }
++            return selected
++        }
++    }
++
++    func retainPending(_ value: Gemma4ShortWireValue) throws {
++        guard pending == nil else { throw ProbeError("Gemma unconsumed frame overlap") }; pending = value
++    }
++    func requireNoPending() throws {
++        guard pending == nil else { throw ProbeError("Gemma payload overlaps an unconsumed frame") }
++    }
++    func consume(sequence: Int, frontier: Int, check: () throws -> Void) throws {
++        try operation {
++            guard rank == 1, let value = pending, value.event == "frame", value.sequence == sequence,
++                  value.frontier == frontier else { throw ProbeError("Gemma consumption lacks exact committed frame") }
++            let receipt = Gemma4ShortWireValue(event: "frame-consumed", sequence: value.sequence,
++                frontier: value.frontier, count: value.count, tokenIDsSHA256: value.tokenIDsSHA256,
++                payloadSHA256: value.payloadSHA256, dtype: value.dtype)
++            try send(receipt, check: check); pending = nil
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortWireCodec.swift
+@@ -0,0 +1,15 @@
++import Foundation
++
++enum Gemma4ShortWireCodec {
++    static func decode(_ data: Data, scope: String, sender: Int, ordinal: Int) throws -> Gemma4ShortWireValue {
++        let object = try QwenLayerStageGenerationWireJSON.object(data)
++        let packet = try JSONDecoder().decode(Gemma4ShortWirePacket.self, from: data)
++        try QwenLayerStageGenerationWireJSON.requireExact(object, packet)
++        guard packet.schema == "gemma4_short_p2p_v1", packet.scopeSHA256 == scope,
++              packet.senderRank == sender, packet.ordinal == ordinal,
++              (0...1).contains(sender), (0..<64).contains(ordinal), qwenStageWireIsSHA256(scope) else {
++            throw ProbeError("Gemma peer operation/role/strict ordinal differs")
++        }
++        return packet.value
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortWirePayload.swift
+@@ -0,0 +1,103 @@
++import Foundation
++import MLX
++import MLXLMCommon
++
++extension Gemma4ShortWire {
++    func sendProbe(_ array: MLXArray, phase: CBv2NativeKVTypeProbe.Phase,
++                   check: () throws -> Void) throws {
++        let sequence = phase == .prefill ? 0 : 1, count = try Gemma4ShortFrames.probeCount(phase == .prefill ? 0 : 1)
++        try sendPayload(array, value: .init(event: "probe", sequence: sequence, frontier: sequence == 0 ? 2 : 3,
++            count: count, tokenIDsSHA256: qwenGenerationTokenHash(Array(repeating: 0, count: count)),
++            dtype: input.job.residualDType), receipt: "probe-buffer-received", check: check)
++    }
++
++    func receiveProbe(phase: CBv2NativeKVTypeProbe.Phase, count: Int,
++                      check: () throws -> Void) throws -> MLXArray {
++        let sequence = phase == .prefill ? 0 : 1
++        guard count == (try Gemma4ShortFrames.probeCount(sequence)) else { throw ProbeError("Gemma actual probe count differs") }
++        return try receivePayload(value: .init(event: "probe", sequence: sequence, frontier: sequence == 0 ? 2 : 3,
++            count: count, tokenIDsSHA256: qwenGenerationTokenHash(Array(repeating: 0, count: count)),
++            dtype: input.job.residualDType), receipt: "probe-buffer-received", check: check).0
++    }
++
++    func sendFrame(_ boundary: Gemma4ForwardBoundary, check: () throws -> Void) throws {
++        let frame = try Gemma4ShortFrames.frame(boundary.frame.sequence)
++        guard boundary.frame == frame, boundary.requestSHA256 == input.request.fingerprint,
++              boundary.artifactSHA256 == Gemma4ArtifactMetadata.artifactAggregateSHA256,
++              boundary.planSHA256 == input.plan.fingerprint, boundary.mappingSHA256 == input.plan.conservation.fingerprint,
++              boundary.producerStageSHA256 == input.plan.stages[0].fingerprint else {
++            throw ProbeError("Gemma produced boundary has a different request/Plan/frame")
++        }
++        let owned = try boundary.ownedCopy(check: check)
++        try owned.requireOwned(tokens: frame.tokenCount, hidden: 2816, dtype: input.job.dtype)
++        try sendPayload(owned.array, value: .init(event: "frame", sequence: frame.sequence,
++            frontier: frame.tokenOffset + frame.tokenCount, count: frame.tokenCount,
++            tokenIDsSHA256: owned.tokenIDsSHA256, payloadSHA256: owned.payloadSHA256,
++            dtype: input.job.residualDType), receipt: "frame-consumed", check: check)
++    }
++
++    func receiveFrame(_ frame: QwenLayerStageFrame, tokens: [Int],
++                      check: () throws -> Void) throws -> Gemma4ForwardBoundary {
++        guard frame == (try Gemma4ShortFrames.frame(frame.sequence)), tokens.count == frame.tokenCount else {
++            throw ProbeError("Gemma incoming request frame differs from local geometry")
++        }
++        let (array, value) = try receivePayload(value: .init(event: "frame", sequence: frame.sequence,
++            frontier: frame.tokenOffset + frame.tokenCount, count: frame.tokenCount,
++            tokenIDsSHA256: qwenGenerationTokenHash(tokens), dtype: input.job.residualDType), receipt: nil, check: check)
++        guard let payload = value.payloadSHA256 else { throw ProbeError("Gemma payload digest is missing") }
++        return .init(requestSHA256: input.request.fingerprint, artifactSHA256: Gemma4ArtifactMetadata.artifactAggregateSHA256,
++            planSHA256: input.plan.fingerprint, mappingSHA256: input.plan.conservation.fingerprint,
++            producerStageSHA256: input.plan.stages[0].fingerprint, frame: frame,
++            tokenIDsSHA256: qwenGenerationTokenHash(tokens), array: array, payloadSHA256: payload)
++    }
++
++    private func sendPayload(_ array: MLXArray, value: Gemma4ShortWireValue, receipt: String,
++                             check: () throws -> Void) throws {
++        try operation {
++            try requireNoPending(); try check()
++            guard rank == 0, array.shape == [1, value.count, 2816], array.dtype == input.job.dtype else {
++                throw ProbeError("Gemma producer native residual shape/dtype differs")
++            }
++            let bytes = value.count * 2816 * input.job.dtype.size
++            // The real probe/session evaluated this tensor before publication.
++            let copied = array.asData(access: .copy).data; try check()
++            guard copied.count == bytes else { throw ProbeError("Gemma residual byte count differs") }
++            let hash = sha256(copied)
++            guard value.payloadSHA256 == nil || value.payloadSHA256 == hash else { throw ProbeError("Gemma source residual digest changed") }
++            var header = value; header.payloadSHA256 = hash
++            try send(header, check: check)
++            let ready = changedEvent(header, "payload-ready")
++            try require(ready, check: check)
++            _ = try group.sendCompleted(array, to: 1, maximumBytes: bytes, check: check)
++            try require(changedEvent(header, receipt), check: check)
++        }
++    }
++
++    private func receivePayload(value: Gemma4ShortWireValue, receipt: String?,
++                                check: () throws -> Void) throws -> (MLXArray, Gemma4ShortWireValue) {
++        try operation {
++            try requireNoPending(); try check()
++            guard rank == 1 else { throw ProbeError("Only Gemma final stage receives residuals") }
++            let actual = try receive(check: check)
++            var expected = value; expected.payloadSHA256 = actual.payloadSHA256
++            guard actual == expected, let payload = actual.payloadSHA256, qwenStageWireIsSHA256(payload) else {
++                throw ProbeError("Gemma residual header differs from the exact local operation")
++            }
++            let bytes = value.count * 2816 * input.job.dtype.size
++            try send(changedEvent(actual, "payload-ready"), check: check)
++            let array = try group.receiveCompleted(shape: [1, value.count, 2816], dtype: input.job.dtype,
++                from: 0, maximumBytes: bytes, check: check)
++            guard sha256(array.asData(access: .copy).data) == payload else { throw ProbeError("Gemma received residual checksum differs") }
++            try check()
++            if let receipt { try send(changedEvent(actual, receipt), check: check) }
++            else { try retainPending(actual) }
++            return (array, actual)
++        }
++    }
++
++    private func changedEvent(_ value: Gemma4ShortWireValue, _ event: String) -> Gemma4ShortWireValue {
++        .init(event: event, sequence: value.sequence, frontier: value.frontier, count: value.count,
++            tokenIDsSHA256: value.tokenIDsSHA256, payloadSHA256: value.payloadSHA256,
++            tokenID: value.tokenID, dtype: value.dtype)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortWireValues.swift
+@@ -0,0 +1,33 @@
++import Foundation
++
++struct Gemma4ShortWireValue: Codable, Equatable {
++    let event: String
++    var sequence = 0, frontier = 0, count = 0
++    var tokenIDsSHA256: String? = nil
++    var payloadSHA256: String? = nil
++    var tokenID: Int? = nil
++    var dtype: String? = nil
++}
++
++struct Gemma4ShortWirePacket: Codable {
++    let schema: String, scopeSHA256: String
++    let senderRank: Int, ordinal: Int
++    let value: Gemma4ShortWireValue
++}
++
++/// Fixed short operation geometry; no values from the wire authorize allocation.
++enum Gemma4ShortFrames {
++    static func frame(_ sequence: Int) throws -> QwenLayerStageFrame {
++        switch sequence {
++        case 0: return .init(sequence: 0, phase: .prefill, tokenOffset: 0, tokenCount: 16, finalPromptChunk: false)
++        case 1: return .init(sequence: 1, phase: .prefill, tokenOffset: 16, tokenCount: 16, finalPromptChunk: true)
++        case 2: return .init(sequence: 2, phase: .decode, tokenOffset: 32, tokenCount: 1, finalPromptChunk: false)
++        default: throw ProbeError("Gemma short frame is outside its three committed evaluations")
++        }
++    }
++
++    static func probeCount(_ sequence: Int) throws -> Int {
++        guard (0...1).contains(sequence) else { throw ProbeError("Gemma short probe phase differs") }
++        return sequence == 0 ? 2 : 1
++    }
++}
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "GemmaShortCorrectnessCheck", targets: ["GemmaShortCorrectnessCheck"]),
+         .executable(name: "WindowedRequestStateCheck", targets: ["WindowedRequestStateCheck"]),
+         .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+         .executable(name: "TargetVerificationCheck", targets: ["TargetVerificationCheck"]),
+@@ -21,6 +22,9 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "GemmaShortCorrectnessCheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/GemmaShortCorrectnessCheck"),
+         .executableTarget(name: "WindowedRequestStateCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/GemmaShortCorrectnessCheck/Main.swift
+@@ -0,0 +1,17 @@
++import Darwin
++import Foundation
++@_spi(ClusterTesting) import DarkbloomClusterRuntime
++
++@main struct GemmaShortCorrectnessMain {
++    static func main() {
++        do {
++            let result = try GemmaShortCorrectnessCheck.run(arguments: Array(CommandLine.arguments.dropFirst()))
++            guard result.count <= 1_048_576 else { throw NSError(domain: "GemmaCheck", code: 1) }
++            try FileHandle.standardOutput.write(contentsOf: result + Data([10]))
++        } catch {
++            let message = Data((String(describing: error).prefix(8192) + "\n").utf8)
++            try? FileHandle.standardError.write(contentsOf: message)
++            Darwin.exit(1)
++        }
++    }
++}

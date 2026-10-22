@@ -1,0 +1,30 @@
+{
+  "status": "source-only",
+  "nativeExecuted": false,
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift",
+      "beforeSHA256": "e79ec35cf051a8446be65178cf03de4df26c6d3cfc7291f60ba460a3520dc905",
+      "afterSHA256": "92fa728bc13abeeec5bbe93190686661da6e709f1ef6af6b753e71fa08ac3173",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4OwnedForwardSession.swift"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedMTPVerification.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "d3675aa3594708c4acbb7abe009960e4eb85defb8e672e31748472883944d50a",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4OwnedMTPVerification.swift"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift",
+      "beforeSHA256": "3f74f64c7c963f4e11ddb9988655989ba06f4708bcc950696b5b4f92c03b493e",
+      "afterSHA256": "5765bc6aa2e5c35d03f24f82b75f0ad972c38bb60a8e2c5e4a0da7b73517f98d",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4BenchmarkEntry.swift"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPStateQualification.swift",
+      "beforeSHA256": null,
+      "afterSHA256": "7d0cb3b56affc4419321d18b74499cf4bbb486aef3a36bc046c866c605a6a454",
+      "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/target-session/Gemma4MTPStateQualification.swift"
+    }
+  ]
+}

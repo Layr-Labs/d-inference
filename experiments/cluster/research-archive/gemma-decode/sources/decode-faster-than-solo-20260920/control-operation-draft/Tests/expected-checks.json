@@ -1,0 +1,26 @@
+{
+  "actualScopeHelper": true,
+  "compiled": false,
+  "executed": false,
+  "labels": [
+    "PASS send-entry-before-allocation-and-fresh-exit",
+    "PASS receive-owned-copy-before-distinct-exit-observation",
+    "PASS entry-refusal-prevents-data-allocation",
+    "PASS exit-refusal-after-copy-prevents-publication",
+    "PASS inner-native-failure-keeps-primary-error",
+    "PASS inner-deadline-refuses-before-continuation",
+    "PASS prior-cancel-prevents-entry",
+    "PASS cancel-during-entry-prevents-allocation",
+    "PASS cancel-during-inner-check-refuses",
+    "PASS cancel-before-body-return-prevents-publication",
+    "PASS cancel-during-exit-prevents-publication",
+    "PASS completed-operation-cannot-replay",
+    "PASS caught-reentry-poisons-original-operation",
+    "PASS recursive-check-poisons-and-closes",
+    "PASS caught-inner-failure-cannot-publish",
+    "PASS escaped-checkpoint-has-no-live-callback",
+    "PASS checkpoint-invalidated-before-exit-reader"
+  ],
+  "nativePrimitiveReplaced": false,
+  "realFoundationData": true
+}

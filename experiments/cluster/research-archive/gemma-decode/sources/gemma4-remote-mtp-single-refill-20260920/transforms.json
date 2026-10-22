@@ -1,0 +1,56 @@
+{
+  "Gemma4RemoteMTPInput.swift": [
+    {
+      "before": "    var rank: Int { role == \"target\" ? 1 : 0 }",
+      "after": "    let refillPolicy: String?\n    var rank: Int { role == \"target\" ? 1 : 0 }"
+    },
+    {
+      "before": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),",
+      "after": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n              (refillPolicy == nil || refillPolicy == \"single_for_depth_one_v1\"),"
+    },
+    {
+      "before": "    let verificationDepth: Gemma4RemoteMTPDepth",
+      "after": "    let verificationDepth: Gemma4RemoteMTPDepth\n    let producerRefillPolicy: Gemma4RemoteMTPRefillPolicy"
+    },
+    {
+      "before": "        let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)",
+      "after": "        let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)\n        let producerRefillPolicy = try Gemma4RemoteMTPRefillPolicy(explicitPolicy:job.refillPolicy,\n            verificationDepth:verificationDepth.maximumDraftTokens)"
+    },
+    {
+      "before": "        self.verificationDepth = verificationDepth",
+      "after": "        self.verificationDepth = verificationDepth\n        self.producerRefillPolicy = producerRefillPolicy"
+    },
+    {
+      "before": "            \"capture=\\(local.job.captureEvidence)\"]+local.benchmark.requests.map(\\.fingerprint)\n            + (local.targetProjectionPolicy.map",
+      "after": "            \"capture=\\(local.job.captureEvidence)\"]+local.benchmark.requests.map(\\.fingerprint)\n            + producerRefillPolicy.scopeComponents\n            + (local.targetProjectionPolicy.map"
+    },
+    {
+      "before": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }",
+      "after": "        if producerRefillPolicy != .paired {\n            report[\"producerRefillPolicy\"] = producerRefillPolicy.rawValue\n            report[\"maximumProducerRefillGrant\"] = 1\n            report[\"maximumProducerLookaheadGrant\"] = 2\n        }\n        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }"
+    }
+  ],
+  "Gemma4MTPPullTarget.swift": [
+    {
+      "before": "    private let channel: Gemma4MTPPullChannel",
+      "after": "    private let channel: Gemma4MTPPullChannel\n    private let producerRefillPolicy: Gemma4RemoteMTPRefillPolicy"
+    },
+    {
+      "before": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int) throws {",
+      "after": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int,\n         producerRefillPolicy: Gemma4RemoteMTPRefillPolicy = .paired) throws {"
+    },
+    {
+      "before": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier",
+      "after": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier\n        self.producerRefillPolicy = producerRefillPolicy"
+    },
+    {
+      "before": "                try grant(min(2,ledger.proposalCredit),check:check)",
+      "after": "                let count = try producerRefillPolicy.exposedGrant(draftCount:draftCount,\n                    proposalCredit:ledger.proposalCredit)\n                try grant(count,check:check)"
+    }
+  ],
+  "Gemma4RemoteMTPDriver.swift": [
+    {
+      "before": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)",
+      "after": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens,\n                    producerRefillPolicy:input.producerRefillPolicy)"
+    }
+  ]
+}

@@ -1,0 +1,1450 @@
+--- a/local/compare.py
++++ b/local/compare.py
+@@ -1,4 +1,5 @@
+ """Accept one actual tiny-state run after source, process and resource joins."""
++from workload_contract import counts
+ import argparse
+ import hashlib
+ import json
+@@ -10,7 +11,7 @@
+ from local_mtp_contract import validate_result
+ from solo_contract import validate_result as validate_solo_result
+ 
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1'
+ 
+ 
+ def completion_join(completion, terminal_raw, remote):
+@@ -67,8 +68,7 @@
+     case=ROOT/'cases'/CASE;outer=case/'solo';returned=outer/'full'
+     operation=inputs.read(case/'operation.json')['operation']
+     job_raw=inputs.raw(case/'full.json');job=parse(job_raw)
+-    require(job['promptCount'] in (128,4096) and (job['mode'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+-        ==('full',64,16,7,'serial') and type(job['captureEvidence']) is bool
++    require(counts(job) and type(job['captureEvidence']) is bool
+         and (operation=='execute-solo' or job['captureEvidence'] is False)
+         and job['buildIdentitySHA256']==activation['nativeSHA256'],'Metadata workload changed')
+     description_lines=inputs.raw(ROOT/'root-actions'/('metadata-'+CASE)/'stdout').splitlines()
+@@ -141,7 +141,7 @@
+     generation=[x if operation=='execute-solo' else x['generation'] for x in result['samples']]
+     generation=[x for x in generation if not x['warmup']]
+     prefill=sum(job['promptCount'] for x in generation)*1e9/sum(x['prefillNanoseconds'] for x in generation)
+-    decode=45e9/sum(x['decodeNanoseconds'] for x in generation)
++    decode=counts(job)['measuredDecodeTokens']*1e9/sum(x['decodeNanoseconds'] for x in generation)
+     return dict(schema='gemma4_decode_cohort_physical_execution_v1',status='passed',nativeOperation=operation,
+         nativeSHA256=activation['nativeSHA256'],sourceSHA256=activation['sourcesSHA256'],
+         buildReceiptSHA256=activation['buildReceiptSHA256'],activationSHA256=activation_sha,
+--- a/local/deploy.py
++++ b/local/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/local/numerical_compare.py
++++ b/local/numerical_compare.py
+@@ -1,4 +1,4 @@
+-"""Read-only P128 same-build ordinary versus local-MTP numerical replay."""
++"""Read-only closed P128/P4096 O16/O128 same-build full evidence replay."""
+ import argparse
+ from collections import Counter
+ from decimal import Decimal
+@@ -14,13 +14,15 @@
+ 
+ from recorded_math import WIDTH, canonical, digest, equal, logical_bytes, parse_json, require, sha_string
+ from snapshot import snapshot
++from workload_contract import counts, state_geometry
+ 
+ ROOT = Path(__file__).resolve().parent
+ COMPONENTS = ('kv.keys', 'kv.position_offsets', 'kv.values')
+ JOURNAL = ('path', 'directoryDevice', 'directoryInode', 'fileDevice', 'fileInode')
+ POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+ HELPERS = {'recorded_math.py': 'f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914',
+-           'snapshot.py': '46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b'}
++           'snapshot.py': '46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b',
++           'workload_contract.py': '61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb'}
+ 
+ 
+ def text_hash(parts):
+@@ -160,10 +162,7 @@
+ 
+ 
+ def workload(job):
+-    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full'
+-            and job['promptCount']==128 and job['chunkSize']==64 and job['outputCount']==16 and job['cut']==7
+-            and job['residualDType']=='bfloat16' and job['prefillPolicy']=='serial' and job['timeoutSeconds']==300,
+-            'Comparator requires exact P128/C64/O16/cut7 ordinary arithmetic')
++    counts(job)
+     ids=job['requestIDs']; require(len(ids)==4 and len(set(ids))==4,'Fresh request IDs')
+     for value in ids+[job['membershipEpoch']]: require(str(uuid.UUID(value))==value,'Noncanonical UUID')
+     return {k:v for k,v in job.items() if k not in ('requestIDs','membershipEpoch','outputDirectory','captureEvidence')}
+@@ -174,7 +173,7 @@
+                             '262144','2816','bfloat16','8192','512','128','8320']).encode())
+     tokens=digest(','.join(map(str,prompt)).encode())
+     return text_hash(['qwen-stage-generation-request-v1',profile,job['requestIDs'][ordinal],
+-                      'prompt='+tokens,'chunk=64','output=16','stop='])
++                      'prompt='+tokens,'chunk=64','output='+str(counts(job)['output']),'stop='])
+ 
+ 
+ def ordinary_scope(job, plan, requests):
+@@ -183,15 +182,16 @@
+         'capture='+str(job['captureEvidence']).lower()]+requests+['prefill=serial'])
+ 
+ 
+-def binding(value, load):
+-    require(value['target']==load['target']=='full-reference' and value['maximumTokens']==144 and value['maximumChunkTokens']==64
++def binding(value, load, job):
++    c=counts(job)
++    require(value['target']==load['target']=='full-reference' and value['maximumTokens']==c['maximumTokens'] and value['maximumChunkTokens']==64
+             and value['probePrefillTokens']==2 and value['probeDecodeTokens']==1
+             and value['selectedTensorCount']==1339, 'Full target state binding differs')
+     for key in ('planSHA256','artifactSHA256','configurationSHA256','parameterLayoutSHA256'):
+         require(value[key]==load[key], 'Binding differs from actual source load: '+key); sha_string(value[key])
+     require(value['selectedBytes']==load['loadedTensorBytes']
+             and value['readAccountingSHA256']==digest(canonical(load['readAccounting'])), 'Actual read accounting differs')
+-    rows=['attention-state-layout-v1','maximumTokens=144','maximumChunkTokens=64','prefix=false','speculation=false']
++    rows=['attention-state-layout-v1','maximumTokens='+str(c['maximumTokens']),'maximumChunkTokens=64','prefix=false','speculation=false']
+     require(len(value['layers'])==30,'Missing full state layers')
+     for index,layer in enumerate(value['layers']):
+         full=index%6==5; dtype=layer['dtype']
+@@ -227,8 +227,8 @@
+                 'Nonfinite native state')
+ 
+ 
+-def state(value, bind, sidecars, ordinal):
+-    require(set(value)=={'frontier','fingerprint','entries'} and value['frontier']==143
++def state(value, bind, sidecars, ordinal, frontier):
++    require(set(value)=={'frontier','fingerprint','entries'} and value['frontier']==frontier
+             and len(value['entries'])==90,'Missing full final state')
+     result={}; identities=[]
+     for entry,(layer,component) in zip(value['entries'],[(i,c) for i in range(30) for c in COMPONENTS]):
+@@ -237,20 +237,18 @@
+         require((entry['localLayerIndex'],entry['globalLayerIndex'],entry['component'])==(layer,layer,component),
+                 'State domain/order differs')
+         geometry=bind['layers'][layer]; position=component=='kv.position_offsets'
+-        dtype='int32' if position else geometry['dtype']
+-        shape=[1] if position else [1,geometry['kvHeads'],143,geometry['headDimension']]
+-        count=math.prod(shape)*WIDTH[dtype]; logical=[] if position else [0,143]
++        dtype,shape,count,logical=state_geometry(geometry,component,frontier)
+         equal([entry['dtype'],entry['shape'],entry['byteCount'],entry['logicalRange']],
+               [dtype,shape,count,logical],'State temporal geometry/type differs')
+         equal(entry['file'],dict(name=f'request-{ordinal}-state-{layer}-{component}.bin',bytes=count,sha256=entry['sha256']),
+               'State filename/hash binding differs')
+         raw=sidecars.read(entry['file']); require(digest(raw)==sha_string(entry['sha256']),'Native state hash differs')
+-        if position: require(raw==struct.pack('<i',143),'Actual stored position differs')
++        if position: require(raw==struct.pack('<i',frontier),'Actual stored position differs')
+         else: finite(raw,dtype)
+         identity=f"{layer}|{component}|{shape}|{dtype}|{count}|{entry['sha256']}"
+-        if not position: identity+='|range=0:143'
++        if not position: identity+=f'|range={logical[0]}:{logical[1]}'
+         identities.append(identity); result[(layer,component)]=(dtype,shape,logical,raw)
+-    require(value['fingerprint']==text_hash(['cbv2-owned-attention-state-v2',bind['stateLayoutSHA256'],'tokens=143']+identities),
++    require(value['fingerprint']==text_hash(['cbv2-owned-attention-state-v2',bind['stateLayoutSHA256'],'tokens='+str(frontier)]+identities),
+             'Actual final snapshot fingerprint differs')
+     return result
+ 
+@@ -282,11 +280,12 @@
+     b=physical(inputs,args.mtp_case,native['sha256'],native['bytes'],digest(package_raw),operation)
+     ja,ordinary,_,_,pa,physical_a=a; jb,mtp,config,config_sha,pb,physical_b=b
+     equal(workload(ja),workload(jb),'Semantic prompt/model/build/math differs')
++    c=counts(ja)
+     require(set(ja['requestIDs']).isdisjoint(jb['requestIDs']),'Ordinary and MTP reused request IDs')
+     require(ja['captureEvidence'] is True and jb['captureEvidence'] is False and config['captureEvidence'] is True,
+             'Full numerical evidence was not independently admitted')
+     prompt_raw=inputs.read(args.prompt_file,131072); prompt=parse_json(prompt_raw)
+-    require(digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==128
++    require(digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==c['prompt']
+             and all(type(x) is int and 0<=x<262144 for x in prompt),'Exact shared prompt packet differs')
+     require(ordinary['schema']=='gemma4_resident_benchmark_result_v1' and ordinary['job']==ja
+             and mtp['schema']=='gemma4_local_mtp_cohort_result_v1' and mtp['benchmarkJob']==jb and mtp['configuration']==config,
+@@ -335,11 +334,11 @@
+         for index,(sample,generation,job,requests) in enumerate(((sa,ga,ja,all_requests[0]),(sb,gb,jb,all_requests[1]))):
+             require(sample['requestID']==job['requestIDs'][ordinal] and sample['requestStateRetired'] is True
+                     and generation['requestSHA256']==requests[ordinal] and generation['ordinal']==ordinal
+-                    and generation['warmup'] is (ordinal==0) and generation['committedTokens']==143,
++                    and generation['warmup'] is (ordinal==0) and generation['committedTokens']==c['frontier'],
+                     'Actual fresh request binding/frontier differs')
+-            tokens=generation['selectedTokenIDs']; require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
++            tokens=generation['selectedTokenIDs']; require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
+             require(sample['selectedTokenIDsSHA256']==digest(','.join(map(str,tokens)).encode()),'Actual selected-token hash differs')
+-            binding(sample['binding'],(ordinary,mtp)[index]['sourceLoad'])
++            binding(sample['binding'],(ordinary,mtp)[index]['sourceLoad'],job)
+         require(sb['scopeSHA256']==text_hash([scope,'iteration='+str(ordinal),all_requests[1][ordinal]]),'MTP per-request scope differs')
+         require(ga['selectedTokenIDs']==gb['selectedTokenIDs'],'Greedy output differs at request '+str(ordinal))
+         equal({k:v for k,v in sa['binding'].items() if k!='readAccountingSHA256'},
+@@ -347,14 +346,14 @@
+         require(eb['capturedBeforeRequestRetirement'] is True and eb['outsideGenerationTiming'] is True,'MTP evidence lifecycle differs')
+         require(row(ea['finalRow'],sidecars[0],ordinal,ga['selectedTokenIDs'][-1])
+                 ==row(eb['finalRow'],sidecars[1],ordinal,gb['selectedTokenIDs'][-1]),'Exact complete final native row differs')
+-        states=[state(e['finalState'],s['binding'],sc,ordinal) for e,s,sc in zip((ea,eb),(sa,sb),sidecars)]
++        states=[state(e['finalState'],s['binding'],sc,ordinal,c['frontier']) for e,s,sc in zip((ea,eb),(sa,sb),sidecars)]
+         require(states[0]==states[1],'Exact chronological full90 native state differs at request '+str(ordinal))
+         total_bytes+=sum(len(x[3]) for x in states[0].values())
+         widths=gb['verificationWidths']; accepted=gb['acceptedPrefixes']
+         require(len(widths)==len(accepted)==gb['verifiedWindows'] and widths and widths[0]==1
+                 and all(type(w) is int and 1<=w<=config['maximumDraftTokens']+1 for w in widths)
+                 and all(type(k) is int and 0<=k<w for k,w in zip(accepted,widths))
+-                and sum(accepted)+len(widths)==15 and gb['proposalTokens']==sum(w-1 for w in widths)
++                and sum(accepted)+len(widths)==c['decode'] and gb['proposalTokens']==sum(w-1 for w in widths)
+                 and gb['acceptedProposalTokens']==sum(accepted) and gb['seedSteps']==widths.count(1),
+                 'Target verified-prefix accounting differs')
+         width_counts.update(widths); accepted_counts.update(accepted)
+@@ -363,14 +362,14 @@
+     require(any(w>1 for w in width_counts),'No actual rectangular target width exercised')
+     for sc in sidecars: require(sc.used==set(sc.files),'Unjoined sidecar evidence')
+     inputs.recheck()
+-    return dict(schema='gemma4_p128_local_mtp_numerical_comparison_v1',status='passed',
++    return dict(schema='gemma4_output_bound_local_mtp_numerical_comparison_v1',status='passed',
+         nativeSHA256=native['sha256'],sourceSHA256=digest(source),buildReceiptSHA256=inputs.pins[str(args.build_receipt)]['sha256'],
+-        packageSHA256=digest(package_raw),promptFileSHA256=digest(prompt_raw),promptTokens=128,chunkTokens=64,outputTokens=16,
+-        requestsCompared=4,warmupRequests=1,measuredRequests=3,generatedTokensCompared=64,
++        packageSHA256=digest(package_raw),promptFileSHA256=digest(prompt_raw),promptTokens=c['prompt'],chunkTokens=64,outputTokens=c['output'],
++        requestsCompared=4,warmupRequests=1,measuredRequests=3,generatedTokensCompared=c['allGeneratedTokens'],
+         fullFinalRowsCompared=4,vocabularyValuesPerRow=262144,stateComponentsCompared=360,stateBytesCompared=total_bytes,
+         nativeRowsAndStateExactlyEqual=True,actualObservedWidths=dict(width_counts),actualAcceptedPrefixLengths=dict(accepted_counts),
+         samples=summaries,physical=[physical_a,physical_b],
+-        scope='same-build P128 final full rows, full90 states and all16 generated IDs for four actual requests',
++        scope='same-build complete final rows/full90 chronological states and all bound generated IDs for four actual requests',
+         allIntermediateRowsCompared=False,allRollbackPrefixesQualified=False,longContextQualified=False,
+         remoteExecutionQualified=False,performanceQualified=False,
+         independentRootBuildInstallationAndAdmissionReviewStillRequired=True,retainedInputPins=list(inputs.pins.values()))
+--- a/local/package/gemma_inputs.py
++++ b/local/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/local/package/local_mtp_base_contract.py
++++ b/local/package/local_mtp_base_contract.py
+@@ -3,6 +3,7 @@
+ import math
+ import re
+ from binding_common import require
++from workload_contract import counts
+ 
+ 
+ def positive(value):
+@@ -10,6 +11,7 @@
+ 
+ 
+ def validate_result(value,job,config,config_sha,operation):
++    c=counts(job)
+     require(value['schema']=='gemma4_local_mtp_cohort_result_v1','Local MTP result schema')
+     require(value['configuration']==config and value['benchmarkJob']==job,'Local MTP result inputs')
+     require(config['schema']=='gemma4_local_mtp_cohort_job_v1'
+@@ -33,11 +35,11 @@
+         require(sample['requestID']==job['requestIDs'][ordinal].lower() and sample['requestStateRetired'] is True,'Request identity/retirement')
+         require(sample['performanceQualified'] is False and sample['modelNumericsQualified'] is False,'Premature numerical/performance claim')
+         require(generation['ordinal']==ordinal and generation['warmup'] is (ordinal==0),'Warmup identity')
+-        require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens),'Generated tokens')
++        require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens),'Generated tokens')
+         require(sample['selectedTokenIDsSHA256']==hashlib.sha256(','.join(map(str,tokens)).encode()).hexdigest(),
+             'Generated token identity differs')
+         identities.append(tokens)
+-        require(generation['committedTokens']==job['promptCount']+15,'Final committed frontier')
++        require(generation['committedTokens']==c['frontier'],'Final committed frontier')
+         widths=generation['verificationWidths'];accepted=generation['acceptedPrefixes']
+         require(len(widths)==len(accepted)==generation['verifiedWindows']
+             and all(type(w) is int and 1<=w<=config['maximumDraftTokens']+1 for w in widths)
+@@ -45,11 +47,11 @@
+         require(generation['proposalTokens']==sum(w-1 for w in widths)
+             and generation['acceptedProposalTokens']==sum(accepted)
+             and generation['seedSteps']==widths.count(1)
+-            and len(widths)+sum(accepted)==15,'Accepted/rejected work accounting')
++            and len(widths)+sum(accepted)==c['decode'],'Accepted/rejected work accounting')
+         for flag in ('mtpEnabled','timingsAreSameProcess','rejectedWorkIncluded'):
+             require(generation[flag] is True,'Missing measured generation property')
+         require(generation['remoteAssistant'] is False and generation['targetBatchNumericsQualified'] is False,'Generation claim')
+-        for phase,count in [('prefill',job['promptCount']),('decode',15)]:
++        for phase,count in [('prefill',job['promptCount']),('decode',c['decode'])]:
+             ns=generation[phase+'Nanoseconds'];tps=generation[phase+'TPS']
+             require(type(ns) is int and ns>0 and positive(tps)
+                 and math.isclose(tps,count*1e9/ns,rel_tol=1e-12),'Same-clock throughput arithmetic')
+@@ -62,7 +64,7 @@
+         if conditioning is not None:
+             qualification_count+=1
+             require(qualify and ordinal==0 and conditioning['schema']=='gemma4_local_mtp_conditioning_parity_v1'
+-                and conditioning['frontier']==job['promptCount']+15 and conditioning['seedToken']==tokens[-1]
++                and conditioning['frontier']==c['frontier'] and conditioning['seedToken']==tokens[-1]
+                 and conditioning['depths']==[1,2] and conditioning['exactTokenColumns']==3
+                 and conditioning['exactHiddenColumns']==3 and conditioning['exactBatchedTokenColumns']==3
+                 and conditioning['exactBatchedHiddenColumns']==2 and conditioning['negativeControls']==5
+--- a/local/package/run_benchmark.py
++++ b/local/package/run_benchmark.py
+@@ -1,4 +1,5 @@
+ """One bounded native cohort. Canonical device lock is inherited across exec."""
++from workload_contract import counts
+ import argparse
+ import json
+ import os
+@@ -33,8 +34,8 @@
+     job=parse(args.job.read_bytes())
+     require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full', 'Job schema/mode')
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+-    require(job['promptCount'] in (128,4096) and (job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+-            ==(64,16,7,'serial') and type(job['captureEvidence']) is bool, 'Local target workload')
++    counts(job)
++    require(type(job['captureEvidence']) is bool, 'Local target workload')
+     require(args.native_operation=='execute-solo' or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
+     config_path=run/'local-mtp.json'
+     require(digest(config_path)==args.local_mtp_config_sha256,'Local MTP config identity')
+--- a/local/package/solo_contract.py
++++ b/local/package/solo_contract.py
+@@ -2,6 +2,7 @@
+ import math
+ import re
+ from binding_common import require
++from workload_contract import counts
+ 
+ FLAGS = dict(modelReleased=True, nativeExecuted=True, runtimeServingEnabled=False,
+     encryptedRDMAEstablished=False, numericalComparisonPerformed=False,
+@@ -24,6 +25,7 @@
+ 
+ 
+ def validate_result(value, job):
++    c=counts(job)
+     require(type(value) is dict and set(value)==FIELDS, 'Solo result fields differ')
+     require(value['schema']=='gemma4_resident_benchmark_result_v1' and value['job']==job
+         and job['mode']=='full' and job['prefillPolicy']=='serial', 'Solo result input/operation differs')
+@@ -46,24 +48,24 @@
+         require(sample['ordinal']==ordinal and sample['warmup'] is (ordinal==0)
+             and sample['requestID']==job['requestIDs'][ordinal], 'Solo request identity/order')
+         tokens=sample['selectedTokenIDs']
+-        require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens)
+-            and sample['committedTokens']==job['promptCount']+15, 'Solo tokens/frontier')
++        require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens)
++            and sample['committedTokens']==c['frontier'], 'Solo tokens/frontier')
+         rows.append(tokens)
+         for key in ('requestSHA256','selectedTokenIDsSHA256'):
+             require(type(sample[key]) is str and re.fullmatch('[0-9a-f]{64}',sample[key]) is not None, 'Solo request digest')
+         start,first,end=sample['startedNanoseconds'],sample['firstLogitsNanoseconds'],sample['completedNanoseconds']
+         agreements=sample['tokenAgreementNanoseconds']
+-        require(all(integer(x,1) for x in [start,first,end,*agreements]) and len(agreements)==16
++        require(all(integer(x,1) for x in [start,first,end,*agreements]) and len(agreements)==c['output']
+             and start<first<=agreements[0]<agreements[-1]<=end and agreements==sorted(agreements), 'Solo actual clock chronology')
+         require(sample['prefillNanoseconds']==agreements[0]-start
+             and sample['decodeNanoseconds']==agreements[-1]-agreements[0], 'Solo timing boundaries')
+-        for phase,count in [('prefill',job['promptCount']),('decode',15)]:
++        for phase,count in [('prefill',job['promptCount']),('decode',c['decode'])]:
+             ns=sample[phase+'Nanoseconds'];tps=sample[phase+'TokensPerSecond']
+             require(integer(ns,1) and type(tps) in (int,float) and math.isfinite(tps) and tps>0
+                 and math.isclose(tps,count*1e9/ns,rel_tol=1e-12), 'Solo same-clock throughput arithmetic')
+-        require(len(sample['frames'])==(job['promptCount']+63)//64+15, 'Solo forward frame count')
++        require(len(sample['frames'])==c['frames'], 'Solo forward frame count')
+         if job['captureEvidence']:
+-            require(sample['finalRow']['bytes']>0 and sample['finalState']['frontier']==job['promptCount']+15
++            require(sample['finalRow']['bytes']>0 and sample['finalState']['frontier']==c['frontier']
+                 and len(sample['finalState']['entries'])==90, 'Solo requested row/whole-state evidence')
+     require(all(x==rows[0] for x in rows), 'Solo fresh-state reproducibility')
+     require(job['captureEvidence'] or value['files']==[], 'Unrequested solo sidecars')
+--- a/local/package/workload_contract.py
++++ b/local/package/workload_contract.py
+@@ -0,0 +1,32 @@
++"""Closed full-model cohort counts; no resource or execution authority."""
++def require(condition, message):
++    if not condition: raise ValueError(message)
++
++def counts(job):
++    require(type(job) is dict and job.get('schema')=='gemma4_resident_benchmark_v1'
++        and job.get('mode')=='full' and type(job.get('promptCount')) is int and job['promptCount'] in (128,4096)
++        and type(job.get('outputCount')) is int and job['outputCount'] in (16,128)
++        and type(job.get('chunkSize')) is int and job['chunkSize']==64
++        and type(job.get('cut')) is int and job['cut']==7
++        and job.get('residualDType')=='bfloat16' and job.get('prefillPolicy')=='serial'
++        and type(job.get('timeoutSeconds')) is int and job['timeoutSeconds']==300,
++        'Closed full P128/P4096 C64 O16/O128 cut7 BF16 workload')
++    p,o=job['promptCount'],job['outputCount']
++    return dict(prompt=p,output=o,decode=o-1,frontier=p+o-1,maximumTokens=p+o,
++        measuredDecodeTokens=3*(o-1),allGeneratedTokens=4*o,frames=(p+63)//64+o-1)
++
++def state_geometry(layer,component,frontier):
++    require(type(frontier) is int and 1<=frontier<=4223,'Closed final frontier')
++    if component=='kv.position_offsets':return 'int32',[1],4,[]
++    require(component in ('kv.keys','kv.values'),'Canonical attention component')
++    dtype=layer['dtype'];require(dtype in ('float16','bfloat16','float32'),'Observed cache dtype')
++    start=max(0,frontier-layer['window']) if layer['window'] else 0
++    shape=[1,layer['kvHeads'],frontier-start,layer['headDimension']]
++    count=shape[1]*shape[2]*shape[3]*(4 if dtype=='float32' else 2)
++    return dtype,shape,count,[start,frontier]
++
++def target_extra_logical_bytes(job):
++    f=counts(job)['frontier']
++    # Exact34-term identity sum: two width4 outputs, four1MiB headrows,
++    # one snapshot, separately named sender packs, hidden and16KiB control.
++    return 40053794+8192*f+16384*min(f,1024)
+--- a/local/remote_metadata.py
++++ b/local/remote_metadata.py
+@@ -14,7 +14,7 @@
+ REMOTE_BODY = r'''
+ import hashlib,json,os,pathlib,stat,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,job_sha,name,operation=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1'
+ assert operation in ('--describe','--check-arguments')
+ assert name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+--- a/local/root_run.py
++++ b/local/root_run.py
+@@ -25,6 +25,7 @@
+     p.add_argument('action',choices=['deploy-prepare','install','case-prepare','metadata','run','compare'])
+     p.add_argument('--case')
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=4096)
++    p.add_argument('--output-count',type=int,choices=[16,128],default=16)
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+     p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp-dense-head','qualify-mtp-conditioning-dense-head'],default='execute-local-mtp-dense-head')
+     p.add_argument('--capture',action='store_true')
+@@ -49,7 +50,7 @@
+             if args.action=='install':
+                 command=['deploy.py','install','--host','darkbloom-48'];timeout=150
+             elif args.action=='case-prepare':
+-                command=['run_case.py','prepare','--name',args.case,'--prompt',str(args.prompt),'--depth',str(args.depth),'--native-operation',args.native_operation]
++                command=['run_case.py','prepare','--name',args.case,'--prompt',str(args.prompt),'--depth',str(args.depth),'--output-count',str(args.output_count),'--native-operation',args.native_operation]
+                 if args.capture:command.append('--capture')
+                 timeout=30
+             elif args.action=='metadata':
+--- a/local/run_case.py
++++ b/local/run_case.py
+@@ -26,7 +26,7 @@
+ CREATE=r'''
+ import hashlib,json,os,pathlib,sys
+ payload=json.load(sys.stdin);job=payload['job'];config=payload['config'];root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ raw=(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n').encode()
+ assert config['benchmarkJob']==str(root/'job.json') and config['benchmarkJobSHA256']==hashlib.sha256(raw).hexdigest()
+@@ -35,7 +35,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -46,7 +46,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-packed-head-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-local-mtp-o128-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+@@ -56,7 +56,8 @@
+  with path.open('x') as stream:json.dump(value,stream,sort_keys=True)
+ '''
+ 
+-def prepare(name,count,cut,capture,chunk,policy,match,depth,operation):
++def prepare(name,count,cut,capture,chunk,policy,match,depth,operation,output_count=16):
++    assert type(output_count) is int and output_count in (16,128)
+     assert count in (128,4096) and (cut,chunk,policy,match)==(7,64,'serial',None)
+     assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp-dense-head','qualify-mtp-conditioning-dense-head')
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+@@ -66,7 +67,7 @@
+                 promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),
+                 requestIDs=requests,membershipEpoch=str(uuid.uuid4()),
+                 buildIdentitySHA256=digest(ROOT/'deployment/bundle'/PRODUCT),residualDType='bfloat16',
+-                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation=='execute-solo' else False,cut=cut)
++                promptCount=count,chunkSize=chunk,outputCount=output_count,timeoutSeconds=300,captureEvidence=capture if operation=='execute-solo' else False,cut=cut)
+     if match is not None:
+         assert match and all(c.isalnum() or c in '-_' for c in match)
+         prior=json.loads((ROOT/'cases'/match/'full.json').read_bytes())
+@@ -234,11 +235,12 @@
+     p.add_argument('--policy',choices=['serial'],default='serial')
+     p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+     p.add_argument('--capture',action='store_true')
++    p.add_argument('--output-count',type=int,choices=[16,128],default=16)
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+     p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp-dense-head','qualify-mtp-conditioning-dense-head'],default='execute-local-mtp-dense-head')
+     a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+-    if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match,a.depth,a.native_operation);return 0
++    if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match,a.depth,a.native_operation,a.output_count);return 0
+     return run(a.name,a.action)
+ 
+ if __name__=='__main__':raise SystemExit(main())
+--- a/local/workload_contract.py
++++ b/local/workload_contract.py
+@@ -0,0 +1,32 @@
++"""Closed full-model cohort counts; no resource or execution authority."""
++def require(condition, message):
++    if not condition: raise ValueError(message)
++
++def counts(job):
++    require(type(job) is dict and job.get('schema')=='gemma4_resident_benchmark_v1'
++        and job.get('mode')=='full' and type(job.get('promptCount')) is int and job['promptCount'] in (128,4096)
++        and type(job.get('outputCount')) is int and job['outputCount'] in (16,128)
++        and type(job.get('chunkSize')) is int and job['chunkSize']==64
++        and type(job.get('cut')) is int and job['cut']==7
++        and job.get('residualDType')=='bfloat16' and job.get('prefillPolicy')=='serial'
++        and type(job.get('timeoutSeconds')) is int and job['timeoutSeconds']==300,
++        'Closed full P128/P4096 C64 O16/O128 cut7 BF16 workload')
++    p,o=job['promptCount'],job['outputCount']
++    return dict(prompt=p,output=o,decode=o-1,frontier=p+o-1,maximumTokens=p+o,
++        measuredDecodeTokens=3*(o-1),allGeneratedTokens=4*o,frames=(p+63)//64+o-1)
++
++def state_geometry(layer,component,frontier):
++    require(type(frontier) is int and 1<=frontier<=4223,'Closed final frontier')
++    if component=='kv.position_offsets':return 'int32',[1],4,[]
++    require(component in ('kv.keys','kv.values'),'Canonical attention component')
++    dtype=layer['dtype'];require(dtype in ('float16','bfloat16','float32'),'Observed cache dtype')
++    start=max(0,frontier-layer['window']) if layer['window'] else 0
++    shape=[1,layer['kvHeads'],frontier-start,layer['headDimension']]
++    count=shape[1]*shape[2]*shape[3]*(4 if dtype=='float32' else 2)
++    return dtype,shape,count,[start,frontier]
++
++def target_extra_logical_bytes(job):
++    f=counts(job)['frontier']
++    # Exact34-term identity sum: two width4 outputs, four1MiB headrows,
++    # one snapshot, separately named sender packs, hidden and16KiB control.
++    return 40053794+8192*f+16384*min(f,1024)
+--- a/remote/Tests/test_contract.py
++++ b/remote/Tests/test_contract.py
+@@ -39,8 +39,15 @@
+         warmupRequests=1,measuredRequests=3,modelReleased=True,nativeExecuted=True,collectiveCreated=True,
+         collectiveReleased=True,encryptedRDMAEstablished=False,numericalComparisonPerformed=False,
+         servingEnabled=False,physicalProcessOrLeaseRetirementEstablished=False,scopeSHA256='e'*64,
+-        nativeCacheBytesAfterRelease=0,guardObservationPolicy='gemma4_invocation_fresh_observation_v1',
+-        guardMetrics=dict(schema='gemma4_guard_wall_counters_v1'),fullTargetLoaded=False,
++        nativeCacheBytesAfterRelease=0,guardObservationPolicy='gemma4_remote_control_resource_boundaries_v1',
++        controlResourceObservationPolicy='gemma4_remote_control_resource_boundaries_v1',
++        controlResourceMetrics=dict(schema='gemma4_remote_control_resource_counters_v1',
++            policy='gemma4_remote_control_resource_boundaries_v1',frameBytes=16384,sends=10,receives=10,
++            completedOperations=20,entryResourceChecks=20,exitResourceChecks=20,innerLifetimeChecks=300,
++            resourceValuesCachedAcrossOperations=False,snapshotResourceCadenceChanged=False,
++            nativeCompletionFencesChanged=False,failed=False),
++        guardMetrics=dict(schema='gemma4_guard_wall_counters_v1',records=[dict(category='wireSendCompleted',count=10),
++            dict(category='wireReceiveCompleted',count=10)]),fullTargetLoaded=False,
+         assistantLoad=dict(artifactSHA256='d8c5fae1f4b7a07376c9f0b92f3ec283ba276d57ec3b675d8cf758a79d73bd34',
+             tensorCount=94,tensorBytes=236114440,allActualParametersReplaced=True),embeddingLoad=embedding,
+         resources=dict(placement='remoteAssistant',completedItems=97,observationCount=100,
+@@ -113,10 +120,10 @@
+         with self.assertRaises(ValueError):target_terms(wrong)
+     def test_dense_metadata_budget_and_operation_policy(self):
+         value=dict(targetProjectionPolicy=POLICY,targetExtraLogicalNativeBytes=43568162,targetExtraHostBytes=16809984)
+-        metadata_policy(value,dict(promptCount=128))
++        metadata_policy(value,fixtures()[0])
+         for field,new in [('targetProjectionPolicy','ordinary'),('targetExtraLogicalNativeBytes',39373858),('targetExtraHostBytes',0)]:
+             wrong=dict(value);wrong[field]=new
+-            with self.assertRaises(ValueError):metadata_policy(wrong,dict(promptCount=128))
++            with self.assertRaises(ValueError):metadata_policy(wrong,fixtures()[0])
+     def test_exact_target_and_assistant(self):
+         rows=fixtures();self.assertEqual(check(rows),'target');rows[2]['role']='assistant';self.assertEqual(check(rows),'assistant')
+     def test_unknown_role_and_extra_fields(self):
+@@ -124,7 +131,7 @@
+             rows=fixtures();rows[2][field]=value
+             with self.assertRaises(ValueError):check(rows)
+     def test_depth_chunk_and_output_closed(self):
+-        for which,field,value in [(1,'maximumDraftTokens',3),(0,'chunkSize',128),(0,'outputCount',128),(0,'captureEvidence',True),(0,'mode','stage1')]:
++        for which,field,value in [(1,'maximumDraftTokens',3),(0,'chunkSize',128),(0,'outputCount',129),(0,'captureEvidence',True),(0,'mode','stage1')]:
+             rows=fixtures();rows[which][field]=value
+             with self.assertRaises(ValueError):check(rows)
+     def test_config_and_native_substitution(self):
+--- a/remote/activation.py
++++ b/remote/activation.py
+@@ -17,9 +17,16 @@
+         row=required[name];assert sha(Path(row['path']))==row['sha256']
+     for name in ['packedHeadActivationManifest','packedHeadActivationComposition','packedHeadActivationExpectedSources','packedHeadActivationPredecessor']:
+         row=required[name];assert sha(Path(row['path']))==row['sha256']
+-    assert json.loads(Path(required['packedHeadActivationExpectedSources']['path']).read_bytes())['files']==required['requiredFiles']
++    assert json.loads(Path(required['packedHeadActivationExpectedSources']['path']).read_bytes())['files']==required['packedHeadFiles']
+     sources=json.loads(sources_path.read_bytes());assert sources['files']==required['requiredFiles']
+     assert sources['workspaceMutated'] is True
++    assert str(build_path)==required['actualBuildReceipt']['path'] and sha(build_path)==required['actualBuildReceipt']['sha256']
++    assert str(sources_path)==required['actualSources']['path'] and sha(sources_path)==required['actualSources']['sha256']
++    assert sources['remoteControlSourceManifestSHA256']==required['remoteControlSourceManifestSHA256']
++    assert sources['remoteControlIntegrationSHA256']==required['remoteControlIntegrationSHA256']
++    assert sources['remoteControlBaseSources']==required['remoteControlBaseSources']
++    for name in ('remoteAssistantFreshGuardManifestSHA256','remoteVerificationDepthManifestSHA256','mtpOutputEnvelopeManifestSHA256'):
++        assert sources[name]==required[name]
+     assert sources['denseActivationManifestSHA256']==required['activationManifest']['sha256']
+     assert sources['denseActivationArgumentOrderManifestSHA256']==required['argumentOrderManifest']['sha256']
+     assert sources['denseExecutionPredecessor']==required['activationPredecessor']
+--- a/remote/check_sources.py
++++ b/remote/check_sources.py
+@@ -1,30 +1,13 @@
+-"""Small source/pin/AST checks only. No test, artifact or remote execution."""
++"""Verify only current source pins/AST and the preserved O128 preparation authority."""
+ from pathlib import Path
+ import ast,hashlib,json
+ ROOT=Path(__file__).resolve().parent
+-m=json.loads((ROOT/'source-inputs.json').read_bytes())
+-for row in m['members']:
+- p=ROOT/row['path'];raw=p.read_bytes();assert not p.is_symlink() and len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+- if p.suffix=='.py':ast.parse(raw,str(p))
+-lineage=json.loads((ROOT/'predecessor-inputs.json').read_bytes())
+-for key in ('predecessorManifest','predecessorLineage'):
+- row=lineage[key];raw=Path(row['path']).read_bytes()
+- assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+-for row in lineage['members']:
+- old=Path(row['source']).read_bytes();new=(ROOT/row['path']).read_bytes()
+- assert hashlib.sha256(old).hexdigest()==row['beforeSHA256'] and hashlib.sha256(new).hexdigest()==row['sha256']
+- if row.get('unchangedRequired'):assert old==new,row['path']
+-native=json.loads((ROOT/'required-native-sources.json').read_bytes())
+-required={row['path']:row for row in native['requiredFiles']}
+-for key in ['packedHeadActivationManifest','packedHeadActivationComposition','packedHeadActivationExpectedSources','packedHeadActivationPredecessor']:
+- row=native[key];raw=Path(row['path']).read_bytes()
+- assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+-assert json.loads(Path(native['packedHeadActivationExpectedSources']['path']).read_bytes())['files']==native['requiredFiles']
+-producers=json.loads((ROOT/'receipt-producer-inputs.json').read_bytes())['members']
+-for row in producers:
+- raw=Path(row['path']).read_bytes()
+- assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+- if 'nativeSourcePath' in row:
+-  actual=required[row['nativeSourcePath']]
+-  assert (actual['bytes'],actual['sha256'])==(row['bytes'],row['sha256'])
+-print(json.dumps(dict(status='passed',members=len(m['members']),predecessorPins=len(lineage['members']),testsExecuted=False,nativeExecuted=False,remoteExecuted=False)))
++for row in json.loads((ROOT/'source-inputs.json').read_bytes())['members']:
++ p=ROOT/row['path'];assert p.is_file() and not p.is_symlink()
++ b=p.read_bytes();assert (len(b),hashlib.sha256(b).hexdigest())==(row['bytes'],row['sha256'])
++ if p.suffix=='.py':ast.parse(b,str(p))
++authority=json.loads((ROOT/'o128-provenance.json').read_bytes())
++for row in [authority['draft'],authority['actualBuildReceipt'],authority['actualSources']]:
++ p=Path(row['path']);assert p.is_file() and not p.is_symlink();b=p.read_bytes()
++ assert (len(b),hashlib.sha256(b).hexdigest())==(row['bytes'],row['sha256'])
++print(json.dumps(dict(status='source-checked',testsExecuted=False,modelExecuted=False)))
+--- a/remote/compare.py
++++ b/remote/compare.py
+@@ -1,4 +1,5 @@
+ """Join actual pair execution/cleanup evidence; never accepts MTP model numerics."""
++from package.workload_contract import counts
+ import argparse,hashlib,json,sys,re
+ from pathlib import Path
+ ROOT=Path(__file__).resolve().parent
+@@ -7,7 +8,7 @@
+ from root_run import verify_source
+ from evidence import Inputs,action,journal,processes,resources
+ from binding_common import parse,require
+-from remote_mtp_contract import validate_inputs,validate_result
++from remote_mtp_contract import validate_inputs,validate_result,validate_metadata_depth
+ from dense_contract import POLICY,metadata_policy
+ from jaccl_startup_stderr import validate_retained
+ from jobs import ROLES
+@@ -109,6 +110,7 @@
+             and meta['nativeSHA256']==activation['nativeSHA256'] and meta['packageSHA256']==package_sha and meta['jobSHA256']==job_sha
+             and meta['localMTPConfigSHA256']==local_sha and meta['remoteMTPConfigSHA256']==wrapper_sha,'Actual metadata prerequisite differs')
+         metadata_policy(meta['description'],job)
++        validate_metadata_depth(meta['description'],local)
+         desc=meta['description'];require(desc['job']==wrapper and desc['scopeSHA256']==result['scopeSHA256'] and desc['runtimeExecutionAuthorized'] is False,'Metadata/result scope')
+         before=inputs.read(returned/'journal-before.json');after=inputs.read(returned/'journal-after.json');journal(before);journal(after,before)
+         final=[x for x in launch['quiescence'] if x['host']==host];require(len(final)==1,'Missing exact quiescence host')
+@@ -130,7 +132,7 @@
+     target,assistant=outcomes['target'],outcomes['assistant'];require(target['scopeSHA256']==assistant['scopeSHA256'],'Bilateral scope differs')
+     for t,a in zip(target['samples'],assistant['samples']):
+         require((t['requestID'],t['requestSHA256'],t['scopeSHA256'])==(a['requestID'],a['requestSHA256'],a['wireScopeSHA256']),'Bilateral request identity differs')
+-    measured=target['samples'][1:];decode=45e9/sum(x['decodeNanoseconds'] for x in measured)
++    measured=target['samples'][1:];decode=counts(target['ordinaryJob'])['measuredDecodeTokens']*1e9/sum(x['decodeNanoseconds'] for x in measured)
+     inputs.recheck();require(verify_source()==source_sha,'Harness source changed')
+     return dict(schema='gemma4_remote_mtp_packed_head_physical_execution_v1',status='passed',nativeSHA256=activation['nativeSHA256'],sourcesSHA256=activation['sourcesSHA256'],
+         buildReceiptSHA256=activation['buildReceiptSHA256'],scopeSHA256=target['scopeSHA256'],physicalResources=physical,originalProcessesRetired=True,
+--- a/remote/deploy.py
++++ b/remote/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/remote/jobs.py
++++ b/remote/jobs.py
+@@ -1,4 +1,4 @@
+-"""Exact role-bound P128/P4096 C64 O16/depth2 jobs with fresh request IDs."""
++"""Exact role-bound P128/P4096 C64 O16-or-128/chosen-depth1-or-2 jobs with fresh request IDs."""
+ from pathlib import Path
+ import hashlib,json,re,uuid
+ from activation import recheck
+@@ -7,7 +7,9 @@
+ ROLES=[('assistant','darkbloom-24'),('target','darkbloom-48')]
+ def encode(value):return (json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)+'\n').encode()
+ def hash_bytes(value):return hashlib.sha256(value).hexdigest()
+-def prepare(name,count,capture,embedding):
++def prepare(name,count,capture,embedding,depth=2,output_count=16):
++    assert type(depth) is int and depth in (1,2)
++    assert type(output_count) is int and output_count in (16,128)
+     assert count in [128,4096] and type(capture) is bool and re.fullmatch('[0-9a-f]{64}',embedding)
+     from registered_embedding import verify
+     assert embedding==verify()
+@@ -18,13 +20,13 @@
+         job=dict(schema='gemma4_resident_benchmark_v1',mode='full',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+             metadataDirectory=REMOTE+'/metadata',promptFile=REMOTE+f'/prompts/prompt-{count}.json',
+             promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),requestIDs=requests,membershipEpoch=epoch,
+-            buildIdentitySHA256=activation['nativeSHA256'],residualDType='bfloat16',promptCount=count,chunkSize=64,outputCount=16,
++            buildIdentitySHA256=activation['nativeSHA256'],residualDType='bfloat16',promptCount=count,chunkSize=64,outputCount=output_count,
+             timeoutSeconds=300,captureEvidence=False,cut=7,prefillPolicy='serial',outputDirectory=remote+'/sidecars')
+         local=dict(schema='gemma4_local_mtp_cohort_job_v1',benchmarkJob=remote+'/job.json',benchmarkJobSHA256=hash_bytes(encode(job)),
+             assistantModelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B-assistant-bb94eae1',assistantMetadataDirectory=REMOTE+'/assistant-metadata',
+-            maximumDraftTokens=2,captureEvidence=capture)
++            maximumDraftTokens=depth,captureEvidence=capture)
+         wrapper=dict(schema='gemma4_remote_mtp_cohort_job_v1',role=role,localMTPJob=remote+'/local-mtp.json',localMTPJobSHA256=hash_bytes(encode(local)),
+             targetNativeSHA256=activation['nativeSHA256'],assistantNativeSHA256=activation['nativeSHA256'],embeddingIdentitySHA256=embedding)
+         for filename,value in [('job.json',job),('local-mtp.json',local),('remote-mtp.json',wrapper)]:
+             with (folder/filename).open('xb') as f:f.write(encode(value))
+-    print(json.dumps(dict(status='prepared',case=name,promptCount=count,depth=2,capture=capture,embeddingIdentitySHA256=embedding)))
++    print(json.dumps(dict(status='prepared',case=name,promptCount=count,outputCount=output_count,depth=depth,capture=capture,embeddingIdentitySHA256=embedding)))
+--- a/remote/package/control_contract.py
++++ b/remote/package/control_contract.py
+@@ -0,0 +1,29 @@
++"""Exact completed fixed-control accounting; no native fact is synthesized."""
++from binding_common import require
++POLICY='gemma4_remote_control_resource_boundaries_v1'
++FIELDS={'schema','policy','frameBytes','sends','receives','completedOperations','entryResourceChecks','exitResourceChecks','innerLifetimeChecks',
++    'resourceValuesCachedAcrossOperations','snapshotResourceCadenceChanged','nativeCompletionFencesChanged','failed'}
++COUNTS=('sends','receives','completedOperations','entryResourceChecks','exitResourceChecks','innerLifetimeChecks')
++def validate_control_metrics(value):
++    require(value['guardObservationPolicy']==value['controlResourceObservationPolicy']==POLICY,'Exact control resource policy')
++    metrics=value['controlResourceMetrics']
++    require(type(metrics) is dict and set(metrics)==FIELDS,'Exact control metric fields')
++    require(metrics['schema']=='gemma4_remote_control_resource_counters_v1' and metrics['policy']==POLICY
++        and type(metrics['frameBytes']) is int and metrics['frameBytes']==16384,'Fixed control metric identity')
++    for name in COUNTS:
++        require(type(metrics[name]) is int and 0<metrics[name]<=2**64-1,'Exact bounded control count: '+name)
++    for name in ('resourceValuesCachedAcrossOperations','snapshotResourceCadenceChanged','nativeCompletionFencesChanged','failed'):
++        require(metrics[name] is False,'Unestablished control claim: '+name)
++    # Six cohort barriers contribute one send and receive on each rank. Every
++    # completed request command likewise has exactly one matching response.
++    require(metrics['sends']==metrics['receives'] and metrics['sends']>=6
++        and metrics['completedOperations']==metrics['sends']+metrics['receives']
++        and metrics['entryResourceChecks']==metrics['exitResourceChecks']==metrics['completedOperations']
++        and metrics['innerLifetimeChecks']>=metrics['completedOperations'],'Control boundary/completion chronology')
++    # The unchanged wall recorder wraps exactly each control operation body.
++    rows=value['guardMetrics']['records']
++    for category,count in [('wireSendCompleted',metrics['sends']),('wireReceiveCompleted',metrics['receives'])]:
++        matches=[row for row in rows if row.get('category')==category]
++        require(len(matches)==1 and type(matches[0].get('count')) is int
++            and matches[0]['count']==count,'Control count differs from actual wire wall recorder')
++    return metrics
+--- a/remote/package/dense_contract.py
++++ b/remote/package/dense_contract.py
+@@ -1,5 +1,6 @@
+ """Closed target-only dense policy; no broader numerical/serving authority."""
+ from binding_common import require
++from workload_contract import target_extra_logical_bytes
+ 
+ POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+ EMBEDDING_SHA256='45259723b22ef7d5c039213763eb57a0711bdc7e897ca112b58821b3d97827a4'
+@@ -21,5 +22,5 @@
+ 
+ def metadata_policy(value,job):
+     require(value.get('targetProjectionPolicy')==POLICY,'Metadata must admit exact explicit dense target policy')
+-    require(value['targetExtraLogicalNativeBytes']=={128:43568162,4096:90508322}[job['promptCount']]
++    require(value['targetExtraLogicalNativeBytes']==target_extra_logical_bytes(job)
+         and value['targetExtraHostBytes']==16*1048576+32768,'Dense target metadata logical budget')
+--- a/remote/package/gemma_inputs.py
++++ b/remote/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/remote/package/remote_mtp_contract.py
++++ b/remote/package/remote_mtp_contract.py
+@@ -1,12 +1,33 @@
+ """Strict run/role/lifecycle acceptance, deliberately separate from model numerics."""
+ import hashlib,math,re,uuid
+ from binding_common import require
++from workload_contract import counts
+ from gemma_inputs import REMOTE
+ from dense_contract import EMBEDDING_SHA256,target_summary,target_terms
+ from embedding_contract import assistant_load_completion
++from control_contract import validate_control_metrics
+ 
+ def sha(raw):return hashlib.sha256(raw).hexdigest()
+ def digest(value):return type(value) is str and re.fullmatch('[0-9a-f]{64}',value) is not None
++
++def verification_depth(local):
++    depth=local['maximumDraftTokens']
++    require(type(depth) is int and depth in (1,2),'Chosen verification depth must be one or two')
++    return depth
++
++def validate_metadata_depth(value,local):
++    require(type(value['maximumDraftTokens']) is int
++        and value['maximumDraftTokens']==verification_depth(local)
++        and type(value['maximumBufferedProposals']) is int and value['maximumBufferedProposals']==5,
++        'Metadata chosen depth/producer queue differs')
++
++def validate_verification_widths(widths,local):
++    # The producer may still grant two and retain five proposals at chosen depth
++    # one. This bounds actual target verification, not producer credit capacity.
++    depth=verification_depth(local)
++    require(type(widths) is list and widths and widths[0]==1
++        and all(type(w) is int and 1<=w<=depth+1 for w in widths),
++        'Verification widths exceed the chosen depth')
+ 
+ def validate_inputs(job,local,wrapper,job_sha,local_sha,run):
+     require(set(wrapper)=={'schema','role','localMTPJob','localMTPJobSHA256','targetNativeSHA256','assistantNativeSHA256','embeddingIdentitySHA256'},'Remote job fields')
+@@ -17,14 +38,14 @@
+     require(all(digest(wrapper[k]) for k in ['targetNativeSHA256','assistantNativeSHA256','embeddingIdentitySHA256']),'Native/embedding digest')
+     require(set(local)=={'schema','benchmarkJob','benchmarkJobSHA256','assistantModelDirectory','assistantMetadataDirectory','maximumDraftTokens','captureEvidence'},'Local input fields')
+     require(local['schema']=='gemma4_local_mtp_cohort_job_v1' and local['benchmarkJob']==str(run/'job.json') and local['benchmarkJobSHA256']==job_sha
+-        and local['maximumDraftTokens']==2 and type(local['captureEvidence']) is bool,'Depth/local input')
++        and type(local['captureEvidence']) is bool,'Depth/local input')
++    verification_depth(local)
+     require(local['assistantModelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B-assistant-bb94eae1'
+         and local['assistantMetadataDirectory']==str(REMOTE/'assistant-metadata'),'Registered assistant directories')
+     require(set(job)=={'schema','mode','modelDirectory','metadataDirectory','promptFile','promptFileSHA256','outputDirectory',
+         'buildIdentitySHA256','requestIDs','membershipEpoch','promptCount','chunkSize','outputCount','cut','prefillPolicy','timeoutSeconds','residualDType','captureEvidence'},'Ordinary job fields')
+-    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full' and job['promptCount'] in [128,4096]
+-        and (job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'],job['timeoutSeconds'],job['residualDType'])==(64,16,7,'serial',300,'bfloat16')
+-        and job['captureEvidence'] is False,'Closed ordinary metadata workload')
++    counts(job)
++    require(job['captureEvidence'] is False,'Closed ordinary metadata workload')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B' and job['metadataDirectory']==str(REMOTE/'metadata')
+         and job['promptFile']==str(REMOTE/f'prompts/prompt-{job["promptCount"]}.json') and job['outputDirectory']==str(run/'sidecars'),'Exact input/output paths')
+     require(job['buildIdentitySHA256']==wrapper['targetNativeSHA256']==wrapper['assistantNativeSHA256'],'Same actual build required')
+@@ -34,14 +55,15 @@
+     return role
+ 
+ def validate_result(value,job,local,wrapper):
++    c=counts(job)
+     role=wrapper['role'];target=role=='target'
+     require(value['schema']=='gemma4_remote_mtp_'+role+'_cohort_v1' and value['configuration']==wrapper,'Result role/input')
+     require(value['targetRank']==1 and value['assistantRank']==0 and value['warmupRequests']==1 and value['measuredRequests']==3,'Topology/cohort')
+     for key in ['modelReleased','nativeExecuted','collectiveCreated','collectiveReleased']:require(value[key] is True,'Missing completed native fact: '+key)
+     for key in ['encryptedRDMAEstablished','numericalComparisonPerformed','servingEnabled','physicalProcessOrLeaseRetirementEstablished']:
+         require(value[key] is False,'Unestablished claim: '+key)
++    validate_control_metrics(value)
+     require(digest(value['scopeSHA256']) and value['nativeCacheBytesAfterRelease']==0
+-        and value['guardObservationPolicy']=='gemma4_invocation_fresh_observation_v1'
+         and value['guardMetrics']['schema']=='gemma4_guard_wall_counters_v1','Scope/cache/fresh guard policy')
+     require(len(value['samples'])==4,'Four actual requests required')
+     if target:
+@@ -76,18 +98,19 @@
+             require(s['originalServiceReleased'] is True and s['branchRootsReleased'] is True and s['targetTokensIndependentlyVerified'] is False
+                 and s['physicalOwnerRetirementEstablished'] is False and digest(s['wireScopeSHA256']),'Assistant release evidence');continue
+         require(s['warmup'] is (index==0) and s['requestStateRetired'] is True and digest(s['scopeSHA256']),'Target request lifecycle')
+-        require(s['maximumDraftTokens']==2 and s['maximumBufferedProposals']==5 and s['mtpEnabled'] is True and s['remoteAssistant'] is True,'Depth/queue')
++        require(s['maximumDraftTokens']==2 and s['maximumBufferedProposals']==5 and s['mtpEnabled'] is True and s['remoteAssistant'] is True,'Producer depth/queue envelope')
+         require(s['targetBatchNumericsQualified'] is False and s['physicalOwnerRetirementEstablished'] is False,'Target quality claim')
+         tokens=s['selectedTokenIDs'];token_sets.append(tokens)
+-        require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens)
++        require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens)
+             and s['selectedTokenIDsSHA256']==sha(','.join(map(str,tokens)).encode()),'Actual selected tokens')
+         widths=s['verificationWidths'];accepted=s['acceptedPrefixes']
+-        require(widths and widths[0]==1 and len(widths)==len(accepted) and all(type(w) is int and 1<=w<=3 for w in widths)
+-            and all(type(a) is int and 0<=a<w for a,w in zip(accepted,widths)) and len(widths)+sum(accepted)==15
+-            and s['committedTokens']==job['promptCount']+15,'Accepted-prefix/frontier accounting')
++        validate_verification_widths(widths,local)
++        require(len(widths)==len(accepted)
++            and all(type(a) is int and 0<=a<w for a,w in zip(accepted,widths)) and len(widths)+sum(accepted)==c['decode']
++            and s['committedTokens']==c['frontier'],'Accepted-prefix/frontier accounting')
+         require(s['offeredProposals']==sum(w-1 for w in widths) and s['acceptedProposals']==sum(accepted)
+             and s['generatedProposals']>=s['offeredProposals'] and 0<=s['reusedProposalsOffered']<=s['offeredProposals'],'Proposal counters')
+-        for phase,count in [('prefill',job['promptCount']),('decode',15)]:
++        for phase,count in [('prefill',job['promptCount']),('decode',c['decode'])]:
+             ns=s[phase+'Nanoseconds'];tps=s[phase+'TPS']
+             require(type(ns) is int and ns>0 and type(tps) in [float,int] and math.isfinite(tps)
+                 and math.isclose(tps,count*1e9/ns,rel_tol=1e-12),'Same-process duration arithmetic')
+@@ -96,6 +119,6 @@
+             and ev['numericalComparisonPerformed'] is False,'Evidence capture lifecycle')
+         captured=ev.get('finalRow') is not None and ev.get('finalState') is not None
+         require(captured is local['captureEvidence'],'Evidence policy')
+-        if captured:require(ev['finalState']['frontier']==job['promptCount']+15 and len(ev['finalState']['entries'])==90,'Canonical full state')
++        if captured:require(ev['finalState']['frontier']==c['frontier'] and len(ev['finalState']['entries'])==90,'Canonical full state')
+     if target:require(all(x==token_sets[0] for x in token_sets),'Fresh request token reproducibility')
+     return value
+--- a/remote/package/workload_contract.py
++++ b/remote/package/workload_contract.py
+@@ -0,0 +1,32 @@
++"""Closed full-model cohort counts; no resource or execution authority."""
++def require(condition, message):
++    if not condition: raise ValueError(message)
++
++def counts(job):
++    require(type(job) is dict and job.get('schema')=='gemma4_resident_benchmark_v1'
++        and job.get('mode')=='full' and type(job.get('promptCount')) is int and job['promptCount'] in (128,4096)
++        and type(job.get('outputCount')) is int and job['outputCount'] in (16,128)
++        and type(job.get('chunkSize')) is int and job['chunkSize']==64
++        and type(job.get('cut')) is int and job['cut']==7
++        and job.get('residualDType')=='bfloat16' and job.get('prefillPolicy')=='serial'
++        and type(job.get('timeoutSeconds')) is int and job['timeoutSeconds']==300,
++        'Closed full P128/P4096 C64 O16/O128 cut7 BF16 workload')
++    p,o=job['promptCount'],job['outputCount']
++    return dict(prompt=p,output=o,decode=o-1,frontier=p+o-1,maximumTokens=p+o,
++        measuredDecodeTokens=3*(o-1),allGeneratedTokens=4*o,frames=(p+63)//64+o-1)
++
++def state_geometry(layer,component,frontier):
++    require(type(frontier) is int and 1<=frontier<=4223,'Closed final frontier')
++    if component=='kv.position_offsets':return 'int32',[1],4,[]
++    require(component in ('kv.keys','kv.values'),'Canonical attention component')
++    dtype=layer['dtype'];require(dtype in ('float16','bfloat16','float32'),'Observed cache dtype')
++    start=max(0,frontier-layer['window']) if layer['window'] else 0
++    shape=[1,layer['kvHeads'],frontier-start,layer['headDimension']]
++    count=shape[1]*shape[2]*shape[3]*(4 if dtype=='float32' else 2)
++    return dtype,shape,count,[start,frontier]
++
++def target_extra_logical_bytes(job):
++    f=counts(job)['frontier']
++    # Exact34-term identity sum: two width4 outputs, four1MiB headrows,
++    # one snapshot, separately named sender packs, hidden and16KiB control.
++    return 40053794+8192*f+16384*min(f,1024)
+--- a/remote/prepare_case.py
++++ b/remote/prepare_case.py
+@@ -1,6 +1,6 @@
+ import argparse
+ from jobs import prepare
+-p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--case',required=True);p.add_argument('--prompt',type=int,choices=[128,4096],required=True)
+-p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256',required=True);a=p.parse_args()
++p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--case',required=True);p.add_argument('--output-count',type=int,choices=[16,128],default=16);p.add_argument('--prompt',type=int,choices=[128,4096],required=True)
++p.add_argument('--depth',type=int,choices=[1,2],default=2);p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256',required=True);a=p.parse_args()
+ assert a.case and all(c.isalnum() or c in '-_' for c in a.case)
+-prepare(a.case,a.prompt,a.capture,a.embedding_sha256)
++prepare(a.case,a.prompt,a.capture,a.embedding_sha256,a.depth,a.output_count)
+--- a/remote/remote_metadata.py
++++ b/remote/remote_metadata.py
+@@ -8,13 +8,13 @@
+ BODY=r'''
+ import hashlib,json,os,pathlib,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,name,role,payload_sha=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1'
+ assert role in ('target','assistant') and name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+ from benchmark_package import verify,digest
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+-from remote_mtp_contract import validate_inputs
++from remote_mtp_contract import validate_inputs,validate_metadata_depth
+ from dense_contract import metadata_policy
+ verify(package_sha);require_empty(observe(device_directory()));assert not processes(time.monotonic()+4)['prohibited']
+ raw=sys.stdin.buffer.read(65537);assert len(raw)<=65536 and hashlib.sha256(raw).hexdigest()==payload_sha
+@@ -41,7 +41,8 @@
+  assert value['schema']=='gemma4_remote_mtp_cohort_capability_v1' and value['job']==wrapper and value['role']==role
+  assert value['rank']==(1 if role=='target' else 0) and value['metadataOnly'] is True
+  metadata_policy(value,job)
+- assert value['runtimeExecutionAuthorized'] is False and value['servingEnabled'] is False and value['maximumDraftTokens']==2 and value['maximumBufferedProposals']==5
++ assert value['runtimeExecutionAuthorized'] is False and value['servingEnabled'] is False
++ validate_metadata_depth(value,local)
+  assert not pathlib.Path(job['outputDirectory']).exists()
+  verify(package_sha);require_empty(observe(device_directory()));assert not processes(time.monotonic()+4)['prohibited']
+  receipt.update(status='passed',description=value)
+--- a/remote/root_run.py
++++ b/remote/root_run.py
+@@ -20,6 +20,8 @@
+     p=argparse.ArgumentParser(allow_abbrev=False)
+     p.add_argument('action',choices=['deploy-prepare','install','case-prepare','metadata','run','compare'])
+     p.add_argument('--host',choices=['darkbloom-24','darkbloom-48']);p.add_argument('--case')
++    p.add_argument('--depth',type=int,choices=[1,2],default=2)
++    p.add_argument('--output-count',type=int,choices=[16,128],default=16)
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=128);p.add_argument('--capture',action='store_true');p.add_argument('--embedding-sha256')
+     for name in ['binary','build-receipt','sources','tiny-qualification']:p.add_argument('--'+name,type=Path)
+     a=p.parse_args();assert a.case is None or (a.case and all(c.isalnum() or c in '-_' for c in a.case))
+@@ -35,7 +37,7 @@
+             if a.action=='install':command=['deploy.py','install','--host',a.host];timeout=150
+             elif a.action=='case-prepare':
+                 assert a.embedding_sha256
+-                command=['prepare_case.py','--case',a.case,'--prompt',str(a.prompt),'--embedding-sha256',a.embedding_sha256]
++                command=['prepare_case.py','--case',a.case,'--prompt',str(a.prompt),'--output-count',str(a.output_count),'--depth',str(a.depth),'--embedding-sha256',a.embedding_sha256]
+                 if a.capture:command.append('--capture')
+                 timeout=30
+             elif a.action=='metadata':command=['remote_metadata.py','--case',a.case];timeout=110
+--- a/remote/run_case.py
++++ b/remote/run_case.py
+@@ -26,7 +26,7 @@
+ 
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -37,7 +37,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-o128-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+--- a/numerical/binding_common.py
++++ b/numerical/binding_common.py
+@@ -0,0 +1,79 @@
++"""Small strict metadata helpers; never evaluate historical paths or code."""
++import hashlib
++import json
++import math
++from pathlib import PurePosixPath
++import re
++
++
++def require(value, message):
++    if not value:
++        raise ValueError(message)
++
++
++def fields(value, names, where):
++    require(type(value) is dict and set(value) == set(names.split()), where + ': keys differ')
++    return value
++
++
++def same(left, right, where):
++    require(type(left) is type(right), where + ': type differs')
++    if type(right) is dict:
++        require(set(left) == set(right), where + ': keys differ')
++        for key in right:
++            same(left[key], right[key], where + '.' + key)
++    elif type(right) is list:
++        require(len(left) == len(right), where + ': count differs')
++        for a, b in zip(left, right):
++            same(a, b, where)
++    else:
++        require(left == right, where + ': value differs')
++
++
++def sha(raw):
++    return hashlib.sha256(raw).hexdigest()
++
++
++def pin(value):
++    require(type(value) is str and re.fullmatch('[0-9a-f]{64}', value), 'Invalid SHA256 pin')
++    return value
++
++
++def integer(value, where, low=0, high=2**63-1):
++    require(type(value) is int and low <= value <= high, where + ': invalid integer')
++    return value
++
++
++def text(value, where, maximum=4096):
++    require(type(value) is str and 0 < len(value.encode('utf-8')) <= maximum
++            and all(ord(c) >= 32 and ord(c) != 127 for c in value), where + ': invalid text')
++    return value
++
++
++def path_text(value, absolute):
++    text(value, 'historical path')
++    path = PurePosixPath(value)
++    require(path.is_absolute() == absolute and str(path) == value and '..' not in path.parts
++            and '\\' not in value and not value.startswith('//') and value not in ('/', '.'),
++            'Historical path is not normalized')
++    return path
++
++
++def canonical(value):
++    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
++
++
++def parse(raw):
++    def pairs(values):
++        result = {}
++        for key, value in values:
++            require(key not in result, 'Duplicate JSON key')
++            result[key] = value
++        return result
++    def bad(_):
++        raise ValueError('Nonfinite JSON number')
++    def floating(value):
++        result = float(value)
++        require(math.isfinite(result), 'Nonfinite JSON number')
++        return result
++    return json.loads(raw, object_pairs_hook=pairs, parse_constant=bad, parse_float=floating)
+--- a/numerical/check_sources.py
++++ b/numerical/check_sources.py
+@@ -1,15 +1,13 @@
+-"""Small source-only pins/AST; never read model/native/sidecar bytes."""
++"""Verify only current source pins/AST and the preserved O128 preparation authority."""
+ from pathlib import Path
+ import ast,hashlib,json
+ ROOT=Path(__file__).resolve().parent
+-def verify(path,row):
+- raw=path.read_bytes();assert not path.is_symlink() and len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],path
+- return raw
+-m=json.loads((ROOT/'source-inputs.json').read_bytes())
+-for row in m['members']:
+- raw=verify(ROOT/row['path'],row)
+- if row['path'].endswith('.py'):ast.parse(raw,row['path'])
+-spec=json.loads((ROOT/'inputs.json').read_bytes())
+-for row in spec['readers']:assert verify(ROOT/row['path'],row)==verify(Path(row['source']),row)
+-for row in [spec['remoteHarness'],spec['localHarness']]+spec['producerSources']:verify(Path(row['path']),row)
+-print(json.dumps(dict(status='passed',members=len(m['members']),exactReaderCopies=3,testsExecuted=False,modelExecuted=False)))
++for row in json.loads((ROOT/'source-inputs.json').read_bytes())['members']:
++ p=ROOT/row['path'];assert p.is_file() and not p.is_symlink()
++ b=p.read_bytes();assert (len(b),hashlib.sha256(b).hexdigest())==(row['bytes'],row['sha256'])
++ if p.suffix=='.py':ast.parse(b,str(p))
++authority=json.loads((ROOT/'o128-provenance.json').read_bytes())
++for row in [authority['draft'],authority['actualBuildReceipt'],authority['actualSources']]:
++ p=Path(row['path']);assert p.is_file() and not p.is_symlink();b=p.read_bytes()
++ assert (len(b),hashlib.sha256(b).hexdigest())==(row['bytes'],row['sha256'])
++print(json.dumps(dict(status='source-checked',testsExecuted=False,modelExecuted=False)))
+--- a/numerical/compare.py
++++ b/numerical/compare.py
+@@ -1,8 +1,9 @@
+-"""Root-only exact same-build P128 ordinary versus real remote MTP replay."""
++"""Root-only exact closed-output same-build ordinary versus remote MTP replay."""
+ import argparse,json
+ from collections import Counter
+ from pathlib import Path
+ import numeric_reader as n
++from control_contract import validate_control_metrics
+ 
+ ROOT=Path(__file__).resolve().parent
+ POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+@@ -28,7 +29,7 @@
+ def wire_scope(job,wrapper,requests,ordinal):
+     return n.digest(('\n'.join(['gemma4_mtp_pull_k2_v1',job['requestIDs'][ordinal],job['membershipEpoch'],
+         wrapper['targetNativeSHA256'],wrapper['assistantNativeSHA256'],TARGET,ASSISTANT,EMBEDDING,
+-        requests[0],'129','143'])+'\n').encode())
++        requests[0],str(n.counts(job)['prompt']+1),str(n.counts(job)['frontier'])])+'\n').encode())
+ 
+ def semantic(job):
+     value=n.workload(job)
+@@ -81,6 +82,7 @@
+         return n.parse_json(raw)
+     pb=args.remote_case/'pair/target';terminal=joined(pb/'terminal.json');remote=terminal['result']
+     jb=joined(pb/'job.json',16384);config=joined(pb/'local-mtp.json',16384);wrapper=joined(pb/'remote-mtp.json',16384)
++    validate_control_metrics(remote)
+     n.require(terminal['nativeOperation']=='execute-remote-mtp-dense-head' and terminal['status']=='completed'
+         and remote['schema']=='gemma4_remote_mtp_target_cohort_v1' and remote['configuration']==wrapper
+         and remote['ordinaryJob']==jb and wrapper['embeddingIdentitySHA256']==EMBEDDING,'Actual remote target identity differs')
+@@ -89,16 +91,19 @@
+     n.require(ordinary['schema']=='gemma4_resident_benchmark_result_v1' and ordinary['job']==ja,
+         'Ordinary full-reference report identity differs')
+     n.equal(semantic(ja),semantic(jb),'Semantic workload/model/build differs')
++    c=n.counts(ja)
+     n.require(set(ja['requestIDs']).isdisjoint(jb['requestIDs']),'Ordinary and remote reused request IDs')
+     prompt_raw=inputs.read(args.prompt_file,131072);prompt=n.parse_json(prompt_raw)
+-    n.require(n.digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==128
++    n.require(n.digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==c['prompt']
+         and all(type(x) is int and 0<=x<262144 for x in prompt),'Exact tokenizer packet differs')
+     request_sets=[[n.request_hash(job,i,prompt) for i in range(4)] for job in (ja,jb)]
+     n.require(ordinary['scopeSHA256']==n.ordinary_scope(ja,ordinary['planSHA256'],request_sets[0]),'Ordinary scope differs')
++    depth=config['maximumDraftTokens']
++    n.require(type(depth) is int and depth in (1,2),'Exact chosen remote verification depth')
+     load=remote['sourceLoad'];plan=load['planSHA256']
+     scope=n.text_hash(['gemma4_remote_mtp_cohort_v1',jb['membershipEpoch'],wrapper['targetNativeSHA256'],
+         wrapper['assistantNativeSHA256'],EMBEDDING,TARGET,ASSISTANT,plan,jb['promptFileSHA256'],
+-        'depth=2','buffer=5','targetRank=1','assistantRank=0','capture=true']+request_sets[1]+['targetProjection='+POLICY])
++        'depth='+str(depth),'buffer=5','targetRank=1','assistantRank=0','capture=true']+request_sets[1]+['targetProjection='+POLICY])
+     n.require(scope==remote['scopeSHA256']==physical['scopeSHA256'],'Bilateral dense policy scope differs')
+     for key in ('artifactSHA256','configurationSHA256','parameterLayoutSHA256','planSHA256','loadedTensorBytes'):
+         n.require(ordinary['sourceLoad'][key]==load[key],'Full registered source/layout differs: '+key)
+@@ -120,10 +125,10 @@
+         for sample,job,requests,report in ((a,ja,request_sets[0],ordinary),(b,jb,request_sets[1],remote)):
+             n.require(sample['requestID']==job['requestIDs'][ordinal] and sample['requestStateRetired'] is True
+                 and sample['requestSHA256']==requests[ordinal] and sample['ordinal']==ordinal
+-                and sample['warmup'] is (ordinal==0) and sample['committedTokens']==143,'Fresh target request/frontier differs')
+-            tokens=sample['selectedTokenIDs'];n.require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
++                and sample['warmup'] is (ordinal==0) and sample['committedTokens']==c['frontier'],'Fresh target request/frontier differs')
++            tokens=sample['selectedTokenIDs'];n.require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
+             n.require(sample['selectedTokenIDsSHA256']==n.digest(','.join(map(str,tokens)).encode()),'Token digest differs')
+-            n.binding(sample['binding'],report['sourceLoad'])
++            n.binding(sample['binding'],report['sourceLoad'],job)
+         n.require(b['scopeSHA256']==wire_scope(jb,wrapper,request_sets[1],ordinal),'Actual per-request pull scope differs')
+         n.equal(a['selectedTokenIDs'],b['selectedTokenIDs'],'Remote greedy output differs')
+         n.equal({k:v for k,v in a['binding'].items() if k!='readAccountingSHA256'},
+@@ -131,24 +136,24 @@
+         evidence=b['evidence'];n.require(evidence['capturedBeforeRequestRetirement'] is True and evidence['outsideGenerationTiming'] is True,'Remote capture lifecycle differs')
+         n.require(n.row(a['finalRow'],sidecars[0],ordinal,a['selectedTokenIDs'][-1])
+             ==n.row(evidence['finalRow'],sidecars[1],ordinal,b['selectedTokenIDs'][-1]),'Exact complete final row differs')
+-        states=[n.state(ev['finalState'],sample['binding'],sc,ordinal) for ev,sample,sc in zip((a,evidence),(a,b),sidecars)]
++        states=[n.state(ev['finalState'],sample['binding'],sc,ordinal,c['frontier']) for ev,sample,sc in zip((a,evidence),(a,b),sidecars)]
+         n.require(states[0]==states[1],'Exact full90 state differs at request '+str(ordinal));total+=sum(len(x[3]) for x in states[0].values())
+         widths=b['verificationWidths'];accepted=b['acceptedPrefixes']
+         n.require(widths and widths[0]==1 and len(widths)==len(accepted)
+-            and all(type(w) is int and 1<=w<=3 for w in widths)
++            and all(type(w) is int and 1<=w<=depth+1 for w in widths)
+             and all(type(k) is int and 0<=k<w for k,w in zip(accepted,widths))
+-            and len(widths)+sum(accepted)==15 and b['offeredProposals']==sum(w-1 for w in widths)
++            and len(widths)+sum(accepted)==c['decode'] and b['offeredProposals']==sum(w-1 for w in widths)
+             and b['acceptedProposals']==sum(accepted),'Accepted prefix accounting differs')
+         counts.update(widths);summaries.append(dict(ordinal=ordinal,tokens=a['selectedTokenIDs'],verificationWidths=widths,
+             acceptedPrefixes=accepted,finalStateSHA256=a['finalState']['fingerprint']))
+     n.require(any(w>1 for w in counts),'No rectangular verification was exercised')
+     for sc in sidecars:n.require(sc.used==set(sc.files),'Unjoined final evidence')
+     inputs.recheck()
+-    return dict(schema='gemma4_p128_remote_packed_head_mtp_numerical_comparison_v1',status='passed',nativeSHA256=native['sha256'],
+-        sourcesSHA256=activation['sourcesSHA256'],targetProjectionPolicy=POLICY,requestsCompared=4,generatedTokensCompared=64,
++    return dict(schema='gemma4_output_bound_remote_packed_head_mtp_numerical_comparison_v1',status='passed',nativeSHA256=native['sha256'],
++        sourcesSHA256=activation['sourcesSHA256'],targetProjectionPolicy=POLICY,requestsCompared=4,promptTokens=c['prompt'],outputTokens=c['output'],generatedTokensCompared=c['allGeneratedTokens'],
+         fullFinalRowsCompared=4,stateComponentsCompared=360,stateBytesCompared=total,nativeRowsAndStateExactlyEqual=True,
+         actualObservedWidths=dict(counts),samples=summaries,ordinaryPhysical=ordinary_physical,
+-        remotePhysicalReceipt=inputs.pins[str(args.remote_case/'physical-result.json')],sameBuildP128RemoteNumericsQualified=True,
++        remotePhysicalReceipt=inputs.pins[str(args.remote_case/'physical-result.json')],sameBuildFinalRemoteNumericsQualified=True,
+         allIntermediateRowsCompared=False,allRollbackPrefixesQualified=False,longContextQualified=False,performanceQualified=False,
+         encryptedRDMAEstablished=False,toleranceApplied=False,retainedInputPins=list(inputs.pins.values()))
+ 
+--- a/numerical/control_contract.py
++++ b/numerical/control_contract.py
+@@ -0,0 +1,29 @@
++"""Exact completed fixed-control accounting; no native fact is synthesized."""
++from binding_common import require
++POLICY='gemma4_remote_control_resource_boundaries_v1'
++FIELDS={'schema','policy','frameBytes','sends','receives','completedOperations','entryResourceChecks','exitResourceChecks','innerLifetimeChecks',
++    'resourceValuesCachedAcrossOperations','snapshotResourceCadenceChanged','nativeCompletionFencesChanged','failed'}
++COUNTS=('sends','receives','completedOperations','entryResourceChecks','exitResourceChecks','innerLifetimeChecks')
++def validate_control_metrics(value):
++    require(value['guardObservationPolicy']==value['controlResourceObservationPolicy']==POLICY,'Exact control resource policy')
++    metrics=value['controlResourceMetrics']
++    require(type(metrics) is dict and set(metrics)==FIELDS,'Exact control metric fields')
++    require(metrics['schema']=='gemma4_remote_control_resource_counters_v1' and metrics['policy']==POLICY
++        and type(metrics['frameBytes']) is int and metrics['frameBytes']==16384,'Fixed control metric identity')
++    for name in COUNTS:
++        require(type(metrics[name]) is int and 0<metrics[name]<=2**64-1,'Exact bounded control count: '+name)
++    for name in ('resourceValuesCachedAcrossOperations','snapshotResourceCadenceChanged','nativeCompletionFencesChanged','failed'):
++        require(metrics[name] is False,'Unestablished control claim: '+name)
++    # Six cohort barriers contribute one send and receive on each rank. Every
++    # completed request command likewise has exactly one matching response.
++    require(metrics['sends']==metrics['receives'] and metrics['sends']>=6
++        and metrics['completedOperations']==metrics['sends']+metrics['receives']
++        and metrics['entryResourceChecks']==metrics['exitResourceChecks']==metrics['completedOperations']
++        and metrics['innerLifetimeChecks']>=metrics['completedOperations'],'Control boundary/completion chronology')
++    # The unchanged wall recorder wraps exactly each control operation body.
++    rows=value['guardMetrics']['records']
++    for category,count in [('wireSendCompleted',metrics['sends']),('wireReceiveCompleted',metrics['receives'])]:
++        matches=[row for row in rows if row.get('category')==category]
++        require(len(matches)==1 and type(matches[0].get('count')) is int
++            and matches[0]['count']==count,'Control count differs from actual wire wall recorder')
++    return metrics
+--- a/numerical/numeric_reader.py
++++ b/numerical/numeric_reader.py
+@@ -1,4 +1,4 @@
+-"""Read-only P128 same-build ordinary versus local-MTP numerical replay."""
++"""Read-only closed P128/P4096 O16/O128 same-build full evidence replay."""
+ import argparse
+ from collections import Counter
+ from decimal import Decimal
+@@ -14,13 +14,15 @@
+ 
+ from recorded_math import WIDTH, canonical, digest, equal, logical_bytes, parse_json, require, sha_string
+ from snapshot import snapshot
++from workload_contract import counts, state_geometry
+ 
+ ROOT = Path(__file__).resolve().parent
+ COMPONENTS = ('kv.keys', 'kv.position_offsets', 'kv.values')
+ JOURNAL = ('path', 'directoryDevice', 'directoryInode', 'fileDevice', 'fileInode')
+-POLICY='gemma4_verification_packed_m1_dense_serial_head_v1'
++POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+ HELPERS = {'recorded_math.py': 'f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914',
+-           'snapshot.py': '46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b'}
++           'snapshot.py': '46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b',
++           'workload_contract.py': '61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb'}
+ 
+ 
+ def text_hash(parts):
+@@ -160,10 +162,7 @@
+ 
+ 
+ def workload(job):
+-    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full'
+-            and job['promptCount']==128 and job['chunkSize']==64 and job['outputCount']==16 and job['cut']==7
+-            and job['residualDType']=='bfloat16' and job['prefillPolicy']=='serial' and job['timeoutSeconds']==300,
+-            'Comparator requires exact P128/C64/O16/cut7 ordinary arithmetic')
++    counts(job)
+     ids=job['requestIDs']; require(len(ids)==4 and len(set(ids))==4,'Fresh request IDs')
+     for value in ids+[job['membershipEpoch']]: require(str(uuid.UUID(value))==value,'Noncanonical UUID')
+     return {k:v for k,v in job.items() if k not in ('requestIDs','membershipEpoch','outputDirectory','captureEvidence')}
+@@ -174,7 +173,7 @@
+                             '262144','2816','bfloat16','8192','512','128','8320']).encode())
+     tokens=digest(','.join(map(str,prompt)).encode())
+     return text_hash(['qwen-stage-generation-request-v1',profile,job['requestIDs'][ordinal],
+-                      'prompt='+tokens,'chunk=64','output=16','stop='])
++                      'prompt='+tokens,'chunk=64','output='+str(counts(job)['output']),'stop='])
+ 
+ 
+ def ordinary_scope(job, plan, requests):
+@@ -183,15 +182,16 @@
+         'capture='+str(job['captureEvidence']).lower()]+requests+['prefill=serial'])
+ 
+ 
+-def binding(value, load):
+-    require(value['target']==load['target']=='full-reference' and value['maximumTokens']==144 and value['maximumChunkTokens']==64
++def binding(value, load, job):
++    c=counts(job)
++    require(value['target']==load['target']=='full-reference' and value['maximumTokens']==c['maximumTokens'] and value['maximumChunkTokens']==64
+             and value['probePrefillTokens']==2 and value['probeDecodeTokens']==1
+             and value['selectedTensorCount']==1339, 'Full target state binding differs')
+     for key in ('planSHA256','artifactSHA256','configurationSHA256','parameterLayoutSHA256'):
+         require(value[key]==load[key], 'Binding differs from actual source load: '+key); sha_string(value[key])
+     require(value['selectedBytes']==load['loadedTensorBytes']
+             and value['readAccountingSHA256']==digest(canonical(load['readAccounting'])), 'Actual read accounting differs')
+-    rows=['attention-state-layout-v1','maximumTokens=144','maximumChunkTokens=64','prefix=false','speculation=false']
++    rows=['attention-state-layout-v1','maximumTokens='+str(c['maximumTokens']),'maximumChunkTokens=64','prefix=false','speculation=false']
+     require(len(value['layers'])==30,'Missing full state layers')
+     for index,layer in enumerate(value['layers']):
+         full=index%6==5; dtype=layer['dtype']
+@@ -227,8 +227,8 @@
+                 'Nonfinite native state')
+ 
+ 
+-def state(value, bind, sidecars, ordinal):
+-    require(set(value)=={'frontier','fingerprint','entries'} and value['frontier']==143
++def state(value, bind, sidecars, ordinal, frontier):
++    require(set(value)=={'frontier','fingerprint','entries'} and value['frontier']==frontier
+             and len(value['entries'])==90,'Missing full final state')
+     result={}; identities=[]
+     for entry,(layer,component) in zip(value['entries'],[(i,c) for i in range(30) for c in COMPONENTS]):
+@@ -237,20 +237,18 @@
+         require((entry['localLayerIndex'],entry['globalLayerIndex'],entry['component'])==(layer,layer,component),
+                 'State domain/order differs')
+         geometry=bind['layers'][layer]; position=component=='kv.position_offsets'
+-        dtype='int32' if position else geometry['dtype']
+-        shape=[1] if position else [1,geometry['kvHeads'],143,geometry['headDimension']]
+-        count=math.prod(shape)*WIDTH[dtype]; logical=[] if position else [0,143]
++        dtype,shape,count,logical=state_geometry(geometry,component,frontier)
+         equal([entry['dtype'],entry['shape'],entry['byteCount'],entry['logicalRange']],
+               [dtype,shape,count,logical],'State temporal geometry/type differs')
+         equal(entry['file'],dict(name=f'request-{ordinal}-state-{layer}-{component}.bin',bytes=count,sha256=entry['sha256']),
+               'State filename/hash binding differs')
+         raw=sidecars.read(entry['file']); require(digest(raw)==sha_string(entry['sha256']),'Native state hash differs')
+-        if position: require(raw==struct.pack('<i',143),'Actual stored position differs')
++        if position: require(raw==struct.pack('<i',frontier),'Actual stored position differs')
+         else: finite(raw,dtype)
+         identity=f"{layer}|{component}|{shape}|{dtype}|{count}|{entry['sha256']}"
+-        if not position: identity+='|range=0:143'
++        if not position: identity+=f'|range={logical[0]}:{logical[1]}'
+         identities.append(identity); result[(layer,component)]=(dtype,shape,logical,raw)
+-    require(value['fingerprint']==text_hash(['cbv2-owned-attention-state-v2',bind['stateLayoutSHA256'],'tokens=143']+identities),
++    require(value['fingerprint']==text_hash(['cbv2-owned-attention-state-v2',bind['stateLayoutSHA256'],'tokens='+str(frontier)]+identities),
+             'Actual final snapshot fingerprint differs')
+     return result
+ 
+@@ -278,15 +276,16 @@
+             'Actual same compiled native/package/source receipt join differs')
+     a=physical(inputs,args.ordinary_case,native['sha256'],native['bytes'],digest(package_raw),'execute-solo')
+     operation=inputs.json(args.mtp_case/'operation.json')['operation']
+-    require(operation in ('execute-local-mtp-dense','qualify-mtp-conditioning-dense'),'MTP operation differs')
++    require(operation in ('execute-local-mtp-dense-head','qualify-mtp-conditioning-dense-head'),'MTP operation differs')
+     b=physical(inputs,args.mtp_case,native['sha256'],native['bytes'],digest(package_raw),operation)
+     ja,ordinary,_,_,pa,physical_a=a; jb,mtp,config,config_sha,pb,physical_b=b
+     equal(workload(ja),workload(jb),'Semantic prompt/model/build/math differs')
++    c=counts(ja)
+     require(set(ja['requestIDs']).isdisjoint(jb['requestIDs']),'Ordinary and MTP reused request IDs')
+     require(ja['captureEvidence'] is True and jb['captureEvidence'] is False and config['captureEvidence'] is True,
+             'Full numerical evidence was not independently admitted')
+     prompt_raw=inputs.read(args.prompt_file,131072); prompt=parse_json(prompt_raw)
+-    require(digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==128
++    require(digest(prompt_raw)==ja['promptFileSHA256']==jb['promptFileSHA256'] and len(prompt)==c['prompt']
+             and all(type(x) is int and 0<=x<262144 for x in prompt),'Exact shared prompt packet differs')
+     require(ordinary['schema']=='gemma4_resident_benchmark_result_v1' and ordinary['job']==ja
+             and mtp['schema']=='gemma4_local_mtp_cohort_result_v1' and mtp['benchmarkJob']==jb and mtp['configuration']==config,
+@@ -308,7 +307,7 @@
+     scope=text_hash(['gemma4-local-mtp-cohort-v1',config_sha,config['benchmarkJobSHA256'],mtp['ordinaryInputScopeSHA256'],
+         mtp['assistantLoad']['artifactSHA256'],mtp['assistantLoad']['parameterLayoutSHA256'],
+         'maximumDraftTokens='+str(config['maximumDraftTokens']),'captureEvidence=true',
+-        'qualifyConditioning='+str(operation=='qualify-mtp-conditioning-dense').lower(),'mtp=true','remote=false']+all_requests[1]+['targetProjection='+POLICY])
++        'qualifyConditioning='+str(operation=='qualify-mtp-conditioning-dense-head').lower(),'mtp=true','remote=false']+all_requests[1]+['targetProjection='+POLICY])
+     require(mtp['scopeSHA256']==scope and mtp['assistantReleased'] is True and mtp['mtpEnabled'] is True
+             and mtp['remoteAssistant'] is False,'MTP scope or assistant retirement differs')
+     require(mtp['assistantLoad']['artifactSHA256']=='d8c5fae1f4b7a07376c9f0b92f3ec283ba276d57ec3b675d8cf758a79d73bd34'
+@@ -335,11 +334,11 @@
+         for index,(sample,generation,job,requests) in enumerate(((sa,ga,ja,all_requests[0]),(sb,gb,jb,all_requests[1]))):
+             require(sample['requestID']==job['requestIDs'][ordinal] and sample['requestStateRetired'] is True
+                     and generation['requestSHA256']==requests[ordinal] and generation['ordinal']==ordinal
+-                    and generation['warmup'] is (ordinal==0) and generation['committedTokens']==143,
++                    and generation['warmup'] is (ordinal==0) and generation['committedTokens']==c['frontier'],
+                     'Actual fresh request binding/frontier differs')
+-            tokens=generation['selectedTokenIDs']; require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
++            tokens=generation['selectedTokenIDs']; require(len(tokens)==c['output'] and all(type(x) is int and 0<=x<262144 for x in tokens),'Token bounds')
+             require(sample['selectedTokenIDsSHA256']==digest(','.join(map(str,tokens)).encode()),'Actual selected-token hash differs')
+-            binding(sample['binding'],(ordinary,mtp)[index]['sourceLoad'])
++            binding(sample['binding'],(ordinary,mtp)[index]['sourceLoad'],job)
+         require(sb['scopeSHA256']==text_hash([scope,'iteration='+str(ordinal),all_requests[1][ordinal]]),'MTP per-request scope differs')
+         require(ga['selectedTokenIDs']==gb['selectedTokenIDs'],'Greedy output differs at request '+str(ordinal))
+         equal({k:v for k,v in sa['binding'].items() if k!='readAccountingSHA256'},
+@@ -347,14 +346,14 @@
+         require(eb['capturedBeforeRequestRetirement'] is True and eb['outsideGenerationTiming'] is True,'MTP evidence lifecycle differs')
+         require(row(ea['finalRow'],sidecars[0],ordinal,ga['selectedTokenIDs'][-1])
+                 ==row(eb['finalRow'],sidecars[1],ordinal,gb['selectedTokenIDs'][-1]),'Exact complete final native row differs')
+-        states=[state(e['finalState'],s['binding'],sc,ordinal) for e,s,sc in zip((ea,eb),(sa,sb),sidecars)]
++        states=[state(e['finalState'],s['binding'],sc,ordinal,c['frontier']) for e,s,sc in zip((ea,eb),(sa,sb),sidecars)]
+         require(states[0]==states[1],'Exact chronological full90 native state differs at request '+str(ordinal))
+         total_bytes+=sum(len(x[3]) for x in states[0].values())
+         widths=gb['verificationWidths']; accepted=gb['acceptedPrefixes']
+         require(len(widths)==len(accepted)==gb['verifiedWindows'] and widths and widths[0]==1
+                 and all(type(w) is int and 1<=w<=config['maximumDraftTokens']+1 for w in widths)
+                 and all(type(k) is int and 0<=k<w for k,w in zip(accepted,widths))
+-                and sum(accepted)+len(widths)==15 and gb['proposalTokens']==sum(w-1 for w in widths)
++                and sum(accepted)+len(widths)==c['decode'] and gb['proposalTokens']==sum(w-1 for w in widths)
+                 and gb['acceptedProposalTokens']==sum(accepted) and gb['seedSteps']==widths.count(1),
+                 'Target verified-prefix accounting differs')
+         width_counts.update(widths); accepted_counts.update(accepted)
+@@ -363,14 +362,14 @@
+     require(any(w>1 for w in width_counts),'No actual rectangular target width exercised')
+     for sc in sidecars: require(sc.used==set(sc.files),'Unjoined sidecar evidence')
+     inputs.recheck()
+-    return dict(schema='gemma4_p128_local_mtp_numerical_comparison_v1',status='passed',
++    return dict(schema='gemma4_output_bound_local_mtp_numerical_comparison_v1',status='passed',
+         nativeSHA256=native['sha256'],sourceSHA256=digest(source),buildReceiptSHA256=inputs.pins[str(args.build_receipt)]['sha256'],
+-        packageSHA256=digest(package_raw),promptFileSHA256=digest(prompt_raw),promptTokens=128,chunkTokens=64,outputTokens=16,
+-        requestsCompared=4,warmupRequests=1,measuredRequests=3,generatedTokensCompared=64,
++        packageSHA256=digest(package_raw),promptFileSHA256=digest(prompt_raw),promptTokens=c['prompt'],chunkTokens=64,outputTokens=c['output'],
++        requestsCompared=4,warmupRequests=1,measuredRequests=3,generatedTokensCompared=c['allGeneratedTokens'],
+         fullFinalRowsCompared=4,vocabularyValuesPerRow=262144,stateComponentsCompared=360,stateBytesCompared=total_bytes,
+         nativeRowsAndStateExactlyEqual=True,actualObservedWidths=dict(width_counts),actualAcceptedPrefixLengths=dict(accepted_counts),
+         samples=summaries,physical=[physical_a,physical_b],
+-        scope='same-build P128 final full rows, full90 states and all16 generated IDs for four actual requests',
++        scope='same-build complete final rows/full90 chronological states and all bound generated IDs for four actual requests',
+         allIntermediateRowsCompared=False,allRollbackPrefixesQualified=False,longContextQualified=False,
+         remoteExecutionQualified=False,performanceQualified=False,
+         independentRootBuildInstallationAndAdmissionReviewStillRequired=True,retainedInputPins=list(inputs.pins.values()))
+--- a/numerical/workload_contract.py
++++ b/numerical/workload_contract.py
+@@ -0,0 +1,32 @@
++"""Closed full-model cohort counts; no resource or execution authority."""
++def require(condition, message):
++    if not condition: raise ValueError(message)
++
++def counts(job):
++    require(type(job) is dict and job.get('schema')=='gemma4_resident_benchmark_v1'
++        and job.get('mode')=='full' and type(job.get('promptCount')) is int and job['promptCount'] in (128,4096)
++        and type(job.get('outputCount')) is int and job['outputCount'] in (16,128)
++        and type(job.get('chunkSize')) is int and job['chunkSize']==64
++        and type(job.get('cut')) is int and job['cut']==7
++        and job.get('residualDType')=='bfloat16' and job.get('prefillPolicy')=='serial'
++        and type(job.get('timeoutSeconds')) is int and job['timeoutSeconds']==300,
++        'Closed full P128/P4096 C64 O16/O128 cut7 BF16 workload')
++    p,o=job['promptCount'],job['outputCount']
++    return dict(prompt=p,output=o,decode=o-1,frontier=p+o-1,maximumTokens=p+o,
++        measuredDecodeTokens=3*(o-1),allGeneratedTokens=4*o,frames=(p+63)//64+o-1)
++
++def state_geometry(layer,component,frontier):
++    require(type(frontier) is int and 1<=frontier<=4223,'Closed final frontier')
++    if component=='kv.position_offsets':return 'int32',[1],4,[]
++    require(component in ('kv.keys','kv.values'),'Canonical attention component')
++    dtype=layer['dtype'];require(dtype in ('float16','bfloat16','float32'),'Observed cache dtype')
++    start=max(0,frontier-layer['window']) if layer['window'] else 0
++    shape=[1,layer['kvHeads'],frontier-start,layer['headDimension']]
++    count=shape[1]*shape[2]*shape[3]*(4 if dtype=='float32' else 2)
++    return dtype,shape,count,[start,frontier]
++
++def target_extra_logical_bytes(job):
++    f=counts(job)['frontier']
++    # Exact34-term identity sum: two width4 outputs, four1MiB headrows,
++    # one snapshot, separately named sender packs, hidden and16KiB control.
++    return 40053794+8192*f+16384*min(f,1024)

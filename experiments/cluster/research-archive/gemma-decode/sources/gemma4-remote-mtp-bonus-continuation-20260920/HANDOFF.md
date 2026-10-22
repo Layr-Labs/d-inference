@@ -1,0 +1,29 @@
+# Bounded bonus-only continuation
+
+Source prototype over actual c721/54b. No compiler, native, GPU, remote, source installation or fixture execution by this author. Eight overlays plus one Foundation-only policy helper; expected native inventory123. Original applied workspace/frozen packages are untouched. `check_sources.py` verifies source pins, reversible transforms and the unchanged target verification method. Other agents' refill/batch/producer-credit policies require an explicit later union.
+
+Select only through the optional remote wrapper field `bonusContinuationPolicy: "bounded_stale_bonus_v1"`. Absence retains strict bonus-bridge retirement and omits added metadata/report fields. Chosen D1 andD2 are supported; maximum native proposal grant2 and original five-slot buffer stay unchanged. Both endpoints derive the policy from the same cohort-bound input. Scope components follow request hashes and precede targetProjection; later union should append refill, snapshot, bonus and producer components in one identical documented order at both peers.
+
+After every draft in the window is accepted, a mismatching assistant bonus can leave an already-produced next proposal. The new policy discards the mismatching bridge, retains the target's actual bonus as `seedToken`, and allows the remaining proposals to be verified as intentionally stale candidates. They make no claim to the target-conditioned draft distribution. A missing ready continuation, any partially/fully rejected draft, cancellation, native fault or failed retirement keeps original strict behavior. Actual target `[seed,drafts]` execution, all-column argmax, accepted-prefix reconcile, target commit and matching peer ACK are byte-identical.
+
+The first admitted bonus mismatch starts one epoch at the actual committed input frontier. Matching branches have no new periodic resets. Later mismatches cannot reset the origin. At most16 further committed verification windows and32 input/produced positions are allowed from that origin. Credit is capped by the32-position ceiling. Before another chosen-width window (including terminal narrowing) could cross a limit, the branch is marked for original fenced retirement and fresh target capture. A fresh seed alone resets epoch state, after the original native/payload retirement join. The terminal single seed remains ordinary target-only; no new proposal is manufactured near the output boundary.
+
+The assistant has no separate evolving KV cache in this branch: it retains an immutable target shared-KV snapshot and advances its own token/hidden chain. This prototype does not attempt hidden rollback or pretend that stale continuation repairs conditioning. Target greedy verification supplies correctness. No speculative or stochastic distribution equivalence is claimed.
+
+No new model arrays, simultaneous graphs, P2P records, tensor copies, or owner lifetimes are introduced. Only bounded scalar policy/counter fields are added; the original admitted host framing/report allowance contains them. Existing five-slot proposal and two-proposal native reservations, original target/assistant resource checks, clocks, faults, deadlines, fences and physical lease retirement remain intact. A failed branch is still retained by the same original owner.
+
+Root qualification commands (separate executables; do not combine two @main files):
+
+```sh
+python3 -B check_sources.py
+swiftc -swift-version 6 -warnings-as-errors -j 2 Runtime/AsyncMTPBonusContinuationPolicy.swift Runtime/AsyncMTPProposalLedger.swift Tests/StrictLedgerChecks.swift -o /ABSOLUTE/NEW/strict-checks
+/ABSOLUTE/NEW/strict-checks
+swiftc -swift-version 6 -warnings-as-errors -j 2 Runtime/AsyncMTPBonusContinuationPolicy.swift Runtime/AsyncMTPProposalLedger.swift Tests/Inputs/Gemma4MTPPullRecord.swift Runtime/Gemma4MTPPullMirror.swift Tests/BonusContinuationChecks.swift -o /ABSOLUTE/NEW/bonus-checks
+/ABSOLUTE/NEW/bonus-checks
+```
+
+The retained strict fixture has13 groups. Thirteen new groups cover actual D1/D2 target seeds, strict default, matching branches beyond the bounds, first-mismatch origin, repeated mismatch non-reset, hard input/produced/window limits, no-ready and terminal narrowing, rejection/partial acceptance, cancellation/native-completion obligations, fresh seed retirement, and the actual mirror command sequence. They are scalar controls, not model acceptance.
+
+Harness follow-on: create a fresh exact-policy namespace and late-bind the successful composed build. Require the wrapper field on both peers, exact new cohort-scope components and metadata fields (`bonusContinuationPolicy`, maximumBonusContinuationWindows16, maximumBonusContinuationPositions32, bonusContinuationStartsAtFirstMismatch=true). Explicit samples additionally carry `bonusContinuation` with the policy/depth/bounds, epochsStarted, bonusMismatchesContinued, boundRetirementDecisions, noReadyRetirementDecisions and observed maxima; all counts must be strict nonnegative integers, maxima≤16/32/32, policy depth must match actual chosen depth, and both claim flags remain false. Retirement-decision counts do not claim actual reseeds; original branchRestarts and phase timers remain their authority. Default samples omit this field.
+
+Preserve the existing native/build/package/source, process/lease/alias/resources, timing/counter joins and complete numerical reader. First compare fresh same-build ordinary/localD1/localD2 against remote D1/D2 policy-off and policy-on atP128/C64/O128:512 selected IDs,4 full rows,360 state components,381 measured decode tokens. Include every refill, rejection, bound reset, protocol finish and failed work in the same decode clock. No speed/acceptance prediction: stale continuation may trade fewer resets for more rejected target work. Best retained local baseline is now D2~79.76TPS, not ordinary~61.68.

@@ -1,0 +1,20 @@
+--- a/Runtime/ExpertAxisRDMAWire.swift
++++ b/Runtime/ExpertAxisRDMAWire.swift
+@@ -72,11 +72,13 @@
+             header.payloadBytes = bytes; header.payloadSHA256 = hash; header.routeSHA256 = route
+             try send(header, check: check)
+             try require(header.changingEvent(event+"-ready"), check: check)
+-            if let owned {
+-                _ = try group.sendCompleted(owned, to: 1-job.rank, maximumBytes: ExpertAxisRDMACodec.payloadLimit, check: check)
+-                sentTensorBytes += bytes
++            try withExtendedLifetime(owned) {
++                if let owned {
++                    _ = try group.sendCompleted(owned, to: 1-job.rank, maximumBytes: ExpertAxisRDMACodec.payloadLimit, check: check)
++                    sentTensorBytes += bytes
++                }
++                try require(header.changingEvent(event+"-consumed"), check: check)
+             }
+-            try require(header.changingEvent(event+"-consumed"), check: check)
+             return hash
+         }
+     }

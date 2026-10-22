@@ -1,0 +1,370 @@
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+@@ -56,6 +56,7 @@
+         if source.is_file() and '__pycache__' not in source.parts:
+             dest=stage/source.relative_to(ROOT/'package');dest.parent.mkdir(parents=True,exist_ok=True)
+             shutil.copyfile(source,dest)
++    shutil.copyfile(ROOT/'activation.json',stage/'activation.json')
+     sources=json.loads(SOURCES.read_bytes())
+     for name,row in sources.items():
+         if not (name.startswith('metadata/') or name=='matrix.json'):continue
+@@ -86,7 +87,7 @@
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('action',choices=['prepare','install'])
+     parser.add_argument('--binary',type=Path)
+-    parser.add_argument('--host',choices=['darkbloom-24','darkbloom-48'])
++    parser.add_argument('--host',choices=['darkbloom-48'])
+     args=parser.parse_args()
+     if args.action=='prepare':
+         assert args.binary and args.binary.is_file();prepare(args.binary);return
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,13 +26,13 @@
+ CREATE=r'''
+ import json,os,pathlib,sys
+ job=json.load(sys.stdin);root=pathlib.Path(job['outputDirectory']).parent
+-assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1/runs')
++assert root.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1/runs')
+ os.umask(0o077);root.parent.mkdir(mode=0o700,exist_ok=True);root.mkdir(mode=0o700)
+ (root/'job.json').write_text(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n')
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -43,7 +43,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}
+@@ -54,6 +54,7 @@
+ '''
+ 
+ def prepare(name,count,cut,capture,chunk,policy,match):
++    assert (count,cut,capture,chunk,policy,match)==(4096,7,False,64,'serial',None)
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+     requests=[str(uuid.uuid4()) for _ in range(4)]
+     common=dict(schema='gemma4_resident_benchmark_v1',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+@@ -68,7 +69,7 @@
+         ignored={'requestIDs','membershipEpoch','mode','outputDirectory','prefillPolicy'}
+         assert {k:v for k,v in prior.items() if k not in ignored} == {k:v for k,v in common.items() if k not in ignored}, 'Matched source workload differs'
+         common.update(requestIDs=prior['requestIDs'],membershipEpoch=prior['membershipEpoch'])
+-    for mode in ['full','stage0','stage1']:
++    for mode in ['full']:
+         job=dict(common,mode=mode,outputDirectory=REMOTE+'/runs/'+name+'-'+mode+'/sidecars')
+         job['prefillPolicy']='serial' if mode=='full' else policy
+         (directory/(mode+'.json')).write_text(json.dumps(job,sort_keys=True,separators=(',',':'))+'\n')
+@@ -127,6 +128,7 @@
+                 records=values,restored=require_retired and bool(values) and values[-1].get('restored') is True)
+ 
+ def run(name,kind):
++    assert kind=='solo', 'Tiny state qualification is full/48 only'
+     directory=ROOT/'cases'/name;out=directory/kind;out.mkdir(mode=0o700)
+     selected=[('full','darkbloom-48')] if kind=='solo' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
+     package_sha=digest(ROOT/'deployment/package.json')
+@@ -209,11 +211,11 @@
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False)
+-    p.add_argument('action',choices=['prepare','solo','pair']);p.add_argument('--name',required=True)
+-    p.add_argument('--prompt',type=int,choices=[128,256,1024,4096,8192],default=128)
+-    p.add_argument('--cut',type=int,choices=[6,7,8,10],default=8)
+-    p.add_argument('--chunk',type=int,choices=[64,128],default=128)
+-    p.add_argument('--policy',choices=['serial','oneChunkLookahead'],default='serial')
++    p.add_argument('action',choices=['prepare','solo']);p.add_argument('--name',required=True)
++    p.add_argument('--prompt',type=int,choices=[4096],default=4096)
++    p.add_argument('--cut',type=int,choices=[7],default=7)
++    p.add_argument('--chunk',type=int,choices=[64],default=64)
++    p.add_argument('--policy',choices=['serial'],default='serial')
+     p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+     p.add_argument('--capture',action='store_true');a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+--- a/root_run.py
++++ b/root_run.py
+@@ -1,126 +1,83 @@
+-"""Root-invoked bounded actions over the preserved physical supervision."""
++"""Root-owned actions: one fresh 48 GiB tiny-state qualification, no model run."""
+ import argparse
+-import hashlib
+ import json
+ from pathlib import Path
+-import sys
+ import time
+-
++from activation import bind, recheck, sha
+ from owned_process import invoke_controller
+ 
+ ROOT = Path(__file__).resolve().parent
+-PYTHON = '/usr/bin/python3'
++CASE = 'tiny-state-1'
++NAMES = {'deploy-prepare':'deploy-prepare-1', 'install':'install-48-1',
++         'case-prepare':'prepare-state-1', 'metadata':'describe-full-1',
++         'run':'run-state-1', 'compare':'compare-state-1'}
+ 
+-def sha(path):
+-    digest = hashlib.sha256()
+-    with path.open('rb') as stream:
+-        for block in iter(lambda: stream.read(1024 * 1024), b''):
+-            digest.update(block)
+-    return digest.hexdigest()
+ 
+ def verify_source():
+-    source = ROOT / 'source-inputs.json'
+-    value = json.loads(source.read_bytes())
+-    for row in value['members']:
+-        path = ROOT / row['path']
++    manifest = ROOT/'source-inputs.json'
++    for row in json.loads(manifest.read_bytes())['members']:
++        path = ROOT/row['path']
+         assert path.is_file() and not path.is_symlink()
+         assert path.stat().st_size == row['bytes'] and sha(path) == row['sha256']
+-    return sha(source)
++    required = json.loads((ROOT/'required-native-sources.json').read_bytes())
++    assert sha(Path(required['metadataSources']['path'])) == required['metadataSources']['sha256']
++    return sha(manifest)
+ 
+-def slug(value):
+-    assert value and all(c.isalnum() or c in '-_' for c in value)
+-    return value
+ 
+ def main():
+-    parser = argparse.ArgumentParser(allow_abbrev=False)
+-    parser.add_argument('action', choices=['deploy-prepare', 'install', 'case-prepare',
+-        'prepare-memory', 'solo', 'pair', 'metadata', 'compare', 'compare-overlap'])
+-    parser.add_argument('--name', required=True, help='Fresh root action output directory')
+-    parser.add_argument('--case')
+-    parser.add_argument('--match')
+-    parser.add_argument('--mode', choices=['full', 'stage0', 'stage1'], default='full')
+-    parser.add_argument('--operation', choices=['describe', 'check-arguments'], default='describe')
+-    parser.add_argument('--host', choices=['darkbloom-24', 'darkbloom-48'])
+-    parser.add_argument('--binary', type=Path)
+-    parser.add_argument('--build-receipt', type=Path)
+-    parser.add_argument('--prompt', type=int, choices=[128, 256, 1024, 4096, 8192], default=4096)
+-    parser.add_argument('--cut', type=int, choices=[6, 7, 8, 10], default=7)
+-    parser.add_argument('--chunk', type=int, choices=[64, 128], default=64)
+-    parser.add_argument('--policy', choices=['serial', 'oneChunkLookahead'], default='serial')
+-    parser.add_argument('--capture', action='store_true')
+-    args = parser.parse_args()
++    p = argparse.ArgumentParser(allow_abbrev=False)
++    p.add_argument('action', choices=list(NAMES))
++    p.add_argument('--binary', type=Path)
++    p.add_argument('--build-receipt', type=Path)
++    p.add_argument('--sources', type=Path)
++    args = p.parse_args()
+     source_sha = verify_source()
+-    for value in [args.name, args.case, args.match]:
+-        if value is not None: slug(value)
+-    command = [PYTHON, '-B']
+-    detail = {}
+-    if args.action == 'deploy-prepare':
+-        assert args.binary and args.build_receipt
+-        assert args.binary.name == 'GemmaResidentBenchmark' and args.binary.is_absolute()
+-        build = json.loads(args.build_receipt.read_bytes())
+-        assert build['exitCode'] == 0 and build['compilerReaped'] is True
+-        assert build['gpuExecuted'] is False
+-        assert sha(args.binary) == build['nativeSHA256'] and args.binary.stat().st_size == build['nativeBytes']
+-        detail = dict(buildReceipt=str(args.build_receipt), buildReceiptSHA256=sha(args.build_receipt), nativeSHA256=build['nativeSHA256'])
+-        command += [str(ROOT / 'deploy.py'), 'prepare', '--binary', str(args.binary)]
+-        timeout = 150
+-    elif args.action == 'install':
+-        assert args.host
+-        command += [str(ROOT / 'deploy.py'), 'install', '--host', args.host]
+-        timeout = 150
+-    elif args.action == 'case-prepare':
+-        assert args.case
+-        command += [str(ROOT / 'run_case.py'), 'prepare', '--name', args.case,
+-            '--prompt', str(args.prompt), '--cut', str(args.cut), '--chunk', str(args.chunk), '--policy', args.policy]
+-        if args.capture: command.append('--capture')
+-        if args.match: command += ['--match', args.match]
+-        timeout = 30
+-    elif args.action == 'prepare-memory':
+-        assert args.case and (ROOT / 'cases' / args.case).is_dir()
+-        command += [str(ROOT / 'prepare_memory.py'), '--output', str(ROOT / 'cases' / args.case / (args.name + '.json'))]
+-        timeout = 150
+-    elif args.action in ['solo', 'pair']:
+-        assert args.case
+-        command += [str(ROOT / 'run_case.py'), args.action, '--name', args.case]
+-        # Native300 / remote315 / SSH345 / alias expiry625, then at most two
+-        # sequential180s collections. This bounds the controller, not native life.
+-        timeout = 1020
+-    elif args.action == 'metadata':
+-        assert args.case
+-        command += [str(ROOT / 'remote_metadata.py'), '--case', args.case,
+-            '--mode', args.mode, '--operation', args.operation]
+-        timeout = 50
+-    elif args.action == 'compare':
+-        assert args.case
+-        command += [str(ROOT / 'compare_results_v2.py'), str(ROOT / 'cases' / args.case)]
+-        timeout = 180
+-    else:
+-        assert args.case and args.match
+-        command += [str(ROOT / 'compare_results_overlap.py'), str(ROOT / 'cases' / args.match), str(ROOT / 'cases' / args.case)]
+-        timeout = 240
+-    parent = ROOT / 'root-actions'; parent.mkdir(mode=0o700, exist_ok=True)
+-    output = parent / args.name; output.mkdir(mode=0o700)
+-    receipt = dict(schema='gemma4_decode_root_action_v1', action=args.action, argv=command,
+-        sourceManifestSHA256=source_sha, **detail)
++    actions = ROOT/'root-actions'; actions.mkdir(mode=0o700, exist_ok=True)
++    output = actions/NAMES[args.action]; output.mkdir(mode=0o700)
++    receipt = dict(schema='gemma4_mtp_state_root_action_v1', action=args.action,
++                   sourceManifestSHA256=source_sha)
+     started = time.monotonic()
+     try:
+-        with (output / 'stdout').open('xb') as stdout, (output / 'stderr').open('xb') as stderr:
+-            invoke_controller(command, stdout, stderr, receipt, timeout=timeout)
+-        assert receipt['exitCode'] == 0 and receipt['reaped'] and receipt['groupAbsent']
+-        assert verify_source() == source_sha
+-        receipt['status'] = 'passed'
++        if args.action == 'deploy-prepare':
++            assert args.binary and args.build_receipt and args.sources
++            activation = bind(args.binary, args.build_receipt, args.sources)
++            receipt.update(activationSHA256=sha(ROOT/'activation.json'), **{
++                k:activation[k] for k in ('buildReceiptSHA256','sourcesSHA256','nativeSHA256')})
++            command = ['deploy.py','prepare','--binary',str(args.binary)]; timeout=150
++        else:
++            activation = recheck()
++            receipt['activationSHA256'] = sha(ROOT/'activation.json')
++            assert not args.binary and not args.build_receipt and not args.sources
++            if args.action == 'install':
++                command=['deploy.py','install','--host','darkbloom-48']; timeout=150
++            elif args.action == 'case-prepare':
++                command=['run_case.py','prepare','--name',CASE,'--prompt','4096','--cut','7','--chunk','64','--policy','serial']; timeout=30
++            elif args.action == 'metadata':
++                command=['remote_metadata.py','--case',CASE,'--mode','full','--operation','describe']; timeout=50
++            elif args.action == 'run':
++                from evidence import Inputs, action
++                action(Inputs(),'describe-full-1','metadata',source_sha,sha(ROOT/'activation.json'))
++                command=['run_case.py','solo','--name',CASE]; timeout=1020
++            else:
++                command=['compare.py','--output',str(ROOT/'comparison-1.json')]; timeout=180
++        argv=['/usr/bin/python3','-B',str(ROOT/command[0]),*command[1:]]
++        receipt['argv']=argv
++        with (output/'stdout').open('xb') as stdout, (output/'stderr').open('xb') as stderr:
++            invoke_controller(argv,stdout,stderr,receipt,timeout=timeout)
++        assert receipt['exitCode']==0 and receipt['reaped'] is True and receipt['groupAbsent'] is True
++        assert verify_source()==source_sha and recheck()==activation
++        receipt['status']='passed'
+     except BaseException as error:
+-        receipt['status'] = 'failed'
+-        receipt['error'] = type(error).__name__ + ': ' + str(error)
++        receipt['status']='failed';receipt['error']=type(error).__name__+': '+str(error)
+         raise
+     finally:
+-        receipt['elapsedSeconds'] = time.monotonic() - started
+-        for name in ['stdout', 'stderr']:
+-            path = output / name
+-            if path.exists(): receipt[name+'SHA256'] = sha(path); receipt[name+'Bytes'] = path.stat().st_size
+-        with (output / 'receipt.json').open('x') as stream:
+-            json.dump(receipt, stream, indent=2); stream.write('\n')
+-        print(json.dumps(receipt), flush=True)
++        receipt['elapsedSeconds']=time.monotonic()-started
++        for name in ('stdout','stderr'):
++            path=output/name
++            if path.exists():receipt[name+'SHA256']=sha(path);receipt[name+'Bytes']=path.stat().st_size
++        with (output/'receipt.json').open('x') as stream:
++            json.dump(receipt,stream,indent=2);stream.write('\n')
++        print(json.dumps(receipt),flush=True)
+ 
+-if __name__ == '__main__':
+-    main()
++
++if __name__=='__main__':main()
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -14,7 +14,7 @@
+ REMOTE_BODY = r'''
+ import hashlib,json,os,pathlib,stat,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,job_sha,name,operation=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1'
+ assert operation in ('--describe','--check-arguments')
+ assert name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+@@ -64,7 +64,7 @@
+ def main():
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('--case', required=True)
+-    parser.add_argument('--mode', choices=['full', 'stage0', 'stage1'], required=True)
++    parser.add_argument('--mode', choices=['full'], required=True)
+     parser.add_argument('--operation', choices=['describe', 'check-arguments'], default='describe')
+     args = parser.parse_args()
+     assert args.case and all(c.isalnum() or c in '-_' for c in args.case)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-decode-cpu-control-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-mtp-state-check-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -59,7 +59,7 @@
+         os.set_inheritable(fd,True);require(os.get_inheritable(fd),'Lease descriptor is not inheritable')
+         write_json(path.parent/'gate.json',record)
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+-        os.execve(str(binary),[str(binary),'--execute',str(job)],launch['environment'])
++        os.execve(str(binary),[str(binary),'--qualify-mtp-state',str(job)],launch['environment'])
+     finally: os.close(fd)
+ 
+ 
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -14,6 +14,7 @@
+ from target_processes import observe as processes
+ from worker_contract import WorkerSpec
+ from worker_processes import PipeWorkers, cleanup_error_text
++from state_contract import validate_result
+ 
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+@@ -27,8 +28,10 @@
+     require(run.resolve()==run and digest(args.job)==args.job_sha256,'Job identity')
+     package=verify(args.package_sha256)
+     job=parse(args.job.read_bytes())
+-    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode'] in ('full','stage0','stage1'), 'Job schema/mode')
++    require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full', 'Job schema/mode')
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
++    require((job['promptCount'],job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
++            ==(4096,64,16,7,'serial') and job['captureEvidence'] is False, 'Tiny state metadata scope')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B','Model path')
+@@ -82,8 +85,7 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            # Numerical/timing acceptance is performed separately against the
+-            # exact description and both rank outputs, after process retirement.
++            validate_result(value, job)
+             return value
+         record['result']=pipes.collect('benchmark',result)[0]
+         pipes.finish()

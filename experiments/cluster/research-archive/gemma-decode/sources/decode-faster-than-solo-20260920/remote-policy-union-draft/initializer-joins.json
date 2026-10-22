@@ -1,0 +1,56 @@
+[
+  {
+    "file": "AsyncMTPProposalLedger.swift",
+    "creditTransformIndex": 2,
+    "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+    "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         maximumProducerGrantTokens: Int? = nil) throws {\n        let producerLimit = maximumProducerGrantTokens ?? maximumDraftTokens"
+  },
+  {
+    "file": "Gemma4MTPPullAssistant.swift",
+    "creditTransformIndex": 1,
+    "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+    "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {"
+  },
+  {
+    "file": "Gemma4MTPPullAssistant.swift",
+    "creditTransformIndex": 3,
+    "before": "                            bonusContinuationPolicy:bonusContinuationPolicy)",
+    "after": "                            bonusContinuationPolicy:bonusContinuationPolicy,\n                            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)"
+  },
+  {
+    "file": "Gemma4MTPPullMirror.swift",
+    "creditTransformIndex": 0,
+    "before": "         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+    "after": "         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         maximumProducerGrantTokens: Int = 2) throws {"
+  },
+  {
+    "file": "Gemma4MTPPullMirror.swift",
+    "creditTransformIndex": 1,
+    "before": "            bonusContinuationPolicy: bonusContinuationPolicy)",
+    "after": "            bonusContinuationPolicy: bonusContinuationPolicy, maximumProducerGrantTokens:maximumProducerGrantTokens)"
+  },
+  {
+    "file": "Gemma4MTPPullTarget.swift",
+    "creditTransformIndex": 1,
+    "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+    "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {"
+  },
+  {
+    "file": "Gemma4MTPPullTarget.swift",
+    "creditTransformIndex": 2,
+    "before": "            bonusContinuationPolicy:bonusContinuationPolicy)",
+    "after": "            bonusContinuationPolicy:bonusContinuationPolicy,\n            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)"
+  },
+  {
+    "file": "Gemma4RemoteMTPAssistantRuntime.swift",
+    "creditTransformIndex": 0,
+    "before": "                        bonusContinuationPolicy:input.bonusPolicy)",
+    "after": "                        bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)"
+  },
+  {
+    "file": "Gemma4RemoteMTPDriver.swift",
+    "creditTransformIndex": 0,
+    "before": "                    bonusContinuationPolicy:input.bonusPolicy)",
+    "after": "                    bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)"
+  }
+]

@@ -1,0 +1,643 @@
+--- a/HANDOFF.md
++++ b/HANDOFF.md
+@@ -1,49 +1,74 @@
+-# Expert projection physical successor
++# Expert C64/C128 qualification harness successor
+ 
+-This fresh source and remote namespace preserves the old expert harness, installation, and failed synthetic result. It binds the actual two successful projection-policy builds from the shared workspace, both to source receipt `6fc4df5254a255cf9ff943b01b4a45aabf326467834acbbf575b18e21b9afcbe`:
++This source-only successor reuses the frozen `gemma4-expert-projection-execution-20260920` harness (manifest `869c635cb18a1d750f2a3805e6d9f58a3dd4c58b47bc6de01ced59a89638d956`) in a new local and remote namespace, `gemma4-expert-prefill-execution-20260920`. It has no actual binary binding, deployment, jobs, or results. All changed paths and retained source pins are listed in `source-changes.json`; prior installations, builds, and observations are untouched.
+ 
+-- `GemmaExpertAxisCheck` build 3: `5e82a28d03beb715aa821bfb44389c43a96689d4ddfc57d299f6f7f7f1588943`, 46,916,824 bytes.
+-- `GemmaExpertRDMACheck` build 2: `0df9ab04f65f305c25c732b9cc4e3572c9587e0de71de2bbcb7ca89add744ef0`, 46,916,840 bytes.
++## Exact source and build gate
+ 
+-`artifact-bindings.json` was produced by `bind_build.py` from the actual successful receipts. The binder checks their matching applied-source identity and every projection override. It does not read the payloads; the existing deployer performs the full actual binary/resource hash checks before and after copying. The original metallib, Metal resource, and matrix pins are retained. No guessed binary identity or executable fallback exists.
++`bind_build.py` requires actual successful Axis and RDMA compiler receipts plus their same applied-source receipt. It checks the final source union from these three packages, with later overlays replacing only their named paths:
+ 
+-`package/expert_results.py` now requires the seven actual per-rank projection policy fields and independently reconstructs the full-bank sort/density/tile decision. The numerical result still must be byte exact. Returned assignments and expert output value counts use only the original top-k slots, and both RDMA tensor directions are checked against those original counts. A follower's acknowledgment is joined to the full comparison digest, which now includes both policy records. Padding never increases the 264-assignment wire bound. This is one-layer numerical qualification; no throughput, whole-model quality, device-only routing, encrypted RDMA, or serving claim follows.
++- Projection policy: integration `e9245b99cb55496bb097014b9bf253ae483cc909d45305a4fb4e0df041693b87`.
++- C128 envelope: manifest `96b09205616dc075d0efb09c6962a630f7e88ba14ee8a7b76e6613fe34b44a06`, integration `13b9d67c161a84c58dda2472d4a61b6019376d132aebac7bae6d47b517d4bc6e`.
++- Description correction: manifest `ed9ee5cfa7e0357d6f003c9553204425d40c6ac8fabaf5656dcdda0ede13748e`, integration `59115464bb9906de761210243baf9dfa044a2104daf3528eafcf61966132490c`.
+ 
+-`package/expert_retirement.py` uses the existing `PipeWorkers` bounded collect, EOF/poll, wait, and group-fence path. Only the zero-exit/numerical decision moves after complete retirement. A full failing report and natural exit 2 are retained, then rejected. Partial output, trailing events, stderr, cancellation, absolute expiry, unresolved cleanup, or any nonzero exit still fail. The old worker helper is byte-exact. The original 300-second native and 315-second parent lifetimes, 6 GiB floor, process ownership, journal checks, peer cancellation, and alias restoration are preserved. `validate_returned.py` additionally requires the new retirement-before-validation observation.
++The applied receipt must contain each exact `sourcePackages` name/integration pair and every final override hash/size. Both actual build receipts must report natural successful compilation, reaped compiler, no GPU execution, the same source receipt, the correct product, actual byte count/hash, and the existing macOS26.2 target path. The binder creates `artifact-bindings.json` exclusively. It never reads large binary payloads. The unchanged deployer verifies actual executable/resource hashes before and after copying. Missing receipts, old source rows, old binaries, or absent bindings cannot activate deployment or jobs; no fallback identity is supplied.
+ 
+-Source author performed metadata binding and AST/source checks only. The 13 parser controls and seven actual-child CPU controls are staged, unexecuted. Root's native builds and 13 Swift projection controls are external results, not author execution. Root should run these Python controls before deployment, in a granted quiet slot:
++Run the read-only source check before the builds:
+ 
+ ```sh
+-cd /Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-execution-20260920
+ python3 -B check_source.py
+-python3 -B -m unittest -v test_contracts test_retirement
+ ```
+ 
+-Then, under root's physical/bulk slot, prepare/install once into the fresh remote root `/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920`:
++It reports pending actual bindings honestly. Root can then bind real receipts, using their observed paths and hashes:
++
++```sh
++python3 -B bind_build.py --axis-receipt ACTUAL_AXIS_JSON --axis-sha256 ACTUAL_SHA \
++  --rdma-receipt ACTUAL_RDMA_JSON --rdma-sha256 ACTUAL_SHA \
++  --sources-receipt ACTUAL_APPLIED_JSON --sources-sha256 ACTUAL_SHA
++python3 -B check_source.py --require-build
++```
++
++The uppercase arguments are required late-bound actual evidence, not runnable placeholder identities. Do not run the historical binder against newly built products or copy the old artifact binding into this namespace.
++
++## Catalog, bounds and numerical acceptance
++
++The default RDMA job contains all seven exact token counts `[1,7,8,9,33,64,128]`. Unknown34/129, duplicate/out-of-order counts, and malformed identity/role jobs are refused. Synthetic E16 retains60 cases over the original five sizes. Real E128 geometry requires42 cases; checkpoint replay requires14. Both ownership maps remain `contiguous48_80` and `strided43_85`.
++
++The parser independently reconstructs the unchanged sorted-RHS policy and its original-slot assignment count, with a1024-assignment maximum for E128 and the old264 bound for E16. C64/C128 must pass byte-exact raw expert output, unchanged weightedExpertSum, and checkpoint post-norm comparisons; no tolerance is added. Padding remains local and cannot appear in transmitted rows or weighted slots. Bilateral input/output bytes, route digests, case identities and comparison-result hashes must agree.
++
++The native source reserves32MiB each for additional host/native wire staging and admits at most5,767,168 payload bytes under an8MiB wire limit. The parent report/stdout limit stays2MiB, native Axis final bound1MiB and RDMA bound2MiB. Expanded bounded metadata fits those unchanged caps; actual output still has to pass them. Native300s, parent315s, collection64MiB, control32KiB/128-record bounds, 6GiB free floor, AC/pressure1/zeroSwap, original group ownership, canonical journal/flock, peer cancellation, alias restoration, and natural retirement validation are unchanged. Larger cases may fail the existing deadline or resource gates; that is a retained refusal, not grounds for an automatic limit increase.
++
++The live numerical checker remains authoritative after process retirement. Complete failing output with natural exit2 is retained and then rejected; stderr, partial/trailing output, stale jobs, timeouts, missing cleanup, or alias failures still fail. The seven core ownership/resource helpers and the retirement helper are byte-exact to the predecessor.
++
++## Root qualification sequence
++
++Six new parser controls are staged alongside the13 original parser controls and seven actual-child retirement controls. None was executed by the author:
++
++```sh
++python3 -B -m unittest -v test_contracts test_prefill_contracts test_retirement
++```
++
++After root builds the actual products, run the original Axis argument controls, RDMA `--check-local`, and both `--describe`/`--check-arguments` metadata paths with a real job bound to the new RDMA hash. Require1024 assignments,8MiB tensor limit,32MiB host/native staging, and the exact original job scope. The optional pure parser below checks saved outputs without launching anything; its receipt explicitly does not prove who executed those bytes:
++
++```sh
++python3 -B validate_description.py ABSOLUTE_NATIVE_JOB_JSON ABSOLUTE_ACTUAL_STDOUT_JSON
++```
++
++Only after root reviews actual CPU/build/metadata receipts and grants the physical slot:
+ 
+ ```sh
+ python3 -B deploy.py prepare
+ python3 -B deploy.py install --host darkbloom-48
+ python3 -B deploy.py install --host darkbloom-24
++python3 -B run_case.py prepare --name small-prefill-1 --kind synthetic-small
++python3 -B run_case.py solo --name small-prefill-1
++python3 -B run_case.py prepare --name geometry-prefill-1 --kind synthetic-gemma
++python3 -B run_case.py solo --name geometry-prefill-1
++python3 -B run_case.py prepare --name checkpoint-prefill-1 --kind checkpoint --layer 0
++python3 -B run_case.py solo --name checkpoint-prefill-1
++python3 -B run_case.py prepare --name rdma-prefill-contiguous-1 --kind rdma --layer 0 --ownership contiguous48_80
++python3 -B run_case.py pair --name rdma-prefill-contiguous-1
++python3 -B run_case.py prepare --name rdma-prefill-strided-1 --kind rdma --layer 0 --ownership strided43_85
++python3 -B run_case.py pair --name rdma-prefill-strided-1
+ ```
+ 
+-Begin with the strict synthetic-small regression. Stop on failure, retain all evidence, and do not continue to later cases until root reviews the actual result:
+-
+-```sh
+-python3 -B run_case.py prepare --name small-projection-1 --kind synthetic-small
+-python3 -B run_case.py solo --name small-projection-1
+-python3 -B validate_returned.py /Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-execution-20260920/cases/small-projection-1/solo
+-```
+-
+-After that gate, the corresponding mandatory real-checkpoint and two-rank commands use the existing model and exact full five-case token catalog:
+-
+-```sh
+-python3 -B run_case.py prepare --name checkpoint-projection-1 --kind checkpoint --layer 0
+-python3 -B run_case.py solo --name checkpoint-projection-1
+-python3 -B validate_returned.py /Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-execution-20260920/cases/checkpoint-projection-1/solo
+-python3 -B run_case.py prepare --name rdma-projection-1 --kind rdma --layer 0 --ownership contiguous48_80
+-python3 -B run_case.py pair --name rdma-projection-1
+-python3 -B validate_returned.py /Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-execution-20260920/cases/rdma-projection-1/pair
+-```
+-
+-The second unequal, noncontiguous ownership is the same three commands with a fresh name and `--ownership strided43_85`. Every run writes create-only jobs/output directories. No request to rerun old failed cases or overwrite an installation is included.
++Stop after any failure, retain the evidence, and validate each returned `cases/NAME/solo` or `cases/NAME/pair` directory with `validate_returned.py` before advancing. Existing strict SSH/host-key configuration is unchanged. A PASS would qualify only this bounded one-layer numerical fixture and original process/lease retirement. It would not establish full-model EP, device-only routing, encrypted transport, serving eligibility, or throughput.
+--- a/binding-inputs.json
++++ b/binding-inputs.json
+@@ -1,6 +1,17 @@
+ {
+-  "schema": "gemma4_expert_future_build_inputs_v1",
+   "binaryDirectory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster-worker/.build-native-worker/arm64-apple-macosx/release",
++  "descriptionSource": {
++    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-prefill-description-20260920/integration.json",
++    "sha256": "59115464bb9906de761210243baf9dfa044a2104daf3528eafcf61966132490c"
++  },
++  "prefillSource": {
++    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-prefill-bound-20260920/integration.json",
++    "sha256": "13b9d67c161a84c58dda2472d4a61b6019376d132aebac7bae6d47b517d4bc6e"
++  },
++  "products": [
++    "GemmaExpertAxisCheck",
++    "GemmaExpertRDMACheck"
++  ],
+   "projectionSource": {
+     "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-policy-20260920/integration.json",
+     "sha256": "e9245b99cb55496bb097014b9bf253ae483cc909d45305a4fb4e0df041693b87"
+@@ -26,8 +37,5 @@
+       "sha256": "b26600a39c859ddf5f64077a36850a294ea1b7f925ca6cea60b06d0ffe01b21f"
+     }
+   ],
+-  "products": [
+-    "GemmaExpertAxisCheck",
+-    "GemmaExpertRDMACheck"
+-  ]
++  "schema": "gemma4_expert_future_build_inputs_v1"
+ }
+--- a/build_binding.py
++++ b/build_binding.py
+@@ -18,19 +18,29 @@
+ def compose(axis,rdma,sources):
+     inputs,_=read(ROOT/'binding-inputs.json')
+     require(inputs['schema']=='gemma4_expert_future_build_inputs_v1','Binding input schema')
+-    projection,_=read(inputs['projectionSource']['path'],inputs['projectionSource']['sha256'])
++    overlays=[]
++    for key,name in [('projectionSource','gemma4-expert-projection-policy-20260920'),
++                     ('prefillSource','gemma4-expert-prefill-bound-20260920'),
++                     ('descriptionSource','gemma4-expert-prefill-description-20260920')]:
++        contract,_=read(inputs[key]['path'],inputs[key]['sha256'])
++        overlays.append((key,name,contract))
+     lineage,_=read(inputs['resourceLineage']['path'],inputs['resourceLineage']['sha256'])
+     same(inputs['resources'],lineage['resources'],'Unchanged resource lineage')
+     source,source_pin=read(sources['path'],sources['sha256'])
+     rows=source['files'];require(type(rows) is list and len(rows)<=100,'Bounded applied source list')
+     by_path={row['path']:row for row in rows}
+     require(len(by_path)==len(rows),'Repeated applied source path')
+-    for overlay in projection['entries']:
+-        same(by_path.get(overlay['destination']),dict(path=overlay['destination'],**overlay['after']),
+-             'Actual projection source binding')
++    # Later bounded successors replace only their named predecessor paths.
++    # Retain every untouched projection file, including native projection math.
++    expected={}
++    for _,_,contract in overlays:
++        for overlay in contract['entries']:
++            expected[overlay['destination']]=dict(path=overlay['destination'],**overlay['after'])
++    for path,row in expected.items():
++        same(by_path.get(path),row,'Actual composed expert source binding')
+     packages=source['sourcePackages']
+-    require(dict(name='gemma4-expert-projection-policy-20260920',
+-                 integrationSHA256=inputs['projectionSource']['sha256']) in packages,'Projection package identity')
++    for key,name,_ in overlays:
++        require(dict(name=name,integrationSHA256=inputs[key]['sha256']) in packages,'Expert package identity')
+     products=[]
+     for name,reference in zip(inputs['products'],[axis,rdma]):
+         receipt,receipt_pin=read(reference['path'],reference['sha256'])
+@@ -45,7 +55,8 @@
+     return dict(schema='gemma4_expert_observed_build_bindings_v1',
+                 binaryDirectory=inputs['binaryDirectory'],products=products,appliedSources=source_pin,
+                 resources=inputs['resources'],resourceLineage=inputs['resourceLineage'],
+-                projectionSource=inputs['projectionSource'])
++                projectionSource=inputs['projectionSource'],prefillSource=inputs['prefillSource'],
++                descriptionSource=inputs['descriptionSource'])
+ 
+ def verify():
+     bindings,_=read(ROOT/'artifact-bindings.json')
+--- a/check_source.py
++++ b/check_source.py
+@@ -1,5 +1,6 @@
+ """Small source/receipt checks only; no binary/model reads or process launches."""
+ import ast
++import argparse
+ import hashlib
+ import json
+ from pathlib import Path
+@@ -7,6 +8,9 @@
+ 
+ ROOT=Path(__file__).resolve().parent
+ def main():
++    parser=argparse.ArgumentParser(allow_abbrev=False)
++    parser.add_argument('--require-build',action='store_true')
++    args=parser.parse_args()
+     manifest=json.loads((ROOT/'manifest.json').read_bytes())
+     for row in manifest['files']:
+         path=ROOT/row['path'];raw=path.read_bytes()
+@@ -17,11 +21,16 @@
+         raw=(ROOT/'originals'/row['path']).read_bytes()
+         assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256']
+     for name in ('worker_processes.py','worker_contract.py','native_gate.py','reference_resources.py',
+-                 'mtp_journal.py','jaccl_startup_stderr.py','binding_common.py'):
++                 'mtp_journal.py','jaccl_startup_stderr.py','binding_common.py','expert_retirement.py'):
+         assert (ROOT/'package'/name).read_bytes()==(ROOT/'originals/package'/name).read_bytes(),name
+-    bindings=verify()
+-    print(json.dumps(dict(sourceFiles=len(manifest['files']),actualReceiptBindings=True,
+-                          nativeProducts=[x['sha256'] for x in bindings['products']],
++    for field in ('projectionSource','prefillSource','descriptionSource','resourceLineage'):
++        pin=json.loads((ROOT/'binding-inputs.json').read_bytes())[field]
++        raw=Path(pin['path']).read_bytes()
++        assert hashlib.sha256(raw).hexdigest()==pin['sha256'],'Source/resource lineage changed'
++    bindings=verify() if args.require_build or (ROOT/'artifact-bindings.json').exists() else None
++    print(json.dumps(dict(sourceFiles=len(manifest['files']),actualReceiptBindings=bindings is not None,
++                          nativeProducts=[x['sha256'] for x in bindings['products']] if bindings else [],
++                          activationBlockedUntilActualBuildBinding=bindings is None,
+                           testsExecuted=False,payloadsRead=False)))
+ 
+ if __name__=='__main__':main()
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920'
+ PRODUCTS=('GemmaExpertAxisCheck','GemmaExpertRDMACheck')
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/expert_results.py
++++ b/package/expert_results.py
+@@ -6,6 +6,7 @@
+ ARTIFACT='2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785'
+ CONFIG='29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa'
+ COUNTS=[1,7,8,9,33]
++EXTENDED_COUNTS=COUNTS+[64,128]
+ def sha(value):return type(value) is str and re.fullmatch('[0-9a-f]{64}',value) is not None
+ def digest(value):return hashlib.sha256(canonical(value)).hexdigest()
+ def maps(experts):
+@@ -17,7 +18,7 @@
+     require(value['maximumAbsoluteError']==0 and value['relativeRMSError']==0,'Numerical error exceeds exact acceptance')
+ def projection_policies(value,rows,ownership):
+     global_count=rows*value['topK'];experts=sum(map(len,ownership))
+-    require(1<=global_count<=264 and 2<=experts<=128,'Projection global geometry')
++    require(1<=global_count<=(1024 if experts==128 else 264) and 2<=experts<=128,'Projection global geometry')
+     policies=value.get('projectionPolicies')
+     require(type(policies) is list and len(policies)==len(ownership),'Projection policy coverage')
+     fields={'globalAssignments','globalExperts','ownedExperts','localAssignments',
+@@ -46,7 +47,7 @@
+     require(all(len(x)==top and len(set(x))==top and all(type(i) is int and 0<=i<experts for i in x) for x in ids),'Expert selected IDs')
+     expected=[sum(i in bank for row in ids for i in row) for bank in ownership]
+     same(counts,expected,'Expert original-slot assignment conservation')
+-    require(sum(counts)==rows*top and all(type(x) is int and 0<=x<=264 for x in counts),'Only original assignments may be returned')
++    require(sum(counts)==rows*top and all(type(x) is int and 0<=x<=rows*top for x in counts),'Only original assignments may be returned')
+     projection_policies(value,rows,ownership)
+     require(sha(value['routingWeightsSHA256']),'Expert route weight digest')
+     difference(value['expertOutputs'],rows*top*hidden);difference(value['weighted'],rows*hidden)
+@@ -96,7 +97,7 @@
+     else:require(value['receivedTensorBytes']==sum(c['comparison']['assignmentCounts'][1] for c in value['cases'])*2816*2,'Exact owner received tensor traffic')
+ def primitive(value,job):
+     small=job['kind']=='synthetic-small';checkpoint=job['kind']=='checkpoint'
+-    count=60 if small else (10 if checkpoint else 30);hidden=128 if small else 2816;experts=16 if small else 128
++    count=60 if small else (14 if checkpoint else 42);hidden=128 if small else 2816;experts=16 if small else 128
+     dtypes=['float32','bfloat16'] if small else ['bfloat16'];layouts=maps(experts)
+     require(value['schema']=='gemma_expert_axis_native_check_v1' and value['mode']=='--'+job['kind']
+             and value['caseCount']==count and len(value['cases'])==count and value['hiddenSize']==hidden
+@@ -111,7 +112,7 @@
+     remaining=list(value['cases'])
+     for dtype in dtypes:
+         for index,ownership in enumerate(layouts):
+-            for rows in COUNTS:
++            for rows in (COUNTS if small else EXTENDED_COUNTS):
+                 for pattern in (['actual-router-replay'] if checkpoint else ['balanced','all-rank0','all-rank1']):
+                     case=remaining.pop(0);comparison(case,rows,hidden,ownership)
+                     prefix=f"checkpoint-layer-{job['layer']}" if checkpoint else 'synthetic'
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -6,7 +6,7 @@
+ from pathlib import Path
+ from binding_common import require
+ 
+-REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
++REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
+ PRODUCTS=('GemmaExpertAxisCheck','GemmaExpertRDMACheck')
+ MODEL='/Users/developer/DarkbloomDev/models/Gemma4-26B'
+ 
+@@ -35,7 +35,7 @@
+         import uuid
+         require(type(n[field]) is str and str(uuid.UUID(n[field]))==n[field],'RDMA canonical UUID')
+     counts=n['tokenCounts']
+-    require(type(counts) is list and 1<=len(counts)<=5 and all(type(x) is int and x in (1,7,8,9,33) for x in counts)
++    require(type(counts) is list and 1<=len(counts)<=7 and all(type(x) is int and x in (1,7,8,9,33,64,128) for x in counts)
+             and counts==sorted(set(counts)),'RDMA closed counts')
+ 
+ def arguments(job,job_path):
+--- /dev/null
++++ b/predecessor-sources.json
+@@ -0,0 +1,158 @@
++{
++  "files": [
++    {
++      "bytes": 4668,
++      "path": "HANDOFF.md",
++      "sha256": "2b07dd799495487fa64f41a46086fbfeeb4fa762dd8c9b6b917d3cf7bf1ba225"
++    },
++    {
++      "bytes": 2905,
++      "path": "alias.py",
++      "sha256": "92d98e36432238e378b7cea1e3c7e7ba83ff6c49c486701cb82e3e589dcbd4ff"
++    },
++    {
++      "bytes": 2320,
++      "path": "artifact-bindings.json",
++      "sha256": "10d6c3ebef0d9668907ccfacca9a92681531eb8b0e6cd3b24559f0c14516524b"
++    },
++    {
++      "bytes": 839,
++      "path": "bind_build.py",
++      "sha256": "04e2c4e391d8a2b0eae6c5ae9a98b07652001064ebede453b7a4fd7b7d14a800"
++    },
++    {
++      "bytes": 1280,
++      "path": "binding-inputs.json",
++      "sha256": "e2f43ad89a10440ed60e026d2658e3fd61b338b207811d40be7e926ddeb792b2"
++    },
++    {
++      "bytes": 3383,
++      "path": "build_binding.py",
++      "sha256": "5ffa184e3c1de476df0fa13eb9a594d037d1d69be49dfb282b92b62ad5d40086"
++    },
++    {
++      "bytes": 1379,
++      "path": "check_source.py",
++      "sha256": "ea858b0af9d50db401e24d27fb74462d0c029cc05460fec03bd61f8ef8aa5e92"
++    },
++    {
++      "bytes": 5942,
++      "path": "deploy.py",
++      "sha256": "6169b854b1849a05553b0bbf8e4e14ed50e3a92434e51b5300d24e79fb75b3d6"
++    },
++    {
++      "bytes": 3444,
++      "path": "lease_source.py",
++      "sha256": "1713853ac303af6e6097d64a84ee1f4376c04c101f7fb3049ba65ef75d9eb90d"
++    },
++    {
++      "bytes": 1608,
++      "path": "package/benchmark_package.py",
++      "sha256": "5efac3df86318241d08267fd85bb77c13638cfd5478d7e3b95c8906927ec7f44"
++    },
++    {
++      "bytes": 2452,
++      "path": "package/binding_common.py",
++      "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
++    },
++    {
++      "bytes": 4703,
++      "path": "package/binding_inputs.py",
++      "sha256": "5bc55273dc7b3ae4ce6d9966c09ebedf9c12dcc84bf91bda42993cae3f13dbd0"
++    },
++    {
++      "bytes": 11812,
++      "path": "package/expert_results.py",
++      "sha256": "5667252b131343b8f9e55f00c05f5530af2ad62099011cc4adb7a4eb1ffe5876"
++    },
++    {
++      "bytes": 1182,
++      "path": "package/expert_retirement.py",
++      "sha256": "2c5a97062466d994f59efdd0815e5815870b4aa8cdd5f589e4584ac292fe397b"
++    },
++    {
++      "bytes": 3109,
++      "path": "package/gemma_inputs.py",
++      "sha256": "a7346f36511950e79e3ead8c1e2a0d8c2fbb855136e6068bd6b238dd0ef4528e"
++    },
++    {
++      "bytes": 2065,
++      "path": "package/jaccl_startup_stderr.py",
++      "sha256": "42c7f01b36392cb69cf177081fd6cf7a953963fd7cfb92b27ca0e784a5b82f29"
++    },
++    {
++      "bytes": 2631,
++      "path": "package/mtp_journal.py",
++      "sha256": "6c3a2d08b994bcbd0a4941ef01f4cf898b1e04a536dbdf21cd322043aa0bec70"
++    },
++    {
++      "bytes": 4491,
++      "path": "package/native_gate.py",
++      "sha256": "0be3da85eb093d5a4b1a74a20719780877693f12d70bd41f847611f5dc493cc6"
++    },
++    {
++      "bytes": 3133,
++      "path": "package/reference_resources.py",
++      "sha256": "497f059014a53d3c69f446f7cb6644ca71cbc00c39af7ca2526abcfaa5d7cc28"
++    },
++    {
++      "bytes": 7538,
++      "path": "package/run_benchmark.py",
++      "sha256": "e1171d3e0ff1f7dd0657bac0182cba11d96b743e4cae49555b98ddfeea0e58eb"
++    },
++    {
++      "bytes": 0,
++      "path": "package/stage_checks/__init__.py",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "bytes": 2393,
++      "path": "package/stage_checks/common.py",
++      "sha256": "3fae477275bd7c90f9da2a6be962aa1e9bb4f474171ce1999d13145f05b5f7ed"
++    },
++    {
++      "bytes": 3447,
++      "path": "package/target_processes.py",
++      "sha256": "246bcc64dcd6a2adcbe4ba13d72ed9d2463c6349a324631b386dc4f2f2eefa98"
++    },
++    {
++      "bytes": 5163,
++      "path": "package/worker_contract.py",
++      "sha256": "9898b44c07337ddfc7949e880deb44ad8ccc9eaa700576c7c6ce008a88feefd6"
++    },
++    {
++      "bytes": 15271,
++      "path": "package/worker_processes.py",
++      "sha256": "b277a0c72a53788a470f0f9634500002c9f7f680fa96fb216c1ebe76e8d784d2"
++    },
++    {
++      "bytes": 343,
++      "path": "parent_settings.py",
++      "sha256": "482d4facaf255bede388c4737375d9d1203d0208bcee8aacb576abbd8cfea39b"
++    },
++    {
++      "bytes": 13234,
++      "path": "run_case.py",
++      "sha256": "e72ce2422cbc65306ad3429c1060f00cdd3003074c4dcbd3d0934ccc17650e88"
++    },
++    {
++      "bytes": 8251,
++      "path": "test_contracts.py",
++      "sha256": "3e4092b5eff7cadc85d023879c904e1ddbff79305b9443ef15099b29ebe33963"
++    },
++    {
++      "bytes": 4878,
++      "path": "test_retirement.py",
++      "sha256": "19b06b06cc214ffa24404fada3a96f85d9ff837b40847485f5d2c6a8e1b6aa22"
++    },
++    {
++      "bytes": 9942,
++      "path": "validate_returned.py",
++      "sha256": "b542396222d16590ecd426cbff32c21eb2bc2d4e58eca4db835abc0ec3f851b0"
++    }
++  ],
++  "manifest": {
++    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-projection-execution-20260920/manifest.json",
++    "sha256": "869c635cb18a1d750f2a3805e6d9f58a3dd4c58b47bc6de01ced59a89638d956"
++  }
++}
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,7 +26,7 @@
+ 
+ CREATE=r'''
+ import json,os,pathlib,sys
+-base=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
++base=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
+ sys.path.insert(0,str(base))
+ from gemma_inputs import validate_job,write_json
+ job=json.load(sys.stdin);validate_job(job);root=pathlib.Path(sys.argv[1])
+@@ -38,7 +38,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -49,7 +49,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-prefill-execution-20260920/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_expert_cancellation_v1','jobSHA256':wanted}
+@@ -222,7 +222,7 @@
+     p.add_argument('--kind',choices=['synthetic-small','synthetic-gemma','checkpoint','rdma'],default='synthetic-small')
+     p.add_argument('--layer',type=int,choices=range(30),default=0)
+     p.add_argument('--ownership',choices=['contiguous48_80','strided43_85'],default='contiguous48_80')
+-    p.add_argument('--tokens',type=int,nargs='+',choices=[1,7,8,9,33],default=[1,7,8,9,33]);a=p.parse_args()
++    p.add_argument('--tokens',type=int,nargs='+',choices=[1,7,8,9,33,64,128],default=[1,7,8,9,33,64,128]);a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+     assert a.tokens==sorted(set(a.tokens))
+     if a.action=='prepare':prepare(a.name,a.kind,a.layer,a.ownership,a.tokens);return 0
+--- /dev/null
++++ b/test_prefill_contracts.py
+@@ -0,0 +1,84 @@
++"""Fabricated parser/binding controls, staged only; no children, model or native IO."""
++import copy
++import unittest
++from test_contracts import fixture, policy, difference, H
++from expert_results import digest, scope, validate_result, validate_pair
++from gemma_inputs import validate_job
++from build_binding import ROOT, compose
++
++
++def expanded(rank, rows):
++    job,value=fixture(rank);native=job['nativeJob'];native['tokenCounts']=[rows]
++    value['job']=native;value['scopeSHA256']=scope(native)
++    comparison=fixture(0)[1]['cases'][0]['comparison']
++    comparison.update(tokenCount=rows,selectedGlobalIDs=comparison['selectedGlobalIDs']*rows,
++        assignmentCounts=[rows*4,rows*4],expertOutputs=difference(rows*8*2816),
++        weighted=difference(rows*2816),postNorm=difference(rows*2816),
++        projectionPolicies=[policy(rows*8,128,48,rows*4,True,True,rows*4),
++                            policy(rows*8,128,80,rows*4,True,True,320 if rows==64 else 512)])
++    case=value['cases'][0]
++    case.update(tokenCount=rows,localAssignmentCount=rows*4,routeSHA256=digest(comparison['selectedGlobalIDs']),
++                referenceResultSHA256=digest(comparison))
++    if rank==0:case['comparison']=comparison
++    value['sentTensorBytes']=(rows if rank==0 else rows*4)*2816*2
++    value['receivedTensorBytes']=(rows*4 if rank==0 else rows)*2816*2
++    return job,value
++
++
++class PrefillContracts(unittest.TestCase):
++    def test_seven_case_job_and_exact_closed_refusals(self):
++        job,_=fixture(0);job['nativeJob']['tokenCounts']=[1,7,8,9,33,64,128];validate_job(job)
++        for counts in ([34],[129],[64,64],[128,64],[True],list(range(1,9))):
++            bad=copy.deepcopy(job);bad['nativeJob']['tokenCounts']=counts
++            with self.assertRaises(ValueError):validate_job(bad)
++
++    def test_c64_sorted_projection_keeps_original_wire_rows(self):
++        a,left=expanded(0,64);b,right=expanded(1,64)
++        validate_result(left,a);validate_result(right,b);validate_pair(left,right)
++        self.assertEqual(left['cases'][0]['comparison']['projectionPolicies'][1]['executedAssignments'],320)
++        self.assertEqual(right['cases'][0]['localAssignmentCount'],256)
++
++    def test_c128_exact_values_and_bilateral_accounting(self):
++        a,left=expanded(0,128);b,right=expanded(1,128)
++        validate_result(left,a);validate_result(right,b);validate_pair(left,right)
++        for change in ('raw','weighted','postnorm','traffic'):
++            bad=copy.deepcopy(left);case=bad['cases'][0]['comparison']
++            if change=='traffic':bad['receivedTensorBytes']+=2
++            else:case[{'raw':'expertOutputs','weighted':'weighted','postnorm':'postNorm'}[change]]['candidateSHA256']='f'*64
++            with self.assertRaises(ValueError):validate_result(bad,a)
++
++    def test_old_bound_or_padded_rows_cannot_qualify(self):
++        for change in ('old-bound','weighted-rank-sum','padded-wire'):
++            job,value=expanded(0,64);case=value['cases'][0]['comparison']
++            if change=='old-bound':case['projectionPolicies'][0]['globalAssignments']=264
++            elif change=='weighted-rank-sum':case['weighted']['exactBytes']=False
++            else:value['receivedTensorBytes']=(320*2816*2)
++            with self.assertRaises(ValueError):validate_result(value,job)
++
++    def test_binding_refuses_absent_actual_build_receipts(self):
++        missing=dict(path=str(ROOT/'absent-native-build-receipt.json'),sha256=H)
++        with self.assertRaises(ValueError):compose(missing,missing,missing)
++
++    def test_new_native_description_refuses_old_assignment_and_staging_bounds(self):
++        from validate_description import validate
++        job,_=fixture(0);native=job['nativeJob'];native['tokenCounts']=[1,7,8,9,33,64,128]
++        # Read the source-bound expected DTO by spelling out the actual contract.
++        value=dict(schema='gemma4_expert_rdma_capability_v1',scopeSHA256=scope(native),rank=0,
++            globalLayerIndex=0,globalExpertIDsByRank=[list(range(48)),list(range(48,128))],
++            tokenCounts=native['tokenCounts'],topK=8,hiddenSize=2816,intermediateSize=704,dtype='bfloat16',
++            maximumAssignments=1024,maximumControlBytes=32768,maximumTensorBytes=8388608,
++            maximumRecordsPerDirection=128,extraNativeStagingBytes=33554432,extraHostStagingBytes=33554432,
++            minimumActualFreeBytes=6*1024**3,requiresAC=True,requiredPressureLevel=1,maximumSwapBytes=0,
++            metadataOnly=True,nativeExecuted=False,sourcePayloadVerified=False,
++            deviceOnlyDynamicRoutingQualified=False,encryptedRDMA=False,runtimeServingEnabled=False,
++            buildIdentityRequiresParentVerification=True)
++        binding={'products':[{'product':'GemmaExpertRDMACheck','sha256':H}]}
++        validate(native,value,binding)
++        for field,old in [('maximumAssignments',264),('maximumTensorBytes',2097152),
++                          ('extraNativeStagingBytes',16777216),('extraHostStagingBytes',16777216),
++                          ('maximumAssignments',1024.0),('runtimeServingEnabled',True)]:
++            bad=copy.deepcopy(value);bad[field]=old
++            with self.assertRaises(ValueError):validate(native,bad,binding)
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/validate_description.py
+@@ -0,0 +1,41 @@
++"""Check saved actual metadata output; never executes a product or reads a model."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from build_binding import read, verify
++from package.expert_results import scope
++from package.binding_common import require, same
++from package.gemma_inputs import validate_job
++
++
++def validate(job, value, bindings):
++    validate_job(dict(schema='gemma4_expert_physical_job_v1',kind='rdma',mode='stage'+str(job['rank']),
++        layer=job['layer'],modelDirectory=job['modelDirectory'],nativeSHA256=job['buildIdentitySHA256'],
++        timeoutSeconds=job['timeoutSeconds'],nativeJob=job))
++    product=next(x for x in bindings['products'] if x['product']=='GemmaExpertRDMACheck')
++    require(job['buildIdentitySHA256']==product['sha256'],'Description must name actual newly bound RDMA binary')
++    expected=dict(schema='gemma4_expert_rdma_capability_v1',scopeSHA256=scope(job),
++        rank=job['rank'],globalLayerIndex=job['layer'],
++        globalExpertIDsByRank=[list(range(48)),list(range(48,128))] if job['ownership']=='contiguous48_80'
++            else [[x for x in range(128) if x%3==0],[x for x in range(128) if x%3!=0]],
++        tokenCounts=job['tokenCounts'],topK=8,hiddenSize=2816,intermediateSize=704,dtype='bfloat16',
++        maximumAssignments=1024,maximumControlBytes=32768,maximumTensorBytes=8388608,
++        maximumRecordsPerDirection=128,extraNativeStagingBytes=33554432,extraHostStagingBytes=33554432,
++        minimumActualFreeBytes=6*1024**3,requiresAC=True,requiredPressureLevel=1,maximumSwapBytes=0,
++        metadataOnly=True,nativeExecuted=False,sourcePayloadVerified=False,
++        deviceOnlyDynamicRoutingQualified=False,encryptedRDMA=False,runtimeServingEnabled=False,
++        buildIdentityRequiresParentVerification=True)
++    same(value,expected,'Exact enlarged native description')
++
++
++if __name__=='__main__':
++    parser=argparse.ArgumentParser(allow_abbrev=False)
++    parser.add_argument('native_job');parser.add_argument('actual_stdout')
++    args=parser.parse_args()
++    job,jpin=read(Path(args.native_job).absolute())
++    value,vpin=read(Path(args.actual_stdout).absolute())
++    bindings=verify();validate(job,value,bindings)
++    print(json.dumps(dict(metadataValuesMatched=True,job=jpin,actualOutput=vpin,
++        artifactBindingsSHA256=hashlib.sha256((Path(__file__).parent/'artifact-bindings.json').read_bytes()).hexdigest(),
++        executionProvenByThisParser=False,nativeExecutedByThisParser=False),sort_keys=True))

@@ -1,0 +1,5 @@
+# Receive staging lifetime correction
+
+Compose these two files with core38cee and target lifetime a4a3c1fb. The original service now retains one staging object before the first receive. Every completed receive array and each concatenated full tensor is stored there before evaluation, with an exact bound of nine roots. Successful receive fences and actual branch installation gate clearing. Any receive/concat/fence/install failure leaves staging owned by the failed original service until process/native retirement. Its peak fragments plus assembled captures remain within the frozen assistant three-snapshot-set allowance; no fourth complete set or new host snapshot is made.
+
+No changes to generic P2P, async submission, guard/deadline policy, numerical acceptance or process release. No compiler/native execution. Native failure controls must inject each full concatenation fence and final capture fence, verify staging is retained and seeded is not sent, then join the original owner before release. Pure scalar fixtures cannot prove this lifetime.

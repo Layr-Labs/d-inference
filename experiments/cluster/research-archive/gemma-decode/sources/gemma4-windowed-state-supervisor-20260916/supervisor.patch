@@ -1,0 +1,459 @@
+--- a/collect_remote.py
++++ b/collect_remote.py
+@@ -8,13 +8,14 @@
+ import sys
+ import time
+ 
+-ROOT=Path('/Users/developer/DarkbloomDev/qwen-target-session-check-20260915')
++ROOT=Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')
+ sys.dont_write_bytecode=True
+ sys.path.insert(0,str(ROOT))
+ from mtp_journal import device_directory, observe as observe_journal
+ from target_processes import observe as observe_processes
+ 
+-run=ROOT/'runs/physical-1'
++assert len(sys.argv)==2 and sys.argv[1] in ('window','session','target')
++run=ROOT/'runs'/(sys.argv[1]+'-1')
+ assert run.resolve()==run and run.is_dir()
+ files={}; total=0
+ names=sorted(run.rglob('*'))
+--- a/install_new_tree.py
++++ b/install_new_tree.py
+@@ -7,7 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'check': Path('/Users/developer/DarkbloomDev/qwen-target-session-check-20260915')}
++ROOTS = {'check': Path('/Users/developer/DarkbloomDev/gemma-window-state-check-20260916')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+@@ -17,10 +17,10 @@
+     raw = sys.stdin.buffer.readline(1_048_577)
+     require(len(raw) <= 1_048_576 and raw.endswith(b'\n'), 'Deployment manifest exceeded bound')
+     manifest = json.loads(raw)
+-    require(manifest['schema'] == 'target_verification_session_copy_only_tree_v1', 'Wrong deployment schema')
++    require(manifest['schema'] == 'window_state_native_copy_only_tree_v1', 'Wrong deployment schema')
+     files = manifest['files']
+     require(type(files) is dict and 10 <= len(files) <= 100, 'Wrong deployment member count')
+-    require(sum(x['bytes'] for x in files.values()) < 300_000_000, 'Deployment exceeded bound')
++    require(sum(x['bytes'] for x in files.values()) < 400_000_000, 'Deployment exceeded bound')
+     for name, entry in files.items():
+         bits = name.split('/')
+         require(len(bits) >= 2 and bits[0] in ROOTS and all(x and x not in ('.', '..') for x in bits), 'Unsafe deployment member')
+@@ -76,7 +76,7 @@
+             verified[name] = dict(bytes=info.st_size, sha256=checksum.hexdigest())
+     require(set(verified) == set(files), 'Installed closure differs')
+     (ROOTS['check'] / 'evidence').mkdir(mode=0o700)
+-    print(json.dumps(dict(schema='target_verification_session_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
++    print(json.dumps(dict(schema='window_state_native_copy_only_verification_v1', manifestSHA256=hashlib.sha256(raw).hexdigest(),
+         verified=verified, canonicalJournalObserved=journal, modelOrOwnerLaunched=False, existingInputsModified=False)), flush=True)
+ 
+ if __name__ == '__main__': main()
+--- a/package/run_target.py
++++ b/package/run_target.py
+@@ -14,7 +14,7 @@
+ from binding_common import canonical, require
+ from mtp_journal import device_directory, observe as journal_observation, require_empty
+ from reference_resources import ResourceGate, read_command
+-from target_contract import REMOTE
++from target_contract import JOBS, REMOTE
+ from target_inputs import Pins, verify_package, write_json
+ from target_processes import observe as process_observation
+ from target_supervision import serve
+@@ -25,7 +25,7 @@
+ def main(arguments=None):
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('--package-sha256', required=True)
+-    parser.add_argument('--run', choices=['physical-1'], required=True)
++    parser.add_argument('--fixture', choices=sorted(JOBS), required=True)
+     args = parser.parse_args(arguments)
+     require(str(ROOT) == REMOTE and ROOT.resolve() == ROOT, 'Wrong fresh remote installation root')
+     require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'Apple Silicon macOS required')
+@@ -44,10 +44,10 @@
+         runs.mkdir(mode=0o700, exist_ok=True)
+         require(runs.resolve() == runs and runs.stat().st_uid == os.geteuid()
+                 and runs.stat().st_mode & 0o077 == 0, 'Unsafe run parent')
+-        run = runs/args.run
++        run = runs/(args.fixture+'-1')
+         run.mkdir(mode=0o700)  # A used run directory is never overwritten.
+         pins = Pins(check)
+-        binding = verify_package(ROOT, args.package_sha256, pins)
++        binding = verify_package(ROOT, args.package_sha256, pins, args.fixture)
+         write_json(run/'input-binding.json', binding)
+         memory = read_command(['/usr/sbin/sysctl', '-n', 'hw.memsize'])
+         require(memory.strip() == str(24*1024**3), 'This root-run job is bound to the 24 GiB Mac')
+@@ -66,7 +66,8 @@
+         # The observation lock has been closed. The launched native entry takes
+         # the canonical gate itself before initializing/evaluating GPU arrays.
+         pins.recheck()
+-        spec = WorkerSpec((str(ROOT/'bundle/TargetVerificationSessionCheck'), 'run-tiny-session-on-gpu'),
++        job = JOBS[args.fixture]
++        spec = WorkerSpec((str(ROOT/'bundle'/job['product']), *job['runArguments']),
+             {'PATH':'/usr/bin:/bin:/usr/sbin:/sbin', 'HOME':str(Path.home()), 'LANG':'C'}, 'solo', None)
+         def postflight():
+             after = journal_observation(device_directory())
+@@ -77,10 +78,10 @@
+             require(not processes['prohibited'], 'Known native/owner remains live after cleanup')
+             return dict(journal=after, processObservation=processes)
+         entered = True
+-        return serve(spec, run, started, gate, pins, postflight)
++        return serve(spec, run, started, gate, pins, postflight, args.fixture)
+     except BaseException as error:
+         if run is not None and not entered and not (run/'terminal.json').exists():
+-            write_json(run/'terminal.json', dict(schema='target_verification_session_observation_v1',
++            write_json(run/'terminal.json', dict(schema='window_state_native_observation_v1', fixture=args.fixture,
+                 status='failed', nativeLaunchAttempted=False, primaryFailure=cleanup_error_text(error)[0],
+                 modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False, journalMutationPerformed=False))
+         raise
+--- a/package/target_contract.py
++++ b/package/target_contract.py
+@@ -1,62 +1,24 @@
+-"""Closed result contract for actual tiny Qwen trunks and shared transactions."""
+-import math
+-from binding_common import fields, integer, parse, pin, require, same
++"""Closed selection among three separately executed native fixtures."""
++from binding_common import require
++from window_result import validate_result as validate_window
++from session_result import validate_result as validate_session
++from transaction_result import validate_result as validate_target
+ 
+-REMOTE = '/Users/developer/DarkbloomDev/qwen-target-session-check-20260915'
+-NATIVE = '37783e2fdbe33022dd56752b6a14f25873515c3f77d1b15f9c4c28918be76960'
+-BUNDLE = '43e381343aff5fe3d670967a56f712139fb672bbbead3c3e2762131ca5f8cb2a'
+-SOURCE = '32fdc7a79171bba7f97a8434fdec48004875fd4d90f848d3488da6bd974b7ffe'
++REMOTE = '/Users/developer/DarkbloomDev/gemma-window-state-check-20260916'
++BUNDLE = 'ad46a1f87e3448ff42fd40e5ffc36bc40a7e7b8a9a29caa646f380b7dbb3cdde'
++SOURCE = 'cbe0586202236cbc225e4de06bbaad28139c20612b49142e6b3310c08f24a3e8'
+ METALLIB = '2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2'
+ PAGED = '4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149'
+-BASE_CASES = ['actual-trunk-keep-0-and-next-decode', 'actual-trunk-keep-1-and-next-decode',
+-    'actual-trunk-keep-2-and-next-decode', 'actual-mismatching-draft-rollback-and-next-decode',
+-    'actual-progressive-client-stop', 'actual-progressive-continue', 'actual-one-step-output-limit']
+-FAILURE_CASES = ['actual-' + name + '-retired' for name in ['owner-before-stage',
+-    'owner-after-two-stages', 'pending-snapshot', 'pending-decode', 'pending-finish',
+-    'commit-then-reject-prefix', 'seed-eos']]
++JOBS = {
++    'window': dict(product='WindowedRequestStateCheck', runArguments=['run-windowed-state-on-gpu'],
++                   processAlarmSeconds=60, sha256='f9e691240f5a0422ceaf0acf5157479d72893fd4d2aa5dba8b9e8ce10b10de83'),
++    'session': dict(product='TargetVerificationSessionCheck', runArguments=['run-tiny-session-on-gpu'],
++                    processAlarmSeconds=60, sha256='3d2b4b16eb516a3c13bbdad1d5b8cf508f3e098890eecb1e0aa4c481afd72359'),
++    'target': dict(product='TargetVerificationCheck', runArguments=['run-native-state-on-gpu'],
++                   processAlarmSeconds=30, sha256='6deeb71002a59f912c6350e94510772cd0a40b09306d83022168a6ecaed405a2'),
++}
+ 
+ 
+-def validate_result(raw):
+-    require(type(raw) is bytes and 0 < len(raw) <= 16384, 'Native result exceeds its bound')
+-    value = fields(parse(raw), 'fixture passed maximumLogitDifference stateComparison seedTokenID '
+-        'ordinaryTargetChosenDraftTokenID eosAfterSeedExercised resourceLedger sourceTensorCount '
+-        'sourceTensorBytes sourcePayloadSHA256 stageActiveTensorCounts sharedSessionTransactionExecuted '
+-        'registeredProfileExecuted mtpAssistantProposalExecuted bilateralWireVerification '
+-        'providerEligibilityEstablished', 'tiny Session result')
+-    same(value['fixture'], 'fabricated-full-source-two-real-stages', 'actual fixture')
+-    same(value['stateComparison'], 'exact-named-state-hashes-after-reconcile-and-next-decode', 'state comparison')
+-    seed = integer(value['seedTokenID'], 'seed', 0, 127)
+-    draft = integer(value['ordinaryTargetChosenDraftTokenID'], 'target-selected draft', 0, 127)
+-    same(value['eosAfterSeedExercised'], draft != seed, 'actual conditional EOS')
+-    expected = BASE_CASES + (['actual-progressive-eos'] if draft != seed else []) + FAILURE_CASES
+-    same(value['passed'], expected, 'complete ordered native cases')
+-    for name, wanted in [('sharedSessionTransactionExecuted', True), ('registeredProfileExecuted', False),
+-            ('mtpAssistantProposalExecuted', False), ('bilateralWireVerification', False),
+-            ('providerEligibilityEstablished', False)]:
+-        same(value[name], wanted, name)
+-    difference = value['maximumLogitDifference']
+-    require(type(difference) in (int, float) and math.isfinite(difference)
+-            and 0 <= difference <= 0.00001, 'Logit error exceeds native fixture tolerance')
+-    count = integer(value['sourceTensorCount'], 'source count', 1, 4096)
+-    integer(value['sourceTensorBytes'], 'source bytes', 1, 64*1024**2)
+-    pin(value['sourcePayloadSHA256'])
+-    stages = value['stageActiveTensorCounts']
+-    require(type(stages) is list and len(stages) == 2, 'Two actual stage inventories required')
+-    require(sum(integer(v, 'stage tensors', 1, 4096) for v in stages) == count,
+-            'Disjoint stage source coverage differs')
+-    ledger = fields(value['resourceLedger'], 'maximumTokens chunkTokens simultaneousPairs '
+-        'perPairLogicalStateAndBoundaryBytes roundedStateAndBoundaryBytes fusionBytes '
+-        'comparisonNativeBytes comparisonHostBytes transactionNativeBytes transactionHostBytes '
+-        'wholeProcessBound', 'fixture ledger')
+-    for name, wanted in [('maximumTokens', 9), ('chunkTokens', 2), ('simultaneousPairs', 2),
+-            ('perPairLogicalStateAndBoundaryBytes', 108808), ('fusionBytes', 0),
+-            ('comparisonHostBytes', 1024), ('wholeProcessBound', False)]:
+-        same(ledger[name], wanted, name)
+-    # Native rounding is runtime-derived, not replaced with a host estimate.
+-    integer(ledger['roundedStateAndBoundaryBytes'], 'rounded state', 2*108808, 256*1024**2)
+-    integer(ledger['comparisonNativeBytes'], 'comparison native', 4*128*4, 256*1024**2)
+-    for name in ['transactionNativeBytes', 'transactionHostBytes']:
+-        values = ledger[name]
+-        require(type(values) is list and len(values) == 2, 'Two rank allowances required')
+-        for item in values: integer(item, name, 0, 256*1024**2)
+-    return value
++def validate_result(raw, fixture):
++    require(fixture in JOBS, 'Unknown native fixture')
++    return {'window': validate_window, 'session': validate_session, 'target': validate_target}[fixture](raw)
+--- a/package/target_inputs.py
++++ b/package/target_inputs.py
+@@ -5,7 +5,7 @@
+ 
+ from binding_common import canonical, fields, integer, parse, pin, require, same
+ from binding_inputs import snapshot
+-from target_contract import BUNDLE, METALLIB, NATIVE, PAGED, SOURCE
++from target_contract import BUNDLE, JOBS, METALLIB, PAGED, SOURCE
+ 
+ 
+ def write_new(path, raw):
+@@ -50,14 +50,15 @@
+             same({k:v for k,v in after.items() if k != 'raw'}, before, 'Input/source changed: ' + str(filename))
+ 
+ 
+-def verify_package(root, wanted, pins):
++def verify_package(root, wanted, pins, fixture):
++    require(fixture in JOBS, 'Unknown native fixture')
+     root = Path(root)
+     require(root.is_dir() and root.resolve() == root, 'Package path contains a link')
+     mode = root.stat()
+     require(mode.st_uid == os.geteuid() and mode.st_mode & 0o077 == 0, 'Package must be private and owned')
+     package = parse(pins.read(root/'package.json', 1024**2, wanted)['raw'])
+     fields(package, 'schema files', 'package')
+-    same(package['schema'], 'target_verification_session_supervisor_package_v1', 'package schema')
++    same(package['schema'], 'window_state_native_supervisor_package_v1', 'package schema')
+     rows = package['files']
+     require(type(rows) is list and 16 <= len(rows) <= 64, 'Package member count differs')
+     seen, total = set(), 0
+@@ -70,23 +71,23 @@
+                 and name not in seen and relative.parts[0] != 'runs', 'Unsafe package member')
+         size = integer(row['bytes'], 'package bytes', 0, 200_000_000)
+         total += size
+-        require(total < 250_000_000, 'Package total bound')
++        require(total < 400_000_000, 'Package total bound')
+         item = pins.read(root/relative, max(size, 1), row['sha256'], keep=False)
+         same(item['size_bytes'], size, 'Package member size')
+         seen.add(name)
+     required = {'run_target.py', 'target_supervision.py', 'target_contract.py', 'target_inputs.py',
+         'target_processes.py', 'worker_processes.py', 'worker_contract.py', 'reference_resources.py',
+         'binding_common.py', 'binding_inputs.py', 'mtp_journal.py',
+-        'stage_checks/__init__.py', 'stage_checks/common.py', 'bundle/bundle.json'}
++        'stage_checks/__init__.py', 'stage_checks/common.py', 'bundle/bundle.json',
++        'window_result.py', 'session_result.py', 'transaction_result.py'}
+     require(required <= seen, 'Package runtime closure missing')
+     bundle = parse(pins.read(root/'bundle/bundle.json', 16384, BUNDLE)['raw'])
+-    same(bundle['schema'], 'target_verification_session_check_bundle_v1', 'native bundle schema')
++    same(bundle['schema'], 'window_state_and_target_checks_bundle_v1', 'native bundle schema')
+     same(bundle['sourceSnapshotSHA256'], SOURCE, 'native source snapshot')
+-    same(bundle['runArguments'], ['run-tiny-session-on-gpu'], 'native command')
+-    same(bundle['processAlarmSeconds'], 60, 'native alarm')
+-    expected = {'TargetVerificationSessionCheck': NATIVE, 'mlx.metallib': METALLIB,
+-        'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal': PAGED}
+-    require(type(bundle['files']) is list and len(bundle['files']) == 3, 'Native resource closure')
++    same(bundle['jobs'], {k:{a:b for a,b in v.items() if a != 'sha256'} for k,v in JOBS.items()}, 'native commands/alarms')
++    expected = {job['product']:job['sha256'] for job in JOBS.values()}
++    expected.update({'mlx.metallib': METALLIB, 'mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal': PAGED})
++    require(type(bundle['files']) is list and len(bundle['files']) == 5, 'Native resource closure')
+     actual = set()
+     for row in bundle['files']:
+         fields(row, 'path bytes sha256', 'native resource')
+@@ -96,6 +97,7 @@
+         require(any(x == dict(path='bundle/'+row['path'], bytes=row['bytes'], sha256=row['sha256'])
+                     for x in rows), 'Native resource differs from package member')
+     pins.read(root/'native-contract/source-snapshot.json', 4*1024**2, SOURCE, keep=False)
+-    require((root/'bundle/TargetVerificationSessionCheck').stat().st_mode & stat.S_IXUSR, 'Native entry is not executable')
+-    return dict(packageSHA256=wanted, nativeSHA256=NATIVE, sourceSnapshotSHA256=SOURCE,
++    for job in JOBS.values():
++        require((root/'bundle'/job['product']).stat().st_mode & stat.S_IXUSR, 'Native entry is not executable')
++    return dict(packageSHA256=wanted, fixture=fixture, nativeSHA256=JOBS[fixture]['sha256'], sourceSnapshotSHA256=SOURCE,
+         bundleSHA256=BUNDLE, metallibSHA256=METALLIB, packageMembers=len(rows), packageBytes=total)
+--- a/package/target_processes.py
++++ b/package/target_processes.py
+@@ -10,7 +10,7 @@
+ COMMAND = ['/bin/ps', '-Aww', '-o', 'pid=,uid=,comm=']
+ OUTPUT_LIMIT = 1024 * 1024
+ NATIVE_OR_OWNER_NAMES = frozenset({'cluster-inference', 'owner-controller', 'targetverificationcheck', 'targetverificationsessioncheck',
+-    'mtptinyforwardcheck', 'mtpselectedloadcheck'})
++    'mtptinyforwardcheck', 'mtpselectedloadcheck', 'windowedrequeststatecheck'})
+ 
+ 
+ def parse_processes(raw):
+--- a/package/target_supervision.py
++++ b/package/target_supervision.py
+@@ -4,7 +4,7 @@
+ import time
+ 
+ from binding_common import require
+-from target_contract import validate_result
++from target_contract import JOBS, validate_result
+ from target_inputs import write_json
+ from worker_processes import PipeWorkers, cleanup_error_text
+ 
+@@ -21,13 +21,15 @@
+     return rows
+ 
+ 
+-def serve(spec, run, started, gate, pins, postflight):
++def serve(spec, run, started, gate, pins, postflight, fixture):
+     deadline = started + 90
+-    result = dict(schema='target_verification_session_observation_v1', status='starting',
++    job = JOBS[fixture]
++    result = dict(schema='window_state_native_observation_v1', fixture=fixture, status='starting',
+         primaryFailure=None, postflightErrors=[], cleanupErrors=[], nativeResult=None,
+         nativeLeaderReaped=False, ownedGroupsAbsent=False, outputComplete=False,
+         sourceInputsUnchanged=False, journalEmptyAfterExit=False, processInventoryClear=False,
+-        fabricatedTargetWeights=True, modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False,
++        fabricatedTargetWeights=fixture != 'target', modelTrunkExecutionObserved=False, registeredCheckpointExecution=False, bilateralVerification=False,
++        windowStateExecutionObserved=False, sharedTargetTransactionObserved=False,
+         registeredProfileExecution=False, throughputMeasurementValid=False,
+         protocolOwnerLeaseReleaseObserved=False, journalMutationPerformed=False)
+     pipes, primary = None, None
+@@ -53,15 +55,17 @@
+             signal.signal(number, interrupted)
+         guard('prelaunch')
+         seconds = int(deadline-time.monotonic())
+-        require(seconds >= 61, 'Insufficient original parent lifetime for native 60s alarm and cleanup')
++        require(seconds >= job['processAlarmSeconds'] + 1, 'Insufficient original parent lifetime for native alarm and cleanup')
+         pipes = PipeWorkers((spec,), run/'native', seconds, guard)
+         pipes.start()
+         write_json(run/'owner.json', dict(nativePIDs=[p.pid for p in pipes.children],
+             nativePGIDs=[p.pid for p in pipes.children], supervisorPID=os.getpid(),
+-            nativeArgv=list(spec.argv), nativeEnvironment=dict(spec.env), nativeAlarmSeconds=60,
++            nativeArgv=list(spec.argv), nativeEnvironment=dict(spec.env), nativeAlarmSeconds=job['processAlarmSeconds'],
+             parentDeadlineMonotonic=deadline, remainingGroupWatchdogSeconds=seconds))
+-        result['nativeResult'] = pipes.collect('target-verification', lambda _, raw: validate_result(raw))[0]
+-        result['modelTrunkExecutionObserved'] = True
++        result['nativeResult'] = pipes.collect('native-state', lambda _, raw: validate_result(raw, fixture))[0]
++        result['modelTrunkExecutionObserved'] = fixture != 'target'
++        result['windowStateExecutionObserved'] = fixture == 'window'
++        result['sharedTargetTransactionObserved'] = fixture in ('session', 'target')
+         pipes.finish()
+         guard('native-completed')
+         result['status'] = 'completed'
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -61,10 +61,13 @@
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+     parser.add_argument('action',choices=['copy','run','collect'])
++    parser.add_argument('--fixture',choices=['window','session','target'])
+     args=parser.parse_args(); os.umask(0o077); commands=verify()
+-    directory=ROOT/('physical-'+args.action+'-1');directory.mkdir(mode=0o700)
++    require((args.action=='copy') == (args.fixture is None), 'Copy has no fixture; run/collect require one')
++    suffix='' if args.fixture is None else '-'+args.fixture
++    directory=ROOT/('physical-'+args.action+suffix+'-1');directory.mkdir(mode=0o700)
+     if args.action=='copy':
+-        code=execute(commands['copyProducer'],directory,'stream',180,output_cap=250*1024**2)
++        code=execute(commands['copyProducer'],directory,'stream',180,output_cap=400*1024**2)
+         require(code==0,'Local stream preparation failed')
+         with (directory/'stream.stdout').open('rb') as stream:
+             code=execute(commands['copyRemote'],directory,'ssh',commands['copyTimeoutSeconds'],stdin=stream)
+@@ -76,8 +79,8 @@
+     if args.action=='run':
+         require((ROOT/'physical-copy-1/ssh.execution.json').exists(),'Copy proof missing')
+         require(json.loads((ROOT/'physical-copy-1/ssh.execution.json').read_text())['exitCode']==0,'Copy did not succeed')
+-        return execute(commands['runRemote'],directory,'ssh',commands['runTimeoutSeconds'])
+-    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text()])
++        return execute(commands['runRemote'][args.fixture],directory,'ssh',commands['runTimeoutSeconds'])
++    command=shlex.join(['/usr/bin/python3','-B','-c',(ROOT/'collect_remote.py').read_text(),args.fixture])
+     code=execute(commands['sshPrefix']+[command],directory,'ssh',45)
+     require(code==0,'Read-only collection failed')
+     receipt=json.loads((directory/'ssh.stdout').read_text()); returned=directory/'returned';returned.mkdir(mode=0o700)
+--- /dev/null
++++ b/package/session_result.py
+@@ -0,0 +1,56 @@
++"""Closed result contract for actual tiny Qwen trunks and shared transactions."""
++import math
++from binding_common import fields, integer, parse, pin, require, same
++
++BASE_CASES = ['actual-trunk-keep-0-and-next-decode', 'actual-trunk-keep-1-and-next-decode',
++    'actual-trunk-keep-2-and-next-decode', 'actual-mismatching-draft-rollback-and-next-decode',
++    'actual-progressive-client-stop', 'actual-progressive-continue', 'actual-one-step-output-limit']
++FAILURE_CASES = ['actual-' + name + '-retired' for name in ['owner-before-stage',
++    'owner-after-two-stages', 'pending-snapshot', 'pending-decode', 'pending-finish',
++    'commit-then-reject-prefix', 'seed-eos']]
++
++
++def validate_result(raw):
++    require(type(raw) is bytes and 0 < len(raw) <= 16384, 'Native result exceeds its bound')
++    value = fields(parse(raw), 'fixture passed maximumLogitDifference stateComparison seedTokenID '
++        'ordinaryTargetChosenDraftTokenID eosAfterSeedExercised resourceLedger sourceTensorCount '
++        'sourceTensorBytes sourcePayloadSHA256 stageActiveTensorCounts sharedSessionTransactionExecuted '
++        'registeredProfileExecuted mtpAssistantProposalExecuted bilateralWireVerification '
++        'providerEligibilityEstablished', 'tiny Session result')
++    same(value['fixture'], 'fabricated-full-source-two-real-stages', 'actual fixture')
++    same(value['stateComparison'], 'exact-named-state-hashes-after-reconcile-and-next-decode', 'state comparison')
++    seed = integer(value['seedTokenID'], 'seed', 0, 127)
++    draft = integer(value['ordinaryTargetChosenDraftTokenID'], 'target-selected draft', 0, 127)
++    same(value['eosAfterSeedExercised'], draft != seed, 'actual conditional EOS')
++    expected = BASE_CASES + (['actual-progressive-eos'] if draft != seed else []) + FAILURE_CASES
++    same(value['passed'], expected, 'complete ordered native cases')
++    for name, wanted in [('sharedSessionTransactionExecuted', True), ('registeredProfileExecuted', False),
++            ('mtpAssistantProposalExecuted', False), ('bilateralWireVerification', False),
++            ('providerEligibilityEstablished', False)]:
++        same(value[name], wanted, name)
++    difference = value['maximumLogitDifference']
++    require(type(difference) in (int, float) and math.isfinite(difference)
++            and 0 <= difference <= 0.00001, 'Logit error exceeds native fixture tolerance')
++    count = integer(value['sourceTensorCount'], 'source count', 1, 4096)
++    integer(value['sourceTensorBytes'], 'source bytes', 1, 64*1024**2)
++    pin(value['sourcePayloadSHA256'])
++    stages = value['stageActiveTensorCounts']
++    require(type(stages) is list and len(stages) == 2, 'Two actual stage inventories required')
++    require(sum(integer(v, 'stage tensors', 1, 4096) for v in stages) == count,
++            'Disjoint stage source coverage differs')
++    ledger = fields(value['resourceLedger'], 'maximumTokens chunkTokens simultaneousPairs '
++        'perPairLogicalStateAndBoundaryBytes roundedStateAndBoundaryBytes fusionBytes '
++        'comparisonNativeBytes comparisonHostBytes transactionNativeBytes transactionHostBytes '
++        'wholeProcessBound', 'fixture ledger')
++    for name, wanted in [('maximumTokens', 9), ('chunkTokens', 2), ('simultaneousPairs', 2),
++            ('perPairLogicalStateAndBoundaryBytes', 108808), ('fusionBytes', 0),
++            ('comparisonHostBytes', 1024), ('wholeProcessBound', False)]:
++        same(ledger[name], wanted, name)
++    # Native rounding is runtime-derived, not replaced with a host estimate.
++    integer(ledger['roundedStateAndBoundaryBytes'], 'rounded state', 2*108808, 256*1024**2)
++    integer(ledger['comparisonNativeBytes'], 'comparison native', 4*128*4, 256*1024**2)
++    for name in ['transactionNativeBytes', 'transactionHostBytes']:
++        values = ledger[name]
++        require(type(values) is list and len(values) == 2, 'Two rank allowances required')
++        for item in values: integer(item, name, 0, 256*1024**2)
++    return value
+--- /dev/null
++++ b/package/transaction_result.py
+@@ -0,0 +1,13 @@
++"""Closed result and build identity for the actual CBv2 native-array fixture."""
++from binding_common import parse, require, same
++
++EXPECTED = dict(passed=['keep-0', 'keep-1', 'keep-2', 'progressive-stop',
++    'progressive-continue', 'open-binding-failure-retired', 'evaluated-failure-retired'],
++    fabricatedNativeArrays=True, modelExecution=False, bilateralVerification=False)
++
++
++def validate_result(raw):
++    require(type(raw) is bytes and 0 < len(raw) <= 16384, 'Native result exceeds its exact bound')
++    value = parse(raw)
++    same(value, EXPECTED, 'Native transaction result')
++    return value
+--- /dev/null
++++ b/package/window_result.py
+@@ -0,0 +1,26 @@
++"""Closed contract for actual mixed full/window cache execution, not Gemma weights."""
++from binding_common import parse, require, same
++
++GROUPS = ['actual-prefill2-decode1-type-probe', 'mixed-bf16-fp32-full-window',
++    'below-at-after-window-and-large-chunks', 'multiple-wraps-cpu-chronology',
++    'metadata-only-inspection', 'cpu-snapshot-survives-mutation', 'empty-recurrent-and-row-retirement',
++    'range-global-layout-fingerprint-separation']
++GROUPS += ['actual-refusal-and-retirement-' + name for name in ['row-identity', 'device-position',
++    'native-dtype', 'descriptor-shape', 'descriptor-window', 'lost-history', 'pending-window-write',
++    'output-validation', 'chunk-bound']]
++GROUPS += ['actual-post-evaluation-cancellation-retirement', 'actual-tiny-qwen-full-and-recurrent-forward',
++    'legacy-v1-snapshot-exact-control', 'legacy-nonempty-missing-recurrent-refusal']
++EXPECTED = dict(fixture='actual-cbv2-mixed-full-window-state', passed=GROUPS,
++    observedDTypes=['bfloat16', 'float32'], windowTokens=4, maximumTokens=32, maximumChunkTokens=7,
++    exactNativeKVCapacityBytes=8192, conservativeBackendReservationBytes=12288,
++    retainedWindowTemporaryBoundBytes=14336, maximumNativeActiveIncrementBytes=64*1024*1024,
++    sharedStateAndCacheExecuted=True, actualPrefill2Decode1Probe=True, legacyQwenActualForward=True,
++    gemmaModelExecuted=False, registeredWeightsLoaded=False, outerGemmaAdmissionQualified=False,
++    distributedExecutionQualified=False)
++
++
++def validate_result(raw):
++    require(type(raw) is bytes and 0 < len(raw) <= 16384, 'Native window result exceeds its bound')
++    value = parse(raw)
++    same(value, EXPECTED, 'Complete actual window-state result')
++    return value

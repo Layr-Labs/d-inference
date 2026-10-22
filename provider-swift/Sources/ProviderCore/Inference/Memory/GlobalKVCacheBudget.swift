@@ -71,10 +71,12 @@ public actor GlobalKVCacheBudget {
 
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0` restores the threshold-only sweep,
     /// which may flush between busy engines' steps.
+    static let idleCacheSweepEnvironmentKey = "DARKBLOOM_TTFT_IDLE_CACHE_SWEEP"
+
     static func idleCacheSweepEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        environment["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP"] != "0"
+        environment[idleCacheSweepEnvironmentKey] != "0"
     }
 
     /// Ask engines to drop retained free KV segments, then wait briefly for it

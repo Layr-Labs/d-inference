@@ -39,7 +39,7 @@ extension EngineV2Factory {
                 retainedFreeSegmentBytes: retention
                     ? min(retainedFreeSegmentCapBytes, admittedGrantBytes / 8) : 0,
                 hostZeroedSegments: retention
-                    && environment["DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS"] != "0"),
+                    && environment[segmentHostZerosEnvironmentKey] != "0"),
             slabCommitment: .atFirstAdmission,
             residentPrefixCache: residentPrefixCache)
     }
@@ -52,9 +52,12 @@ extension EngineV2Factory {
     /// `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` restores release-time segment
     /// retirement and the per-segment device zero fill plus stream fence;
     /// `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps retention with device fills.
+    static let segmentRetentionEnvironmentKey = "DARKBLOOM_TTFT_SEGMENT_RETENTION"
+    static let segmentHostZerosEnvironmentKey = "DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS"
+
     static func segmentRetentionEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        environment["DARKBLOOM_TTFT_SEGMENT_RETENTION"] != "0"
+        environment[segmentRetentionEnvironmentKey] != "0"
     }
 }

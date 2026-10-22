@@ -16,8 +16,17 @@ struct ModelBenchmarkDispatchTests {
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp_text"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "prism_hadamard_qwen35"))
+        // Flint's scalar caches are not paged; it benchmarks through the production session.
+        #expect(ModelBenchmark.usesNativeGeneration(modelType: "flint"))
         for modelType in [nil, "qwen3_5", "qwen3_5_text", "gemma4", "nemotron_h"] {
             #expect(!ModelBenchmark.usesNativeGeneration(modelType: modelType))
+        }
+    }
+
+    @Test func flintSweepNeverRunsScalarPrefill() {
+        #expect(!ThroughputSweep.measuresScalarPrefill(modelType: "flint"))
+        for modelType in [nil, "qwen3_5", "gemma4", "Flint", "flint_mtp"] as [String?] {
+            #expect(ThroughputSweep.measuresScalarPrefill(modelType: modelType))
         }
     }
 

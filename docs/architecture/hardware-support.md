@@ -524,6 +524,35 @@ values, including a literal `4` from older configs, are kept.
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
 
+### GDN prompt kernels by GPU
+
+Gated DeltaNet prompt windows of the Qwen model types named in
+[inference](inference.md#context) take a four-row kernel only on a GPU where it
+reproduces the stock `gated_delta_step` bit for bit, so on every chip outputs
+and recurrent checkpoints keep the stock kernel's bits. No chip list decides
+this: in each process, the first eligible window of each kernel instantiation
+runs the candidates and the stock kernel on a fixed 32-position window on that
+GPU and keeps the first exact candidate, or else the stock kernel
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+`GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
+kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) restores
+the stock kernel.
+
+| GPU | Speed qualification |
+|---|---|
+| M5 Ultra (80-core) | Per-layer recurrence 1.45-1.70x faster (bf16 inputs, fp32 state, 512 and 4,096 positions); the probe keeps `packed` at the Qwen3.5-9B, Qwen3.8-27B and Qwen3.5-35B-A3B head geometries |
+| M3 Ultra | Qwen3.5-9B cold prefill takes 1.1-1.3% less time at 2,048, 8,192 and 32,768 prompt tokens (`darkbloom benchmark --scheduler-prefill`, probe against the stock kernel, A/B/A on one binary) |
+| Every other GPU | Unmeasured: bit-exact through the probe, speed unknown. `GatedDeltaPrefillTests` prints per-layer timings with `DARKBLOOM_GDN_PREFILL_BENCH=1` |
+
+The selected kernel has the stock kernel's inputs, outputs and fp32 state, so
+steady-state memory is unchanged. The probe allocates transiently, once per
+kernel instantiation and process: a 32-position window and up to four fp32
+recurrent states, at most about 16 MiB at Qwen3.8-27B's 48 value heads of 128.
+Capacity compatibility: no full-load quotation, measured activation floor, KV
+grant or reported capacity field changes, so
+[platform admission](#cross-repository-agreement) needs no change.
+
 ## Invariants
 
 1. New KV charges must fit the current unified cap, OS availability and activation

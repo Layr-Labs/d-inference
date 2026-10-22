@@ -1158,7 +1158,10 @@ extension ProviderLoop {
     }
 
     private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
+        // Retained free KV segments count: the load path releases them before
+        // it evicts or refuses.
         Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+            + Double(CBv2RetainedKVSegments.retainedBytes) / 1_073_741_824.0
     }
 
     /// What unloading `slots` and clearing MLX's buffer cache hands back:
@@ -1188,9 +1191,11 @@ extension ProviderLoop {
         weightsGb: Double, allowEviction: Bool = true,
         waitForQwen4Retirement: Bool = false
     ) async throws {
-        // Busy engines keep the MLX buffer pool (idle-gated sweep), so drop
-        // that reusable pool once before unloading a resident model for room.
+        // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
+        // retained free KV segments, so drop both once before unloading a
+        // resident model for room.
         var poolDropped = !GlobalKVCacheBudget.idleCacheSweepEnabled()
+            && !EngineV2Factory.segmentRetentionEnabled()
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1237,6 +1242,7 @@ extension ProviderLoop {
                 // Nothing idle to evict — drop the reclaimable pool and resample
                 // before failing, so a pool-inflated box isn't refused a load
                 // that fits. Same self-heal as fastAdmissionReject.
+                await GlobalKVCacheBudget.releaseRetainedKVSegments()
                 clearCacheAfterConfirmedNativeOwnership()
                 let retried = await availableMemoryGb()
                 let retriedRequiredGb = ModelLoadAdmission.requiredToLoadGb(
@@ -1252,6 +1258,7 @@ extension ProviderLoop {
             }
             if !poolDropped {
                 poolDropped = true
+                await GlobalKVCacheBudget.releaseRetainedKVSegments()
                 clearCacheAfterConfirmedNativeOwnership()
                 continue
             }
@@ -1375,6 +1382,7 @@ extension ProviderLoop {
         // Not enough free memory and nothing idle to evict. Drop the reclaimable
         // pool and resample once before rejecting (the wedge self-heal).
         if available < requiredGb && !hasEvictable {
+            await GlobalKVCacheBudget.releaseRetainedKVSegments()
             clearCacheAfterConfirmedNativeOwnership()
             let retried = await availableMemoryGb()
             // The retry sample is another suspension: re-resolve the

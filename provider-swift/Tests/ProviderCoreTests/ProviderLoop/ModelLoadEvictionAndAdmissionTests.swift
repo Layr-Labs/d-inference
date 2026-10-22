@@ -87,6 +87,29 @@ struct ModelLoadEvictionAndAdmissionTests {
         #expect(stub.engine.shutdownCalls == 1)
     }
 
+    @Test("retained KV segments are released before an idle model is evicted")
+    func retainedSegmentsReleaseBeforeEviction() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = "test/large-idle-retained"
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1)
+        let stub = makeInertStubBridge(modelId: id)
+        await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: 100 << 30)
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        // The pinned sample never changes, so the release cannot make room and
+        // the eviction still follows; the load path must have released on the way.
+        await #expect(throws: InferenceError.self) {
+            try await loop.evictUntilAvailable(weightsGb: 10)
+        }
+        #expect(engine.parkedBytes == 0)
+        #expect(stub.engine.shutdownCalls == 1)
+    }
+
     @Test("a model with a live request is never evicted")
     func busyModelIsNotEvicted() async throws {
         let sandbox = try ModelLoadingSandbox()

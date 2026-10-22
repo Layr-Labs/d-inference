@@ -77,6 +77,19 @@ public actor GlobalKVCacheBudget {
         environment["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP"] != "0"
     }
 
+    /// Ask engines to drop retained free KV segments, then wait briefly for it
+    /// (idle engines honor it within a recheck, busy ones at their next step)
+    /// so a load-time resample sees that memory. Host-zeroed backing returns
+    /// to the OS when dropped; device-filled backing reaches the MLX cache.
+    static func releaseRetainedKVSegments(timeout: Duration = .milliseconds(250)) async {
+        guard CBv2RetainedKVSegments.retainedBytes > 0 else { return }
+        CBv2RetainedKVSegments.requestRelease()
+        let deadline = ContinuousClock.now + timeout
+        while CBv2RetainedKVSegments.retainedBytes > 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
     /// Swift initializes this once, on first use. Keep constructors free of MLX
     /// access so callers can bind the immutable runtime metallib before serving.
     /// The ledger invokes this before its lock; native owners warm it even earlier,

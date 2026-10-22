@@ -1,5 +1,7 @@
 import Foundation
+import MLX
 import Testing
+@testable import MLXLMCommon
 @testable import ProviderCore
 
 private let gib: UInt64 = 1024 * 1024 * 1024
@@ -182,6 +184,49 @@ struct KVPoolIdleSweepTests {
             .init(total: 64 * gib, active: 0, cache: 0, systemAvailable: 64 * gib)
         })
         #expect(!budget.signalsEngineRefusals)
+    }
+
+    @Test("a load-time release waits for engine steps to drop retained KV segments")
+    func loadReleaseWaitsForEngineSteps() async throws {
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        #expect(CBv2RetainedKVSegments.retainedBytes >= engine.parkedBytes)
+        let steps = engine.start()
+        defer { steps.cancel() }
+        await GlobalKVCacheBudget.releaseRetainedKVSegments(timeout: .seconds(2))
+        #expect(engine.parkedBytes == 0)
+    }
+}
+
+/// One paged pool holding parked free segments, plus an engine-queue stand-in
+/// that honors process-wide release requests at each step like `EngineLoopV2`.
+/// Host-zeroed 16 KiB pages keep segment growth free of GPU work.
+final class RetainingEngineStub: @unchecked Sendable {
+    private let lock = NSLock()
+    private let backend: PagedKVBackend
+
+    init() throws {
+        let kind = CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 2, queryHeads: 4)
+        backend = try PagedKVBackend(layerKinds: [kind], config: .init(
+            capacityBytes: 8 << 20, dtype: .bfloat16, maxPrefillChunk: 512,
+            nominalMaxSequenceLength: 2048, maxBufferLength: 16 << 20,
+            segmentSizeBytes: 9 * 16_384, retainedFreeSegmentBytes: 4 << 20,
+            hostZeroedSegments: true))
+        let rows = try backend.makeSequenceState(layerKinds: [kind], promptLength: 0, maxLength: 64)
+        backend.release(rows)
+    }
+
+    var parkedBytes: Int { lock.withLock { backend.pool.retainedSegmentBytes } }
+
+    func step() { lock.withLock { backend.pool.releaseRetainedSegmentsIfRequested() } }
+
+    func start() -> Task<Void, Never> {
+        Task.detached { [self] in
+            while !Task.isCancelled {
+                step()
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
     }
 }
 

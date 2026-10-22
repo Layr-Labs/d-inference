@@ -51,7 +51,7 @@ tagging):
 | A cache plan applies only to a matching prompt contract | [`registry/cache_tiers.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/cache_tiers.go) (`CapabilityMatchesPlan`) |
 | Super has a per-identity provider-version floor | [`registry/catalog_version_floor.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`, unset there; [darkbloom-platform#400](https://github.com/Layr-Labs/darkbloom-platform/pull/400) sets `0.10.0`) |
 | GLM-5.3-Flash requires `glm5_next_v1` | [`registry/provider_capabilities.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/provider_capabilities.go) (`ProviderCapabilityGLM5Next`, `embeddedRequiredProviderCapabilities`) |
-| Production `74e9f989` has neither gate | Neither symbol exists in [`coordinator/registry` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
+| Production `74e9f989` has neither gate | Neither symbol exists in the [platform registry package at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
 
 `v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
 from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was

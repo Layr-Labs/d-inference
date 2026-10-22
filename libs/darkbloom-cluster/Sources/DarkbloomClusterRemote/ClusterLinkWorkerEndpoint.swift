@@ -62,7 +62,10 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// command (`ClusterWorkerLimits.commandBytes`, a reservation with a
     /// `wirePromptTokens` prompt) is 4/3 of it, with room for the other fields.
     public static let maximumBytes = 12 * 1024 * 1024
-    public static let version = 1
+    /// 2: carries worker protocol 2 (`ClusterWorkerLimits.version`, packed
+    /// prompt tokens), so a leader and a follower of different builds refuse
+    /// each other at the session's open.
+    public static let version = 2
 
     public enum Kind: String, Codable, Sendable {
         // Leader to follower.

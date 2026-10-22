@@ -6,10 +6,15 @@ public enum ClusterWorkerProtocolError: Error, Equatable, Sendable {
 
 /// Software ceilings, never permission to allocate native state or load a model.
 public enum ClusterWorkerLimits {
-    public static let version = 1
-    /// A reservation carries its whole prompt as JSON token IDs (at most seven
-    /// bytes each for a vocabulary below 1,000,000): 8 MiB holds a
-    /// `wirePromptTokens` prompt with its stop tokens, sampling and routes.
+    /// 2: a reservation's prompt crosses as packed little-endian UInt32 token
+    /// IDs in base64 (`promptTokens`, with `promptTokenCount`) instead of a
+    /// JSON number array. Every record carries the version and every reader
+    /// refuses another, and the runtime capability carries it too, so
+    /// mismatched builds refuse at pairing and setup, never inside a request.
+    public static let version = 2
+    /// A reservation carries its whole prompt as packed token IDs (four bytes
+    /// each, 5 1/3 in base64): 8 MiB holds a `wirePromptTokens` prompt with its
+    /// stop tokens, sampling and routes.
     public static let commandBytes = 8 * 1024 * 1024
     /// The one larger command: a reservation carrying GLM media bytes to the
     /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,

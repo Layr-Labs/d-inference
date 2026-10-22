@@ -239,7 +239,8 @@ public enum ClusterWorkerCodec {
         return value
     }
     private static func reservation(_ r: ClusterWorkerReservation) throws -> [String: Any] {
-        var value: [String: Any] = ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,
+        var value: [String: Any] = ["profileID": r.profileID, "promptTokens": try packedTokens(r.promptTokenIDs),
+         "promptTokenCount": r.promptTokenIDs.count, "stopTokenIDs": r.stopTokenIDs,
          "outputCount": r.outputCount, "chunkSize": r.chunkSize,
          "deadlineUptimeNanoseconds": NSNumber(value: r.deadlineUptimeNanoseconds), "capacityLimitBytes": r.capacityLimitBytes]
         // Greedy text has no field at all, so its bytes are unchanged.
@@ -261,6 +262,47 @@ public enum ClusterWorkerCodec {
         if let media = r.glmMedia { value["glmMedia"] = media.wireObject() }
         return value
     }
+    /// A prompt's token IDs as packed little-endian UInt32 in base64: one JSON
+    /// string instead of one number per token, so each hop a reservation takes
+    /// (provider, link, owner, worker) parses and re-encodes it in a fraction
+    /// of the time. Token IDs are below `ClusterWorkerLimits.vocabularySize`
+    /// (validated before encoding); anything outside UInt32 is refused here.
+    public static func packedTokens(_ tokens: [Int]) throws -> String {
+        var bytes = [UInt8](repeating: 0, count: tokens.count * 4)
+        for (index, token) in tokens.enumerated() {
+            guard let value = UInt32(exactly: token) else { throw ClusterWorkerProtocolError.invalid("Token ID outside UInt32") }
+            bytes[index * 4] = UInt8(truncatingIfNeeded: value)
+            bytes[index * 4 + 1] = UInt8(truncatingIfNeeded: value >> 8)
+            bytes[index * 4 + 2] = UInt8(truncatingIfNeeded: value >> 16)
+            bytes[index * 4 + 3] = UInt8(truncatingIfNeeded: value >> 24)
+        }
+        return Data(bytes).base64EncodedString()
+    }
+
+    /// `packedTokens`' inverse: canonical base64 only (re-encoding gives the
+    /// same text), exactly `count` four-byte IDs, `count` within the wire's
+    /// prompt bound. Ranges against the vocabulary are the reservation's own
+    /// validation, as before.
+    public static func unpackedTokens(_ encoded: String, count: Int) throws -> [Int] {
+        try workerRequire((1...ClusterWorkerLimits.wirePromptTokens).contains(count)
+            && encoded.utf8.count == (count * 4 + 2) / 3 * 4, "Invalid packed token count")
+        guard let data = Data(base64Encoded: encoded), data.count == count * 4,
+              data.base64EncodedString() == encoded else {
+            throw ClusterWorkerProtocolError.invalid("Invalid packed tokens")
+        }
+        let bytes = [UInt8](data)
+        var tokens = [Int](repeating: 0, count: count)
+        for index in 0 ..< count {
+            let base = index * 4
+            var value = UInt32(bytes[base])
+            value |= UInt32(bytes[base + 1]) << 8
+            value |= UInt32(bytes[base + 2]) << 16
+            value |= UInt32(bytes[base + 3]) << 24
+            tokens[index] = Int(value)
+        }
+        return tokens
+    }
+
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
         var r = WorkerObject(object)
         let sampling = r.values["sampling"] == nil ? nil : try ClusterWorkerSamplingCodec.decode(r.object("sampling"))
@@ -288,7 +330,9 @@ public enum ClusterWorkerCodec {
             media = try ClusterMiMoImages.decodeBounded(bytes)
         } else { media = nil }
         let glmMedia = r.values["glmMedia"] == nil ? nil : try ClusterGLMMedia.decode(wire: r.object("glmMedia"))
-        let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: r.ints("promptTokenIDs"),
+        let promptTokenCount = try r.int("promptTokenCount")
+        let promptTokenIDs = try unpackedTokens(r.string("promptTokens"), count: promptTokenCount)
+        let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: promptTokenIDs,
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
             sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia)

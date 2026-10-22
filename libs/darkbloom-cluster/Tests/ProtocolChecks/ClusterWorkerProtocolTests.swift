@@ -53,7 +53,7 @@ private struct Conversation {
 @main
 struct ClusterWorkerProtocolTests {
     static func main() throws {
-        try fullLengthOutput(); try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
+        try fullLengthOutput(); try roundTrips(); try packedPromptRoundTrip(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
         try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try laneCancellation()
         try tensorParallelModes()
         try logprobs()
@@ -256,20 +256,59 @@ struct ClusterWorkerProtocolTests {
         let unknown = String(decoding: routedBytes, as: UTF8.self).replacingOccurrences(of: "decoding_rank_alone", with: "both_ranks_alone")
         try check((try? ClusterWorkerCodec.decodeCommand(Data(unknown.utf8))) == nil, "An unknown route is refused")
     }
+    /// Packed prompt tokens round-trip exactly: the smallest and largest IDs
+    /// the wire admits, a long prompt, and every byte position's carries.
+    static func packedPromptRoundTrip() throws {
+        let edge = [0, 1, 255, 256, 65_535, 65_536, 16_777_215, 16_777_216].filter { $0 < ClusterWorkerLimits.vocabularySize }
+            + [ClusterWorkerLimits.vocabularySize - 1]
+        let long = (0 ..< 31_563).map { ($0 * 7919 + 13) % ClusterWorkerLimits.vocabularySize }
+        for prompt in [edge, long, [7]] {
+            let value = ClusterWorkerReservation(profileID: "large", promptTokenIDs: prompt, stopTokenIDs: [],
+                outputCount: 1, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+            let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 3, requestID: requestID, command: .reserve(value))
+            let bytes = try ClusterWorkerCodec.encode(frame)
+            try check(try ClusterWorkerCodec.decodeCommand(bytes) == frame, "Packed prompt round trip (\(prompt.count) tokens)")
+            try check(try ClusterWorkerCodec.unpackedTokens(ClusterWorkerCodec.packedTokens(prompt), count: prompt.count) == prompt,
+                "Packed tokens invert")
+        }
+        // A negative or oversized ID never reaches the packing (validation), and the packing itself refuses it.
+        try refuses { _ = try ClusterWorkerCodec.packedTokens([-1]) }
+        try refuses { _ = try ClusterWorkerCodec.packedTokens([1 << 32]) }
+        try refuses { _ = try ClusterWorkerCodec.unpackedTokens("", count: 0) }
+    }
     static func malformedJSON() throws {
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(reservation()))
         let raw = String(decoding: try ClusterWorkerCodec.encode(frame), as: UTF8.self)
-        let mutations = [raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":2"),
-            raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":true"),
-            raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":1.0"),
-            raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":1e0"),
-            raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":1,\"version\":1"),
-            raw.replacingOccurrences(of: "\"version\":1", with: "\"version\":1,\"ver\\u0073ion\":1"),
+        let v = ClusterWorkerLimits.version
+        try check(raw.contains("\"version\":\(v)") && raw.contains("\"promptTokenCount\":3")
+            && raw.contains("\"promptTokens\":\"AQAAAAIAAAADAAAA\"") && !raw.contains("promptTokenIDs"),
+            "A reservation carries its prompt packed, as little-endian UInt32 in base64")
+        let mutations = [raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":\(v + 1)"),
+            // The previous protocol's record is refused, not misread.
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":1"),
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":true"),
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":\(v).0"),
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":\(v)e0"),
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":\(v),\"version\":\(v)"),
+            raw.replacingOccurrences(of: "\"version\":\(v)", with: "\"version\":\(v),\"ver\\u0073ion\":\(v)"),
             raw.replacingOccurrences(of: "\"outputCount\":2", with: "\"outputCount\":true"),
             raw.replacingOccurrences(of: "\"outputCount\":2", with: "\"outputCount\":0"),
             raw.replacingOccurrences(of: "\"outputCount\":2", with: "\"outputCount\":18446744073709551616"),
             raw.replacingOccurrences(of: "\"sequence\":0", with: "\"sequence\":-1"),
-            raw.replacingOccurrences(of: "\"promptTokenIDs\":[1,2,3]", with: "\"promptTokenIDs\":[1,true,3]"),
+            // Packed tokens: a count that differs, a truncated or padded text,
+            // a character outside base64, the old array, either field missing.
+            raw.replacingOccurrences(of: "\"promptTokenCount\":3", with: "\"promptTokenCount\":2"),
+            raw.replacingOccurrences(of: "\"promptTokenCount\":3", with: "\"promptTokenCount\":4"),
+            raw.replacingOccurrences(of: "\"promptTokenCount\":3", with: "\"promptTokenCount\":true"),
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "\"AQAAAAIAAAADAAA=\""),
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "\"AQAAAAIAAAADAAAAAA==\""),
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "\"AQAAAAIAAAADAAA!\""),
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "\"AQAAAAIAAAAD AAAA\""),
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "[1,2,3]"),
+            raw.replacingOccurrences(of: "\"promptTokens\":\"AQAAAAIAAAADAAAA\",", with: ""),
+            raw.replacingOccurrences(of: "\"promptTokenCount\":3,", with: ""),
+            // A token ID beyond the wire's vocabulary bound, packed: refused by validation.
+            raw.replacingOccurrences(of: "\"AQAAAAIAAAADAAAA\"", with: "\"AQAAAAIAAAD/////\""),
             raw.replacingOccurrences(of: "\"stopTokenIDs\":[]", with: "\"stopTokenIDs\":[2,2]"),
             raw.replacingOccurrences(of: "\"stopTokenIDs\":[]", with: "\"stopTokenIDs\":[2,1]"),
             raw.replacingOccurrences(of: "\"profileID\":\"greedy-text\"", with: "\"profileID\":\"greedy-text\",\"extra\":0"),
@@ -277,7 +316,7 @@ struct ClusterWorkerProtocolTests {
             raw.replacingOccurrences(of: requestID.uuidString.lowercased(), with: requestID.uuidString),
             String(raw.dropLast()), raw + raw, "[]\n", "{\"version\":NaN}\n"]
         for value in mutations { try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(value.utf8)) } }
-        let shutdown = "{\"kind\":\"shutdown\",\"membershipEpoch\":\"\(epoch.uuidString.lowercased())\",\"requestID\":null,\"sequence\":0,\"version\":1}\n"
+        let shutdown = "{\"kind\":\"shutdown\",\"membershipEpoch\":\"\(epoch.uuidString.lowercased())\",\"requestID\":null,\"sequence\":0,\"version\":\(v)}\n"
         try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(shutdown.utf8)) }
         let deep = "{\"extra\":" + String(repeating: "[", count: 17) + "0" + String(repeating: "]", count: 17) + "}\n"
         try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(deep.utf8)) }

@@ -161,14 +161,14 @@ ssdscheme=darkbloom/prefix-ssd-key/input-line/v1
 ssdepoch=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 ssdkey="$(printf '%064d' 0 | tr 0 a)"
 ssdline() { # EPOCH RANK BASE64KEY
-  printf '{"version":1,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":%s,"key":"%s"}\n' "$1" "$2" "$3"
+  printf '{"version":2,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":%s,"key":"%s"}\n' "$1" "$2" "$3"
 }
 ssdkey32="$(head -c 32 /dev/zero | tr '\0' 'k' | base64)"
 ssdline "$ssdepoch" 0 "$ssdkey32" > "$work/ssd-good"
 ssdline "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" 0 "$ssdkey32" > "$work/ssd-other-epoch"
 ssdline "$ssdepoch" 1 "$ssdkey32" > "$work/ssd-other-rank"
 ssdline "$ssdepoch" 0 "$(head -c 16 /dev/zero | base64)" > "$work/ssd-short-key"
-printf '{"version":1,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":0,"key":"%s","extra":1}\n' "$ssdepoch" "$ssdkey32" > "$work/ssd-extra-field"
+printf '{"version":2,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":0,"key":"%s","extra":1}\n' "$ssdepoch" "$ssdkey32" > "$work/ssd-extra-field"
 check prefix-ssd-key-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
   "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR=$work/ssd" --
 check prefix-ssd-key-file-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE is never read from the environment" "" \

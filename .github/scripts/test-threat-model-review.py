@@ -752,7 +752,8 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 60", source)
         self.assertIn("THREAT_REVIEW_TIMEOUT_SECONDS: '3000'", source)
         self.assertIn("BEDROCK_SCAN_CALL_POLICY: workload", source)
-        self.assertIn("BEDROCK_SCAN_MAX_WORKLOAD_CALLS: '100'", source)
+        self.assertIn("BEDROCK_SCAN_MAX_WORKLOAD_CALLS: ${{ vars.BEDROCK_SCAN_MAX_WORKLOAD_CALLS || '500' }}", source)
+        self.assertIn("BEDROCK_SCAN_MAX_OUTPUT_TOKENS: ${{ vars.BEDROCK_SCAN_MAX_OUTPUT_TOKENS || '16384' }}", source)
         self.assertNotIn("BEDROCK_SCAN_MAX_CALLS:", source)
         review_job = source.split("\n  review:\n", 1)[1]
         self.assertNotIn("workflow_dispatch", review_job)

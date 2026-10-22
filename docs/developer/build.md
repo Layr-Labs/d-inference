@@ -257,6 +257,8 @@ bounded recovery, retained findings and denial of incomplete/stale clearance;
 a successful normal response alone does not test recovery.
 CI admits source, selected depth and integration work from the actual batch plan,
 with an emergency ceiling and a bounded deadline that leaves time for reporting.
+Native workload defaults allow larger reviews and output; maintainers can lower
+the dedicated call ceiling and output settings without a code change.
 Paid manual dispatches and job reruns are disabled; incomplete final reviews
 explicitly hand off to a human. See the verification guide for the exact limits.
 

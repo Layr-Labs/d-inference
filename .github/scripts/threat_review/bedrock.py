@@ -48,12 +48,13 @@ class BedrockCalls:
             raise ReviewUnavailable("Invalid BEDROCK_SCAN_CALL_POLICY")
         # CI plans the actual source/depth/integration work. Standalone probes
         # retain their explicitly bounded fixed allowance.
-        self.ceiling = (bounded(env, "BEDROCK_SCAN_MAX_WORKLOAD_CALLS", 100, 1, 100)
+        self.ceiling = (bounded(env, "BEDROCK_SCAN_MAX_WORKLOAD_CALLS", 500, 1, 500)
                         if self.call_policy == "workload" else
                         bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100))
         self.limit = self.ceiling if self.call_policy == "fixed" else 0
         self.planned_calls = 0
-        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS", 4096, 256, 16384)
+        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS",
+                                     16384 if self.call_policy == "workload" else 4096, 256, 16384)
         self.calls = self.fallbacks = self.input_tokens = self.output_used = 0
         self.cache_read_input_tokens = self.cache_write_input_tokens = 0
         self.unknown = 0

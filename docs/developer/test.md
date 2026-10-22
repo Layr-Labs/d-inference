@@ -726,9 +726,11 @@ and findings after final-result write failure. Merge-gate tests reject artifacts
 from another run/attempt even for the same revisions. PR closure has a distinct
 lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
-Workload tests segment a real large fixture into 31 source batches, then complete
-all three selected models, hierarchical integrations and one repair within the
-emergency ceiling. Lifecycle tests verify stage admission failure identifies the
+Workload tests segment large fixtures into 31 and 62 source batches, then complete
+all three selected models, hierarchical integrations and one repair, including
+a 197-request scan beyond the former emergency ceiling. Adapter tests stop after
+exactly 500 requests, apply the larger native output default and preserve fixed
+probe limits. Lifecycle tests verify stage admission failure identifies the
 unadmitted integration rather than the previous source call, manual GitHub job
 reruns perform no paid work, runtime configuration stays bounded and every final
 incomplete outcome requires human review. Workflow checks restrict manual dispatch

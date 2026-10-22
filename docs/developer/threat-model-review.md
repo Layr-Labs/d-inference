@@ -144,14 +144,20 @@ shared response-repair slot. Integration can require more than one round; later
 rounds receive an allowance only while the summaries converge. Cache reuse avoids
 native calls but does not admit additional stages.
 
-The workflow uses a **100-call emergency ceiling**, separate from the calculated
+The workflow defaults to a **500-call emergency ceiling**, separate from the calculated
 allowance. An oversized stage is refused before its first call, retains completed
 work and requires human review. Native requests remain bounded to 180,000 encoded
-bytes and 4,096 output tokens by default (output configuration: 256–16,384 tokens).
+bytes and default to **16,384 output tokens** in workload mode. The existing
+analysis, finding and citation validation bounds still apply to the response.
 CI no longer reads the old fixed `BEDROCK_SCAN_MAX_CALLS` repository variable.
 Standalone bounded probes retain `fixed` policy by default and use that variable
-(default 12, range 1–100). `BEDROCK_SCAN_MAX_WORKLOAD_CALLS` bounds the workload
-policy to at most 100; the reviewed workflow pins it to 100.
+(default 12, range 1–100) and default to 4,096 output tokens.
+Maintainers can tighten workload limits without a code change through Actions
+variables `BEDROCK_SCAN_MAX_WORKLOAD_CALLS` (1–500, default 500) and
+`BEDROCK_SCAN_MAX_OUTPUT_TOKENS` (256–16,384, workload default 16,384). An unset
+variable uses the generous default; invalid values stop before paid work.
+The call ceiling is a backstop, not a request target: stage admission allocates
+only the actual scheduled work plus one shared repair.
 These workload bounds are not a repository-wide dollar cap. AWS charges
 are reconciled through dedicated profile tags and the usage metadata artifact.
 Fork PRs keep the capped OpenRouter route unless a maintainer explicitly sets

@@ -112,6 +112,9 @@ extension EngineV2Factory {
         public let kvQuantization: EngineV2KVQuantizationSelection
         /// Effective complete-checkpoint encoding, independent of live precision.
         public let kvCheckpointQuantization: EngineV2KVQuantizationSelection
+        /// Prompt geometry of the scheduler handed to the engine, after serving,
+        /// calibration and GLM policy. Nil for scripted/test builds.
+        public let prefillGeometry: PrefillGeometry?
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -131,7 +134,8 @@ extension EngineV2Factory {
             effectiveMaxConcurrentRequests: Int = 0,
             kvQuantization: EngineV2KVQuantizationSelection = .native,
             kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
-            admissionWatermarkFraction: Double? = nil
+            admissionWatermarkFraction: Double? = nil,
+            prefillGeometry: PrefillGeometry? = nil
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
@@ -145,6 +149,7 @@ extension EngineV2Factory {
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
             self.kvQuantization = kvQuantization
             self.kvCheckpointQuantization = kvCheckpointQuantization
+            self.prefillGeometry = prefillGeometry
         }
     }
 
@@ -393,7 +398,8 @@ extension EngineV2Factory {
                 : checkpointQuantization.flatMap { configuration in
                     EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
                 } ?? preparedBackend.kvQuantization,
-            admissionWatermarkFraction: admissionConfig.watermarkFraction)
+            admissionWatermarkFraction: admissionConfig.watermarkFraction,
+            prefillGeometry: PrefillGeometry(scheduler: schedulerConfig))
         build.glm5NextNativeOwner = glmOwner
         if glmOwner != nil {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength

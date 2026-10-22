@@ -295,8 +295,8 @@ flowchart TD
     B --> C{available ≥ requiredGb?}
     C -- no, idle slots exist --> D{evictionCanReach?}
     D -- no --> R1[refuse: modelLoadFailed]
-    D -- yes --> E[evict idle slot, re-check]
-    C -- no, nothing evictable --> F[drop reclaimable cache, re-measure once]
+    D -- yes --> E[first pass: release retained KV segments, drop reclaimable cache, re-check without retained credit; then evict idle slot, re-check]
+    C -- no, nothing evictable --> F[release retained KV segments, drop reclaimable cache, re-measure once]
     F --> C
     C -- yes --> P{claimPendingLoad: atomic target + assistant + setup allowance}
     P -- optional assistant cannot fit --> T[retry target-only claim once]
@@ -314,6 +314,29 @@ flowchart TD
 (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; the
 standalone server runs the same sequence in
 `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`.)
+
+Coordinator requests reach the pre-accept check (`fastAdmissionReject`) in
+work-FIFO order. An accepted request whose model is not resident releases the
+FIFO while it waits for its load (`releaseWorkFIFO` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
+requests can reach the check while that load runs. The check sees a load's
+memory only once the load holds its pending-load claim, so a request for another
+model that is not resident first waits for released loads of other models
+(`awaitReleasedLoads`). A request for the model being loaded that the check
+rejects, because the load's claim already holds the memory the check sized for
+a second copy, waits for that load and is checked again. Requests for resident
+models overtake; one for an idle resident model can keep a slot the released
+load would have evicted, and that load then fails this gate after acceptance.
+The gate, pending-load claims and eviction still decide every load. Native MiMo
+keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
+every model.
+
+The prompt token store (`PromptPieceTokenStore` in
+`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
+is ordinary process heap with no claim or reserve in this gate: at most
+`DARKBLOOM_TTFT_PROMPT_CACHE_MB` (default `32 << 20` bytes) per loaded
+tokenizer, plus one piece. Like other process heap, it reaches the gate only
+through the measured free memory.
 
 ### After the load
 
@@ -335,6 +358,41 @@ standalone server runs the same sequence in
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache
   reclaimer remains separate; it cannot refund live request or load ownership.
+  Its proactive sweep (buffer cache ≥ 2 GiB) flushes only after 5 s of
+  whole-Mac idleness or when the cache crowds out admission headroom
+  (`KVPoolReclaimer.proactiveWindow`). The idle flush rechecks idleness and
+  clears inside `WholeMacServiceBudget.performIfIdle`: a request admitted
+  first cancels the clear without spending the reclaim rate limit, and one
+  arriving during it is admitted afterwards. Every shortfall reclaim or
+  pressure sweep also asks paged pools to drop retained free KV segments,
+  even when it does not flush. Refused charges that bypass request
+  reservations (paged engine growth, native MiMo media work) signal that
+  reclaim while either the idle sweep or segment retention is on
+  (`GlobalKVCacheBudget.directChargeRefusalSignal`). Their shortfall is
+  exactly what usage must fall by for the refused charge to fit, including
+  commitment debt and usage already inside the reserve; MiMo's extra OS
+  reserve narrows only the system side, not the cap
+  (`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryLedger.swift`,
+  `ProcessMemoryLedger.capacityShortfall`). Retained segments
+  (`CBv2RetainedKVSegments.retainedBytes`) are allocator-active memory that
+  only a release request returns, at each engine's next step. The load gates
+  (`ProviderLoop.evictUntilAvailable`,
+  `ProviderLoop.evictUntilNemotronSuperFits`,
+  `StandaloneServer.ensureMemoryHeadroomForLoad`) release them and drop the
+  buffer cache once (`releaseReclaimableMemoryForLoad`, which waits up to
+  250 ms) before they evict or refuse, and `StartupPreloader` does the same
+  before it skips a candidate (`reclaimBeforeSkip`). Eviction feasibility
+  counts them only to decide whether that release could make room (when not
+  even they and every idle model could, the gate refuses without releasing);
+  after it, only the memory sample shows what returned, and segments still
+  parked (a step that outlasted the wait, or segments parked since) are no
+  eviction credit (`ProviderLoop.reclaimableMemoryBytes`). Pre-accept
+  (`ProviderLoop.fastAdmissionReject`,
+  `ProviderLoop.nemotronSuperLoadIsCertainToFail`) releases and resamples
+  the same way when nothing is idle or only they could close the gap. The
+  post-load headroom guard above re-measures after its cache flush without
+  releasing them: that backing was already counted as used when the gate
+  admitted the load.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
@@ -531,6 +589,14 @@ Calibration observations are staged per cell and published only after all
 requests retire and the completion posture check passes. A cancelled or
 non-nominal cell discards those observations and remains retryable; valid
 earlier measurements and independently published serving evidence survive.
+The excluded shape warmup that precedes the startup cells uses the same
+session, idle gate and foreground lease, within the same KV and service
+budgets; only its startup-preload pass skips the posture check, because it
+measures nothing. Its probes and cells publish no observations or work totals.
+While any such session runs, the periodic proactive MLX pool sweep waits:
+its flush is device work that cancels the session, so a warmup cell longer
+than the tick could never finish. A sweep signalled just before a session
+started checks again when it runs. On-pressure reclaims still run.
 
 ### Serving width by chip
 
@@ -546,9 +612,89 @@ Mode or a non-nominal thermal state the bridge serves and reports the configured
 width (`EngineV2Bridge.hasPostureGatedWidth`). Explicit `engine_v2_max_concurrent`
 values, including a literal `4` from older configs, are kept.
 
+The [prompt geometry](inference.md#prompt-geometry) likewise changes no KV
+grant, windowed-ring size, load quotation or activation floor: the paged pool
+is sized from the largest schedulable chunk, `max(prefillChunkSize,
+soloPrefillStripeTokens)`, which Gemma 4's 2,048-token plain chunk leaves at
+its previous value, and Gemma 4 media keeps its 512-token chunk. It does let a
+Gemma mixed step carry up to 4,096 prompt tokens beside decode rows. That
+working set rides the unchanged activation reserve: the
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+put its KV-subtracted peak at eight concurrent 32k-token prompts at 3.73 GiB,
+inside the 5.5 GiB default. GPT-OSS and dense Qwen keep 512 / 2,048 by default
+because the same geometry lifted their peaks at that load further above their
+floors, GPT-OSS from 3.50 to 3.62 GiB against 3.5 and Qwen3.5-9B from 5.73 to
+6.03 GiB against 5.5. The live KV gate grants KV up to the cap minus the
+reserve (`UnifiedMemoryCap.liveKVHeadroomBytes`), so a peak above the reserve
+lands beyond the cap; even the previous geometry reaches both floors at that
+load, so they need a long-context re-measurement coordinated with platform
+admission. MoE Qwen's peak rose 2.1 GiB (`EngineV2Factory.usesWidePrefillChunk`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`).
+
+### Deadline admission rates
+
+First-token deadline admission is a time check, not a memory grant. Its
+estimator corrections ([deadlines](inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`) change no KV grant, load quotation,
+activation floor, serving width or memory concurrency; a request they admit
+still passes slot and process byte admission. Their inputs are measured on the
+serving Mac, so the same request can project differently on other hardware:
+
+- Decode is charged per batch step from the step shape the engine measured. On
+  an MTP engine the charged depth follows the chip's automatic verification
+  envelope
+  (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`,
+  `MTPAutomaticVerificationPolicy.maxRectangularTokens`;
+  [chip families](../provider/hardware-requirements.md#chip-families)): a
+  smaller envelope reaches the one-token-per-row charge at fewer decode rows,
+  as the live planner does.
+- An ordinary engine's isolated-prefill anchor is its own startup calibration
+  cell, measured idle at nominal posture. Expired evidence returns to the
+  anchor only while the whole Mac is idle at nominal posture
+  (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`,
+  `EngineV2Bridge.calibrationPosturePermitsWork`: no Low Power Mode, nominal
+  thermal state). While another resident model or device activity holds the
+  Mac, or under Low Power Mode or a non-nominal thermal state, the anchor only
+  floors the aggregate rate
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
+  their recovery probe instead.
+
+The anchor and floor shape admission only. The published isolated rate,
+capacity wire fields and the external platform's memory contract are unchanged.
+
 ### Cross-repository agreement
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
+
+### GDN prompt kernels by GPU
+
+Gated DeltaNet prompt windows of the Qwen model types named in
+[inference](inference.md#context) take a four-row kernel only on a GPU where it
+reproduces the stock `gated_delta_step` bit for bit, so on every chip outputs
+and recurrent checkpoints keep the stock kernel's bits. No chip list decides
+this: in each process, the first eligible window of each kernel instantiation
+runs the candidates and the stock kernel on a fixed 32-position window on that
+GPU and keeps the first exact candidate, or else the stock kernel
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+`GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
+kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) restores
+the stock kernel.
+
+| GPU | Speed qualification |
+|---|---|
+| M5 Ultra (80-core) | Per-layer recurrence 1.45-1.70x faster (bf16 inputs, fp32 state, 512 and 4,096 positions); the probe keeps `packed` at the Qwen3.5-9B, Qwen3.8-27B and Qwen3.5-35B-A3B head geometries |
+| M3 Ultra | Qwen3.5-9B cold prefill takes 1.1-1.3% less time at 2,048, 8,192 and 32,768 prompt tokens (`darkbloom benchmark --scheduler-prefill`, probe against the stock kernel, A/B/A on one binary) |
+| Every other GPU | Unmeasured: bit-exact through the probe, speed unknown. `GatedDeltaPrefillTests` prints per-layer timings with `DARKBLOOM_GDN_PREFILL_BENCH=1` |
+
+The selected kernel has the stock kernel's inputs, outputs and fp32 state, so
+steady-state memory is unchanged. The probe allocates transiently, once per
+kernel instantiation and process: a 32-position window and up to four fp32
+recurrent states, at most about 16 MiB at Qwen3.8-27B's 48 value heads of 128.
+Capacity compatibility: no full-load quotation, measured activation floor, KV
+grant or reported capacity field changes, so
+[platform admission](#cross-repository-agreement) needs no change.
 
 ## Invariants
 
@@ -599,6 +745,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
 | Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
+| Deadline admission rate inputs | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `IsolatedPrefillAdmissionRate`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`targetFirstTokenDeadlineAdmission`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |

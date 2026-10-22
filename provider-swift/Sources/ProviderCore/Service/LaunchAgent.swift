@@ -262,9 +262,18 @@ public enum LaunchAgent: Sendable {
     /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and
+    /// `2048` roll Gemma 4 back to the SDK prompt geometry; `2048` and `4096`
+    /// opt another family into the wide one.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
-    /// admission-mode control. Both must persist in the provider job because
+    /// admission-mode control. All must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
+    /// corrections are on by default; their rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
+    /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
+    /// retained, host-zeroed paged KV segments are on by default; each
+    /// rollback must reach the provider job too.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
@@ -273,23 +282,53 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
     /// on by default for the supported MiMo identities; preserve its opt-out
     /// in the provider job independently of the global cache kill switch.
+    /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
+    /// kernel wherever its parity probe finds it bit-exact, which says nothing
+    /// about speed; the stock-kernel rollback must reach the job. Spelled out
+    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLLM`.
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
     /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
+    /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
+    /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
+    /// the rollback.
+    /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
+    /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
+    /// fully serial FIFO.
+    /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
+    /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
+    /// incremental `auto` tool calls and the plain-tail Qwen content seed are
+    /// on by default; exact `0` is each rollback.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
+        EngineV2Factory.prefillChunkKey,
+        EngineV2Factory.stepTokenBudgetKey,
         PrefillDeadlineMode.environmentKey,
+        DeadlineAdmissionFixes.environmentKey,
+        GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
+        EngineV2Factory.segmentRetentionEnvironmentKey,
+        EngineV2Factory.segmentHostZerosEnvironmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
+        "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        PromptTokenCachePolicy.environmentKey,
+        PromptTokenCachePolicy.capacityEnvironmentKey,
+        PromptTokenCachePolicy.verifyEnvironmentKey,
+        ChatTemplateLoopRewrites.environmentKey,
+        WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
+        ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

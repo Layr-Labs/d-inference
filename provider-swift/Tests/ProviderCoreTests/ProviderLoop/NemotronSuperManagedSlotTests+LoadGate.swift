@@ -33,21 +33,31 @@ extension NemotronSuperManagedSlotTests {
     /// scanner discovers it; its loader sizes and gates the load as the pinned
     /// checkpoint's on 128 GiB, and a fixture loads.
     static func coResidentFixture(weightsGiB: Double, availableGiB: Double,
-                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
+                                  configReserveBytes: UInt64 = 0,
+                                  parkedKVBytes: @escaping @Sendable () -> UInt64 = { 0 },
+                                  onShutdown: @escaping @Sendable () async -> Void = {}) async throws
+        -> CoResidentFixture {
         try await coResidentFixture(weightsGiB: [weightsGiB], availableGiB: availableGiB,
-                                    configReserveBytes: configReserveBytes)
+                                    configReserveBytes: configReserveBytes, parkedKVBytes: parkedKVBytes,
+                                    onShutdown: onShutdown)
     }
 
     /// One co-resident model per entry of `weightsGiB`, each as above, the
-    /// first least recently used.
+    /// first least recently used. `onShutdown` runs as any of them shuts down.
+    /// `parkedKVBytes` is retained KV backing that, like the weights, keeps
+    /// MLX memory until it is dropped.
     static func coResidentFixture(weightsGiB: [Double], availableGiB: Double,
-                                  configReserveBytes: UInt64 = 0) async throws -> CoResidentFixture {
-        let stubs = weightsGiB.indices.map { makeInertStubBridge(modelId: coResidentID($0)) }
+                                  configReserveBytes: UInt64 = 0,
+                                  parkedKVBytes: @escaping @Sendable () -> UInt64 = { 0 },
+                                  onShutdown: @escaping @Sendable () async -> Void = {}) async throws
+        -> CoResidentFixture {
+        let stubs = weightsGiB.indices.map { makeInertStubBridge(modelId: coResidentID($0), onShutdown: onShutdown) }
         let engines = stubs.map(\.engine)
         let weights = weightsGiB.map { UInt64($0 * 1_073_741_824) }, available = UInt64(availableGiB * 1_073_741_824)
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
                                          configReserveBytes: configReserveBytes) {
             let resident = zip(engines, weights).reduce(UInt64(0)) { $0 + ($1.0.shutdownCalls == 0 ? $1.1 : 0) }
+                + parkedKVBytes()
             return .init(total: 128 << 30, active: resident, cache: 0,
                          systemAvailable: available + weights.reduce(0, +) - resident)
         }
@@ -258,6 +268,131 @@ extension NemotronSuperManagedSlotTests {
             #expect("\(try #require(refusal))".contains("refusing without evicting"))
             #expect(!(await Self.claimAdmits(requirements.last ?? 0, fixture.budget)))
         }
+    }
+
+    /// Like the ordinary gate, Super's releases retained free KV segments
+    /// (and the buffer pool) once before it evicts an idle model. The pinned
+    /// sample never changes, so the eviction still follows; the parked bytes
+    /// are read as the idle model shuts down.
+    @Test(.timeLimit(.minutes(1)))
+    func retainedSegmentsReleaseBeforeSuperEviction() async throws {
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let parkedAtEviction = ParkedBytesRecorder()
+        let fixture = try await Self.coResidentFixture(
+            weightsGiB: 30, availableGiB: 92, onShutdown: { parkedAtEviction.record(engine.parkedBytes) })
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        try await loop.evictUntilNemotronSuperFits(model, allowEviction: true)
+        #expect(fixture.idle.shutdownCalls == 1)
+        #expect(parkedAtEviction.bytes == 0)
+    }
+
+    /// With nothing idle to evict, the refusal follows the same release.
+    @Test(.timeLimit(.minutes(1)))
+    func superRefusalReleasesRetainedSegmentsFirst() async throws {
+        let fixture = try await Self.coResidentFixture(weightsGiB: 30, availableGiB: 92)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        await loop.modelLoadingSetRequest("busy", model: Self.coResidentID)
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        var refusal: Error?
+        do { try await loop.evictUntilNemotronSuperFits(model, allowEviction: true) } catch { refusal = error }
+        #expect("\(try #require(refusal))".contains("all loaded models are actively serving"))
+        #expect(engine.parkedBytes == 0)
+        #expect(fixture.idle.shutdownCalls == 0)
+    }
+
+    /// Retained segments their engine has not dropped when the release's wait
+    /// ends (a step that outlasts it) are no eviction credit. Here only they
+    /// close the gap, by half: Super is refused without evicting the idle
+    /// model, rather than after it, while the other model serves.
+    @Test(.timeLimit(.minutes(1)))
+    func unreleasedRetainedSegmentsAreNoSuperEvictionCredit() async throws {
+        let engine = try RetainingEngineStub()
+        let parked = UInt64(CBv2RetainedKVSegments.retainedBytes)
+        #expect(parked > 1)
+        let narrowest = NemotronSuperLoadFit.narrowestRequirementBytes
+        let busy = Self.weightsLeavingRoom(narrowest - parked / 2)
+        let fixture = try await Self.coResidentFixture(
+            weightsGiB: [4, Double(busy) / 1_073_741_824], availableGiB: 120)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop
+        let model = try #require(await loop.advertisedModels[Self.modelID])
+        #expect(await loop.nemotronSuperLoadRequirements(model).last == narrowest)
+        await loop.modelLoadingSetRequest("busy", model: Self.coResidentID(1))
+        #expect(await loop.nemotronSuperClaimRoomBytes() + (4 << 30) + parked / 2 == narrowest)
+
+        var refusal: Error?
+        do { try await loop.evictUntilNemotronSuperFits(model, allowEviction: true) } catch { refusal = error }
+        let message = "\(try #require(refusal))"
+        #expect(message.contains("refusing without evicting"), "\(message)")
+        #expect(fixture.idle.shutdownCalls == 0)
+        // The release request stands: the engine's next step honors it.
+        engine.step()
+        #expect(engine.parkedBytes == 0)
+    }
+
+    /// Pre-accept counts retained free KV segments only as far as releasing
+    /// them returns room. The co-resident model is serving and its parked
+    /// backing leaves the room short of the narrowest configuration by half
+    /// of it; an engine that does not step within the release's wait returns
+    /// nothing, so Super is refused.
+    @Test(.timeLimit(.minutes(1)))
+    func superPreAcceptRefusesOnUnreleasedRetainedSegments() async throws {
+        let engine = try RetainingEngineStub()
+        let fixture = try await Self.retainedMarginFixture(engine)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        #expect(await fixture.loop.fastAdmissionReject(modelId: Self.modelID))
+        engine.step()
+        #expect(engine.parkedBytes == 0)
+    }
+
+    /// The same Mac with an engine that steps: pre-accept's release returns
+    /// the parked backing, and Super is admitted on the room it leaves.
+    @Test(.timeLimit(.minutes(1)))
+    func superPreAcceptAdmitsTheRoomTheReleaseReturns() async throws {
+        let engine = try RetainingEngineStub()
+        let fixture = try await Self.retainedMarginFixture(engine)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        #expect(await fixture.loop.fastAdmissionReject(modelId: Self.modelID) == false)
+        #expect(engine.parkedBytes == 0)
+    }
+
+    /// Co-resident weights that leave `room` for Super's claim on the
+    /// scripted Mac with nothing else resident.
+    private static func weightsLeavingRoom(_ room: UInt64) -> UInt64 {
+        UnifiedMemoryCap.hardCapBytes(physicalBytes: 128 << 30, capFraction: 0.9)
+            - UnifiedMemoryCap.defaultActivationReserveBytes - room
+    }
+
+    /// One serving co-resident model whose weights, with `engine`'s parked KV
+    /// backing, leave the room short of the narrowest configuration by half
+    /// that backing; dropping it makes room.
+    private static func retainedMarginFixture(_ engine: RetainingEngineStub) async throws -> CoResidentFixture {
+        let parked = UInt64(engine.parkedBytes)
+        #expect(parked > 1)
+        let narrowest = NemotronSuperLoadFit.narrowestRequirementBytes
+        let fixture = try await coResidentFixture(
+            weightsGiB: Double(weightsLeavingRoom(narrowest + parked / 2)) / 1_073_741_824, availableGiB: 120,
+            parkedKVBytes: { UInt64(engine.parkedBytes) })
+        await fixture.loop.modelLoadingSetRequest("busy", model: coResidentID)
+        let room = await fixture.loop.nemotronSuperClaimRoomBytes()
+        #expect(room < narrowest && room + parked == narrowest + parked / 2)
+        return fixture
     }
 
     /// A `memory_reserve_gb` raised to 16 GiB stays free beside Super's claim,

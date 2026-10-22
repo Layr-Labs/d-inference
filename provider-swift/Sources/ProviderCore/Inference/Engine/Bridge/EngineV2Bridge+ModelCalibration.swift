@@ -35,6 +35,9 @@ extension EngineV2Bridge {
 
     func runModelCalibration(continuous: Bool, requireNominalPosture: Bool = true) async {
         modelCalibration.interrupted = false
+        // Excluded first-use shapes precede the measured cells. Preemption
+        // cancels this task, so the loop below stops and the session retries.
+        if !continuous { await runShapeWarmupIfNeeded(requireNominalPosture: requireNominalPosture) }
         let cells = continuous
             ? (modelCalibration.bootstrapCompleted ? ModelCalibrationPolicy.maintenance
                 : ModelCalibrationPolicy.bootstrap(maximumConcurrency: effectiveServingConcurrency))
@@ -52,7 +55,8 @@ extension EngineV2Bridge {
             guard (advertisedContextTokens ?? Int.max) >= cell.promptTokens + cell.outputTokens else { continue }
             do {
                 let tokens = try modelCalibrationPrompt(targetTokens: cell.promptTokens, variant: index)
-                if !(await runModelCalibrationCell(cell, tokens: tokens, requireNominalPosture: requireNominalPosture)) { succeeded = false; break }
+                if await runModelCalibrationCell(cell, tokens: tokens,
+                    requireNominalPosture: requireNominalPosture) == .failed { succeeded = false; break }
             } catch { succeeded = false; break }
         }
         let complete = succeeded && performanceMeasurements.freshRate("isolated_prefill") != nil

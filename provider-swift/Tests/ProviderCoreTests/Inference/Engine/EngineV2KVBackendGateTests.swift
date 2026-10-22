@@ -710,19 +710,49 @@ struct EngineV2KVBackendGateTests {
         // `assembleProductionBuild`; this pins the pool against it so a
         // re-introduced parallel constant fails here instead of aborting
         // the daemon under a long windowed prefill.
-        // The solo-prefill stripe (default-on) is a chunk the engine can
-        // actually schedule, so the lockstep covers max(chunk, stripe).
+        // The solo-prefill stripe is also a chunk the engine can actually
+        // schedule, so the lockstep covers max(chunk, stripe).
         #expect(
             paged.pool.config.maxPrefillChunk
                 == max(
                     prepared.schedulerConfig.prefillChunkSize,
                     prepared.schedulerConfig.soloPrefillStripeTokens ?? 0))
-        #expect(prepared.schedulerConfig.soloPrefillStripeTokens
-            == EngineV2Factory.defaultSoloPrefillStripeTokens)
+        // Gemma 4's wide plain chunk replaces its former default stripe, so
+        // the rings keep their size.
+        #expect(prepared.schedulerConfig.prefillChunkSize == EngineV2Factory.widePrefillChunkTokens)
+        #expect(prepared.schedulerConfig.soloPrefillStripeTokens == nil)
+        #expect(paged.pool.config.maxPrefillChunk == EngineV2Factory.defaultSoloPrefillStripeTokens)
         #expect(prepared.schedulerConfig.maxConcurrentRequests == 2)
         // Prefix caching is the ONLY field assembly may still decide, and
         // it is off until a cache instance is supplied.
         #expect(!prepared.schedulerConfig.enablePrefixCache)
+    }
+
+    @Test("the wide plain chunk replaces the stripe without resizing the paged pool")
+    func widePrefillChunkKeepsPagedPoolGeometry() async throws {
+        let model = try tinyGPTOSS()
+        func prepare(_ overrides: [String: String]) throws -> (CBv2SchedulerConfig, Int) {
+            let prepared = try EngineV2Factory.prepareProductionBackend(
+                model: model, kvBytesCapacity: gateTestCapacity, maxConcurrentRequests: 2,
+                kvBackend: .paged, maxContextLength: 2048, environment: gateEnvironment(overrides))
+            #expect(prepared.kind == .paged)
+            let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
+            let paged = try #require(backend as? PagedKVBackend)
+            return (prepared.schedulerConfig, paged.pool.config.maxPrefillChunk)
+        }
+        // GPT-OSS keeps the SDK geometry by default; the wide chunk is an opt-in.
+        let (wide, widePoolChunk) = try prepare([
+            EngineV2Factory.prefillChunkKey: "2048", EngineV2Factory.stepTokenBudgetKey: "4096",
+        ])
+        #expect(wide.prefillChunkSize == EngineV2Factory.widePrefillChunkTokens)
+        #expect(wide.maxBatchedTokensPerStep == 2 * EngineV2Factory.widePrefillChunkTokens)
+        #expect(wide.soloPrefillStripeTokens == nil)
+        let (sdk, sdkPoolChunk) = try prepare([:])
+        #expect(sdk.prefillChunkSize == 512 && sdk.maxBatchedTokensPerStep == 2048)
+        #expect(sdk.soloPrefillStripeTokens == EngineV2Factory.defaultSoloPrefillStripeTokens)
+        // Windowed rings and their KV charges follow max(chunk, stripe).
+        #expect(widePoolChunk == sdkPoolChunk)
+        #expect(widePoolChunk == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
     @Test("resident cache policy is prompt-bound and follows the master gate")

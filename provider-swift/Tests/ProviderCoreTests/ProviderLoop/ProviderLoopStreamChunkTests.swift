@@ -56,7 +56,7 @@ private func encodeChunk(
                     role: role,
                     content: content,
                     reasoningContent: reasoningContent,
-                    toolCalls: toolCalls
+                    toolCalls: toolCalls?.map { OpenAIToolCallDelta($0) }
                 ),
                 finishReason: finishReason
             )
@@ -279,8 +279,8 @@ func parseStreamChunkExtractsToolCallsDelta() throws {
         "tool_calls delta must surface from delta.tool_calls (P2 #2)")
     #expect(extracted.count == 1)
     #expect(extracted[0].id == "call_1")
-    #expect(extracted[0].function.name == "get_weather")
-    #expect(extracted[0].function.arguments == #"{"city":"SF"}"#)
+    #expect(extracted[0].function?.name == "get_weather")
+    #expect(extracted[0].function?.arguments == #"{"city":"SF"}"#)
 }
 
 /// The hash-encoding helper must produce a deterministic, framed
@@ -296,7 +296,7 @@ func encodeToolCallsForHashProducesStableEncoding() {
         type: "function",
         function: .init(name: "get_weather", arguments: #"{"city":"SF"}"#)
     )
-    let encoded = ProviderLoop.encodeToolCallsForHash([call])
+    let encoded = ProviderLoop.encodeToolCallsForHash([OpenAIToolCallDelta(call)])
 
     // Wrapped with \u{1F} markers (Unit Separator — invalid in
     // normal chat content, so cannot collide).
@@ -309,7 +309,7 @@ func encodeToolCallsForHashProducesStableEncoding() {
 
     // Idempotent encoding — same input must always produce the same
     // bytes (sortedKeys output formatting).
-    let encoded2 = ProviderLoop.encodeToolCallsForHash([call])
+    let encoded2 = ProviderLoop.encodeToolCallsForHash([OpenAIToolCallDelta(call)])
     #expect(encoded == encoded2,
         "encoding must be deterministic across invocations (sortedKeys)")
 }

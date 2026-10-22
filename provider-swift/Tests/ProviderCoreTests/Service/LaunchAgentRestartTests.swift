@@ -1,4 +1,5 @@
 import Foundation
+@testable import MLXLLM
 import MLXLMCommon
 @testable import ProviderAppAttest
 import Testing
@@ -178,6 +179,82 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
+    @Test func forwardsPrefillGeometryRollbackToProviderJob() {
+        // The wide mixed-step chunk is Gemma 4's default; its rollback (and
+        // another family's opt-in) only works if it reaches the provider job.
+        let rollback = [
+            EngineV2Factory.prefillChunkKey: "512",
+            EngineV2Factory.stepTokenBudgetKey: "2048",
+        ]
+        let out = LaunchAgent.passthroughEnvironment(
+            from: rollback.merging(["UNRELATED_SECRET": "excluded"]) { value, _ in value })
+        #expect(out == rollback)
+        // Foreground and launchd resolve the same geometry from the same shell.
+        let shell = [EngineV2Factory.prefillChunkKey: "1024", EngineV2Factory.stepTokenBudgetKey: "3072"]
+        #expect(EngineV2Factory.prefillGeometry(
+            model: nil, environment: LaunchAgent.passthroughEnvironment(from: shell))
+            == EngineV2Factory.prefillGeometry(model: nil, environment: shell))
+        #expect(EngineV2Factory.prefillGeometry(model: nil, environment: shell).maxBatchedTokensPerStep == 3072)
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log", environment: out)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == rollback)
+        #expect(WatchdogAgent.passthroughEnvKeys.allSatisfy { !rollback.keys.contains($0) })
+    }
+
+    @Test func forwardsDeadlineAdmissionRollbackToProviderJob() {
+        // The estimator corrections are on by default; the rollback only takes
+        // effect in the launchd-managed provider process if the plist carries it.
+        let key = DeadlineAdmissionFixes.environmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        let out = LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED_SECRET": "excluded"])
+        #expect(out == [key: "0"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: out))
+        // The job receives the raw value; a trailing line ending still disables.
+        let templated = LaunchAgent.passthroughEnvironment(from: [key: "off\n"])
+        #expect(templated == [key: "off\n"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: templated))
+        #expect(DeadlineAdmissionFixes.resolve(environment: LaunchAgent.passthroughEnvironment(from: [:])))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [key: "off", "UNRELATED_SECRET": "excluded"])
+        let vars = plist["EnvironmentVariables"] as? [String: String]
+        #expect(vars == [key: "off"])
+        #expect(!DeadlineAdmissionFixes.resolve(environment: vars ?? [:]))
+    }
+
+    @Test func forwardsServingStallRollbacksToProviderJob() {
+        // The idle-gated sweep and retained KV segments are on by default; a
+        // rollback only takes effect in the launchd provider job if the plist
+        // carries it. The watchdog never runs inference.
+        let keys = [
+            GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
+            EngineV2Factory.segmentRetentionEnvironmentKey,
+            EngineV2Factory.segmentHostZerosEnvironmentKey,
+        ]
+        #expect(keys.allSatisfy { LaunchAgent.inferencePassthroughEnvKeys.contains($0) })
+        #expect(keys.allSatisfy { !WatchdogAgent.passthroughEnvKeys.contains($0) })
+        let rollback = Dictionary(uniqueKeysWithValues: keys.map { ($0, "0") })
+        let out = LaunchAgent.passthroughEnvironment(
+            from: rollback.merging(["UNRELATED_SECRET": "excluded"]) { a, _ in a })
+        #expect(out == rollback)
+        #expect(!GlobalKVCacheBudget.idleCacheSweepEnabled(environment: out))
+        #expect(!EngineV2Factory.segmentRetentionEnabled(environment: out))
+        let defaults = LaunchAgent.passthroughEnvironment(from: [:])
+        #expect(GlobalKVCacheBudget.idleCacheSweepEnabled(environment: defaults))
+        #expect(EngineV2Factory.segmentRetentionEnabled(environment: defaults))
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: out)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == rollback)
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.
@@ -230,6 +307,30 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == rollback)
         #expect(EngineV2SlotFactory.nativeMiMoVerificationMode(wantsMTP: true, environment: out)
             == .serialTarget)
+    }
+
+    @Test func forwardsGDNPromptKernelRollbackToProviderJob() {
+        // The SDK's GDN prompt-kernel probe checks bits, not speed, so the
+        // stock-kernel rollback is how an operator recovers from a slower
+        // bit-exact kernel. launchd does not inherit the shell: the provider
+        // job resolves the foreground's mode only if its plist carries the key.
+        let key = GatedDeltaPrefill.envFlag
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "0", " OFF ", "packed", "rows", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(GatedDeltaPrefill.Mode(environmentValue: launchd[key])
+                == GatedDeltaPrefill.Mode(environmentValue: foreground[key]))
+        }
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "0"])
+        #expect(rollback == [key: "0"])
+        #expect(GatedDeltaPrefill.Mode(environmentValue: rollback[key]) == .stock)
     }
 
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {

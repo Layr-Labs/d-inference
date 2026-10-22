@@ -67,7 +67,8 @@ extension ProviderLoop {
         // watchdog drove this sweep every 2s until the v0.7.5 engine deletion
         // removed it with its host; this tick is that watchdog's documented
         // successor. Non-blocking: only signals the off-actor reclaimer
-        // (rate-limited, threshold-gated); the GPU sync never runs here.
+        // (rate-limited, threshold-gated, and windowed so busy engines keep
+        // their pool while headroom is healthy); the GPU sync never runs here.
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()

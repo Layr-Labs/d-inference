@@ -35,14 +35,19 @@ final class ModelPrefixBenchmarkFixture {
 
     /// Forward an explicit specification value through the existing factory
     /// setting. Process-wide diagnostic variables cannot silently change a
-    /// frozen benchmark specification or its serving geometry.
+    /// frozen benchmark specification or its serving geometry. Specifications
+    /// pinned a stripe above the SDK's plain chunk, which a wide-chunk family
+    /// would otherwise swallow, so a pinned stripe also pins that chunk.
     static func checkpointEnvironment(
         root: URL, soloPrefillStripeTokens: Int?
     ) -> [String: String] {
         var environment = ["DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
             "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1", "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": root.path]
         if let stripe = soloPrefillStripeTokens {
+            let sdk = CBv2SchedulerConfig()
             environment[EngineV2Factory.soloPrefillStripeKey] = String(stripe)
+            environment[EngineV2Factory.prefillChunkKey] = String(sdk.prefillChunkSize)
+            environment[EngineV2Factory.stepTokenBudgetKey] = String(sdk.maxBatchedTokensPerStep)
         }
         return environment
     }

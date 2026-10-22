@@ -617,6 +617,17 @@ that includes reasoning tokens. Both are single-stream results from a release
 test build, not server capacity or a signed release. Source:
 `provider-swift/Tests/ServingQualificationTests/FlintHTTPBenchmarkTests.swift`.
 
+`FlintR2InstallTests` checks delivery of a published model: with
+`DARKBLOOM_FLINT_R2_INSTALL=1`, a fresh nonexistent absolute
+`DARKBLOOM_FLINT_R2_INSTALL_CACHE`, and the published `_R2_PREFIX`,
+`_R2_AGGREGATE` and `_R2_VERSION`, the production `ModelDownloader` installs
+the manifest into that cache and the test checks the installed aggregate and
+template. Optional `DARKBLOOM_FLINT_HF_REPO` and `_HF_REVISION` pin a public
+Hugging Face source that the downloader tries first, falling back to R2. Then
+run `FlintLiveTests` with `DARKBLOOM_FLINT_CACHE` set to the same root to load
+and serve that copy. It downloads the full model and needs no coordinator.
+Source: `provider-swift/Tests/ProviderCoreTests/Server/FlintR2InstallTests.swift`.
+
 `FlintLiveTests` is opt-in physical-machine qualification, not an ordinary CI
 weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
 `DARKBLOOM_FLINT_CACHE` to an owned HF-layout cache containing the verified

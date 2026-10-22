@@ -178,10 +178,14 @@ public actor GlobalKVCacheBudget {
             idleClearCache: {
                 // No device activity is reported, so an idle Mac keeps its
                 // deadline quiescence and any idle calibration session. A
-                // request admitted since the window check keeps its warm pool.
-                guard serviceBudget.isIdle else { return }
+                // request admitted since the window check keeps its warm pool;
+                // the clear itself runs inside the idle check, so one arriving
+                // meanwhile is admitted after it.
+                guard serviceBudget.isIdle(for: KVPoolReclaimer.idleSweepDelay) else { return false }
                 MLX.Stream().synchronize()
-                MLX.Memory.clearCache()
+                return serviceBudget.performIfIdle(for: KVPoolReclaimer.idleSweepDelay) {
+                    MLX.Memory.clearCache()
+                }
             },
             releaseRetained: { CBv2RetainedKVSegments.requestRelease() })
     }

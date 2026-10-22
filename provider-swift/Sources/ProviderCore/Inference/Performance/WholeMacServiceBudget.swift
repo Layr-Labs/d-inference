@@ -227,10 +227,23 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     /// No request charge and no unbounded device activity for `duration`.
     func isIdle(for duration: Duration) -> Bool {
+        lock.withLock { isIdleLocked(for: duration) }
+    }
+
+    /// Runs `body` only while `isIdle(for:)` holds, keeping admission and
+    /// device-activity starts out until it returns, so no request can begin
+    /// between the check and the work. Returns whether `body` ran. The body
+    /// must not reenter this service budget.
+    func performIfIdle(for duration: Duration, _ body: () -> Void) -> Bool {
         lock.withLock {
-            charges.isEmpty && unboundedActivities.isEmpty
-                && clockNow() >= idleSince.advanced(by: duration)
+            guard isIdleLocked(for: duration) else { return false }
+            body()
+            return true
         }
+    }
+
+    private func isIdleLocked(for duration: Duration) -> Bool {
+        charges.isEmpty && unboundedActivities.isEmpty && clockNow() >= idleSince.advanced(by: duration)
     }
 
     func calibrationEvidenceGuard(ownerID: String) -> CBv2FirstContentEvidenceGuard? {

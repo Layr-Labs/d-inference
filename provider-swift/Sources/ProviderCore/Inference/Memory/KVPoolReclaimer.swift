@@ -99,8 +99,10 @@ actor KVPoolReclaimer {
     private let proactiveThresholdBytes: UInt64
     /// When a proactive sweep may flush the pool it found over the threshold.
     private let sweepWindow: @Sendable (_ reclaimableBytes: UInt64) -> SweepWindow
-    /// Flush for an idle sweep; nil reuses `clearCache`.
-    private let idleClearCache: (@Sendable () -> Void)?
+    /// Flush for an idle sweep. False when it declined because the Mac
+    /// stopped idling: no reclaim is recorded and the rate-limit window stays
+    /// open for a reclaim the new work may need.
+    private let idleClearCache: @Sendable () -> Bool
     /// Non-blocking request that engines drop retained free KV segments: live
     /// allocator memory no cache flush reaches. Sent on shortfall and pressure.
     private let releaseRetained: @Sendable () -> Void
@@ -149,7 +151,7 @@ actor KVPoolReclaimer {
         proactiveThresholdBytes: UInt64 = KVPoolReclaimer.defaultProactiveThresholdBytes,
         isReclaimAllowed: @escaping @Sendable () -> Bool = { true },
         sweepWindow: @escaping @Sendable (UInt64) -> SweepWindow = { _ in .pressure },
-        idleClearCache: (@Sendable () -> Void)? = nil,
+        idleClearCache: (@Sendable () -> Bool)? = nil,
         releaseRetained: @escaping @Sendable () -> Void = {}
     ) {
         self.clearCache = clearCache
@@ -158,7 +160,10 @@ actor KVPoolReclaimer {
         self.proactiveThresholdBytes = proactiveThresholdBytes
         self.isReclaimAllowed = isReclaimAllowed
         self.sweepWindow = sweepWindow
-        self.idleClearCache = idleClearCache
+        self.idleClearCache = idleClearCache ?? {
+            clearCache()
+            return true
+        }
         self.releaseRetained = releaseRetained
     }
 
@@ -191,7 +196,7 @@ actor KVPoolReclaimer {
         guard isReclaimAllowed(), shortfall > 0 else { return false }
         releaseRetained()
         guard reclaimableBytes() >= shortfall else { return false }
-        return flushIfDue(clearCache)
+        return flushIfDue(deviceFlush)
     }
 
     /// Proactive sweep: flush iff the reclaimable pool has grown past the
@@ -206,10 +211,10 @@ actor KVPoolReclaimer {
         guard pool >= proactiveThresholdBytes else { return false }
         switch sweepWindow(pool) {
         case .closed: return false
-        case .idle: return flushIfDue(idleClearCache ?? clearCache)
+        case .idle: return flushIfDue(idleClearCache)
         case .pressure:
             releaseRetained()
-            return flushIfDue(clearCache)
+            return flushIfDue(deviceFlush)
         }
     }
 
@@ -217,7 +222,14 @@ actor KVPoolReclaimer {
         telemetry.snapshot()
     }
 
-    private func flushIfDue(_ flush: @Sendable () -> Void) -> Bool {
+    private func deviceFlush() -> Bool {
+        clearCache()
+        return true
+    }
+
+    /// Runs `flush` outside the rate-limit window. Only a flush that ran
+    /// records a reclaim and starts the next window.
+    private func flushIfDue(_ flush: () -> Bool) -> Bool {
         guard isReclaimAllowed() else { return false }
         let now = ContinuousClock.now
         if let last = lastReclaimAt, now - last < minInterval { return false }
@@ -227,9 +239,9 @@ actor KVPoolReclaimer {
         // enter its GPU callback after an observed native ownership refusal.
         // Never hold registry/ledger locks across the blocking native callback.
         guard isReclaimAllowed() else { return false }
-        lastReclaimAt = now
         let startedAt = ContinuousClock.now
-        flush()
+        guard flush() else { return false }
+        lastReclaimAt = now
         let elapsed = ContinuousClock.now - startedAt
         let cacheAfter = reclaimableBytes()
         let reclaimed = cacheBefore > cacheAfter ? cacheBefore - cacheAfter : 0

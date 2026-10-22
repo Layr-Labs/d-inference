@@ -35,7 +35,7 @@ struct KVPoolIdleSweepTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib,
             sweepWindow: { _ in .closed },
-            idleClearCache: { spy.record("idle") })
+            idleClearCache: { spy.record("idle"); return true })
 
         #expect(!(await reclaimer.sweep()))
         #expect(await reclaimer.sweepSignalCount == 1)
@@ -54,7 +54,7 @@ struct KVPoolIdleSweepTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib,
             sweepWindow: { _ in .idle },
-            idleClearCache: { spy.record("idle") })
+            idleClearCache: { spy.record("idle"); return true })
 
         #expect(await reclaimer.sweep())
         #expect(spy.flushes == ["idle"])
@@ -74,7 +74,7 @@ struct KVPoolIdleSweepTests {
                 observed.reclaimable = pool
                 return .pressure
             },
-            idleClearCache: { spy.record("idle") })
+            idleClearCache: { spy.record("idle"); return true })
 
         #expect(await reclaimer.sweep())
         #expect(spy.flushes == ["device"])
@@ -93,7 +93,7 @@ struct KVPoolIdleSweepTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib,
             sweepWindow: { _ in pressure.reclaimable == 0 ? .closed : .pressure },
-            idleClearCache: { spy.record("idle") },
+            idleClearCache: { spy.record("idle"); return true },
             releaseRetained: { releases.record("release") })
 
         // The cache cannot cover this shortfall; retained backing still goes.
@@ -152,6 +152,52 @@ struct KVPoolIdleSweepTests {
         #expect(!budget.isIdle(for: .seconds(5)))
         clock.advance(.seconds(5))
         #expect(budget.isIdle(for: .seconds(5)))
+    }
+
+    @Test("an idle-only operation keeps request admission out until it returns")
+    func idleOperationHoldsOffAdmission() async {
+        let clock = SweepTestClock()
+        let budget = WholeMacServiceBudget(clockNow: { clock.now })
+        #expect(!budget.performIfIdle(for: .seconds(5)) { Issue.record("ran before 5 s of idleness") })
+        clock.advance(.seconds(5))
+        let admitted = SweepSpy(reclaimable: 0)
+        var admission: Task<Void, Never>?
+        let ran = budget.performIfIdle(for: .seconds(5)) {
+            admission = Task.detached {
+                #expect(budget.acquire(ownerID: "request", concurrency: 1))
+                admitted.reclaimable = 1
+            }
+            usleep(100_000)
+            #expect(admitted.reclaimable == 0, "the request was admitted during the idle-only operation")
+        }
+        #expect(ran)
+        await admission?.value
+        #expect(admitted.reclaimable == 1 && budget.count == 1)
+        #expect(!budget.performIfIdle(for: .zero) { Issue.record("ran while a request is charged") })
+        budget.release(ownerID: "request")
+    }
+
+    @Test("a declined idle flush records no reclaim and leaves the rate-limit window open")
+    func declinedIdleFlushLeavesRateLimitOpen() async {
+        let spy = SweepSpy(reclaimable: 3 * gib)
+        let reclaimer = KVPoolReclaimer(
+            clearCache: { spy.record("device") },
+            reclaimableBytes: { spy.reclaimable },
+            minInterval: .seconds(3600),
+            proactiveThresholdBytes: 2 * gib,
+            sweepWindow: { _ in .idle },
+            idleClearCache: {
+                spy.record("declined")
+                return false
+            })
+
+        // A request admitted after the window check declined the idle flush.
+        #expect(!(await reclaimer.sweep()))
+        #expect(await reclaimer.reclaimCount == 0)
+        // Its shortfall reclaim still flushes inside the hour-long window.
+        #expect(await reclaimer.reclaimIfNeeded(shortfall: gib))
+        #expect(spy.flushes == ["declined", "device"])
+        #expect(await reclaimer.reclaimCount == 1)
     }
 
     @Test("a refused engine-owned charge signals the bytes it was short by")

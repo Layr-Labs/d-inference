@@ -354,6 +354,40 @@ public final class QwenTensorParallelModel {
 
     func newCache() -> [KVCache] { model.newCache(parameters: nil) }
 
+    /// Paged attention keys and values (`QwenTensorParallelPagedKV.swift`):
+    /// the request caches `newCache(account:)` makes keep every
+    /// full-attention layer's keys and values in this pool's pages; nil keeps
+    /// `KVCacheSimple`. Set at load, before the first request.
+    var attentionPagePool: PagedAttentionKVPool?
+
+    /// Full-attention layers (each holds one paged history per request).
+    var attentionLayerCount: Int { model.cbv2LayerKinds.count }
+
+    /// A pool for this rank's full-attention layers: its own key/value heads
+    /// and head dims, in the checkpoint's native KV dtype (the dtype the
+    /// layers' projections and rotary produce, as the stage KV host takes it).
+    func makeAttentionPagePool(pageSize: Int) throws -> PagedAttentionKVPool {
+        let kinds = model.cbv2LayerKinds
+        guard let first = kinds.first,
+              kinds.allSatisfy({ $0.kvHeads == first.kvHeads && $0.headDim == first.headDim
+                  && $0.valueHeadDim == first.valueHeadDim && $0.sharesKVWithLayer == nil }),
+              let types = model.cbv2CompleteCheckpointKVDTypes, let dtype = types.first,
+              types.count == kinds.count, types.allSatisfy({ $0 == dtype }) else {
+            throw ProbeError("Tensor-parallel paged attention needs uniform attention layers and a known KV dtype")
+        }
+        return try PagedAttentionKVPool(pageSize: pageSize, kvHeads: first.kvHeads, keyHeadDim: first.headDim,
+            valueHeadDim: first.valueHeadDim, dtype: dtype)
+    }
+
+    /// A request's caches: the Gated DeltaNet layers' state as always and,
+    /// with `attentionPagePool`, every attention layer's keys and values in
+    /// its pages, counted against `account`.
+    func newCache(account: GLM5NextDSAPageBook.Account?) -> [KVCache] {
+        let caches = model.newCache(parameters: nil)
+        guard let pool = attentionPagePool else { return caches }
+        return caches.map { $0 is KVCacheSimple ? PagedAttentionKVCache(pool: pool, account: account) : $0 }
+    }
+
     /// The model over `input` `[1, T]` with `cache`: logits `[1, T, V or V/size]`, not evaluated.
     func forwardForRuntime(_ input: MLXArray, cache: [KVCache]) -> MLXArray { model(input, cache: cache) }
 

@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 /// One rank's prompt-prefix cache under tensor parallel: the request state of
@@ -93,7 +94,10 @@ final class QwenTensorParallelPrefixCache {
         let state = cache.map { $0.copy() }
         let arrays = state.flatMap { $0.innerState() }
         eval(arrays)
+        // Paged attention histories share the request's pages (their roots
+        // are fences): the entry counts every page it holds.
         let bytes = arrays.reduce(0) { $0 + $1.nbytes }
+            + state.reduce(0) { $0 + (($1 as? PagedAttentionKVCache)?.pagedBytes ?? 0) }
         guard bytes <= budgetBytes else { return }
         lock.withLock {
             let key = Self.key(scope: scope, prompt: prompt, length: length)

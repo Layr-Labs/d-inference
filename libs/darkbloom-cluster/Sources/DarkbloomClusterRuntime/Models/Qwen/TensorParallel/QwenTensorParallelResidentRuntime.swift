@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
 
@@ -109,8 +110,10 @@ public final class QwenTensorParallelResidentRuntime {
             let mode = ClusterGenerationMode.tensorParallel
             // The prefix cache votes in a reduction of its own: both ranks must have it on, or both off.
             let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
+            // Paged attention KV (`QwenTensorParallelPagedKV.swift`), bound into the agreement.
+            let pagedKV = try Self.pagedKV(environment)
             let fields = mode.loadAgreementFields + loadAgreementFields(shares: shares)
-                + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
+                + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint()] + fields))
             if let credential {
@@ -142,6 +145,8 @@ public final class QwenTensorParallelResidentRuntime {
                         reduction: group, check: checked)
                 }
                 retired = value.model; loadedModel = value.model; shardReceipt = value.receipt; source = value.profile
+                // Every request's attention keys and values live in this rank's page pool.
+                if pagedKV { value.model.attentionPagePool = try value.model.makeAttentionPagePool(pageSize: Self.attentionPageTokens) }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
                     value.receipt.storageCommitmentSHA256, value.receipt.planName]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
@@ -154,7 +159,8 @@ public final class QwenTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(value.receipt.planName)"
                     + " shares=\(shares.map(String.init).joined(separator: "-")) shard_bytes=\(value.receipt.shardBytes)"
                     + " source_bytes=\(value.receipt.sourceBytes) tensors=\(value.receipt.sourceTensors)"
-                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)")
+                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)"
+                    + " paged_kv=\(pagedKV ? Self.attentionPageTokens : 0) page_bytes=\(value.model.attentionPagePool?.pageBytes ?? 0)")
                 try configuration.allocatorPolicy.prepareReady(
                     synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                     snapshot: {
@@ -262,8 +268,15 @@ public final class QwenTensorParallelResidentRuntime {
             guard total <= value.capacityLimitBytes, total <= baseReady.requestCapacityBytes else {
                 throw ProbeError("Tensor-parallel reservation exceeds its owner or readiness capacity ceiling")
             }
-            // Kept prefixes give way before a reservation is refused for memory.
-            try prefix.yieldingMemory { try charge.allowance.requireLive(additionalNativeBytes: charge.extraNativeBytes) }
+            // Pages no request or prefix entry holds go back first (the pool
+            // regrows to this request's pages when it starts).
+            _ = try? model?.attentionPagePool?.trim()
+            // Kept prefixes give way before a reservation is refused for memory;
+            // a paged rank also needs what its page pool grows by.
+            try prefix.yieldingMemory {
+                try charge.allowance.requireLive(additionalNativeBytes: try QwenLongPrefillCheckedBytes.sum([
+                    charge.extraNativeBytes, Self.pagedGrowthBytes(model: model, tokens: request.maximumTokens)]))
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, allowance: charge.allowance, extraNativeBytes: charge.extraNativeBytes,
                 deadline: value.deadlineUptimeNanoseconds)
@@ -356,8 +369,11 @@ public final class QwenTensorParallelResidentRuntime {
             return false
         }
 
+        // The request's attention pages (nil when contiguous), held until it ends.
+        let pages = try Self.reservePages(model: model, tokens: request.maximumTokens)
+        defer { withExtendedLifetime(pages) {} }
         // Prompt prefix: the longest chunk boundary both ranks hold.
-        var cache = model.newCache()
+        var cache = model.newCache(account: pages?.account)
         var start = 0
         let scope = loadAgreement + "|" + receipt
         if prefix.enabled, prompt.count > chunk {
@@ -366,6 +382,8 @@ public final class QwenTensorParallelResidentRuntime {
             if let agreed = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates),
                let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) {
                 cache = restored; start = agreed
+                // The entry's pages are shared; what the request appends is its own.
+                for case let history as PagedAttentionKVCache in cache { history.account = pages?.account }
             }
         }
         // Prefill from `start` in chunks aligned to the boundaries; keep the

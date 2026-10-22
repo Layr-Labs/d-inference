@@ -204,6 +204,24 @@ struct EngineV2PrefillGeometryTests {
         #expect(geometry(try geometryGPTOSS(), override(chunk: "256", stripe: "0")).prefillChunkTokens == 256)
     }
 
+    @Test("a Gemma 4 step budget override never refuses a whole media block")
+    func gemmaStepBudgetOverrideCoversMediaBlock() throws {
+        // The stripe-sized ring holds the block, but submit validation also
+        // bounds every block by the step budget (`CBv2MultimodalPlan.validate`).
+        let block = EngineV2Factory.gemma4MaximumMediaBlockTokens
+        let environment = [
+            EngineV2Factory.prefillChunkKey: "256", EngineV2Factory.soloPrefillStripeKey: String(block),
+            EngineV2Factory.stepTokenBudgetKey: "256",
+        ]
+        #expect(geometry(try geometryGemma4Text(), environment) == Geometry(
+            prefillChunkTokens: 256, maxBatchedTokensPerStep: block,
+            soloPrefillStripeTokens: block, bidirectionalMediaPrefillChunkCeiling: nil))
+        #expect(geometry(try geometryGemma4Text(), [EngineV2Factory.stepTokenBudgetKey: "6144"])
+            .maxBatchedTokensPerStep == 6144)
+        // Families without bidirectional blocks keep the requested budget.
+        #expect(geometry(try geometryGPTOSS(), environment).maxBatchedTokensPerStep == 256)
+    }
+
     @Test("malformed or nonpositive chunks restore the SDK chunk for every family")
     func malformedChunkFailsTowardSDK() throws {
         let gemma = try geometryGemma4Text()
@@ -379,5 +397,29 @@ struct EngineV2PrefillGeometryEngineTests {
             maxContextLength: 2_048)
         #expect(media.visionChunks == 1)
         #expect(media.prefillChunkTokensMax == 512)
+    }
+
+    @Test("an undersized Gemma 4 step budget override still admits a whole media block")
+    func gemmaUndersizedStepBudgetAdmitsMediaBlock() async throws {
+        // A 256-token step budget would refuse the 300-token block at submit
+        // (`spanTooLong`) even though the stripe-sized rings hold it.
+        let span = CBv2ImageSpan(tokenOffset: 1_100, length: 300)
+        let embedding = MLXArray.zeros([1, span.length, 64], dtype: .float32)
+        eval(embedding)
+        let media = try await prefillBesideDecode(
+            model: try geometryGemma4Text(),
+            request: { id in
+                var request = Self.textRequest(id, tokens: 1_800)
+                request.multimodal = CBv2MultimodalInput(spans: [span]) { [embedding] }
+                return request
+            },
+            overrides: [
+                EngineV2Factory.prefillChunkKey: "256",
+                EngineV2Factory.soloPrefillStripeKey: String(EngineV2Factory.gemma4MaximumMediaBlockTokens),
+                EngineV2Factory.stepTokenBudgetKey: "256",
+            ],
+            maxContextLength: 2_048)
+        #expect(media.visionChunks == 1)
+        #expect(media.prefillChunkTokensMax >= UInt32(span.length))
     }
 }

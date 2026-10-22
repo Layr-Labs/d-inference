@@ -98,10 +98,16 @@ extension EngineV2Factory {
             chunk = gemma4MaximumMediaBlockTokens
             stripe = nil
         }
+        var budget = stepTokenBudget(abovePlainChunk: chunk, environment: environment)
+        // Submit validation refuses a block longer than the step budget
+        // (`CBv2MultimodalPlan.validate`), so the budget must hold one too.
+        if isGemma4(model) {
+            budget = max(budget, gemma4MaximumMediaBlockTokens)
+        }
         let sdkChunk = CBv2SchedulerConfig().prefillChunkSize
         return PrefillGeometry(
             prefillChunkTokens: chunk,
-            maxBatchedTokensPerStep: stepTokenBudget(abovePlainChunk: chunk, environment: environment),
+            maxBatchedTokensPerStep: budget,
             soloPrefillStripeTokens: stripe,
             bidirectionalMediaPrefillChunkCeiling: chunk > sdkChunk ? sdkChunk : nil)
     }

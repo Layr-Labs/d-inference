@@ -2040,7 +2040,9 @@ or change consumer/OpenRouter routing.
    `video_processor.max_soft_tokens` soft tokens (280 and 70 by default; the
    vision family's largest image budget is 1,120). The default 2,048-token
    chunk covers that, and a chunk override that leaves `max(chunk, stripe)`
-   below 1,120 tokens is raised to 1,120 —
+   below 1,120 tokens is raised to 1,120. A step budget below 1,120 is raised
+   to 1,120 as well, because submit validation refuses a block longer than the
+   step budget —
    `libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma4.swift` (`Gemma4Processor`),
    `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
    `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,

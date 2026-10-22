@@ -779,6 +779,24 @@ and findings after final-result write failure. Merge-gate tests reject artifacts
 from another run/attempt even for the same revisions. PR closure has a distinct
 lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
+Workload tests segment large fixtures into 31 and 62 source batches, then complete
+Sonnet and selected Sol review, hierarchical integrations and one repair. Removing
+duplicate Opus passes reduces those critical-code fixtures from 100 to 69 and
+197 to 135 requests without losing source coverage. Routing regressions retain
+full Sonnet review of clean support files, escalate their findings and uncertainty,
+preserve workflow and renamed-path risk, and target exact integration citations.
+Production `AppAttest.swift`, `Attest.swift`, `AuthLatest.swift` and critical
+test-named files retain independent depth outside explicit support trees.
+Global uncertainty still denies clearance without triggering a blanket rescan;
+cached results preserve the same selected scope. Adapter tests stop after
+exactly 500 requests, apply the larger native output default and preserve fixed
+probe limits. Client configuration tests preserve single-attempt transport and
+allow more response time for workload mode. Lifecycle tests verify stage admission
+failure identifies the
+unadmitted integration rather than the previous source call, manual GitHub job
+reruns perform no paid work, runtime configuration stays bounded and every final
+incomplete outcome requires human review. Workflow checks restrict manual dispatch
+to unpaid preflight and keep the scanner deadline below the job timeout.
 
 From the repository root:
 

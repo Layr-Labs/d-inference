@@ -5,14 +5,15 @@ import json
 from pathlib import Path
 import runpy
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from threat_review.bedrock import BedrockCalls, MODELS
-from threat_review.budget_scan import SCHEMA
+from threat_review.budget_scan import SCHEMA, Scanner
 from threat_review.budget_runner import status_body
 from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
-from threat_review.context import SONNET, SOL
+from threat_review.context import SONNET, SOL, ThreatContext
 from threat_review.review import model_call
 from threat_review.structured_output import bedrock_schema
 from threat_review.merge_policy import clean, manual_override
@@ -298,6 +299,83 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(len(self.client.requests), 1)
         self.assertEqual(self.calls.fallback.calls, [])
 
+    def test_workload_policy_admits_stages_instead_of_using_legacy_fixed_limit(self):
+        self.env.update(BEDROCK_SCAN_CALL_POLICY="workload", BEDROCK_SCAN_MAX_CALLS="1")
+        self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", self.env,
+                                 client=self.client, fallback_factory=Backup)
+        with self.assertRaises(BudgetStopped):
+            self.invoke()  # No unplanned native call, even before the first stage.
+        self.calls.plan_calls(30)
+        self.assertEqual(self.calls.limit, 31)  # source + one shared repair
+        for _ in range(30):
+            self.invoke()
+        self.calls.plan_calls(1)  # actual cross-file integration
+        self.invoke()
+        self.assertEqual(len(self.client.requests), 31)
+        self.assertEqual(self.calls.metrics()["bedrock_planned_calls"], 31)
+        self.assertEqual(self.calls.limit, 32)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_generous_workload_defaults_and_emergency_ceiling_are_still_bounded(self):
+        self.assertEqual(self.calls.ceiling, 12)
+        self.assertEqual(self.calls.output_tokens, 4096)  # fixed diagnostic probes retain their limits
+        self.env.update(BEDROCK_SCAN_CALL_POLICY="workload")
+        self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", self.env,
+                                 client=self.client, fallback_factory=Backup)
+        self.assertEqual(self.calls.ceiling, 500)
+        self.assertEqual(self.calls.output_tokens, 16384)
+        self.calls.plan_calls(499)
+        for _ in range(500):
+            self.invoke()  # planned work plus the one shared repair slot
+        with self.assertRaises(BudgetStopped):
+            self.invoke()
+        self.assertEqual(len(self.client.requests), 500)
+        self.assertEqual(self.client.requests[-1]["inferenceConfig"]["maxTokens"], 16384)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_larger_workload_has_time_for_output_without_sdk_retries(self):
+        for policy, seconds in (("fixed", 240), ("workload", 600)):
+            with self.subTest(policy=policy):
+                configs = []
+                def config(**values):
+                    configs.append(values)
+                    return values
+                modules = {"boto3": SimpleNamespace(client=lambda *args, **kwargs: self.client),
+                           "botocore": SimpleNamespace(), "botocore.config": SimpleNamespace(Config=config)}
+                env = dict(self.env, BEDROCK_SCAN_CALL_POLICY=policy, BEDROCK_SCAN_CREDENTIALS_READY="true")
+                self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", env, fallback_factory=Backup)
+                self.calls.plan_calls(1)
+                with patch.dict("sys.modules", modules):
+                    self.invoke()
+                self.assertEqual(configs, [{"connect_timeout": 10, "read_timeout": seconds,
+                                            "retries": {"total_max_attempts": 1, "mode": "standard"}}])
+
+    def test_workload_emergency_ceiling_stops_before_the_unadmitted_stage(self):
+        self.env.update(BEDROCK_SCAN_CALL_POLICY="workload", BEDROCK_SCAN_MAX_WORKLOAD_CALLS="3")
+        self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", self.env,
+                                 client=self.client, fallback_factory=Backup)
+        self.calls.plan_calls(2)
+        self.invoke()
+        self.invoke()
+        with self.assertRaises(BudgetStopped) as caught:
+            self.calls.plan_calls(1)
+        self.assertEqual(caught.exception.diagnostic["code"], "BEDROCK_WORKLOAD_LIMIT")
+        with self.assertRaises(BudgetStopped):
+            self.invoke()
+        self.assertEqual(len(self.client.requests), 2)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_invalid_call_policies_and_ceiling_cannot_expand_paid_work(self):
+        for config in ({"BEDROCK_SCAN_CALL_POLICY": "unlimited"},
+                       {"BEDROCK_SCAN_CALL_POLICY": "workload", "BEDROCK_SCAN_MAX_WORKLOAD_CALLS": "501"},
+                       {"BEDROCK_SCAN_CALL_POLICY": "workload", "BEDROCK_SCAN_MAX_WORKLOAD_CALLS": "0"},
+                       {"BEDROCK_SCAN_CALL_POLICY": "fixed", "BEDROCK_SCAN_MAX_CALLS": "101"},
+                       {"BEDROCK_SCAN_CALL_POLICY": "workload", "BEDROCK_SCAN_MAX_OUTPUT_TOKENS": "16385"}):
+            with self.subTest(config=config), self.assertRaises(ReviewUnavailable):
+                BedrockCalls(None, 1, "123-1", "synthetic", "index", dict(self.env, **config),
+                             client=self.client, fallback_factory=Backup)
+        self.assertEqual(self.client.requests, [])
+
     def test_missing_aws_credentials_uses_explicit_backup(self):
         self.calls.client = None
         self.assertEqual(self.invoke(), {"backup": True})
@@ -352,6 +430,74 @@ class BedrockTests(unittest.TestCase):
         self.assertEqual(self.client.requests, [])
 
 
+class WorkloadScanTests(unittest.TestCase):
+    def large_scan(self, lines):
+        context = ThreatContext("threats:\n  - id: T-TEST\n    description: Preserve security.\n")
+        files = [{"filename": "encrypt.py", "status": "added", "source_complete": True,
+                  "head_text": ("x" * 999 + "\n") * lines, "patch": ""}]
+        requests, progress = [], []
+        outer = self
+        class Native:
+            def converse(self, **request):
+                outer.assertEqual(request["inferenceConfig"]["maxTokens"], 16384)
+                message = json.loads(request["messages"][0]["content"][0]["text"])
+                requests.append((request["modelId"].rsplit("/", 1)[-1], message["stage"]))
+                result = {"findings": [], "covered_units": message["expected_covered_units"],
+                          "analysis": "a" * 4000, "needs_deeper_review": False}
+                if len(requests) == 1:
+                    result["analysis"] = ""  # one existing bounded repair
+                return {"usage": {"inputTokens": 100, "outputTokens": 50}, "stopReason": "end_turn",
+                        "output": {"message": {"content": [{"text": json.dumps(result)}]}}}
+        with tempfile.TemporaryDirectory() as directory:
+            env = {"BEDROCK_SCAN_CALL_POLICY": "workload", "BEDROCK_SCAN_MAX_CALLS": "30",
+                   "BEDROCK_SCAN_USAGE_FILE": str(Path(directory) / "usage.jsonl"),
+                   "GITHUB_REPOSITORY": "example/repo", "GITHUB_RUN_ID": "123",
+                   "BEDROCK_SCAN_PROFILES": json.dumps({
+                       alias: f"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/{alias}"
+                       for alias in ("sonnet", "opus", "sol")})}
+            paid = BedrockCalls(None, 1, "123-1", None, context.prefix(), env,
+                                client=Native(), fallback_factory=Backup)
+            scanner = Scanner(context, files, None, paid, lambda value: progress.append(copy.deepcopy(value)), "b" * 40)
+            scanner.use_cache = False
+            result = scanner.run()  # automatic path selection, no force_deep
+        self.assertEqual(paid.fallback.calls, [])
+        return result, requests, progress, len(scanner.source)
+
+    def test_large_automatic_scan_finishes_all_depth_hierarchical_integration_and_one_repair(self):
+        # Real source segmentation yields 31 batches: the old 30-call CI limit
+        # could not finish even the source pass. Long valid analyses also force
+        # two integration levels for each model that integrates.
+        result, requests, progress, source_batches = self.large_scan(1900)
+        self.assertEqual(source_batches, 31)
+        self.assertTrue(clean({"head": "a" * 40, "base": "b" * 40, "review": result}, "a" * 40, "b" * 40))
+        self.assertTrue(result["finished"])
+        self.assertTrue(progress[-1]["finished"])
+        self.assertEqual(result["covered_units"], 63)
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertEqual(result["bedrock_planned_calls"], 68)
+        self.assertEqual(result["bedrock_requests"], 69)
+        self.assertEqual(result["bedrock_call_limit"], 69)
+        self.assertEqual(result["response_repairs"][0]["status"], "completed")
+        for alias, source_count, integration_count in (("sonnet", 32, 3), ("opus", 0, 0), ("sol", 31, 3)):
+            self.assertEqual(requests.count((alias, "source")), source_count)
+            self.assertEqual(requests.count((alias, "integration")), integration_count)
+
+    def test_larger_workload_completes_beyond_the_previous_hundred_call_ceiling(self):
+        result, requests, progress, source_batches = self.large_scan(3800)
+        self.assertEqual(source_batches, 62)
+        self.assertTrue(clean({"head": "a" * 40, "base": "b" * 40, "review": result}, "a" * 40, "b" * 40))
+        self.assertTrue(progress[-1]["finished"])
+        self.assertEqual(result["covered_units"], 124)
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertEqual(result["bedrock_planned_calls"], 134)
+        self.assertEqual(result["bedrock_requests"], 135)
+        self.assertEqual(result["bedrock_call_limit"], 135)
+        self.assertEqual(result["bedrock_call_ceiling"], 500)
+        for alias, source_count, integration_count in (("sonnet", 63, 5), ("opus", 0, 0), ("sol", 62, 5)):
+            self.assertEqual(requests.count((alias, "source")), source_count)
+            self.assertEqual(requests.count((alias, "integration")), integration_count)
+
+
 class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.head, self.base = "a" * 40, "b" * 40
@@ -390,6 +536,25 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("Scan completed; human review required", body)
         self.assertNotIn("Review not completed", body)
         self.assertFalse(clean(self.report, self.head, self.base))
+
+    def test_final_incomplete_results_always_explicitly_require_a_human(self):
+        for changes in ({"errors": ["Provider failed"]}, {"covered_units": 2},
+                        {"integration_completed": False}, {"depth_batches_pending": 1},
+                        {"limited_files": ["libs/runtime"]}):
+            with self.subTest(changes=changes):
+                snapshot = dict(self.report["review"], finished=True, **changes)
+                body = status_body("example/repo", self.head, self.base, self.base, snapshot, {})
+                self.assertIn("Human review required: CI did not complete", body)
+                self.assertIn("do not manually rerun the paid scan", body)
+                self.assertNotIn("**Scan completed.**", body)
+                self.assertFalse(clean({"head": self.head, "base": self.base, "review": snapshot},
+                                       self.head, self.base))
+
+    def test_running_scan_is_not_prematurely_handed_to_a_human(self):
+        snapshot = dict(self.report["review"], finished=False, integration_completed=False)
+        body = status_body("example/repo", self.head, self.base, self.base, snapshot, {})
+        self.assertIn("Review in progress", body)
+        self.assertNotIn("Human review required: CI did not complete", body)
 
     def test_clearance_footer_preserves_human_decision_and_diagnostics(self):
         self.report["review"]["manual_review_reasons"] = ["Independent human review required"]

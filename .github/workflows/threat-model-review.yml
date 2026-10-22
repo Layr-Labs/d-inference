@@ -6,14 +6,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: 'PR number for a maintainer-requested deeper review (normal caps still apply)'
-        required: false
-        type: string
       preflight:
         description: 'Verify state writes, budget capacity and funding without paid calls'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write # atomic budget ledger and report checkpoints on a dedicated branch
@@ -56,7 +52,7 @@ jobs:
   review:
     name: Threat Model Review (advisory)
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
@@ -64,17 +60,17 @@ jobs:
     env:
       THREAT_REVIEW_REQUIRE_CLEARANCE: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE }}
       # Untrusted forks keep the existing capped OpenRouter path unless a
-      # maintainer explicitly opts them into AWS or dispatches a review.
-      BEDROCK_SCAN_ENABLED: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository || vars.BEDROCK_SCAN_ALLOW_FORKS == 'true') && 'true' || 'false' }}
+      # maintainer explicitly opts them into AWS.
+      BEDROCK_SCAN_ENABLED: ${{ vars.BEDROCK_SCAN_ENABLED == 'true' && (github.event.pull_request.head.repo.full_name == github.repository || vars.BEDROCK_SCAN_ALLOW_FORKS == 'true') && 'true' || 'false' }}
     # Conditional clearance is activated only after its exact workflow rule is installed.
     continue-on-error: ${{ vars.THREAT_REVIEW_REQUIRE_CLEARANCE != 'true' }}
     if: >-
-      ${{ (github.event_name == 'workflow_dispatch' && !inputs.preflight) || (github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
-          (github.event.action != 'edited' || github.event.changes.base.ref.from != '' || vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true')) }}
+      ${{ github.event_name == 'pull_request_target' && !github.event.pull_request.draft &&
+          (github.event.action != 'edited' || github.event.changes.base.ref.from != '' || vars.THREAT_REVIEW_REQUIRE_CLEARANCE == 'true') }}
     # In clearance mode an edited PR must not replace a failed required run with
     # a skipped success. Advisory mode still ignores ordinary title/body edits.
     concurrency:
-      group: threat-model-advisory-${{ github.event.pull_request.number || inputs.pr_number }}
+      group: threat-model-advisory-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
       - name: Check out the current trusted scanner
@@ -87,32 +83,6 @@ jobs:
             /.github/scripts/
       - name: Record scanner revision
         run: echo "THREAT_REVIEW_SCANNER_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-      - name: Resolve maintainer-requested PR from trusted API data
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REQUESTED_PR: ${{ inputs.pr_number }}
-        run: |
-          python3 - <<'PY'
-          import json, os, re, sys
-          from pathlib import Path
-          sys.path.insert(0, '.github/scripts')
-          from threat_review.client import GitHub
-          number = os.environ['REQUESTED_PR']
-          if not re.fullmatch(r'[1-9][0-9]{0,9}', number):
-              raise SystemExit('Invalid PR number')
-          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-          github = GitHub(event['repository']['full_name'], int(number), os.environ['GH_TOKEN'])
-          pull = github.pull()
-          if pull['base']['ref'] != event['repository']['default_branch']:
-              raise SystemExit('Manual review requires the default target branch')
-          event.update(pull_request=pull, review_depth='deep')
-          path = Path(os.environ['RUNNER_TEMP']) / 'threat-review-event.json'
-          path.write_text(json.dumps(event))
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write(f'THREAT_REVIEW_EVENT_PATH={path}\n')
-              output.write(f"THREAT_REVIEW_BASE_SHA={pull['base']['sha']}\n")
-          PY
       - name: Check for an independent manual override
         id: merge-policy
         env:
@@ -155,12 +125,16 @@ jobs:
           THREAT_REVIEW_STATE_TOKEN: ${{ steps.state-token.outputs.token || secrets.THREAT_REVIEW_STATE_TOKEN }}
           THREAT_REVIEW_RESULT_FILE: ${{ runner.temp }}/threat-review-result.json
           THREAT_REVIEW_DIAGNOSTICS_FILE: ${{ runner.temp }}/threat-review-diagnostics.json
-          THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha || env.THREAT_REVIEW_BASE_SHA }}
+          THREAT_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Stop with enough time to save findings, publish the human handoff
+          # and evaluate clearance before the job or one-hour credentials end.
+          THREAT_REVIEW_TIMEOUT_SECONDS: '3000'
           THREAT_REVIEW_ENABLED: ${{ vars.THREAT_REVIEW_ENABLED }}
           BEDROCK_SCAN_PROFILES: ${{ vars.BEDROCK_SCAN_PROFILES }}
           BEDROCK_SCAN_AWS_REGION: ${{ vars.BEDROCK_SCAN_AWS_REGION || 'us-east-1' }}
-          BEDROCK_SCAN_MAX_CALLS: ${{ vars.BEDROCK_SCAN_MAX_CALLS || '12' }}
-          BEDROCK_SCAN_MAX_OUTPUT_TOKENS: ${{ vars.BEDROCK_SCAN_MAX_OUTPUT_TOKENS || '4096' }}
+          BEDROCK_SCAN_CALL_POLICY: workload
+          BEDROCK_SCAN_MAX_WORKLOAD_CALLS: ${{ vars.BEDROCK_SCAN_MAX_WORKLOAD_CALLS || '500' }}
+          BEDROCK_SCAN_MAX_OUTPUT_TOKENS: ${{ vars.BEDROCK_SCAN_MAX_OUTPUT_TOKENS || '16384' }}
           BEDROCK_SCAN_CREDENTIALS_READY: ${{ steps.bedrock-auth.outcome == 'success' && 'true' || 'false' }}
           BEDROCK_SCAN_USAGE_FILE: ${{ runner.temp }}/bedrock-usage.jsonl
         run: python3 .github/scripts/threat-model-review.py
@@ -200,4 +174,4 @@ jobs:
         run: python3 .github/scripts/threat-review-gate.py after
       - name: Report infrastructure failure
         if: ${{ failure() }}
-        run: echo 'Threat-model review incomplete; check the review and configured merge policy.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Threat-model review incomplete; human review required. Do not manually rerun the paid scan.' >> "$GITHUB_STEP_SUMMARY"

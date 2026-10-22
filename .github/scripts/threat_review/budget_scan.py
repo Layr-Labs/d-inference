@@ -2,7 +2,8 @@
 import copy
 import json
 from .client import APIError, ReviewUnavailable, ScanTimeout
-from .context import VERSION, SONNET, OPUS, SOL, RISK, CRITICAL, digest
+from .context import VERSION, SONNET, OPUS, SOL, digest
+from .depth_policy import source_depth
 from .review import SYSTEM, FindingCapacityReached, model_call, patch_lines, prepare, validate_findings
 from .scan import SCAN_SCHEMA, INSTRUCTION, units, batches, patch_context
 from .state import BudgetStopped
@@ -82,6 +83,7 @@ class Scanner:
         self.covered = set()
         self.reused = 0
         self.integration = False
+        self.finished = False
         self.depth_pending = 0
         self.use_cache = True
         self.manual_review_reasons = []
@@ -108,7 +110,7 @@ class Scanner:
                 "covered_units": len(self.covered), "total_units": sum(map(len, self.source)),
                 "changed_files": len(self.evidence), "limited_files": self.limits,
                 "depth_batches_pending": self.depth_pending,
-                "integration_completed": self.integration, "reused_batches": self.reused,
+                "integration_completed": self.integration, "finished": self.finished, "reused_batches": self.reused,
                 "manual_review_reasons": self.manual_review_reasons, "diagnostics": diagnostics,
                 "response_repairs": self.response_repairs,
                 "active_request": {**self.active_request, **getattr(self.paid, "last_request", {})},
@@ -299,7 +301,9 @@ class Scanner:
         pending = summaries
         while pending:
             reduced = []
-            for batch in batches(pending):
+            scheduled = list(batches(pending))
+            self.plan_calls(model, "integration", len(scheduled))
+            for batch in scheduled:
                 result = self.call(model, "integration", batch)
                 reduced.append({"id": str(len(reduced)), "analysis": result["analysis"],
                                 "findings": result["findings"],
@@ -311,31 +315,64 @@ class Scanner:
             pending = reduced
         return None
 
+    def plan_calls(self, model, stage, count):
+        # OpenRouter retains its independent durable dollar limits. Only the
+        # native adapter uses this workload plan; caches never authorize extra
+        # stages and integration rounds must still converge.
+        planner = getattr(self.paid, "plan_calls", None)
+        if planner:
+            self.active_request = {"model": model, "stage": stage, "phase": "planning",
+                                   "scheduled_batches": count}
+            self.paid.last_request = {}
+            planner(count)
+
+    def finding_batches(self, findings):
+        """Target retained finding citations instead of rescanning the PR."""
+        selected = []
+        for batch in self.source:
+            evidence = self.batch_evidence("source", batch)
+            if any(f["file"] in evidence and f["line"] in evidence[f["file"]]["lines"][f["side"]]
+                   for f in findings):
+                selected.append(batch)
+        return selected
+
     def run(self, force_deep=False):
         summaries, deepen, critical = [], [], []
         first_results = {}
         try:
+            self.plan_calls(SONNET, "source", len(self.source))
             for batch in self.source:
                 result = self.call(SONNET, "source", batch)
                 first_results[digest(batch)] = result["findings"]
                 summaries.append({"id": str(len(summaries)), "analysis": result["analysis"],
                                   "findings": result["findings"],
                                   "needs_deeper_review": result["needs_deeper_review"]})
-                paths = " ".join(u["metadata"]["file"] for u in batch)
-                if force_deep or RISK.search(paths) or result["needs_deeper_review"] or result["findings"]:
+                depth = source_depth(batch, result)
+                if force_deep or depth == OPUS:
                     deepen.append(batch)
-                if force_deep or CRITICAL.search(paths) or any(f["severity"] == "high" for f in result["findings"]):
+                if force_deep or depth == SOL:
                     critical.append(batch)
             integrated = self.integrate(SONNET, summaries)
-            if integrated and (integrated["needs_deeper_review"] or integrated["findings"]):
-                deepen = list(self.source)
+            # Reduction and formatting repair cannot erase earlier validated
+            # advice. All retained findings here come from the Sonnet pass.
+            if self.findings:
+                for batch in self.finding_batches(self.findings):
+                    if batch not in deepen:
+                        deepen.append(batch)
+                high = [f for f in self.findings if f["severity"] == "high"]
+                for batch in self.finding_batches(high):
+                    if batch not in critical:
+                        critical.append(batch)
             if integrated and integrated["needs_deeper_review"]:
                 # Independent depth passes do not receive this global question;
                 # their clean local answers cannot establish its resolution.
                 self.manual_review_reasons.append(
                     "Cross-file reviewer requests further review; independent human review required")
-            if integrated and any(f["severity"] == "high" for f in integrated["findings"]):
-                critical = list(self.source)
+            # Sol supplies the independent second view for critical source;
+            # repeating the same batches with Opus adds a third local pass.
+            # Explicit diagnostic deep scans retain their all-model contract.
+            if not force_deep:
+                deepen = [batch for batch in deepen if batch not in critical]
             self.integration = True
             self.depth_pending = len(deepen) + len(critical)
             self.outcomes.append({"model": SONNET, "status": "first pass completed"})
@@ -349,6 +386,7 @@ class Scanner:
                 # reconciled its own local questions. A source flag is not final.
                 if model == SOL:
                     self.depth_pending += 1
+                self.plan_calls(model, "source", len(selected))
                 depth_summaries = []
                 for batch in selected:
                     # Independent source assessment, without the earlier verdict.
@@ -381,5 +419,6 @@ class Scanner:
             self.errors.append(failure(error))
             active = {**self.active_request, **getattr(self.paid, "last_request", {})}
             self.diagnostics.append(failure_record(error, active))
+        self.finished = True
         self.checkpoint(self.snapshot())
         return self.snapshot()

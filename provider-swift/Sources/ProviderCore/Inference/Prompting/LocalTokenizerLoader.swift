@@ -63,7 +63,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
     private let upstream: any Tokenizers.Tokenizer
     private let chatTemplate: String?
     private let modelType: String?
-    private let promptCache: PromptTokenCache?
+    let promptTokenCache: PromptTokenCache?
 
     init(
         _ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?,
@@ -78,16 +78,14 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         if let promptCacheConfigurations, let template = self.chatTemplate,
             let pretrained = upstream as? PreTrainedTokenizer
         {
-            promptCache = PromptTokenCache(
+            promptTokenCache = PromptTokenCache(
                 upstream: pretrained, configurations: promptCacheConfigurations,
                 chatTemplate: template,
                 selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType))
         } else {
-            promptCache = nil
+            promptTokenCache = nil
         }
     }
-
-    var promptTokenCache: PromptTokenCache? { promptCache }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         upstream.encode(text: text, addSpecialTokens: addSpecialTokens)
@@ -145,7 +143,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
         additionalContext: [String: any Sendable]?,
         promptCacheScope: String
     ) throws -> [Int] {
-        if let promptCache, let tokens = promptCache.applyChatTemplate(
+        if let promptTokenCache, let tokens = promptTokenCache.applyChatTemplate(
             messages: messages, tools: tools,
             additionalContext: effectiveContext(additionalContext), scope: promptCacheScope)
         {

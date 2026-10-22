@@ -278,7 +278,8 @@ public enum LaunchAgent: Sendable {
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
     /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
-    /// prompt-token reuse is on by default; exact `0` is the rollback.
+    /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
+    /// the rollback.
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.

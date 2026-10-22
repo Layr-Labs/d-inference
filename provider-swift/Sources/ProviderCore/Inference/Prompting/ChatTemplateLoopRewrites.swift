@@ -7,7 +7,7 @@
 // forward over every later message after each tool call; GPT-OSS walks
 // forward over every later message after each tool call. swift-jinja builds a
 // loop context per iteration, so a 1,600-message agent history renders in
-// 0.9-2.3 s on an M5 Ultra, on every request. Each rewrite replaces a block
+// 0.25-0.72 s on an M3 Ultra, on every request. Each rewrite replaces a block
 // matched verbatim with a form that renders the same text: the previous
 // non-tool role is tracked while the main loop runs, the tool-response scan
 // stops at the first non-tool message (later iterations only skip), and the

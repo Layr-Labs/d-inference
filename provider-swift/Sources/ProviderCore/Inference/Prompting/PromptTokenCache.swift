@@ -4,14 +4,15 @@
 //
 // Prompt preparation renders the chat template and BPE-encodes the whole
 // conversation on every request, on one core, before engine submission:
-// 3.6-11.6 µs per token, so 0.1-0.4 s at 32K tokens. Multi-turn chats and agent
-// loops resend the same history, so nearly all of that work repeats.
+// 2.7-8.5 µs per token on an M3 Ultra, so 0.1-0.35 s for a 27-46K-token
+// conversation. Multi-turn chats and agent loops resend the same history, so
+// nearly all of that work repeats.
 //
 // swift-transformers splits its input at every added-token match and encodes
 // each section on its own. The rendered prompt is therefore cut where an added
 // token begins (`PromptPieceSplitter` states when that is exact), every piece
 // is looked up by SHA-256 over (cache scope, piece bytes), and only pieces not
-// seen before are encoded, in parallel when several large ones are missing.
+// seen before are encoded, in parallel when they total at least 32 KiB.
 // Token IDs equal the unchanged path's: the render replays
 // `PreTrainedTokenizer.applyChatTemplate` over the same template (or its
 // `ChatTemplateLoopRewrites` form) and configuration, a load-time self-check
@@ -97,7 +98,6 @@ struct PromptPieceSplitter: Sendable {
     private let buckets: [[[UInt8]]]
     private let firstBytes: [Bool]
     let cutTokens: [String]
-    var cutTokenCount: Int { cutTokens.count }
 
     init?(tokenizerData: Config) {
         // Same reads as `PreTrainedTokenizer.init`: the separator alternation
@@ -136,7 +136,7 @@ struct PromptPieceSplitter: Sendable {
     /// Ascending byte offsets in `1..<utf8.count` where a piece starts.
     func cutOffsets(in utf8: UnsafeBufferPointer<UInt8>) -> [Int] {
         var cuts: [Int] = []
-        guard cutTokenCount > 0, let base = utf8.baseAddress else { return cuts }
+        guard !cutTokens.isEmpty, let base = utf8.baseAddress else { return cuts }
         let count = utf8.count
         var index = 0
         firstBytes.withUnsafeBufferPointer { first in
@@ -210,8 +210,9 @@ struct PromptPieceSplitter: Sendable {
 
 /// Byte-bounded store of piece token IDs keyed by the scoped piece digest.
 /// Two generations approximate least-recently-used eviction without sorting:
-/// new and reused pieces live in the young generation; when it fills half the
-/// capacity it becomes the old one, and the previous old generation is dropped.
+/// new and reused pieces live in the young generation; when it exceeds half
+/// the capacity it becomes the old one, and the previous old generation is
+/// dropped. Both together hold at most the capacity plus one piece.
 final class PromptPieceTokenStore: @unchecked Sendable {
     private static let entryOverheadBytes = 96
     let capacityBytes: Int

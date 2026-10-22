@@ -343,7 +343,9 @@ extension ProviderLoop {
         // tools, content-less messages, the `developer` role) before
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        // The body extensions read below come from the same parse.
+        // `decodeInboundChatRequest` runs that decode and also reads the
+        // body extensions below, in the same parse when the tool and
+        // function-call repairs leave the body unchanged.
         let inbound: InboundChatRequest
         do {
             inbound = try Self.decodeInboundChatRequest(decryptedData)

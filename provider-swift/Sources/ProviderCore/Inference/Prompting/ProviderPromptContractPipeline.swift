@@ -14,8 +14,7 @@ enum ProviderPromptContractPipeline {
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,
-        modelType: String?,
-        promptCacheScope: String? = nil
+        modelType: String?
     ) throws -> [Int] {
         if MiMoV26TemplateFix.applies(to: .init(modelType: modelType)) {
             try MiMoV26TemplateFix.validateRawControls(body)
@@ -28,8 +27,7 @@ enum ProviderPromptContractPipeline {
             request: request,
             tokenizer: tokenizer,
             modelType: modelType,
-            templateControls: templateControls,
-            promptCacheScope: promptCacheScope)
+            templateControls: templateControls)
     }
 
 

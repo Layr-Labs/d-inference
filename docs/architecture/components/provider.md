@@ -79,6 +79,7 @@ inference requests, cancels and attestation challenges are not held behind
 weight loading. A coordinator cancel for the waiting request is applied when its
 admission returns, where the serial consumer applied it. Connection, drain and
 model-management events, and the end of the work stream, still wait for it.
+Native MiMo requests keep the serial consumer.
 `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`

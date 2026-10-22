@@ -537,7 +537,8 @@ budgets; only its startup-preload pass skips the posture check, because it
 measures nothing. Its probes and cells publish no observations or work totals.
 While any such session runs, the periodic proactive MLX pool sweep waits:
 its flush is device work that cancels the session, so a warmup cell longer
-than the tick could never finish. On-pressure reclaims still run.
+than the tick could never finish. A sweep signalled just before a session
+started checks again when it runs. On-pressure reclaims still run.
 
 ### Serving width by chip
 

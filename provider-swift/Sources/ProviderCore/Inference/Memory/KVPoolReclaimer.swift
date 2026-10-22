@@ -136,9 +136,22 @@ actor KVPoolReclaimer {
 
     /// Proactive signal from the periodic drivers (ProviderLoop's
     /// capacity-refresh tick, StandaloneServer's sweep task). Non-isolated,
-    /// same contract as `scheduleReclaim`.
-    nonisolated func scheduleSweep() {
-        Task { await self.sweep() }
+    /// same contract as `scheduleReclaim`. `deferred` is read when the queued
+    /// sweep runs on this actor, so a condition that began after the signal
+    /// still holds the flush back.
+    nonisolated func scheduleSweep(deferredWhile deferred: @escaping @Sendable () -> Bool) {
+        Task { await self.sweep(deferredWhile: deferred) }
+    }
+
+    /// A deferred sweep counts its signal but neither flushes nor consumes
+    /// the rate-limit window.
+    @discardableResult
+    func sweep(deferredWhile deferred: () -> Bool) -> Bool {
+        if deferred() {
+            telemetry.recordSweepSignal()
+            return false
+        }
+        return sweep()
     }
 
     // MARK: - Reclaim execution (runs on this actor, never the budget actor)

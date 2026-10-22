@@ -237,6 +237,9 @@ private func checkRequestMix(_ layout: ClusterModelLayout, _ checks: PlacementCh
     let clamped = ClusterRequestMix.reference([sample(50_000, 9_000), sample(60_000, 9_000), sample(70_000, 9_000)], layout: layout)
     checks.require("auto choice: the request mix stays within the model's planned request",
         clamped?.promptTokens == layout.maximumPromptTokens && clamped?.outputTokens == layout.maximumOutputTokens)
+    let probes = ClusterRequestMix.reference([sample(14, 16), sample(60, 10), sample(208, 8)], layout: layout)
+    checks.require("auto choice: short probe answers do not shrink the reference answer below \(ClusterRequestMix.minimumOutputTokens) tokens",
+        probes?.promptTokens == 60 && probes?.outputTokens == min(ClusterRequestMix.minimumOutputTokens, layout.maximumOutputTokens))
 }
 
 /// Fixed LOAD reservations survive short-request speed calibration and layout

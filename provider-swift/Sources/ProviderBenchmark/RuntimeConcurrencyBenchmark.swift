@@ -81,7 +81,8 @@ public enum RuntimeConcurrencyBenchmark {
                 let measurement: Result<Void, any Error>
                 do {
                     // Model policy can lower the slot's width; queued rows are not a batch.
-                    if session.effectiveMaxConcurrentRequests == batchSize {
+                    let width = session.effectiveMaxConcurrentRequests
+                    if width == batchSize {
                         cells.append(
                             try await measure(
                                 session, prompts: prompts.prefix(batchSize), rowMaxTokens: quotas,
@@ -89,9 +90,7 @@ public enum RuntimeConcurrencyBenchmark {
                     } else {
                         refusedCells.append(
                             RefusedCell(
-                                batchSize: batchSize,
-                                effectiveMaxConcurrentRequests: session
-                                    .effectiveMaxConcurrentRequests))
+                                batchSize: batchSize, effectiveMaxConcurrentRequests: width))
                     }
                     measurement = .success(())
                 } catch {

@@ -295,6 +295,12 @@ public actor GlobalKVCacheBudget {
         reservations[requestID] != nil || pendingLoadIDs[requestID] != nil
     }
 
+    /// Read-only charged bytes of each request reservation, by request ID, for
+    /// local diagnostics. Pending LOAD claims live in `pendingLoads`.
+    func reservationBytesSnapshot() -> [String: UInt64] {
+        reservations.mapValues(\.bytes)
+    }
+
     func reservationClockNow() -> ContinuousClock.Instant { clockNow() }
 
     func recordReservationRefusal(bytes: UInt64) {

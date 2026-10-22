@@ -73,7 +73,22 @@ extension EngineV2Factory {
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
                 newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let superAdapter as NemotronSuperRecurrentAdapter:
+                layerKinds = superAdapter.cbv2LayerKinds
+                modelCapabilities = superAdapter.cbv2Capabilities
+                newCaches = { make in try superAdapter.newCacheV2(makeLayerCache: make) }
+            case let superTarget as NemotronSuperMTPTextTarget:
+                // Opt-in text speculation target over that same Super adapter.
+                layerKinds = superTarget.cbv2LayerKinds
+                modelCapabilities = superTarget.cbv2Capabilities
+                newCaches = { make in try superTarget.newCacheV2(makeLayerCache: make) }
             case let nemotron as NemotronH35Model:
+                layerKinds = nemotron.cbv2LayerKinds
+                modelCapabilities = nemotron.cbv2Capabilities
+                newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }
+            case let nemotron as NemotronHModel where type(of: nemotron) == NemotronHModel.self:
+                // Explicit base implementation only; derived Lightning/MTP execution
+                // is not interchangeable with the Super target's Mamba2 blocks.
                 layerKinds = nemotron.cbv2LayerKinds
                 modelCapabilities = nemotron.cbv2Capabilities
                 newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }

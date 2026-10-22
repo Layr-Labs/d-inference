@@ -32,6 +32,7 @@ where Inner.Context == BasicRequestContext {
     let reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
     /// What `previous_response_id` continues; the fork's typed Responses request does not carry the field.
     let responseConversations: LocalResponseConversationStore
+    let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)?
 
     init(
         inner: Inner,
@@ -39,13 +40,15 @@ where Inner.Context == BasicRequestContext {
         maxUploadBytes: Int = localInferenceMaxUploadBytes,
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil,
         reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)? = nil,
-        responseConversations: LocalResponseConversationStore = LocalResponseConversationStore()
+        responseConversations: LocalResponseConversationStore = LocalResponseConversationStore(),
+        serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)? = nil
     ) {
         self.reasoningParserFor = reasoningParserFor
         self.responseConversations = responseConversations
         self.inner = inner
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
+        self.serviceForRawChat = serviceForRawChat
     }
 
     /// The POST paths that carry inline media and need the raised ceiling.
@@ -157,8 +160,19 @@ where Inner.Context == BasicRequestContext {
         case .success(let decoded): item = decoded
         case .failure(let badRequest): return badRequest
         }
-        await resolveReasoningParser(&item)
-        let requestService = serviceForTemplateControls(item.templateControls)
+        // Optional unpublished-owner hook is reached only after outer auth,
+        // body-limit collection and ordinary request decoding. Exact raw bytes
+        // retain controls that the upstream request type deliberately omits.
+        // Its owner splits its own reasoning channel and refuses a request
+        // parser, so the inferred parser applies only to the generic service
+        // (the coordinator path likewise sets none for a Super owner).
+        let requestService: MLXOpenAIService
+        if let rawService = serviceForRawChat?(Data(buffer: buffer), item.request) {
+            requestService = rawService
+        } else {
+            await resolveReasoningParser(&item)
+            requestService = serviceForTemplateControls(item.templateControls)
+        }
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.

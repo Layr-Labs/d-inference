@@ -168,7 +168,8 @@ extension EngineV2Factory {
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
         nativeKVLayerIndices: Set<Int> = [],
-        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
+        schedulerPolicy: ((inout CBv2SchedulerConfig) -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
@@ -338,7 +339,7 @@ extension EngineV2Factory {
         func servingPolicy(for kind: EngineV2KVBackendKind) -> (
             CBv2SchedulerConfig, ServingPerformanceProfile?
         ) {
-            productionServingPolicy(
+            var resolved = productionServingPolicy(
                 model: model, modelID: modelID, modelArtifactSHA256: modelArtifactSHA256,
                 constructionPurpose: constructionPurpose,
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
@@ -347,31 +348,34 @@ extension EngineV2Factory {
                 backend: kind,
                 maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
                 environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
+            schedulerPolicy?(&resolved.scheduler)
+            return resolved
         }
 
         var nativeKVTypes: CBv2NativeKVTypeProbe.Result?
         var nativeKVProbeFailure: Error?
+        /// The recurrent checkpoint bank this backend hosts, carved from its
+        /// grant. Paged storage hosts one only when the config opts in.
+        func hostedHybridCache(paged: Bool) throws -> CBv2HybridPrefixCacheConfig? {
+            guard modelCapabilities.supportsRecurrentCheckpointReuse,
+                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
+                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
+                !hybridPrefixCache.buildID.isEmpty,
+                !paged || hybridPrefixCache.permitsPagedStorage
+            else { return nil }
+            guard hybridPrefixCache.maximumBytes < cappedCapacity else {
+                throw EngineV2ProductionError.noKVHeadroom
+            }
+            return hybridPrefixCache
+        }
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(
                 .contiguous, selection: precision, reason: fallbackReason)
             if let nativeKVProbeFailure { throw nativeKVProbeFailure }
             let observed = try nativeKVTypes ?? probeNativeKVTypes(model: model, adapter: adapter)
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .contiguous)
-            var contiguousCapacity = cappedCapacity
-            let configuredHybridCache: CBv2HybridPrefixCacheConfig?
-            if modelCapabilities.supportsRecurrentCheckpointReuse,
-                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
-                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
-                !hybridPrefixCache.buildID.isEmpty
-            {
-                guard hybridPrefixCache.maximumBytes < contiguousCapacity else {
-                    throw EngineV2ProductionError.noKVHeadroom
-                }
-                configuredHybridCache = hybridPrefixCache
-                contiguousCapacity -= hybridPrefixCache.maximumBytes
-            } else {
-                configuredHybridCache = nil
-            }
+            let configuredHybridCache = try hostedHybridCache(paged: false)
+            let contiguousCapacity = cappedCapacity - (configuredHybridCache?.maximumBytes ?? 0)
             let backend = CBv2ContiguousKVBackend(
                 config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity))
             let caches = try adapter.newCaches { index, kind in
@@ -435,9 +439,13 @@ extension EngineV2Factory {
             let resolvedResidentPrefix =
                 precision == .native && modelCapabilities.supportsPrefixReuse
                 ? residentPrefixCache : nil
+            // Carve a bank only where the engine hosts one on pages: unquantized
+            // storage without a resident page index (`EngineV2.hostsPagedHybridBank`).
+            let pagedHybridCache = resolvedResidentPrefix == nil && precision == .native
+                ? try hostedHybridCache(paged: true) : nil
             do {
                 let paged = try makeSegmentedPagedBackend(
-                    admittedGrantBytes: cappedCapacity,
+                    admittedGrantBytes: cappedCapacity - (pagedHybridCache?.maximumBytes ?? 0),
                     layerKinds: layerKinds,
                     layerDTypes: nativeKVTypes.layerDTypes,
                     schedulerConfig: schedulerConfig,
@@ -478,7 +486,8 @@ extension EngineV2Factory {
                         ? Self.pagedPoolDTypeName(paged.pool.config.dtype) : "mixed",
                     nativeLayerDTypes: nativeKVTypes.layerDTypes,
                     kvQuantization: precision,
-                    residentPrefixCacheEnabled: resolvedResidentPrefix != nil)
+                    residentPrefixCacheEnabled: resolvedResidentPrefix != nil,
+                    hybridPrefixCache: pagedHybridCache)
             } catch let error as CBv2KVError {
                 switch error {
                 case .backendIneligible(let reason):

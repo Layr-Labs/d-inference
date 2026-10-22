@@ -515,7 +515,14 @@ public actor EngineV2Bridge {
     // Test-installed only; never emitted to logging/telemetry or built in release.
     var _testNativeTextObserver: (@Sendable (String, String) -> Void)?
     var _testBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
+    /// Awaited before every native terminal until cleared. Concurrent requests
+    /// can finish in one batched step, which a re-armed one-shot gate can miss.
+    var _testPersistentBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
+
+    func _testInstallPersistentTerminalGate(_ gate: (@Sendable (CBv2Usage) async -> Void)?) {
+        _testPersistentBeforeNativeTerminal = gate
+    }
 
     func _testInstallCancelledSettlementHooks(
         beforeNativeTerminal: @escaping @Sendable (CBv2Usage) async -> Void,

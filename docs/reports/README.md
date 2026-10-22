@@ -259,3 +259,4 @@ retained in this tree.
 - [2026-10-07-autopilot-shadow-evidence.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-07-autopilot-shadow-evidence.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/2026-09-08-gemma-qat-defaults/README.md)
 - [README.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/evidence/all-model-prefix-2026-10-03/README.md)
+- [Nemotron Super image ingress measurements — 2026-10-15](2026-10-15-nemotron-super-image-ingress.md)

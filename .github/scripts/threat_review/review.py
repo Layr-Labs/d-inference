@@ -121,7 +121,8 @@ def validate_findings(result, evidence, threat_model):
         if finding["severity"] not in ("high", "medium", "low"):
             raise ReviewUnavailable("Model returned an invalid severity")
         for key, maximum in (("title", 160), ("detail", 1600)):
-            if not isinstance(finding[key], str) or not 1 <= len(finding[key].strip()) <= maximum:
+            if (not isinstance(finding[key], str) or not finding[key].strip()
+                    or len(finding[key]) > maximum):
                 raise ReviewUnavailable("Model returned invalid finding text")
         ids = finding["threat_ids"]
         if not isinstance(ids, list) or any(not isinstance(i, str) or i not in known_ids for i in ids):

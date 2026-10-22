@@ -254,6 +254,16 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// sentinel that the receiver replaces.
     static func command(_ command: ClusterWorkerCommand, requestID: UUID?, epoch: UUID, session: UUID,
                         sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+        try commandWire(command, requestID: requestID, epoch: epoch, session: session, sequence: sequence, now: now,
+            deliveryDeadline: deliveryDeadline).wire
+    }
+
+    /// `command`, and the worker frame its payload encodes, so a writer that
+    /// stamps the link sequence re-encodes that frame instead of decoding
+    /// the payload back.
+    static func commandWire(_ command: ClusterWorkerCommand, requestID: UUID?, epoch: UUID, session: UUID,
+                            sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws
+        -> (wire: Self, frame: ClusterWorkerCommandFrame) {
         guard deliveryDeadline > now else { throw ClusterWorkerOwnerError.deadline }
         var wire = Self(kind: .command, epoch: epoch, session: session, sequence: sequence)
         wire.deliveryRemainingNanoseconds = min(deliveryDeadline - now, ClusterWorkerLimits.deadlineNanoseconds)
@@ -267,9 +277,19 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
                 capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
                 glmMedia: r.glmMedia))
         }
-        wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
-            requestID: requestID, command: sent))
-        return wire
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: sent)
+        wire.worker = try ClusterWorkerCodec.encode(frame)
+        return (wire, frame)
+    }
+
+    /// The most the wire's own fields beside `worker` take when encoded
+    /// (kind, IDs, sequence, durations, detail): `worker` crosses in base64.
+    static let fieldBytes = 4 * 1024
+
+    /// Whether this wire, encoded, stays within `maximumBytes`, without
+    /// encoding it: the worker payload's base64 length and `fieldBytes`.
+    func fitsEncoded() -> Bool {
+        ((worker?.count ?? 0) + 2) / 3 * 4 + Self.fieldBytes <= Self.maximumBytes
     }
 
     /// The refusal a relayed command's failure is, when it is one request's:
@@ -347,6 +367,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var terminationValue: ClusterWorkerProcessTermination?
     private var incoming: [ClusterWorkerEventFrame] = []
     private var outgoing: [ClusterLinkWorkerWire] = []
+    /// The worker frames of the commands in `outgoing`, in their order: the
+    /// writer stamps each with its link sequence and encodes it once.
+    private var outgoingFrames: [ClusterWorkerCommandFrame] = []
     private var queuedCommands = 0
     private var nextOutgoing: UInt64 = 0
     private var nextIncoming: UInt64 = 0
@@ -483,18 +506,21 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 if reserve { throw ClusterWorkerOwnerError.refused(.busy) }
                 throw ClusterWorkerOwnerError.closed
             }
-            // Sequenced when written; encoded now so a bad command fails here.
-            let wire: ClusterLinkWorkerWire
+            // Sequenced when written; validated now so a bad command fails here:
+            // the worker codec encodes and validates the frame, the wire checks
+            // its fields and its encoded bound (without encoding it twice).
+            let built: (wire: ClusterLinkWorkerWire, frame: ClusterWorkerCommandFrame)
             do {
-                wire = try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: expectedIdentity.membershipEpoch,
-                    session: session, sequence: 0, now: now, deliveryDeadline: deadline)
-                _ = try wire.encoded()
+                built = try ClusterLinkWorkerWire.commandWire(command, requestID: requestID,
+                    epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0, now: now, deliveryDeadline: deadline)
+                try built.wire.validate()
+                guard built.wire.fitsEncoded() else { throw ClusterLinkWorkerError.invalid("Worker wire exceeds its bound") }
             } catch let error as ClusterWorkerOwnerError {
                 throw error
             } catch where reserve {
                 throw ClusterWorkerOwnerError.refused(.profile)
             }
-            outgoing.append(wire); queuedCommands += 1
+            outgoing.append(built.wire); outgoingFrames.append(built.frame); queuedCommands += 1
         }
         wake.signal()
     }
@@ -571,7 +597,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 if invalid && !fenceSent && fenceRequested && !cleanup {
                     fenceSent = true
                     // The fence goes before any queued command: nothing more is wanted.
-                    outgoing.removeAll(where: { $0.kind == .command }); queuedCommands = 0
+                    outgoing.removeAll(where: { $0.kind == .command }); outgoingFrames.removeAll(); queuedCommands = 0
                     var fence = ClusterLinkWorkerWire(kind: .fence, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
                     fence.detail = fenceReason // The follower's incident names the cause (S24).
                     outgoing.append(fence)
@@ -590,9 +616,13 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 var next = outgoing.removeFirst()
                 if next.kind == .command { queuedCommands -= 1 }
                 next.sequence = nextOutgoing; nextOutgoing += 1
-                if next.kind == .command, var frame = try? ClusterWorkerCodec.decodeCommand(next.worker!) {
-                    frame = .init(membershipEpoch: frame.membershipEpoch, sequence: next.sequence, requestID: frame.requestID, command: frame.command)
-                    next.worker = try? ClusterWorkerCodec.encode(frame)
+                if next.kind == .command, !outgoingFrames.isEmpty {
+                    // The queued frame, stamped with its link sequence: one encode, no decode.
+                    let frame = outgoingFrames.removeFirst()
+                    if let stamped = try? ClusterWorkerCodec.encode(.init(membershipEpoch: frame.membershipEpoch,
+                        sequence: next.sequence, requestID: frame.requestID, command: frame.command)) {
+                        next.worker = stamped
+                    }
                 }
                 return (next, false)
             }

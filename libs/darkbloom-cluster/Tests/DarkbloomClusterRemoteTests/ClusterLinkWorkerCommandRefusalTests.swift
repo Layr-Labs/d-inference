@@ -8,6 +8,12 @@ private final class DiscardingWorkerTransport: ClusterLinkWorkerTransport, @unch
     func send(_ bytes: Data) throws {}
 }
 
+private final class CapturingWorkerTransport: ClusterLinkWorkerTransport, @unchecked Sendable {
+    let lock = NSLock()
+    var sent: [Data] = []
+    func send(_ bytes: Data) throws { lock.withLock { sent.append(bytes) } }
+}
+
 /// Candidate 35 (2026-10-22): at ~1,040,000 prompt tokens the owner writer of a rank gave up on the ~7 MB record
 /// after its half second, the endpoint failed and the leader ended the pair. A command now has its own delivery
 /// deadline. And a reservation the follower's own owner cannot take is that request's refusal, said to the leader
@@ -95,5 +101,42 @@ final class ClusterLinkWorkerCommandRefusalTests: XCTestCase {
         XCTAssertEqual(admitted.requestID, next)
         XCTAssertEqual(admitted.event, .admitted(reservedBytes: 100))
         XCTAssertNotNil(endpoint.readiness)
+    }
+
+    /// A relayed command is encoded once, with the link sequence it is written
+    /// at: the worker frame on the link carries that sequence and the
+    /// reservation exactly (its host deadline replaced by the sentinel).
+    func testARelayedCommandCrossesWithItsLinkSequenceStamped() throws {
+        let transport = CapturingWorkerTransport()
+        let endpoint = try ClusterLinkWorkerEndpoint(transport: transport, clusterID: "fixture",
+            expectedIdentity: identity, profile: profile, rank: 1, executionPlanSHA256: plan,
+            lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 20_000_000_000, bootstrapRelay: nil)
+        let epoch = identity.membershipEpoch
+        endpoint.accept(ClusterLinkWorkerWire(kind: .accepted, epoch: epoch, session: endpoint.session, sequence: 0))
+        let now = DispatchTime.now().uptimeNanoseconds
+        let reservation = ClusterWorkerReservation(profileID: "invented", promptTokenIDs: Array(1 ... 8), stopTokenIDs: [],
+            outputCount: 2, chunkSize: 4, deadlineUptimeNanoseconds: now + 10_000_000_000, capacityLimitBytes: 64, sampling: nil)
+        let requests = [UUID(), UUID()]
+        for request in requests {
+            try endpoint.sendWorkerCommand(.reserve(reservation), requestID: request, deadline: now + 5_000_000_000)
+        }
+        let until = Date().addingTimeInterval(5)
+        var commands: [ClusterLinkWorkerWire] = []
+        while commands.count < 2, Date() < until {
+            commands = transport.lock.withLock { transport.sent }.compactMap { try? ClusterLinkWorkerWire.decode($0) }
+                .filter { $0.kind == .command }
+            if commands.count < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(commands.count, 2)
+        for (wire, request) in zip(commands, requests) {
+            let frame = try ClusterWorkerCodec.decodeCommand(try XCTUnwrap(wire.worker))
+            XCTAssertEqual(frame.sequence, wire.sequence, "the worker frame carries the link sequence")
+            XCTAssertEqual(frame.requestID, request)
+            guard case .reserve(let crossed) = frame.command else { return XCTFail("not a reservation") }
+            XCTAssertEqual(crossed.promptTokenIDs, reservation.promptTokenIDs)
+            XCTAssertEqual(crossed.deadlineUptimeNanoseconds, 1, "a reservation crosses without a host uptime")
+        }
+        XCTAssertLessThan(commands[0].sequence, commands[1].sequence)
+        endpoint.requestNativeCleanup()
     }
 }

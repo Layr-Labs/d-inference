@@ -57,8 +57,16 @@ struct EngineV2MTPAdmissionCharges: Equatable {
         }
         // Ordering above proves both nonnegative subtractions representable.
         let remainingAuxiliary = auxiliaryBytesPerToken - legacyMTPBytesPerToken
-        return .init(kvBytesPerToken: kvBytesPerToken - legacyMTPBytesPerToken,
-            auxiliaryBytesPerToken: remainingAuxiliary,
+        // The engine charges bounded MTP growth per reserved token; mirror it.
+        let (rate, rateOverflow) = (kvBytesPerToken - legacyMTPBytesPerToken)
+            .addingReportingOverflow(bounded.auxiliaryBytesPerToken)
+        let (auxiliary, auxiliaryOverflow) = remainingAuxiliary
+            .addingReportingOverflow(bounded.auxiliaryBytesPerToken)
+        guard bounded.auxiliaryBytesPerToken >= 0, !rateOverflow, !auxiliaryOverflow else {
+            throw CBv2MTPAdmissionRefusal.chargeOverflow
+        }
+        return .init(kvBytesPerToken: rate,
+            auxiliaryBytesPerToken: auxiliary,
             auxiliaryTokenGranularity: remainingAuxiliary == 0 ? 1 : auxiliaryTokenGranularity,
             auxiliaryTokenAllocationPadding: remainingAuxiliary == 0 ? 0 : auxiliaryTokenAllocationPadding,
             // Already includes bounded MTP, target and caller fixed state.

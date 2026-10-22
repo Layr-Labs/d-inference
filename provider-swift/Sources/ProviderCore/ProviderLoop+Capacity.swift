@@ -134,7 +134,8 @@ extension ProviderLoop {
             // behavior unchanged.
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
-                    totalResidentWeightBytes: totalResidentWeightBytes,
+                    totalResidentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(
+                        to: totalResidentWeightBytes),
                     activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),

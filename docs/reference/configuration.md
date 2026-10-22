@@ -9,6 +9,76 @@ Pinned platform links on this page are immutable evidence snapshots, not claims
 about current platform behavior. For current settings and behavior, consult the
 latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
 
+## Local GLM qualification
+
+This process-local opt-in is independent of the coordinator supported-model set.
+
+| Variable / field | Default / behavior | Consumer |
+|---|---|---|
+| `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` | Unset: disabled. Otherwise an absolute path to a regular JSON selection file, at most 4 MiB; not a boolean and not forwarded to launchd | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift` (`selection`) |
+| `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
+| `expectedAggregateSHA256` | Required lowercase 64-digit SHA-256 pin; must equal both catalog and manifest aggregates. This is the exact local artifact selection, not an assertion that bytes are verified or published | `GLM5NextLocalQualification.validate` |
+| `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets the smaller of the model's default output budget (4,096 for the pinned artifact) and half the bound. A prompt plus output budget above the bound is refused with HTTP 400 `advertised_context_exceeded` before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
+| `tokenizer` | Not supported. A present field refuses the whole selection: the LOAD quotation covers only the tokenizer shipped in the pinned weight snapshot | `GLM5NextLocalQualification.Selection` |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | On: a published GLM engine holds standing wired residency for its weights, bounded by the MiMo safe ceiling (physical memory minus max(16 GiB, 10%)) and released only after proven retirement. Rollback: trimmed, case-insensitive `0`, `false`, `no`, `off`. Acceleration only, never load admission; without it 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. Forwarded to the launchd provider job | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`, `prepare`) |
+
+The weight snapshot's `chat_template.jinja` must be the reviewed template
+shipped in `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+(`GLM5NextPromptPolicy.templateSHA256`); any other template refuses the LOAD
+even when it renders (`GLM5NextLocalQualification.requireShippedTemplate`).
+
+The provider rechecks the selection before local LOAD, and the managed loader
+verifies manifest-pinned bytes under ordinary pending-load admission. A stale
+discovery hash refuses selection. The opt-in does not change coordinator
+advertisement, MTP defaults or performance cohorts. Only use an isolated local
+process and explicitly reviewed artifacts; publication and full-model numerical
+or throughput qualification remain separate gates.
+
+GLM serves only through its embedded-MTP engine with a native operation owner;
+target-only GLM has no checked completion receipt. MTP is therefore on for GLM
+without any setting: the default `[backend] mtp_mode = "auto"` enables it, as
+does `"on"` (`MTPMode.enablesMTP`). `mtp_mode = "off"` or the process kill switch
+`DARKBLOOM_CBV2_MTP=0` (also `false`, `no`, `off`) disables it; local startup then skips the
+model with a message, and the local server's model list omits it
+(`GLM5NextLocalServing.partition`); any LOAD fails before weight allocation.
+When a selection is missing or invalid, startup prints the specific reason
+(`GLM5NextLocalQualification.localSelectionRefusal`).
+Coordinator-connected mode needs no setting: it serves only catalog build
+`glm-5.3-flash` with a 262,144-token enforced context, on Apple M5 Max or
+M5 Ultra with at least 256 GiB, and only while MTP is enabled
+(`ProviderLoop.coordinatorGLM5NextPlan`). The selection file is ignored there.
+There is no assistant-floor,
+post-build or wedge-recovery fallback to target-only: those paths unload or
+refuse the GLM slot instead.
+
+For the pinned local identity and `glm-5.3-flash` the encrypted SSD prefix store defaults on;
+`DARKBLOOM_PREFIX_CACHE=0` disables it
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`,
+`PrefixCachePolicy.isEnabled`). The KV backend needs no setting: automatic
+selection is paged, and `contiguous` or `DARKBLOOM_CBV2_PAGED_KV=0` refuses the
+load (`EngineV2Factory.prepareProductionBackend`).
+
+The local `/metrics` endpoint exports these gauges from
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFaultState.swift`
+(`GLM5NextLoadFaultState`):
+
+| Metric | Meaning |
+|---|---|
+| `darkbloom_glm5_next_retained_fault` | `1` after any unproven GLM native retirement |
+| `darkbloom_glm5_next_retained_owner_objects` | Distinct in-process objects kept alive by GLM faults (bridges, newcomer containers, leases, activity markers); not a model count |
+| `darkbloom_glm5_next_retained_resident_bytes` | Unpublished weight and KV bytes charged to retained owners; subtracted from fleet KV budgets |
+
+A retained fault refuses new GLM work until process restart. Retained native
+roots, the pending-load lease and memory claims are never refunded by that
+signal. Other model families keep loading and reclaiming under their own
+admission and native health gates when capacity remains, but their re-sliced
+grants exclude the charged bytes, so survivors cannot regrow into memory a
+retained GLM owner may hold. When a lone GLM slot held the whole fleet KV
+budget, the retained charge leaves none, so other loads are refused. A
+published GLM slot whose unload, eviction or shutdown cannot prove retirement
+stays in place: its KV claim is charged, its grant is frozen, eviction skips
+it and shutdown stays draining.
+
 ## Console UI
 
 The retained console uses build-time public variables. Rebuild after changing
@@ -123,6 +193,20 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Scheduler-prefill benchmark prompts
+
+| CLI setting | Default / behavior | Consumer |
+|---|---|---|
+| `benchmark --scheduler-prefill --prefill-fixed-prompt` | Off by default: measured prompts rotate by `iteration * 17`. Enabled: warmup and measured prompts start at seed offset `0`, with identical inputs per length. CLI-only; no environment or `provider.toml` key. Other benchmark modes reject the flag before runtime loading. | `provider-swift/Sources/darkbloom/BenchmarkCommand.swift` (`prefillFixedPrompt`); `provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift` (`schedulerPrefillOptionError`, `runSchedulerPrefillBenchmark`); `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift` (`run`, `makePrompt`) |
+
+The [benchmark report metadata](../provider/cli-reference.md#darkbloom-benchmark) distinguishes
+fixed repeated-input runs from rotating-fixture runs. This option does not
+change the prefill stripe or enable prefix caching.
+
+Scheduler prefill applies the existing `MLXMemoryGuard` memory/cache settings
+before direct model loading, as serving and the throughput sweep do. It logs
+the applied limits without changing their defaults, reserves or override rules.
 
 ### App Attest worker qualification
 
@@ -357,6 +441,7 @@ and restart for latched kernel flags.
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
 | `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download. The default verification is exact rectangular (`EngineV2SlotFactory.nativeMiMoVerificationMode`): scalar-dense rows, row-exact affine projections and serialized attention reproduce serial decode while scoring all draft columns in one forward; a tracked engine that cannot arm the scalar-dense scratch never drafts. Under the serial-target rollback the adaptive controller keeps plans target-only (`nativeMiMoMTPConfig`, `allowsAdaptiveSerialRounds: false`), because each serial draft column costs one ordinary target forward. Media rows stay target-only |
+| `DARKBLOOM_GLM_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (rectangular adaptive MTP verification, depth up to 3; greedy output is not token-identical to target-only decode); rollback selects the serial-target single-proposal profile | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextProtectedExecution.swift` (`GLM5NextProtectedModel.verification`); does not itself enable MTP. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (exact rectangular verification when MTP is enabled); rollback selects serial target | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP; the provider never selects the bulk rectangular trunk. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabled(environment:)`); separately charged scalar-shape rows only in genuine admitted rectangular verification. Its rollback also selects serial target in the provider. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RowExactProjection.swift`; scalar-dense affine 8-bit projections stream each weight tile once for up to seven rows with one-row `qmv_fast` arithmetic; rollback keeps one matmul per row (same output, slower). Forwarded to the launchd provider job |
@@ -482,7 +567,10 @@ uploads, catalog changes, signing or production promotion.
 
 The default reusable-buffer reader and bounded parallel hashing change full-file
 reading and scheduling, not the verified
-bytes or model arithmetic. Discovery remains hash-free. Fresh pre/post-load
+bytes or model arithmetic. Each file is first read through a page-aligned
+`F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
+does not pull a second copy of loaded weights through the file cache; the
+readers selected below remain its fallbacks. Discovery remains hash-free. Fresh pre/post-load
 verification and delayed identity publication retain their existing rules.
 
 | Variable | Values / type | Default | Read in | Effect |
@@ -524,6 +612,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | absolute path; empty is unset | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` (`load`) | DEBUG builds only; release builds do not compile this path. Replaces the Secure Enclave/Keychain SSD cache KEK with one derived from an existing operator-created file (`(umask 077 && head -c 32 /dev/urandom > FILE)`), reported as persistent. The file must be exactly 32 bytes, a regular file owned by the current user with mode `0600` and one link; the final path component must not be a symlink. Any other file refuses with a typed `key_unavailable` cause (an affirmative `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` still falls back to an ephemeral key). The file is never created or rewritten. An explicit persistent test namespace keeps its own enclave key. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `4000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent rolling-day write budget; includes serialized cache-file framing. A saved `cache.daily_write_gb` takes precedence. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |

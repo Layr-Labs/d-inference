@@ -11,6 +11,9 @@ extension EngineV2Factory {
     static func directServingModel(
         model: any LanguageModel, isVLM: Bool
     ) throws -> any LanguageModel {
+        // GLM's root remains the serving owner even for text-only requests. Its
+        // original text tower is selected by the adapter without dropping vision.
+        if model is GLM5NextModel || model is GLM5NextProtectedModel { return model }
         guard isVLM else { return model }
         if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 { return model }
         guard let gemma4 = model as? MLXVLM.Gemma4 else {
@@ -23,6 +26,11 @@ extension EngineV2Factory {
     /// Metadata seam for model diagnostics; unsupported families return nil.
     static func cbv2LayerKinds(model: any LanguageModel) -> [CBv2LayerKind]? {
         ProductionModelAdapter(model: model)?.layerKinds
+    }
+
+    static func glm5NextTarget(model: any LanguageModel) -> GLM5NextTextModel? {
+        (model as? GLM5NextTextModel) ?? (model as? GLM5NextModel)?.textTower
+            ?? (model as? GLM5NextProtectedModel)?.root.textTower
     }
 
     /// One family dispatch supplies both backend metadata and cache construction.
@@ -40,7 +48,19 @@ extension EngineV2Factory {
                 throws -> [any CBv2AttendingLayerCache]
 
         init?(model: any LanguageModel) {
+            // Every GLM serving identity (text tower, root, protected model)
+            // describes and allocates through its one original text tower.
+            if let glm = EngineV2Factory.glm5NextTarget(model: model) {
+                layerKinds = glm.cbv2LayerKinds
+                modelCapabilities = glm.cbv2Capabilities
+                newCaches = { make in try glm.newCacheV2(makeLayerCache: make) }
+                return
+            }
             switch model {
+            case let flint as FlintModel:
+                layerKinds = flint.cbv2LayerKinds
+                modelCapabilities = .attentionOnly
+                newCaches = { make in try flint.newCacheV2(makeLayerCache: make) }
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly

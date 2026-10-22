@@ -342,6 +342,12 @@ public actor StandaloneServer {
     /// older (legacy-engine) versions; the v2 engine itself never persists.
     /// Test hooks (see `V2TestHooks`); nil in production.
     var v2TestHooks: V2TestHooks?
+    #if DEBUG
+        /// GLM fault-path seam: observes the real built native bridge and can
+        /// force the post-build headroom verdict false. It never replaces
+        /// engine construction (unlike `V2TestHooks.makeEngine`).
+        var glm5NextPostBuildProbeForTesting: (@Sendable (EngineV2Bridge) async throws -> Bool)?
+    #endif
     /// Bind status, set by Hummingbird's onServerRunning (success) or the server
     /// task's catch (failure). `waitUntilBound` reads these — the authoritative
     /// "did WE bind the port" signal, not an HTTP probe a foreign process on the
@@ -370,7 +376,7 @@ public actor StandaloneServer {
         // (`darkbloom start --local`) applies the same filter with an
         // operator-facing error and refuses to start when nothing remains.
         let served = Self.filterSupported(
-            models, runtimeCapabilities: config.runtimeCapabilities)
+            models, runtimeCapabilities: config.runtimeCapabilities, mtpMode: config.mtpMode)
         self.models = served
         // The standalone serving set is static (only configured models
         // load), so the per-model activation reserve resolves once here —
@@ -392,7 +398,8 @@ public actor StandaloneServer {
     /// from `/v1/models`.
     private static func filterSupported(
         _ models: [ModelInfo],
-        runtimeCapabilities: Set<ProviderRuntimeCapability>
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        mtpMode: MTPMode
     ) -> [ModelInfo] {
         let eligible = models.filter {
             ModelRuntimeRequirements.isEligible(
@@ -408,7 +415,7 @@ public actor StandaloneServer {
                 "Not serving permanently ineligible model(s): \(ids)")
         }
         // The managed Super owner is built only by the provider loop.
-        let (supported, unsupported) = EngineV2SupportedModels.partition(eligible.filter {
+        let (supported, unsupported) = GLM5NextLocalQualification.partition(eligible.filter {
             !NemotronSuperServingPolicy.isServingIdentity(modelID: $0.id, modelType: $0.modelType)
         })
         let managedOnly = eligible.filter {
@@ -423,7 +430,13 @@ public actor StandaloneServer {
             standaloneLogger.warning(
                 "Not serving \(unsupported.count) model(s) without a CBv2 adapter (v0.7.5 serves everything through engine v2): \(ids)")
         }
-        return supported
+        let (loadable, withoutMTP) = GLM5NextLocalServing.partition(supported, mode: mtpMode)
+        if !withoutMTP.isEmpty {
+            let ids = withoutMTP.map(\.id).sorted().joined(separator: ", ")
+            standaloneLogger.warning(
+                "Not serving GLM model(s) without native MTP (on by default; disabled by mtp_mode = \"off\" or DARKBLOOM_CBV2_MTP=0): \(ids)")
+        }
+        return loadable
     }
 
     /// Internal access so the +HTTP extension can pass the same
@@ -448,7 +461,7 @@ public actor StandaloneServer {
     @discardableResult
     public func setModels(_ newModels: [ModelInfo]) async -> Bool {
         let filtered = Self.filterSupported(
-            newModels, runtimeCapabilities: config.runtimeCapabilities)
+            newModels, runtimeCapabilities: config.runtimeCapabilities, mtpMode: config.mtpMode)
         guard nativeMiMoReclaimAllowed else {
             pendingModelsUpdate = filtered
             return true
@@ -678,7 +691,19 @@ public actor StandaloneServer {
         // after clearCache and leave its subsequently-freed buffers pooled.
         var residentBridges = slots.filter { !isNativeMiMoSlot($0.key) }.map { $0.value.bridge }
         for bridge in residentBridges {
-            await bridge.shutdown()
+            do { try await GLM5NextRetirement.beforeRelease(bridge) }
+            catch {
+                if let bundle = slots.values.first(where: { $0.bridge === bridge })?.bundle {
+                    await GLM5NextRetirement.retainUnpublished(bundle, with: [self])
+                } else {
+                    GLM5NextLoadFaultState.retain([self, bridge])
+                }
+                lifecycleDraining = true
+                lifecycleStatus.outcome = .draining
+                lifecycleStatus.remaining = max(1, slots.count)
+                shutdownTask = nil
+                return
+            }
         }
         residentBridges.removeAll()
 
@@ -794,6 +819,21 @@ public actor StandaloneServer {
     func setV2TestHooksForTesting(_ hooks: V2TestHooks?) {
         v2TestHooks = hooks
     }
+
+    #if DEBUG
+        func setGLM5NextPostBuildProbeForTesting(
+            _ probe: (@Sendable (EngineV2Bridge) async throws -> Bool)?
+        ) {
+            glm5NextPostBuildProbeForTesting = probe
+        }
+    #endif
+
+    /// Load-funnel state an unproven GLM completion must keep (no refund).
+    func glm5NextLoadRetentionForTesting(_ modelId: String) -> (pendingLease: Bool, loading: Bool, loadGateHeld: Bool) {
+        (pendingLoadLeases[modelId] != nil, modelsLoading.contains(modelId), isLoadingAny)
+    }
+
+    func serviceBudgetIsIdleForTesting() -> Bool { kvBudget.serviceBudget.isIdle }
 
     /// Test seams for the `setModels`-during-load deferral: mark a load as
     /// in flight (the marker `ensureModelLoaded` sets before its gate), and
@@ -931,8 +971,8 @@ public actor StandaloneServer {
     /// release newcomer weights → regrow survivors, in that order).
     func unwindBuiltSlotAndRegrowForTesting(
         bridge: EngineV2Bridge, newcomer: EngineV2NewcomerBox
-    ) async {
-        await unwindBuiltSlotAndRegrow(bridge: bridge, newcomer: newcomer)
+    ) async throws {
+        try await unwindBuiltSlotAndRegrow(bridge: bridge, newcomer: newcomer)
     }
 
     /// Drive one LRU idle-eviction pass (unit tests).
@@ -962,7 +1002,8 @@ public actor StandaloneServer {
     }
 
     /// Fleet KV budget for a prospective residency set: the unified-memory
-    /// cap minus Σ resident weights (all slots + the newcomer's), with no
+    /// cap minus Σ resident weights (all slots + the newcomer's + memory
+    /// charged to retained GLM owners outside any slot), with no
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
     /// `activationReserveBytes` overrides the live serving-set reserve for a
@@ -980,7 +1021,7 @@ public actor StandaloneServer {
             ?? ProcessInfo.processInfo.physicalMemory
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
-            residentWeightBytes: totalWeights,
+            residentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(to: totalWeights),
             activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: 0)
     }
@@ -1126,15 +1167,19 @@ public actor StandaloneServer {
                 modelDirectory: modelDirectory,
                 container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
+                maximumContextLength: targetSizing.maxContextLength,
                 assistantLoader: v2TestHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 logInfo: { standaloneLogger.info("\($0)") },
                 logWarning: { standaloneLogger.warning("\($0)") })
         } catch {
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: [newcomerBox],
+                charging: newcomerBox, residentBytes: GLM5NextLoadFaultState.residentBytes(targetSizing.weightsBytes))
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             await newcomerBox.releaseAfterExternalResources()
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
-            throw error
+            throw failure
         }
         try requireNativeMiMoNewWorkAllowed()
         // Prepare-stage fail-open: the drafter never became resident, so drop
@@ -1161,12 +1206,13 @@ public actor StandaloneServer {
 
         // Serviceability floor (fail loud): refuse a load that would leave
         // any slot below the minimum serveable live-KV grant.
-        if !Self.resliceKeepsSlotsServiceable(targets, existing: existing), prepared.assistant != nil
+        if !Self.resliceKeepsSlotsServiceable(targets, existing: existing), prepared.assistant != nil,
+            !prepared.requiresGLM5NextNativeMTP
         {
             standaloneLogger.warning(
                 "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantResliceFloor.rawValue); retrying target-only before refusing the load")
             prepared.assistant?.release()
-            prepared = prepared.fallingBack(.assistantResliceFloor)
+            prepared = try prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
             if let pendingLoad = pendingLoadLeases[modelId] {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
@@ -1261,6 +1307,13 @@ public actor StandaloneServer {
             // Restoring before the weights are gone would let Σ(grants)
             // exceed the true fleet budget while the failed container was
             // still resident.
+            var owners: [AnyObject] = [newcomerBox]
+            if let assistant = prepared.assistant { owners.append(assistant) }
+            // Unproven: survivors stay shrunk; the newcomer's weights and grant stay charged.
+            let failure = await GLM5NextRetirement.validatedFailure(error, retaining: owners,
+                charging: newcomerBox,
+                residentBytes: GLM5NextLoadFaultState.residentBytes(sizing.weightsBytes, targets[modelId] ?? 0))
+            if GLM5NextLoadFunnel.isUnproven(failure) { throw failure }
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
@@ -1268,7 +1321,7 @@ public actor StandaloneServer {
                 guard nativeMiMoReclaimAllowed else { break }
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
-            throw error
+            throw failure
         }
 
         // Phase 3 — grow-side targets (self-healing when a previous state
@@ -1288,10 +1341,16 @@ public actor StandaloneServer {
     /// RELEASE the aborted newcomer's weights, and only then regrow the
     /// survivors — in that order, so the regrow's fleet budget reflects true
     /// residency and Σ(grants) never exceeds it. Caller holds `isLoadingAny`.
+    /// An unproven GLM retirement retains the bundle and newcomer and THROWS:
+    /// no weight release, cache clear or regrowth may follow it.
     private func unwindBuiltSlotAndRegrow(
         bundle: ProviderEngineBundle, newcomer: EngineV2NewcomerBox
-    ) async {
-        await bundle.bridge.shutdown()
+    ) async throws {
+        do { try await GLM5NextRetirement.beforeRelease(bundle.bridge) }
+        catch {
+            GLM5NextLoadFaultState.retain([bundle, newcomer])
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
         if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
@@ -1300,8 +1359,8 @@ public actor StandaloneServer {
 
     private func unwindBuiltSlotAndRegrow(
         bridge: EngineV2Bridge, newcomer: EngineV2NewcomerBox
-    ) async {
-        await unwindBuiltSlotAndRegrow(
+    ) async throws {
+        try await unwindBuiltSlotAndRegrow(
             bundle: ProviderEngineBundle(targetOnly: bridge), newcomer: newcomer)
     }
 
@@ -1332,6 +1391,10 @@ public actor StandaloneServer {
         }
     }
 
+    private static func isRetainedGLM5Next(_ bridge: EngineV2Bridge) -> Bool {
+        bridge.isGLM5NextManaged && GLM5NextLoadFaultState.isRetained
+    }
+
     private func evictLRUIdleSlot() async -> Bool {
         guard nativeMiMoReclaimAllowed else { return false }
         // The base implementation retained complete CachedSlot copies in
@@ -1345,7 +1408,10 @@ public actor StandaloneServer {
         var selected: (key: String, bridge: EngineV2Bridge, lastUsedAt: ContinuousClock.Instant)?
 
         for entry in snapshot {
-            guard slots[entry.key]?.bridge === entry.bridge,
+            // A retained GLM slot can never release its memory, so selecting it
+            // would block every eviction another load needs.
+            guard !Self.isRetainedGLM5Next(entry.bridge),
+                  slots[entry.key]?.bridge === entry.bridge,
                   !evictingModels.contains(entry.key),
                   !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0 else { continue }
@@ -1370,7 +1436,7 @@ public actor StandaloneServer {
             }
         }
 
-        guard let selected,
+        guard let selected, !Self.isRetainedGLM5Next(selected.bridge),
               slots[selected.key]?.bridge === selected.bridge,
               !evictingModels.contains(selected.key),
               !isMTPUpgradeTargetRetained(selected.key),
@@ -1382,7 +1448,7 @@ public actor StandaloneServer {
         let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(slots[evictKey]?.modelType)
 
         let active = await bridge.activeRequestCount()
-        guard slots[evictKey]?.bridge === bridge,
+        guard !Self.isRetainedGLM5Next(bridge), slots[evictKey]?.bridge === bridge,
               !evictingModels.contains(evictKey),
               !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0,
@@ -1414,10 +1480,16 @@ public actor StandaloneServer {
         evictingModels.insert(evictKey)
         defer { evictingModels.remove(evictKey) }
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainActivity = false
+        defer { if !retainActivity { deviceActivity.finish() } }
         // Drain the v2 bridge (running requests finish, new submissions are
         // rejected by the engine), then release the container reference.
-        await bridge.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(bridge) }
+        catch {
+            retainActivity = true
+            await GLM5NextRetirement.retainUnpublished(bundle, with: [self, deviceActivity])
+            return false
+        }
         guard slots[evictKey]?.bridge === bridge else { return false }
         bundle.releaseAssistant()
         await ModelContainerLoading.releaseExternalResources(in: slots[evictKey]?.container)
@@ -1532,6 +1604,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        try GLM5NextLoadFaultState.requireHealthy(modelType: models.first { $0.id == modelId }?.modelType)
         try requireNativeMiMoNewWorkAllowed()
         if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
@@ -1675,6 +1748,7 @@ public actor StandaloneServer {
     /// slots; startup preloads pass `allowEviction = false` to preserve earlier
     /// warm models while still using the authoritative memory gate.
     func ensureModelLoaded(_ modelId: String, allowEviction: Bool = true) async throws {
+        try GLM5NextLoadFaultState.requireHealthy(modelType: models.first { $0.id == modelId }?.modelType)
         try requireNativeMiMoNewWorkAllowed()
         await waitForMTPUpgrade(modelId)
         try requireNativeMiMoNewWorkAllowed()
@@ -1706,7 +1780,7 @@ public actor StandaloneServer {
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
         // fail-loud — there is no legacy engine to degrade onto).
-        guard EngineV2SupportedModels.isSupported(model: modelInfo)
+        guard GLM5NextLocalQualification.isSupportedLocally(model: modelInfo)
             || isSyntheticNativeMiMoUnderTest(modelInfo) else {
             standaloneLogger.error(
                 "Model '\(modelId)' (model_type \(modelInfo.modelType ?? "unknown")) has no CBv2 adapter — refusing to load")
@@ -1717,6 +1791,19 @@ public actor StandaloneServer {
             ?? ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
+        let glmLocal: GLM5NextServingPlan?
+        if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
+            let local = try GLM5NextLocalQualification.resolveLocalPlan(modelID: modelId, directory: modelPath)
+            guard ModelScanner.glm5NextLoadQuotationIsCurrent(
+                modelInfo, directory: local.plan.weights.directory) else {
+                throw GLM5NextManagedLoadError.admission
+            }
+            glmLocal = local
+        } else { glmLocal = nil }
+        let glmPlan = glmLocal?.plan
+        var glmOwnership: GLM5NextArtifactOwnership? = nil
+        defer { glmOwnership?.release() }
+        let estimatedLoadGb = GLM5NextLoadFunnel.estimatedWeightsGb(scanned: modelInfo.estimatedMemoryGb, plan: glmPlan)
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -1725,7 +1812,11 @@ public actor StandaloneServer {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if let nativeLoad {
+        if let glmPlan {
+            mtpPreparation = try GLM5NextLoadFunnel.preparation(plan: glmPlan,
+                mode: config.mtpMode, externalPath: config.mtpDrafterPath)
+            try GLM5NextLoadFunnel.requireNativeMTP(mtpPreparation)
+        } else if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: config.mtpMode,
                 externalPath: config.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
@@ -1755,14 +1846,18 @@ public actor StandaloneServer {
                 loadGateWaiters.append(cont)
             }
             try Task.checkCancellation()
+            try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
             if slots[modelId] != nil, !evictingModels.contains(modelId) {
                 touchSlot(modelId)
                 return
             }
         }
+        try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
+        glmOwnership = try glmPlan.map { try GLM5NextArtifactOwnership.acquire(plan: $0) }
         isLoadingAny = true
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainGLMActivity = false
+        defer { if !retainGLMActivity { deviceActivity.finish() } }
         // Re-validate membership AFTER the suspensions above (spec-dec
         // preparation, the load-gate wait): a concurrent `setModels` can
         // have removed this model and relaxed the reserve to the remaining
@@ -1782,6 +1877,11 @@ public actor StandaloneServer {
         }
         let pendingLoadID = "pending-load:\(modelId)"
         var pendingLoad: PendingModelLoadLease?
+        // GLM owners an unproven retirement must retain, and the unpublished
+        // weight bytes charged to them (the claimed load quotation).
+        var glmNewcomer: EngineV2NewcomerBox?
+        var glmBundle: ProviderEngineBundle?
+        var glmWeightBytes: UInt64 = 0
         modelsLoading.insert(modelId)
         // The marker joins the reserve basis: push the (possibly raised)
         // floor to the KV budget actor BEFORE the gate and allocation, as
@@ -1795,7 +1895,7 @@ public actor StandaloneServer {
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     // Includes the validated native load-copy envelope or
                     // legacy padding; never substitute bare steady residency.
-                    weightsGb: modelInfo.estimatedMemoryGb,
+                    weightsGb: estimatedLoadGb,
                     // Cap-aware: activation reserve + min serveable KV, so a model
                     // that loads can actually serve (matches the runtime KV gate).
                     headroomGb: Double(
@@ -1827,16 +1927,15 @@ public actor StandaloneServer {
             var extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
 
-            var pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                extraWeightBytes: extraWeightBytes)
+            var pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
+                scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: extraWeightBytes)
             pendingLoad = await kvBudget.claimPendingLoad(
                 requestID: pendingLoadID, weightBytes: pendingLoadBytes)
             if pendingLoad == nil, extraWeightBytes > 0 {
                 mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
                 extraWeightBytes = 0
-                pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
-                    estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
+                    scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: 0)
                 pendingLoad = await kvBudget.claimPendingLoad(
                     requestID: pendingLoadID, weightBytes: pendingLoadBytes)
             }
@@ -1845,15 +1944,22 @@ public actor StandaloneServer {
                     "Insufficient memory for '\(modelId)' at final load admission")
             }
             pendingLoadLeases[modelId] = acceptedLoad
+            if glmPlan != nil { glmWeightBytes = pendingLoadBytes }
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let reusableSSDRequested = PrefixCachePolicy.requiresLoadHashBracket(
                 modelId: modelId, modelDirectory: modelPath)
-            let artifactIdentityRequired = reusableSSDRequested
+            let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadArtifactHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
+            if let glmPlan {
+                guard preLoadArtifactHash == glmPlan.weights.manifest.aggregateSHA256 else {
+                    throw GLM5NextManagedLoadError.identityMismatch
+                }
+                try glmPlan.weights.recheck()
+            }
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1874,11 +1980,20 @@ public actor StandaloneServer {
             // BEFORE survivor grants are restored/regrown. Never bind
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
+            let glmLoad: GLM5NextManagedLoad?
+            if let glmPlan, let pendingLoad {
+                glmLoad = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
+                    permit: pendingLoad, artifactOwnership: glmOwnership)
+            } else { glmLoad = nil }
             let newcomer = EngineV2NewcomerBox(
-                try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId))
+                try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
+            if glmPlan != nil { glmNewcomer = newcomer }
             try Task.checkCancellation()
             let postLoadArtifactHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
+            if let glmPlan, postLoadArtifactHash != glmPlan.weights.manifest.aggregateSHA256 {
+                throw GLM5NextManagedLoadError.identityMismatch
+            }
             let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
             if artifactIdentityRequired {
@@ -1908,8 +2023,17 @@ public actor StandaloneServer {
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
             // bridge need.
-            let targetSizing = try await newcomer.borrowModel().sizing(
-                modelPath: modelPath, defaultMaxTokens: Self.slotDefaultMaxTokens)
+            let targetSizing: SlotSizingSnapshot
+            if let glmLocal {
+                targetSizing = try glmLocal.boundedSizing(
+                    await GLM5NextLoadFunnel.sizing(container: newcomer.borrow(), defaultMaxTokens: Self.slotDefaultMaxTokens))
+                mtpPreparation = try await EngineV2SlotFactory.glm5NextInlinePreparation(container: newcomer.borrow(),
+                    enabled: mtpPreparation.status.configured && mtpPreparation.status.reason == nil)
+                try GLM5NextLoadFunnel.requireNativeMTP(mtpPreparation)
+            } else {
+                targetSizing = try await newcomer.borrowModel().sizing(
+                    modelPath: modelPath, defaultMaxTokens: Self.slotDefaultMaxTokens)
+            }
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
             if let acceptedLoad = pendingLoad, !(await kvBudget.reducePendingLoad(
@@ -1980,9 +2104,11 @@ public actor StandaloneServer {
             do {
                 slotBuild = try await buildSlot(preparation: mtpPreparation)
             } catch let error as StandaloneServerError {
+                if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) { throw error }
                 if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw error
             } catch {
+                if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) { throw error }
                 if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded")
@@ -1995,6 +2121,14 @@ public actor StandaloneServer {
             var bundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var bridge = bundle.bridge
+            if glmPlan != nil {
+                glmBundle = bundle
+                // Never publish (or rebuild into) an ownerless target-only GLM engine.
+                guard await GLM5NextLoadFunnel.servesWithNativeOwner(bundle) else {
+                    try await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
+                    throw GLM5NextManagedLoadError.nativeMTPRequired
+                }
+            }
 
             // Post-BRIDGE measured-headroom re-guard (mirrors ProviderLoop):
             // engine construction/JIT may retain load-time memory beyond the
@@ -2008,15 +2142,21 @@ public actor StandaloneServer {
                 kvBackendKind: bridge.kvBackendKind,
                 pagedPoolBytes: await bridge.kvBackendPoolBytes(),
                 activationReserveBytes: resolvedActivationReserveBytes)
+            #if DEBUG
+                if glmPlan != nil, let probe = glm5NextPostBuildProbeForTesting {
+                    postBridgeServeable = try await probe(bridge) && postBridgeServeable
+                }
+            #endif
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
-            if bundle.mtpStatus.active,
+            // GLM has no target-only fallback: a failed guard unwinds below.
+            if glmPlan == nil, bundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
             {
                 let reason: MTPFallbackReason = runtimeMTPActive
                     ? .assistantPostBuildHeadroom : .engineInactive
                 standaloneLogger.warning(
                     "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
-                await bridge.shutdown()
+                try await GLM5NextRetirement.beforeRelease(bridge)
                 bundle.releaseAssistant()
                 if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 do {
@@ -2047,7 +2187,7 @@ public actor StandaloneServer {
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident
                 // would let Σ(grants) exceed the true fleet budget.
-                await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
+                try await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded")
@@ -2058,7 +2198,7 @@ public actor StandaloneServer {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never publish a slot with no
                 // container.
-                await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
+                try await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
                 throw StandaloneServerError.capacityUnavailable(
                     "internal: newcomer container missing at install for '\(modelId)'")
             }
@@ -2091,6 +2231,19 @@ public actor StandaloneServer {
             releaseLoadGateWaiters()
             await applyDeferredModelsIfNeeded()
         } catch {
+            if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) {
+                // Keep the real pending lease, loading marker, ownership and
+                // activity: no refund, cache clear or survivor regrowth.
+                glmOwnership?.retainAfterUnprovenCompletion()
+                retainGLMActivity = true
+                await GLM5NextLoadFunnel.retainUnprovenLoad(owners: [self], activity: deviceActivity,
+                    newcomer: glmNewcomer, bundle: glmBundle, weightBytes: glmWeightBytes)
+                isLoadingAny = false
+                for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] { waiter.resume(throwing: error) }
+                releaseLoadGateWaiters()
+                throw error
+            }
+            if glmPlan != nil, let glmNewcomer { await glmNewcomer.releaseAfterExternalResources() }
             modelsLoading.remove(modelId)
             // The failed load's marker leaves the basis: relax the KV
             // budget actor with it (no-op when the floor didn't move).
@@ -2106,14 +2259,16 @@ public actor StandaloneServer {
             }
             // Release pool buffers a failed load left behind.
             if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
+            let loadError: any Error = error as? GLM5NextManagedLoadError == .admission
+                ? StandaloneServerError.capacityUnavailable("Insufficient memory for '\(modelId)' at native GLM allocation") : error
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume(throwing: error)
+                waiter.resume(throwing: loadError)
             }
             releaseLoadGateWaiters()
             // The failed load restored the previous grants: if `setModels`
             // moved the floor meanwhile, re-size them under it now.
             await applyDeferredModelsIfNeeded()
-            throw error
+            throw loadError
         }
     }
 

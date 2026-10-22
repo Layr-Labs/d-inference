@@ -88,6 +88,9 @@ public enum GLM5NextTensorParallelBench {
         /// layer compared bit for bit; the bench then stops (no runs).
         public var divergenceTokens: Int?
         public var divergenceMicroBatchTokens = 8192
+        /// The probe's chunk starts at each of these offsets in turn, after the
+        /// prompt's first tokens prefilled the product's way.
+        public var divergenceStarts = [0]
         /// `product` and `merged`: chunks whose micro-batches all have at
         /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
         /// rows run as micro-batches of at most this many rows instead (nil:
@@ -279,8 +282,11 @@ public enum GLM5NextTensorParallelBench {
         }
         var runs: [Run] = []
         if let tokens = options.divergenceTokens {
-            try divergenceProbe(stage: stage, prompt: Array(options.promptTokenIDs.prefix(tokens)),
-                microBatchTokens: options.divergenceMicroBatchTokens, microBatches: options.microBatches, log: log)
+            for start in options.divergenceStarts {
+                try divergenceProbe(stage: stage, prompt: options.promptTokenIDs, start: start,
+                    count: tokens, microBatchTokens: options.divergenceMicroBatchTokens,
+                    microBatches: options.microBatches, log: log)
+            }
         }
         for repeatIndex in 0 ..< (options.divergenceTokens == nil ? max(1, options.repeats) : 0) {
             if let group { _ = try group.exchangeIntegers([Int32(repeatIndex)]) }
@@ -747,11 +753,18 @@ extension GLM5NextTensorParallelBench {
                 let half = rows / 2
                 let own = partial[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
                 let padding = MLX.full(own.shape, values: MLXArray(Float(-0.0)).asType(dtype))
+                // One evaluation each, in this order, so the sealed counters
+                // are 4 s + 0 (all-sum), 1 (reduce-scatter), 2 (padded all-sum),
+                // 3 (all-gather): one evaluation of all four ran them in MLX's
+                // graph order instead (1 and 3 were the all-sums).
                 let sum = group.allSum(partial)
+                eval(sum)
                 let scattered = group.reduceScatter(partial)
+                eval(scattered)
                 let padded = group.allSum(concatenated(group.rank == 0 ? [own, padding] : [padding, own], axis: 1))
+                eval(padded)
                 let gathered = group.allGather(own)
-                eval(sum, scattered, padded, gathered)
+                eval(gathered)
                 let expected = sum[0..., (group.rank * half) ..< ((group.rank + 1) * half)]
                 let scatterOK = scattered.shape == expected.shape && bits(scattered) == bits(expected)
                 let gatherOK = gathered.shape == [1, rows, width] && bits(gathered) == bits(padded)
@@ -761,10 +774,10 @@ extension GLM5NextTensorParallelBench {
         }
     }
 
-    /// Local cost of the sealed reduction's crypto alone (no link): one rank's
-    /// seal of a partial and the other's open of it, with paired test keys.
     /// Where two cuts of one chunk into micro-batches first compute different
-    /// bits: `prompt` (one chunk, from an empty cache) as the product's
+    /// bits: `prompt[start ..< start + count]` (one chunk; with `start` > 0,
+    /// after the prompt's first `start` tokens prefilled the product's way,
+    /// chunk by chunk, into a cache both cuts then copy) as the product's
     /// micro-batches and as micro-batches of at most `microBatchTokens` rows,
     /// built layer by layer (`GLM5NextTextStage.beginForward`, one-layer
     /// slices). After every layer each cut's boundary (the pending mHC expand:
@@ -773,29 +786,42 @@ extension GLM5NextTensorParallelBench {
     /// bit for bit. At the first differing layer every earlier layer is
     /// identical, so its inputs are: `residual` differs means the attention
     /// sublayer (with its sum), `output` alone the feed-forward one. Every
-    /// line is logged; both ranks run the same collectives.
-    static func divergenceProbe(stage: GLM5NextTextStage, prompt: [Int], microBatchTokens: Int, microBatches: Int,
-                                log: (String) -> Void) throws {
-        let count = prompt.count
+    /// line is logged; both ranks run the same collectives. After the last
+    /// layer both cuts read out (stream mean, final norm, head) and their
+    /// hidden rows and last-row logits are compared too.
+    static func divergenceProbe(stage: GLM5NextTextStage, prompt: [Int], start: Int = 0, count: Int,
+                                microBatchTokens: Int, microBatches: Int, log: (String) -> Void) throws {
+        guard start >= 0, count > 0, start + count <= prompt.count else {
+            throw ProbeError("GLM divergence probe: tokens \(start) ..< \(start + count) are outside the prompt")
+        }
         let product = GLM5NextPrefillSegment.chunk(tokens: count, microBatches: max(1, microBatches)).microBatchRows
         let parts = max(1, (count + microBatchTokens - 1) / microBatchTokens)
         let other = (0 ..< parts).map { (($0 + 1) * count / parts) - ($0 * count / parts) }
-        let tokens = MLXArray(prompt.map(Int32.init), [1, count])
+        let tokens = MLXArray(prompt[start ..< start + count].map(Int32.init), [1, count])
         let c = stage.plan.configuration
-        func pages() throws -> GLM5NextPageReservation? {
-            try stage.dsaPagePool.map { pool in
-                GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
-                    GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: c,
-                        contextTokens: count + 1, speculative: false)))
-            }
+        // One account for the prefix and both cuts' appends (the copies share the prefix's pages).
+        let pages = try stage.dsaPagePool.map { pool in
+            GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
+                GLM5NextTensorParallelResidentRuntime.historyPages(pool: pool, configuration: c,
+                    contextTokens: start + 2 * count + 1, speculative: false)))
         }
-        let (pagesA, pagesB) = (try pages(), try pages())
-        let cacheA = stage.newCache(account: pagesA?.account), cacheB = stage.newCache(account: pagesB?.account)
+        let prefix = stage.newCache(account: pages?.account)
+        if start > 0 {
+            // The product's chunks, each alone (no merging, no prefix kept).
+            let runtime = GLM5NextTensorParallelResidentRuntime.self
+            let plan = GLM5NextTensorParallelPrefillPlan.make(promptCount: start, start: 0,
+                chunkTokens: runtime.prefillChunkTokens, keepAt: 0, bulkTokens: runtime.bulkPrefillChunkTokens,
+                microBatches: max(1, microBatches), mergedTokens: 0)
+            _ = try plan.run(stage: stage, cache: prefix, prompt: Array(prompt[0 ..< start]), speculation: nil,
+                keep: { _, _, _ in })
+            log("divergence prefix tokens=\(start) chunks=\(plan.chunks.map { String($0.tokens) }.joined(separator: ","))")
+        }
+        let cacheA = prefix.copy(), cacheB = prefix.copy()
         let a = try stage.beginForward(tokens: tokens, cache: cacheA, segments: [.init(microBatchRows: product)],
             readout: .lastToken)
         let b = try stage.beginForward(tokens: tokens, cache: cacheB, segments: [.init(microBatchRows: other)],
             readout: .lastToken)
-        log("divergence tokens=\(count) cut_a=\(product.map(String.init).joined(separator: "+"))"
+        log("divergence start=\(start) tokens=\(count) cut_a=\(product.map(String.init).joined(separator: "+"))"
             + " cut_b=\(other.map(String.init).joined(separator: "+")) layers=\(stage.layers.count)")
         /// Rows (axis 1) whose bits differ, the first of them, and the largest absolute difference.
         func difference(_ x: MLXArray, _ y: MLXArray) -> String {
@@ -837,10 +863,23 @@ extension GLM5NextTensorParallelBench {
             log("divergence layer=\(layer) attention=\(kind) \(fields.joined(separator: " ")) state=[\(states.joined(separator: ","))]")
             if !same, first == nil { first = layer }
         }
-        log("divergence first_layer=\(first.map(String.init) ?? "none")")
-        _ = try a.finish(); _ = try b.finish()
+        let (ca, cb) = (try a.finish(), try b.finish())
+        guard case .final(let oa) = ca.output, case .final(let ob) = cb.output else {
+            throw ProbeError("GLM divergence probe: a cut read out no logits")
+        }
+        try MLX.withError { error in
+            eval(ca.segmentHidden + cb.segmentHidden + [oa.logits, ob.logits])
+            try error.check()
+        }
+        let hidden = difference(concatenated(ca.segmentHidden, axis: 1), concatenated(cb.segmentHidden, axis: 1))
+        let logits = difference(oa.logits, ob.logits)
+        log("divergence readout hidden=\(hidden) last_logits=\(logits)")
+        if first == nil, hidden != "=" || logits != "=" { first = stage.layers.count }
+        log("divergence first_layer=\(first.map { $0 == stage.layers.count ? "readout" : String($0) } ?? "none")")
     }
 
+    /// Local cost of the sealed reduction's crypto alone (no link): one rank's
+    /// seal of a partial and the other's open of it, with paired test keys.
     public static func sealProbe(bytes sizes: [Int], repeats: Int, log: (String) -> Void) {
         let (zero, one) = QwenTensorParallelSealCodec.pair(scope: Data("glm-tp-seal-probe".utf8))
         var next: UInt64 = 0

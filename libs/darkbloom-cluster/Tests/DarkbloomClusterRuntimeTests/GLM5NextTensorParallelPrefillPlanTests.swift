@@ -379,13 +379,15 @@ struct GLM5NextTensorParallelPrefillPlanTests {
         let c = loader.configuration.textConfig
         let stage = try loader.loadTextStage(plan: .init(configuration: c, layers: 0 ..< c.hiddenLayers))
         let prompt = (0 ..< 37).map { 4 + ($0 * 7) % 23 }
-        for rows in [37, 20] {
+        for (start, count, rows) in [(0, 37, 37), (0, 37, 20), (16, 21, 21), (16, 21, 11)] {
             var lines: [String] = []
-            try GLM5NextTensorParallelBench.divergenceProbe(stage: stage, prompt: prompt, microBatchTokens: rows,
-                microBatches: 2, log: { lines.append($0) })
-            #expect(lines.count == c.hiddenLayers + 2)
-            #expect(lines.dropFirst().dropLast().allSatisfy { $0.hasPrefix("divergence layer=") })
-            if rows == 37 { #expect(lines.last == "divergence first_layer=none") }
+            try GLM5NextTensorParallelBench.divergenceProbe(stage: stage, prompt: prompt, start: start, count: count,
+                microBatchTokens: rows, microBatches: 2, log: { lines.append($0) })
+            let layerLines = lines.filter { $0.hasPrefix("divergence layer=") }
+            #expect(layerLines.count == c.hiddenLayers)
+            #expect(lines.contains { $0.hasPrefix("divergence readout ") })
+            #expect(lines.contains { $0.hasPrefix("divergence prefix ") } == (start > 0))
+            if rows == count { #expect(lines.last == "divergence first_layer=none") }
             #expect(lines.last?.hasPrefix("divergence first_layer=") == true)
         }
     }

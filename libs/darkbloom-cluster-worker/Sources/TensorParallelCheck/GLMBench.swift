@@ -11,7 +11,7 @@ import MLX
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
 //     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
 //     [--kv paged|contiguous]
-//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--divergence N [--divergence-rows R]]
+//     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
 // GLM-5.3-Flash tensor-parallel measurement (GLM5NextTensorParallelBench): the
 // unsharded model, one rank's shard with no peer, or one rank of a JACCL pair.
@@ -73,7 +73,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--divergence N [--divergence-rows R]]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -136,6 +136,13 @@ enum GLMBench {
             if let rows = fields["--divergence-rows"] {
                 guard let value = Int(rows), value > 0 else { throw Failure("glm: --divergence-rows takes a row count") }
                 options.divergenceMicroBatchTokens = value
+            }
+            if let offsets = fields["--divergence-start"] {
+                let values = offsets.split(separator: ",").compactMap { Int($0) }
+                guard !values.isEmpty, values.count == offsets.split(separator: ",").count, values.allSatisfy({ $0 >= 0 }) else {
+                    throw Failure("glm: --divergence-start takes token offsets (K or K1,K2,...)")
+                }
+                options.divergenceStarts = values
             }
         }
         // Several requests decoding together (MTP rounds batched in one forward, or time-sliced).

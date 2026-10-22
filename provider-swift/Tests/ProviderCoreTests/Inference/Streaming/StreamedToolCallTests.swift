@@ -192,8 +192,13 @@ struct StreamedToolCallTests {
         #expect(thrown is MultiModelBatchSchedulerEngineError)
     }
 
-    @Test func truncatedCallEndsQuietlyOnlyAtTheTokenLimit() throws {
-        let partial = #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#
+    /// The second partial holds a `}`, so Gemma's lenient EOS parse reads a
+    /// garbled call that contradicts the exposed arguments.
+    @Test(arguments: [
+        #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#,
+        #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>def f(): return {"a": 1}"#,
+    ])
+    func truncatedCallEndsQuietlyOnlyAtTheTokenLimit(partial: String) throws {
         var lengthRouter = try Self.router(Self.request())
         for character in Self.characters(partial) { _ = try lengthRouter.process(character) }
         #expect(try lengthRouter.finishToolCalls(truncated: true).isEmpty)

@@ -94,13 +94,14 @@ struct NativeToolStreamRouter {
 
     /// End of generation for streamed calls: completes a call whose end tag
     /// is a stop token and flushes unexposed buffers. A call cut off by the
-    /// output-token limit stays truncated, as in OpenAI streams; any other
-    /// unfinished exposed call is model noncompliance.
+    /// output-token limit stays truncated, as in OpenAI streams, even when a
+    /// lenient EOS parse reads its partial arguments as a different call;
+    /// any other unfinished exposed call is model noncompliance.
     mutating func finishToolCalls(truncated: Bool) throws -> [MLXServerGenerationEvent] {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         for segment in handler.finishSegments() {
-            if truncated, case .callFailed(.unterminated) = segment {
+            if truncated, case .callFailed = segment {
                 openCallIndex = nil
                 continue
             }

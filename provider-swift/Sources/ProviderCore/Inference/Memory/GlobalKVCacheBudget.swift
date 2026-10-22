@@ -63,6 +63,18 @@ public actor GlobalKVCacheBudget {
     static let defaultSelfHealMinInterval: Duration = KVPoolReclaimer.defaultMinInterval
     /// The reclaimer's fenced flush of MLX's buffer cache.
     private nonisolated let flushCache: @Sendable () -> Void
+    /// Engine-owned charge refusals (paged growth) signal the same
+    /// shortfall-gated reclaim as request reservations, because busy engines
+    /// no longer get a proactive sweep.
+    nonisolated let signalsEngineRefusals: Bool
+
+    /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0` restores the threshold-only sweep,
+    /// which may flush between busy engines' steps.
+    static func idleCacheSweepEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["DARKBLOOM_TTFT_IDLE_CACHE_SWEEP"] != "0"
+    }
 
     /// Swift initializes this once, on first use. Keep constructors free of MLX
     /// access so callers can bind the immutable runtime metallib before serving.
@@ -107,10 +119,13 @@ public actor GlobalKVCacheBudget {
         self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
-        self.processLedger = Self.makeLedger(
+        let ledger = Self.makeLedger(
             total: total, capFraction: capFraction, activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
+        self.processLedger = ledger
+        let idleSweep = Self.idleCacheSweepEnabled()
+        self.signalsEngineRefusals = idleSweep
         self.flushCache = clearCache
         self.reclaimer = KVPoolReclaimer(
             clearCache: clearCache,
@@ -118,6 +133,21 @@ public actor GlobalKVCacheBudget {
             isReclaimAllowed: {
                 let registry = MiMoV26NativeLoadRegistry.shared
                 return !registry.hasRetainedFault && !registry.hasUnretiredClosingTransactions
+            },
+            sweepWindow: { pool in
+                guard idleSweep else { return .pressure }
+                return KVPoolReclaimer.proactiveWindow(
+                    idle: serviceBudget.isIdle(for: KVPoolReclaimer.idleSweepDelay),
+                    reclaimableBytes: pool, remainingBytes: ledger.snapshot().remainingBytes,
+                    thresholdBytes: KVPoolReclaimer.defaultProactiveThresholdBytes)
+            },
+            idleClearCache: {
+                // No device activity is reported, so an idle Mac keeps its
+                // deadline quiescence and any idle calibration session. A
+                // request admitted since the window check keeps its warm pool.
+                guard serviceBudget.isIdle else { return }
+                MLX.Stream().synchronize()
+                MLX.Memory.clearCache()
             })
     }
 
@@ -151,6 +181,7 @@ public actor GlobalKVCacheBudget {
         self.clockNow = clockNow
         self.auditMinInterval = auditMinInterval
         self.emitAuditEvent = emitAuditEvent
+        self.signalsEngineRefusals = false
         let fencedClearCache: @Sendable () -> Void = {
             let deviceActivity = serviceBudget.beginUnboundedActivity()
             defer { deviceActivity.finish() }
@@ -387,7 +418,11 @@ public actor GlobalKVCacheBudget {
     }
 
     nonisolated func makeEngineMemoryOwner() -> EngineProcessMemoryOwner {
-        EngineProcessMemoryOwner(ledger: processLedger)
+        guard signalsEngineRefusals else { return EngineProcessMemoryOwner(ledger: processLedger) }
+        let reclaimer = reclaimer
+        return EngineProcessMemoryOwner(ledger: processLedger) { shortfall in
+            reclaimer.scheduleReclaim(shortfall: shortfall)
+        }
     }
 
     private static func makeLedger(

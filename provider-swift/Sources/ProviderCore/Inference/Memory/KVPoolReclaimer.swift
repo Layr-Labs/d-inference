@@ -97,7 +97,35 @@ actor KVPoolReclaimer {
     /// Proactive sweep only flushes when the reclaimable pool has grown to at
     /// least this many bytes, so a small/healthy cache is never thrashed.
     private let proactiveThresholdBytes: UInt64
+    /// When a proactive sweep may flush the pool it found over the threshold.
+    private let sweepWindow: @Sendable (_ reclaimableBytes: UInt64) -> SweepWindow
+    /// Flush for an idle sweep; nil reuses `clearCache`.
+    private let idleClearCache: (@Sendable () -> Void)?
     private var lastReclaimAt: ContinuousClock.Instant?
+
+    /// A flush while engines serve holds the MLX eval lock between their
+    /// steps and empties the buffer pool their next steps would reuse, so
+    /// busy engines keep it unless it crowds out admission headroom.
+    enum SweepWindow: Equatable, Sendable {
+        /// Engines are serving and headroom is healthy: keep the pool.
+        case closed
+        /// No request or device activity: flush without reporting activity.
+        case idle
+        /// The pool crowds out what admission has left: flush now.
+        case pressure
+    }
+
+    /// Whole-Mac idleness a proactive sweep waits for, so the gap between
+    /// back-to-back requests does not start the next one on an empty pool.
+    static let idleSweepDelay: Duration = .seconds(5)
+
+    static func proactiveWindow(
+        idle: Bool, reclaimableBytes: UInt64, remainingBytes: UInt64, thresholdBytes: UInt64
+    ) -> SweepWindow {
+        if idle { return .idle }
+        let (margin, overflow) = reclaimableBytes.addingReportingOverflow(thresholdBytes)
+        return remainingBytes < (overflow ? .max : margin) ? .pressure : .closed
+    }
 
     private let telemetry = TelemetryStore()
 
@@ -116,13 +144,17 @@ actor KVPoolReclaimer {
         reclaimableBytes: @escaping @Sendable () -> UInt64,
         minInterval: Duration = KVPoolReclaimer.defaultMinInterval,
         proactiveThresholdBytes: UInt64 = KVPoolReclaimer.defaultProactiveThresholdBytes,
-        isReclaimAllowed: @escaping @Sendable () -> Bool = { true }
+        isReclaimAllowed: @escaping @Sendable () -> Bool = { true },
+        sweepWindow: @escaping @Sendable (UInt64) -> SweepWindow = { _ in .pressure },
+        idleClearCache: (@Sendable () -> Void)? = nil
     ) {
         self.clearCache = clearCache
         self.reclaimableBytes = reclaimableBytes
         self.minInterval = minInterval
         self.proactiveThresholdBytes = proactiveThresholdBytes
         self.isReclaimAllowed = isReclaimAllowed
+        self.sweepWindow = sweepWindow
+        self.idleClearCache = idleClearCache
     }
 
     // MARK: - Fire-and-forget signals (called from the budget actor)
@@ -151,24 +183,31 @@ actor KVPoolReclaimer {
     @discardableResult
     func reclaimIfNeeded(shortfall: UInt64) -> Bool {
         guard isReclaimAllowed(), shortfall > 0, reclaimableBytes() >= shortfall else { return false }
-        return flushIfDue()
+        return flushIfDue(clearCache)
     }
 
     /// Proactive sweep: flush iff the reclaimable pool has grown past the
-    /// threshold and we are outside the rate-limit window. Keeps admission
-    /// headroom healthy under sustained load so most admissions never near-miss.
+    /// threshold, its sweep window is open and we are outside the rate-limit
+    /// window. Keeps admission headroom healthy under sustained load so most
+    /// admissions never near-miss.
     @discardableResult
     func sweep() -> Bool {
         telemetry.recordSweepSignal()
-        guard isReclaimAllowed(), reclaimableBytes() >= proactiveThresholdBytes else { return false }
-        return flushIfDue()
+        guard isReclaimAllowed() else { return false }
+        let pool = reclaimableBytes()
+        guard pool >= proactiveThresholdBytes else { return false }
+        switch sweepWindow(pool) {
+        case .closed: return false
+        case .idle: return flushIfDue(idleClearCache ?? clearCache)
+        case .pressure: return flushIfDue(clearCache)
+        }
     }
 
     nonisolated func telemetrySnapshot() -> TelemetrySnapshot {
         telemetry.snapshot()
     }
 
-    private func flushIfDue() -> Bool {
+    private func flushIfDue(_ clearCache: @Sendable () -> Void) -> Bool {
         guard isReclaimAllowed() else { return false }
         let now = ContinuousClock.now
         if let last = lastReclaimAt, now - last < minInterval { return false }

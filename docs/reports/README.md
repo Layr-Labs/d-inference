@@ -4,6 +4,7 @@
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
+- [Mixed-step prefill geometry](2026-10-21-mixed-step-prefill-geometry.md) - load, engine, inter-token latency and KV-subtracted activation measurements behind Gemma 4's 2,048 / 4,096 prompt geometry, its media ceiling and the GPT-OSS and dense Qwen opt-in.
 - [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)
 - [Startup shape warmup: first-request TTFT](2026-10-21-startup-shape-warmup-first-request.md)
 - [Bonsai 9B publication delay](2026-10-15-bonsai9b-publication.md)

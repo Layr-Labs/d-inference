@@ -262,8 +262,11 @@ public enum LaunchAgent: Sendable {
     /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and
+    /// `2048` roll Gemma 4 back to the SDK prompt geometry; `2048` and `4096`
+    /// opt another family into the wide one.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
-    /// admission-mode control. Both must persist in the provider job because
+    /// admission-mode control. All must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
     /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
     /// corrections are on by default; their rollback must reach the job too.
@@ -304,6 +307,8 @@ public enum LaunchAgent: Sendable {
     /// on by default; exact `0` is each rollback.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
+        EngineV2Factory.prefillChunkKey,
+        EngineV2Factory.stepTokenBudgetKey,
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
         GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,

@@ -14,9 +14,11 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
     /// 4 adds per-cell memory evidence and full-context warmup.
-    /// Optional prompt metadata is additive; absent fields in older reports
-    /// mean unspecified provenance, not a verified fixed-prompt run.
-    public static let currentSchemaVersion = 4
+    /// 4 adds optional prompt metadata: absent fields in older reports mean
+    /// unspecified provenance, not a verified fixed-prompt run.
+    /// 5 adds `prefillChunkTokens` and `maxBatchedTokensPerStep`: the plain
+    /// chunk is no longer always 512, so a nil stripe alone is ambiguous.
+    public static let currentSchemaVersion = 5
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
@@ -47,9 +49,13 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// Selection versus the backends the measured engines were built with.
     public let kvBackend: BenchmarkKVBackend
     /// Effective `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` the measured engines
-    /// were built with (nil = plain 512-token chunks). Recorded so a stripe
-    /// arm can never masquerade as a plain-chunk baseline.
+    /// were built with (nil = no stripe above `prefillChunkTokens`). Recorded
+    /// so a stripe arm can never masquerade as a plain-chunk baseline.
     public let soloPrefillStripeTokens: Int?
+    /// Effective plain chunk and step budget of the measured engines; absent
+    /// before schema 5, when every production chunk was 512 tokens.
+    public let prefillChunkTokens: Int?
+    public let maxBatchedTokensPerStep: Int?
     public let samples: [Sample]
     public var promptMode: SchedulerPrefillBenchmark.PromptMode? = nil
     /// Both the bootstrap and full-context warmups use this offset.
@@ -151,29 +157,16 @@ public enum SchedulerPrefillBenchmark {
         log("load memory: active_bytes=\(Memory.activeMemory) peak_bytes=\(Memory.peakMemory)")
         let baseTokens = facts.baseTokens
 
-        // The production factory selects the dense-Qwen long-context stripe
-        // from the resolved serving model, not from the VLM wrapper. Record
-        // the same effective value in the benchmark receipt so a default
-        // production run cannot be reported as the generic 2,048-token arm.
-        let effectiveSoloPrefillStripeTokens = try await container.perform {
-            context -> Int? in
-            let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: context.model,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory)
-            return EngineV2Factory.soloPrefillStripeTokens(
-                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize,
-                model: servingModel)
-        }
-
         log("kv backend selection \(kvBackend.rawValue)")
         log("prompt mode: \(promptMode.rawValue); warmup offset=0")
 
         // Warm-up (kernel compiles, Metal pipelines) — not recorded. It is
         // also the FIRST engine an explicit, unservable `--kv-backend paged`
         // is refused on, so the run fails here rather than after a full
-        // matrix of measurements nobody can attribute.
-        _ = try await measureOne(
+        // matrix of measurements nobody can attribute. Its engine also fixes the
+        // prompt geometry the receipt records: the scheduler handed to the
+        // engine, after serving, calibration and GLM policy.
+        let geometry = try await measureOne(
             container: container,
             modelID: modelID,
             baseTokens: baseTokens,
@@ -185,7 +178,7 @@ public enum SchedulerPrefillBenchmark {
             modelDirectory: modelDirectory,
             kvBackend: kvBackend,
             checkpointQuantization: checkpointQuantization
-        )
+        ).geometry
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
         var resolved: [String] = []
@@ -202,7 +195,7 @@ public enum SchedulerPrefillBenchmark {
         }
         for length in lengths {
             for iteration in 1 ... iterations {
-                let sample = try await measureOne(
+                let measured = try await measureOne(
                     container: container,
                     modelID: modelID,
                     baseTokens: baseTokens,
@@ -215,6 +208,11 @@ public enum SchedulerPrefillBenchmark {
                     kvBackend: kvBackend,
                     checkpointQuantization: checkpointQuantization
                 )
+                guard measured.geometry == geometry else {
+                    throw BenchmarkError.requestFailed(
+                        "L=\(length) engine prompt geometry differs from the warm-up engine's")
+                }
+                let sample = measured.sample
                 if !resolved.contains(sample.resolvedKVBackend) {
                     resolved.append(sample.resolvedKVBackend)
                     log("  engine resolved kv backend: \(sample.resolvedKVBackend)")
@@ -235,7 +233,9 @@ public enum SchedulerPrefillBenchmark {
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
-            soloPrefillStripeTokens: effectiveSoloPrefillStripeTokens,
+            soloPrefillStripeTokens: geometry.soloPrefillStripeTokens,
+            prefillChunkTokens: geometry.prefillChunkTokens,
+            maxBatchedTokensPerStep: geometry.maxBatchedTokensPerStep,
             samples: samples,
             promptMode: promptMode,
             warmupPromptOffset: 0
@@ -254,7 +254,9 @@ public enum SchedulerPrefillBenchmark {
         modelDirectory: URL,
         kvBackend: EngineV2KVBackendSelection,
         checkpointQuantization: EngineV2KVQuantizationSelection
-    ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
+    ) async throws -> (sample: SchedulerPrefillBenchmarkReport.Sample,
+        geometry: EngineV2Factory.PrefillGeometry)
+    {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
         let kvCapacity = Int(min(
@@ -267,6 +269,7 @@ public enum SchedulerPrefillBenchmark {
             let engine: any CBv2Engine
             /// The backend the factory resolved to, with any fallback reason.
             let resolvedBackend: String
+            let geometry: EngineV2Factory.PrefillGeometry?
         }
         // `makeProductionBuild` is the construction `makeProductionEngine`
         // wraps, and additionally hands back the backend the engine actually
@@ -287,9 +290,14 @@ public enum SchedulerPrefillBenchmark {
                 checkpointQuantization: checkpointQuantization)
             return EngineParts(
                 engine: build.engine,
-                resolvedBackend: build.resolvedKVBackendDescriptor)
+                resolvedBackend: build.resolvedKVBackendDescriptor,
+                geometry: build.prefillGeometry)
         }
         let engine = parts.engine
+        guard let geometry = parts.geometry else {
+            await stopAndReclaim(engine)
+            throw BenchmarkError.requestFailed("production build carried no prompt geometry")
+        }
 
         let prompt = makePrompt(
             baseTokens: baseTokens, length: promptTokens, iteration: iteration, mode: promptMode)
@@ -332,7 +340,7 @@ public enum SchedulerPrefillBenchmark {
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
         await stopAndReclaim(engine)
-        return SchedulerPrefillBenchmarkReport.Sample(
+        let sample = SchedulerPrefillBenchmarkReport.Sample(
             strategy: strategyLabel,
             promptTokens: promptTokens,
             iteration: iteration,
@@ -343,6 +351,7 @@ public enum SchedulerPrefillBenchmark {
             resolvedKVBackend: parts.resolvedBackend,
             promptOffset: prompt.offset
         )
+        return (sample, geometry)
     }
 
     static func stopAndReclaim(_ engine: any CBv2Engine) async {

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -706,14 +706,25 @@ interruption and failed report/diagnostic writes. Selective integration tests
 enforce each model's source citation scope across fresh and cached results,
 bounded exact-source replay, explicit omissions and unchanged acknowledgments.
 State tests reproduce shared-branch conflicts between different report files,
-cache immutability, bounded recovery and refusal to retry ambiguous writes.
+including twelve simultaneous writers and a burst exceeding the former retry
+window, cache immutability, bounded recovery and refusal to retry ambiguous writes.
 Request tests verify native schema projection preserves local bounds; workflow
 tests keep current trusted scanner code separate from pinned threat-model data.
 Bedrock usage tests preserve Sol cache-write input and reject malformed cache
 counts; finding-text and both scan paths' analysis tests enforce raw character
 limits including padding.
-Lifecycle tests ensure failed backup accounting also stops a recovered primary
-while preserving already validated findings.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary,
+and missing native usage or failed response-usage writes preserve validated
+findings while stopping further spending and denying clearance.
+Response-repair tests inject empty analysis in Sonnet, Opus and Sol source and
+integration passes and incorrect primary acknowledgments during integration.
+Both faults share one repair allowance, preserve original findings and uncertainty,
+and stop at a second invalid response, exhausted call budget or failed checkpoint.
+Replay IDs cannot be confused with primary IDs; the integration schema and cache
+identity bind the expected acknowledgments. CLI tests retain original diagnostics
+and findings after final-result write failure. Merge-gate tests reject artifacts
+from another run/attempt even for the same revisions. PR closure has a distinct
+lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
 
 From the repository root:

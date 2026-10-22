@@ -1188,6 +1188,9 @@ extension ProviderLoop {
         weightsGb: Double, allowEviction: Bool = true,
         waitForQwen4Retirement: Bool = false
     ) async throws {
+        // Busy engines keep the MLX buffer pool (idle-gated sweep), so drop
+        // that reusable pool once before unloading a resident model for room.
+        var poolDropped = !GlobalKVCacheBudget.idleCacheSweepEnabled()
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1246,6 +1249,11 @@ extension ProviderLoop {
                         ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
                         : "Insufficient memory (\(available) GB free, need \(required) GB) to load without evicting resident models"
                 )
+            }
+            if !poolDropped {
+                poolDropped = true
+                clearCacheAfterConfirmedNativeOwnership()
+                continue
             }
 
             logger.info("Evicting idle model \(modelId) to free memory")

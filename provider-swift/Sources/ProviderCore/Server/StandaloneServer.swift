@@ -1463,10 +1463,20 @@ public actor StandaloneServer {
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
+        // Busy engines keep the MLX buffer pool (idle-gated sweep), so drop
+        // that reusable pool once before evicting a cached model for room.
+        var poolDropped = !GlobalKVCacheBudget.idleCacheSweepEnabled()
         while await availableMemoryGb() < requiredGb {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
+            if !poolDropped {
+                poolDropped = true
+                if nativeMiMoReclaimAllowed {
+                    MLX.Memory.clearCache()
+                    continue
+                }
+            }
             guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)

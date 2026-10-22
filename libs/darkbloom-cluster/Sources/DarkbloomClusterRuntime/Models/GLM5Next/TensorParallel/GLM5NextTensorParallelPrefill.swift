@@ -80,9 +80,15 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// `coalescing` (a merging frame), consecutive such chunks first join into
     /// one segment of up to `microBatchTokens` tokens (never across the kept
     /// boundary), re-cut the same way, so a micro-batch may span chunks.
+    ///
+    /// `tailTokens`: past the kept boundary (or with none kept), a rest of at
+    /// most this many tokens that starts on the `chunkTokens` grid runs as one
+    /// chunk (`GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid`) instead
+    /// of chunk-aligned pieces. A different cut of those rows: not the same
+    /// bits as without.
     static func make(promptCount: Int, start: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
                      microBatches: Int, mergedTokens: Int, microBatchTokens: Int? = nil,
-                     coalescing: Bool = false) -> Self {
+                     coalescing: Bool = false, tailTokens: Int? = nil) -> Self {
         precondition(promptCount > 0 && (0 ..< promptCount).contains(start) && chunkTokens > 0 && microBatches > 0
             && keepAt >= 0 && mergedTokens >= 0 && (microBatchTokens ?? 1) > 0, "GLM tensor-parallel prefill plan bounds")
         func invariant(_ tokens: Int) -> Bool {
@@ -103,8 +109,13 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
             // Bulk chunks while they end at or before the boundary kept for
             // prefixes (or the prompt's end), then chunk-aligned ones.
             let limit = keepAt > offset ? keepAt : promptCount
-            let end = offset % chunkTokens == 0 && bulk > chunkTokens && offset + bulk <= limit
-                ? offset + bulk : min(promptCount, (offset / chunkTokens + 1) * chunkTokens)
+            let end: Int
+            if let tail = tailTokens, keepAt <= offset, offset % chunkTokens == 0, promptCount - offset <= tail {
+                end = promptCount
+            } else {
+                end = offset % chunkTokens == 0 && bulk > chunkTokens && offset + bulk <= limit
+                    ? offset + bulk : min(promptCount, (offset / chunkTokens + 1) * chunkTokens)
+            }
             if coalescing, let limit = microBatchTokens, invariant(end - offset), let last = segments.last,
                last.end != keepAt, invariant(last.end - last.start), end - last.start <= limit {
                 // Joins the previous invariant chunk(s): one segment, re-cut.
@@ -166,13 +177,14 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     /// and the kept boundary when one of them ends there. Both ranks derive a
     /// frame's segments from its bounds alone.
     static func frame(start: Int, end: Int, promptCount: Int, chunkTokens: Int, keepAt: Int, bulkTokens: Int,
-                      microBatches: Int, microBatchTokens: Int? = nil, coalescing: Bool = false) throws -> Chunk {
+                      microBatches: Int, microBatchTokens: Int? = nil, coalescing: Bool = false,
+                      tailTokens: Int? = nil) throws -> Chunk {
         guard (start + 1 ... promptCount).contains(end) else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is outside the prompt")
         }
         let plan = make(promptCount: promptCount, start: start, chunkTokens: chunkTokens, keepAt: keepAt,
             bulkTokens: bulkTokens, microBatches: microBatches, mergedTokens: 0, microBatchTokens: microBatchTokens,
-            coalescing: coalescing)
+            coalescing: coalescing, tailTokens: tailTokens)
         let segments = plan.chunks.map { $0.segments[0] }.prefix { $0.end <= end }
         guard segments.last?.end == end else {
             throw ProbeError("GLM tensor-parallel prefill frame \(start)..<\(end) is off the chunk grid")

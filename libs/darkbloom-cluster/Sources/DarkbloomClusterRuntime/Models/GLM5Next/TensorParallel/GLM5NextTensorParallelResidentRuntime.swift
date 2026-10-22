@@ -871,10 +871,25 @@ public final class GLM5NextTensorParallelResidentRuntime {
         return max(requestChunk, (prefillChunkTokens / requestChunk) * requestChunk)
     }
 
-    /// The prompt boundary kept for prefixes: the last whole chunk before the
-    /// final token (0 with the cache off).
+    /// Owner decision (off): prompt prefixes are kept on the bulk grid
+    /// (`bulkPrefillChunkTokens`, every 8,192 tokens) instead of every chunk,
+    /// and the rest of a prompt past its kept boundary (at most a bulk chunk)
+    /// runs as one chunk (`GLM5NextTensorParallelPrefillPlan.make(tailTokens:)`):
+    /// a 31.5K prompt's last 6,924 tokens run as 2 x 3,462 rows instead of
+    /// 2 x 2,048 + 2 x 1,414. That cut changes those rows' bits (the DSA
+    /// selection is not row-count invariant on the model), so it ships only
+    /// through the perplexity / top-1 gate; prefixes are then found at 8K
+    /// granularity.
+    static let prefixOnBulkGrid = false
+    /// The rest of a prompt past its kept boundary that runs as one chunk.
+    static var prefillTailTokens: Int? { prefixOnBulkGrid ? bulkPrefillChunkTokens : nil }
+
+    /// The prompt boundary kept for prefixes: the last whole chunk (or, with
+    /// `prefixOnBulkGrid`, the last whole bulk chunk) before the final token
+    /// (0 with the cache off).
     static func prefixKeepAt(promptCount: Int, chunk: Int, prefixEnabled: Bool) -> Int {
-        prefixEnabled ? ((promptCount - 1) / chunk) * chunk : 0
+        let grid = prefixOnBulkGrid ? max(chunk, (bulkPrefillChunkTokens / chunk) * chunk) : chunk
+        return prefixEnabled ? ((promptCount - 1) / grid) * grid : 0
     }
 
     /// Where the prefill frame that starts at `offset` ends. The chunks are
@@ -889,7 +904,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         GLM5NextTensorParallelPrefillPlan.make(promptCount: promptCount, start: offset, chunkTokens: chunk,
             keepAt: keepAt, bulkTokens: bulkPrefillChunkTokens, microBatches: prefillMicroBatches,
             mergedTokens: merging ? mergedPrefillTokens : 0, microBatchTokens: prefillMicroBatchTokens,
-            coalescing: merging).chunks[0].end
+            coalescing: merging, tailTokens: prefillTailTokens).chunks[0].end
     }
 
     /// A request as it begins on this rank, after both ranks checked they hold
@@ -986,7 +1001,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
             chunkTokens: opened.chunk, keepAt: opened.keepAt,
             bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
-            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging)
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging, tailTokens: Self.prefillTailTokens)
         let result = try GLM5NextTensorParallelPrefillPlan.run(frame, stage: stage, cache: opened.cache, prompt: prompt,
             speculation: opened.speculation, inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
         if let kept = result.kept {
@@ -1018,7 +1033,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
             chunkTokens: opened.chunk, keepAt: opened.keepAt,
             bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
-            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging)
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging, tailTokens: Self.prefillTailTokens)
         return try .init(frame, stage: stage, cache: opened.cache, prompt: prompt, speculation: opened.speculation,
             inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
     }

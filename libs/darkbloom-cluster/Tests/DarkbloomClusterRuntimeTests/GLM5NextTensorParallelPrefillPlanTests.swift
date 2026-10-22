@@ -177,6 +177,29 @@ struct GLM5NextTensorParallelPrefillPlanTests {
     }
 
     /// The endpoint's prompt sizes under the runtime's constants.
+    /// `prefixOnBulkGrid` (owner decision, off): prefixes kept every 8,192
+    /// tokens and the rest past the kept boundary as one chunk.
+    @Test func theBulkGridKeepsPrefixesEvery8KAndRunsTheRestAsOneChunk() {
+        func plan(_ count: Int, merged: Int = 0) -> Plan {
+            let grid = 8192
+            return Plan.make(promptCount: count, start: 0, chunkTokens: 4096, keepAt: ((count - 1) / grid) * grid,
+                bulkTokens: 8192, microBatches: 2, mergedTokens: merged, tailTokens: 8192)
+        }
+        let p = plan(31_500)
+        #expect(p.chunks.map { $0.segments.map(\.microBatchRows) } == [[[4096, 4096]], [[4096, 4096]],
+            [[4096, 4096]], [[3462, 3462]]])
+        #expect(p.keptBoundary == 24_576)
+        #expect(plan(16_384).chunks.map(\.tokens) == [8192, 8192] && plan(16_384).keptBoundary == 8192)
+        #expect(plan(10_500).chunks.map(\.tokens) == [8192, 2308])
+        #expect(plan(24_577).chunks.map(\.tokens) == [8192, 8192, 8192, 1])
+        #expect(plan(3_931).chunks.map(\.tokens) == [3931])
+        #expect(plan(31_500, merged: 16_384).chunks.map(\.tokens) == [16_384, 15_116])
+        // Off: the product's chunks.
+        let product = Plan.make(promptCount: 31_500, start: 0, chunkTokens: 4096, keepAt: 28_672, bulkTokens: 8192,
+            microBatches: 2, mergedTokens: 0)
+        #expect(product.chunks.map(\.tokens) == [8192, 8192, 8192, 4096, 2828])
+    }
+
     @Test func endpointPromptsRunInFewGraphs() {
         func shape(_ count: Int) -> [[Int]] {
             Self.runtimePlan(promptCount: count, merged: GLM5NextTensorParallelResidentRuntime.mergedPrefillTokens)

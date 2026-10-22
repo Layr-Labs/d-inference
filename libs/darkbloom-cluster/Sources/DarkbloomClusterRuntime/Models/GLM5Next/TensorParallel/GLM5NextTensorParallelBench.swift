@@ -79,6 +79,9 @@ public enum GLM5NextTensorParallelBench {
         /// `product` and `merged`: keep the product's prompt prefix (copied
         /// into a prefix cache, as the runtime stores it).
         public var keepsPrefix = true
+        /// `product` and `merged`: prefixes on the bulk grid and the rest as
+        /// one chunk (`GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid`).
+        public var prefixOnBulkGrid = GLM5NextTensorParallelResidentRuntime.prefixOnBulkGrid
         /// `product` and `merged`: chunks whose micro-batches all have at
         /// least `GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`
         /// rows run as micro-batches of at most this many rows instead (nil:
@@ -366,12 +369,15 @@ public enum GLM5NextTensorParallelBench {
             // The runtime's schedule and prefix store, from an empty cache.
             let runtime = GLM5NextTensorParallelResidentRuntime.self
             let chunkTokens = max(chunk, (runtime.prefillChunkTokens / chunk) * chunk)
+            let grid = options.prefixOnBulkGrid
+                ? max(chunkTokens, (runtime.bulkPrefillChunkTokens / chunkTokens) * chunkTokens) : chunkTokens
             let plan = GLM5NextTensorParallelPrefillPlan.make(promptCount: prompt.count, start: 0,
                 chunkTokens: chunkTokens,
-                keepAt: options.keepsPrefix ? ((prompt.count - 1) / chunkTokens) * chunkTokens : 0,
+                keepAt: options.keepsPrefix ? ((prompt.count - 1) / grid) * grid : 0,
                 bulkTokens: runtime.bulkPrefillChunkTokens, microBatches: max(1, options.microBatches),
                 mergedTokens: options.prefillSchedule == .merged ? options.mergedTokens : 0,
-                microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged)
+                microBatchTokens: options.microBatchTokens, coalescing: options.prefillSchedule == .merged,
+                tailTokens: options.prefixOnBulkGrid ? runtime.bulkPrefillChunkTokens : nil)
             let prefix = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
             let result = try plan.run(stage: stage, cache: cache, prompt: prompt, speculation: speculation,
                 observe: options.perplexity ? { rows.append(($0, $1)) } : nil) { end, kept, history in

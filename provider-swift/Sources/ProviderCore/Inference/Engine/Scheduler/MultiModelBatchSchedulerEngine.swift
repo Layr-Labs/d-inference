@@ -27,6 +27,7 @@
 //     owns the typed error surface and the scheduler-message parser.
 
 import Foundation
+import Logging
 import ProviderCoreFoundation
 import MLXLMCommon
 import MLXLMServer
@@ -441,6 +442,36 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         } onCancel: {
             lease.closeAndCancel()
         }
+    }
+
+    /// One local line per text request's prompt preparation
+    /// (`darkbloom.request.prep`): the prompt's size, the normalization and the
+    /// tokenizer's chat-template call (Jinja render and BPE encode), and the
+    /// request profile's stamps up to it (ms from the profile's anchor, the
+    /// request frame's receipt): dequeue, decrypt, parse, admission, task
+    /// spawn, preparation start and end. No request content.
+    static let promptPrepLogger = Logger(label: "darkbloom.request.prep")
+
+    static func promptPrepMetadata(promptTokens: Int, timing: ProviderPromptContractPipeline.PrepTiming)
+        -> Logger.Metadata
+    {
+        ["prompt_tokens": .stringConvertible(promptTokens),
+         "normalize_ms": .stringConvertible(Double(timing.normalizeMicroseconds) / 1000),
+         "template_tokenize_ms": .stringConvertible(Double(timing.templateTokenizeMicroseconds) / 1000)]
+    }
+
+    static func promptPrepStamps(_ f: RequestProfileBuilder.Fields) -> Logger.Metadata {
+        var result: Logger.Metadata = [:]
+        let stamps: [(String, RequestProfileBuilder.Stamp)] = [
+            ("dequeued_at_ms", .dequeued), ("decrypted_at_ms", .decrypted), ("parsed_at_ms", .parsed),
+            ("admission_at_ms", .admission), ("task_spawned_at_ms", .taskSpawned),
+            ("load_wait_start_at_ms", .loadWaitStart), ("load_wait_end_at_ms", .loadWaitEnd),
+            ("prep_start_at_ms", .promptPrepStart), ("prep_end_at_ms", .promptPrepEnd),
+        ]
+        for (name, stamp) in stamps {
+            if let offset = f.offset(stamp) { result[name] = .stringConvertible(Double(offset) / 1000) }
+        }
+        return result
     }
 
     private func prepareCompletion(
@@ -865,17 +896,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         let promptTokens: [Int]
+        let prepTiming: ProviderPromptContractPipeline.PrepTiming
         do {
             try checkFirstContentDeadline()
             // Profiler: template render + BPE encode is the dominant CPU
             // stage before submit.
             profile?.mark(.promptPrepStart)
-            promptTokens = try ProviderPromptContractPipeline.tokenize(
+            let measured = try ProviderPromptContractPipeline.tokenizeMeasured(
                 prepared: prepared,
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
                 templateControls: templateControls)
+            promptTokens = measured.tokens
+            prepTiming = measured.timing
             try checkFirstContentDeadline()
         } catch {
             emitToolConstraintTelemetry(
@@ -885,13 +919,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
+        var prepLine = Self.promptPrepMetadata(promptTokens: promptTokens.count, timing: prepTiming)
         if let profile {
             let promptTokenCount = Int64(promptTokens.count)
             profile.update { f, now in
                 f.mark(.promptPrepEnd, offsetUs: now)
                 f.set(.promptTokens, promptTokenCount)
+                prepLine.merge(Self.promptPrepStamps(f)) { first, _ in first }
             }
         }
+        Self.promptPrepLogger.info("Prompt preparation", metadata: prepLine)
 
         // The rendered prompt determines whether output starts in reasoning
         // or content mode. Seed that state before any model output so neither

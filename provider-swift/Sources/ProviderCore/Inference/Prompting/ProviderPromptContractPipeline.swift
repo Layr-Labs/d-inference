@@ -50,6 +50,37 @@ enum ProviderPromptContractPipeline {
             tools: input.tools, additionalContext: input.additionalContext)
     }
 
+    /// Where `tokenize`'s time goes: the request's normalization, and the
+    /// tokenizer's one chat-template call (the Jinja render and the BPE encode
+    /// of its text, inseparable from outside the tokenizer).
+    struct PrepTiming: Sendable {
+        let normalizeMicroseconds: Int64
+        let templateTokenizeMicroseconds: Int64
+    }
+
+    /// `tokenize`, the same calls on the same inputs, timed.
+    static func tokenizeMeasured(
+        prepared: ToolChoicePromptPolicy.Prepared,
+        request: OpenAIChatCompletionRequest,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        modelType: String?,
+        templateControls: ChatTemplateControls
+    ) throws -> (tokens: [Int], timing: PrepTiming) {
+        func microseconds(_ duration: Duration) -> Int64 {
+            let parts = duration.components
+            return parts.seconds * 1_000_000 + parts.attoseconds / 1_000_000_000_000
+        }
+        let started = ContinuousClock.now
+        let input = try normalizedInput(prepared: prepared, request: request,
+            modelType: modelType, templateControls: templateControls)
+        let normalized = ContinuousClock.now
+        let tokens = try tokenizer.applyChatTemplate(messages: input.messages,
+            tools: input.tools, additionalContext: input.additionalContext)
+        let rendered = ContinuousClock.now
+        return (tokens, PrepTiming(normalizeMicroseconds: microseconds(normalized - started),
+            templateTokenizeMicroseconds: microseconds(rendered - normalized)))
+    }
+
     /// Exposes the SAME production normalization result. The default path is
     /// byte/ordering-equivalent to tokenize's original inputs. Only the native
     /// decoded-media adapter supplies structured content: it is carried through

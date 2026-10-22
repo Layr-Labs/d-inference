@@ -56,7 +56,20 @@ struct WorkerObject {
     }
     mutating func ints(_ key: String) throws -> [Int] {
         guard let value = try take(key) as? [Any] else { throw ClusterWorkerProtocolError.invalid("Expected integer array: " + key) }
-        return try value.map { item in var r = WorkerObject([key: item]); return try r.int(key) }
+        // A prompt's tokens arrive here (31.5K of them, ~54 ms through `int`).
+        // An integer-typed, non-Boolean CFNumber holds exactly its Int64 value,
+        // which `int`'s decimal round trip returns; anything else takes `int`.
+        var result = [Int]()
+        result.reserveCapacity(value.count)
+        for item in value {
+            if let number = item as? NSNumber, !(number is NSDecimalNumber),
+               CFGetTypeID(number) == CFNumberGetTypeID(), !CFNumberIsFloatType(number) {
+                result.append(Int(number.int64Value))
+            } else {
+                var r = WorkerObject([key: item]); result.append(try r.int(key))
+            }
+        }
+        return result
     }
     func peekString(_ key: String) -> String? { values[key] as? String }
     func finish() throws { try workerRequire(values.isEmpty, "Unknown worker record fields") }

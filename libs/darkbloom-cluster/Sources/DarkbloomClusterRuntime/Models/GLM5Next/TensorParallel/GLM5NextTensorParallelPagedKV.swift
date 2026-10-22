@@ -33,6 +33,27 @@ extension GLM5NextTensorParallelResidentRuntime {
         }
     }
 
+    /// Slab capacity an idle rank keeps for the next request
+    /// (`DARKBLOOM_CLUSTER_GLM_PAGED_RETAIN_MB`, default 2,048 MB per rank,
+    /// a ~100K-token request's pages). Above it, idle release trims as
+    /// before, so memory drops after a long generation; at or below it the
+    /// slabs stay and the next request reserves without allocating.
+    static let defaultPagedRetainBytes = 2048 << 20
+
+    static func pagedRetainBytes(_ environment: [String: String]) throws -> Int {
+        guard let raw = environment["DARKBLOOM_CLUSTER_GLM_PAGED_RETAIN_MB"] else { return defaultPagedRetainBytes }
+        guard let megabytes = Int(raw), (0...(1 << 30)).contains(megabytes) else {
+            throw ProbeError("DARKBLOOM_CLUSTER_GLM_PAGED_RETAIN_MB must be a whole number of megabytes, not \(raw)")
+        }
+        return megabytes << 20
+    }
+
+    /// Whether idle release trims the slabs: under host pressure always,
+    /// otherwise only when they hold more than `retainBytes`.
+    static func trimsIdleSlabs(capacityBytes: Int, retainBytes: Int, underPressure: Bool) -> Bool {
+        capacityBytes > 0 && (underPressure || capacityBytes > retainBytes)
+    }
+
     static func pagedKVAgreementFields(_ paged: Bool) -> [String] {
         ["glm5-next-tp-paged-kv-v1", paged ? "page=\(dsaPageTokens)" : "contiguous"]
     }
@@ -62,6 +83,19 @@ extension GLM5NextTensorParallelResidentRuntime {
             contextTokens: Self.historyTokens(request), speculative: mtp != nil)
         let growth = pool.growthBytes(reserving: pages)
         return growth > 0 ? max(0, growth - pages * pool.pageBytes) + pool.capacityBytes : 0
+    }
+
+    /// What an idle rank keeps for the next request gives way before a gate
+    /// refuses: MLX's freed buffers and the prompt-prefix entries
+    /// (`prefix.yieldingMemory`), then the page slabs it retains between
+    /// requests (`releaseIdleMemory`), whole once no entry holds a page. A
+    /// trim is a no-op while any request or lane holds pages.
+    func yieldingIdleMemory<T>(_ body: () throws -> T) throws -> T {
+        do { return try prefix.yieldingMemory(body) } catch {
+            guard let pool = stage?.dsaPagePool, ((try? pool.trim()) ?? 0) > 0 else { throw error }
+            Memory.clearCache()
+            return try body()
+        }
     }
 
     /// Opens `request`'s page reservation (nil with contiguous histories).

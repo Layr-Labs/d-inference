@@ -56,6 +56,8 @@ struct GLM5NextStageContract {
         if model.plan.layers.contains(where: { c.layerTypes[$0] == .deepseekSparseAttention }) {
             model.dsaPagePool = try model.makeDSAPagePool(pageSize: GLM5NextPageReservation.pageTokens,
                 activation: model.embedding == nil ? try GLM5NextPageReservation.activationType(model) : nil)
+            // Its kernels compile here, not in the first request's prefill.
+            try model.dsaPagePool?.prewarm()
         }
         return .init(model: model, contract: self, stageIndex: stageIndex)
     }

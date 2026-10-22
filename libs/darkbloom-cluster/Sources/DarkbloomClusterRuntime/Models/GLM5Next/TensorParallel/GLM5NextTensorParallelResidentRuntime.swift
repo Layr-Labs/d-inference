@@ -325,6 +325,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         // Paged KV histories (`GLM5NextTensorParallelPagedKV.swift`), bound into the agreement.
         let pagedKV = try Self.pagedKV(environment)
+        _ = try Self.pagedRetainBytes(environment)
         var requestCharge = try GLM5NextTensorParallelRequestCharge(descriptor: descriptor, envelopes: envelopes,
             fixedBytes: fixedRequestBytes, speculativeDepth: Self.mtpDepth, maximumBufferBytes: maximumBufferBytes,
             allocationBound: QwenResidentResourceEnvironment.allocationBound)
@@ -444,6 +445,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     let pool = try value.makeDSAPagePool(pageSize: Self.dsaPageTokens)
                     value.dsaPagePool = pool
                     requestCharge.pagedHistory = .init(pool: pool)
+                    // Its kernels compile here, not in the first request's prefill.
+                    let warming = DispatchTime.now().uptimeNanoseconds
+                    try pool.prewarm()
+                    log("darkbloom-glm-paged-prewarm-v1 rank=\(collective.rank)"
+                        + " ms=\((DispatchTime.now().uptimeNanoseconds - warming) / 1_000_000)")
                 }
                 // The NextN layer, whole, bound to the stage's replicated embedding and head.
                 let head = Self.mtpDepth > 0 ? try autoreleasepool { try loader.loadMTP(stage: value) } : nil
@@ -663,16 +669,34 @@ public final class GLM5NextTensorParallelResidentRuntime {
         guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return 0 }
         let cached = Memory.cacheMemory, held = Memory.activeMemory + cached, entries = prefix.count
         let dropped = underPressure ? prefix.sweep() : 0
-        // Pages nobody holds go back with the slabs (all of them once no entry holds any).
-        _ = try? stage?.dsaPagePool?.trim()
+        // Pages nobody holds go back to the pool. Its slabs stay for the next
+        // request (one that fits them reserves without allocating or copying
+        // a slab) up to the retention cap; above it, or under pressure, they
+        // go as before (all of them once no entry holds a page). A
+        // reservation's gate takes retained slabs back before it refuses
+        // (`yieldingIdleMemory`).
+        var slabs = ""
+        if let pool = stage?.dsaPagePool {
+            let capacity = pool.capacityBytes
+            let cap = (try? Self.pagedRetainBytes(ProcessInfo.processInfo.environment)) ?? Self.defaultPagedRetainBytes
+            if Self.trimsIdleSlabs(capacityBytes: capacity, retainBytes: cap, underPressure: underPressure) {
+                let trimmed = (try? pool.trim()) ?? 0
+                slabs = " slabs=trimmed trimmed_bytes=\(trimmed) retained_bytes=\(pool.capacityBytes)"
+            } else {
+                pool.recycle()
+                slabs = " slabs=retained retained_bytes=\(capacity)"
+            }
+            slabs += " retain_cap_bytes=\(cap)"
+        }
         ClusterIdleMemory.releaseFreedBuffers()
         let released = max(0, held - Memory.activeMemory - Memory.cacheMemory)
-        // Keep-warm pulses leave a few bytes in the cache between ticks.
-        if released >= 1 << 20 {
+        // Keep-warm pulses leave a few bytes in the cache between ticks; the
+        // slab decision is logged on every idle release that is not a pressure tick.
+        if released >= 1 << 20 || (!slabs.isEmpty && !underPressure) {
             log("darkbloom-idle-release-v1 rank=\(collective.rank) released_bytes=\(released) freed_buffer_bytes=\(cached)"
                 + " prefix_entries_dropped=\(underPressure ? entries : 0) prefix_bytes_dropped=\(dropped)"
                 + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) pressure=\(underPressure ? 1 : 0)"
-                + " active_bytes=\(Memory.activeMemory)")
+                + " active_bytes=\(Memory.activeMemory)" + slabs)
         }
         return released
     }
@@ -685,11 +709,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
         guard operation.try() else { return nil }
         defer { operation.unlock() }
         guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return nil }
+        // The page slabs' free capacity is kept for the next request and given back before a refusal.
+        let retained = stage?.dsaPagePool?.unallocatedBytes ?? 0
         guard let value = try? requestCharge.servingContextTokens(
-            reclaimableBytes: prefix.bytesInUse + Memory.cacheMemory) else { return nil }
+            reclaimableBytes: prefix.bytesInUse + Memory.cacheMemory + retained) else { return nil }
         if value != servingContextTokens {
             log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(value) previous=\(servingContextTokens ?? 0)"
-                + " reclaimable=\(prefix.bytesInUse + Memory.cacheMemory)")
+                + " reclaimable=\(prefix.bytesInUse + Memory.cacheMemory + retained)")
         }
         servingContextTokens = value
         return value
@@ -727,7 +753,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             // What an idle rank keeps for the next request gives way first.
             // A paged rank also needs what its page pool grows by for this request.
-            try prefix.yieldingMemory {
+            try yieldingIdleMemory {
                 try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge,
                     pagedGrowthBytes(request)]))
             }

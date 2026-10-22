@@ -152,7 +152,7 @@ extension GLM5NextTensorParallelResidentRuntime {
             let states = try QwenLongPrefillCheckedBytes.sum([state] + held.map(\.laneStateBytes))
             let largest = max(transient, held.map(\.transientBytes).max() ?? 0)
             let frontier = try Self.prefillFrontierBytes(configuration: descriptor.configuration.textConfig)
-            try prefix.yieldingMemory {
+            try yieldingIdleMemory {
                 try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([states, largest, frontier,
                     pagedGrowthBytes(request)]))
             }

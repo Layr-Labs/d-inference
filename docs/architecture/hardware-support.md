@@ -221,8 +221,8 @@ flowchart TD
     B --> C{available ≥ requiredGb?}
     C -- no, idle slots exist --> D{evictionCanReach?}
     D -- no --> R1[refuse: modelLoadFailed]
-    D -- yes --> E[evict idle slot, re-check]
-    C -- no, nothing evictable --> F[drop reclaimable cache, re-measure once]
+    D -- yes --> E[first pass: release retained KV segments, drop reclaimable cache, re-check; then evict idle slot, re-check]
+    C -- no, nothing evictable --> F[release retained KV segments, drop reclaimable cache, re-measure once]
     F --> C
     C -- yes --> P{claimPendingLoad: atomic target + assistant + setup allowance}
     P -- optional assistant cannot fit --> T[retry target-only claim once]
@@ -261,6 +261,13 @@ standalone server runs the same sequence in
   logs sustained rejection and keeps every owner's charge until the caller
   releases it after its resources retire. The asynchronous allocator-cache
   reclaimer remains separate; it cannot refund live request or load ownership.
+  Its proactive sweep (buffer cache ≥ 2 GiB) flushes only after 5 s of
+  whole-Mac idleness or when the cache crowds out admission headroom
+  (`KVPoolReclaimer.proactiveWindow`); every shortfall or pressure flush also
+  asks paged pools to drop retained free KV segments. Those segments are
+  allocator-active memory, so load admission counts them as reclaimable
+  (`CBv2RetainedKVSegments.retainedBytes`) and the load path releases them
+  before it evicts or refuses.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what

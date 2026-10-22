@@ -805,6 +805,21 @@ or fences them, so staging does not wait for that chunk
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
 
+Segmented paged admission does not stall the GPU queue. A released row's free
+64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`, outside
+the grant, floor and ledger charge, and the next admission of the same size
+class reinstalls them. New segments wrap zero-fill-on-demand host pages, so
+growth neither zero-fills on the device nor waits on a process-wide stream
+synchronize under the MLX eval lock
+(`EngineV2Factory+SegmentedBackend.swift`, `PagedKVGroup.swift`). Parked
+backing is dropped on a refused admission, on a process-wide release request
+(memory pressure, a refused charge, a cold load) and after 30 s of engine
+idleness. The proactive allocator-cache sweep never flushes between busy
+engines' steps: it waits for 5 s of whole-Mac idleness unless the pool crowds
+out admission headroom (`KVPoolReclaimer.proactiveWindow`).
+`DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
+restore the previous behavior ([configuration](../reference/configuration.md)).
+
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
 correlates checkpoint callbacks to that receipt so delayed donor callbacks

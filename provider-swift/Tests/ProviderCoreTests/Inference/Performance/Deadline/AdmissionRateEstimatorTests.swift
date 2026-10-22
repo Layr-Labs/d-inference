@@ -234,6 +234,32 @@ struct AdmissionRateEstimatorTests {
         #expect(EngineV2Bridge.engineDecodeShape(usage: usage, nativeBlock: false) == .init(batchRows: 1))
     }
 
+    @Test("a completed request's terminal timing reaches the measured decode shape")
+    func completedRequestRecordsDecodeShape() async throws {
+        let (bridge, engine) = bridge(fixes: true)
+        let request = ChatCompletionRequest(model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: "user", content: "hi")], max_tokens: 32)
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 7, count: 200),
+            request: request, requestId: "measured-shape")
+        let consumer = Task { for await _ in stream {} }
+        let continuation = try #require(engine.continuations.first)
+        // Nine verify rounds at four rows confirmed 27 tokens after the first.
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 28)
+        var timing = CBv2RequestTiming()
+        timing.firstTokenNanos = 1_000_000
+        timing.lastTokenNanos = 101_000_000
+        timing.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        timing.decodeSteps = 9
+        timing.batchRowsSum = 40
+        timing.mtpProposed = 27
+        usage.timing = timing
+        continuation.yield(.finished(reason: .stop, usage: usage))
+        continuation.finish()
+        await consumer.value
+        #expect(await bridge.observedDecodeShapeEwma == .init(batchRows: 4, tokensPerStep: 3, stepWidth: 4))
+        await bridge.shutdown()
+    }
+
     @Test("a decode reset restarts the measured shape with the rate")
     func decodeShapeResetsWithRate() async {
         let (bridge, _) = bridge(fixes: true)

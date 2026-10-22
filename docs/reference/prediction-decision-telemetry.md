@@ -34,9 +34,9 @@ calibration, the provider charges decode once per projected batch step
 `projected_prefill_tokens / prefill_tps + projected_decode_tokens / decode_tps`,
 which is the previous per-row charge. On an MTP engine such a projection also
 caps each decode row at the depth the live planner can use, so
-`projected_decode_tokens` counts one token per row, not the configured `1+k`,
-in steps beyond the batch gate or the automatic verification envelope.
-Wire fields are unchanged.
+`projected_decode_tokens` can count fewer than the configured `1+k` per row:
+one token per row in steps beyond the batch gate or where the automatic
+verification envelope leaves no depth. Wire fields are unchanged.
 
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can

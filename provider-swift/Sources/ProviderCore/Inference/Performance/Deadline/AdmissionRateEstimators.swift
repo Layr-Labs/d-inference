@@ -50,13 +50,13 @@ enum IsolatedPrefillAdmissionRate {
 
     static func resolve(
         observed: Double?, anchor: Double?, evidenceAge: Duration?,
-        engineIdle: Bool, nominalPosture: Bool,
-        freshness: Duration = EnginePerformanceMeasurements.freshness
+        engineIdle: Bool, nominalPosture: Bool
     ) -> Double? {
         let observed = observed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         let anchor = anchor.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         if engineIdle, let evidenceAge, evidenceAge > staleEvidenceExpiry { return nil }
-        if let anchor, engineIdle, nominalPosture, let evidenceAge, evidenceAge > freshness {
+        if let anchor, engineIdle, nominalPosture, let evidenceAge,
+            evidenceAge > EnginePerformanceMeasurements.freshness {
             // Expired evidence on an idle engine is not evidence of current
             // slowness; the next admitted request measures afresh.
             return max(observed ?? anchor, anchor)

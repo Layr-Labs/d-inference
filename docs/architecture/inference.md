@@ -968,9 +968,13 @@ shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
 chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
 One cell at the served width covers plain chunks beside decoding rows and decode
 or MTP verify at that width. Both use the artifact's default sampling. No probe
-or cell trains a rate or counter. They share a 20-second wall budget. A timeout
-or refusal completes the attempt; only preemption leaves it due, and the retry
-resumes after the probes and cells already finished.
+or cell trains a rate or counter. They share a 20-second wall budget that
+includes prompt rendering. A timeout or refusal completes the attempt; only
+preemption leaves it due, and the retry resumes after the probes and cells
+already finished. The probe judges the whole cache from its one short shape, so
+a cache that holds it but not the long-prompt or served-width kernels (a process
+stopped between the probe and the cells, or a cache that only saw short prompts)
+skips the cells, and the first such request compiles them as before.
 
 The startup preload warms each loaded model after any passing self-test, before
 registration (or before a standalone listener opens), so routed traffic cannot

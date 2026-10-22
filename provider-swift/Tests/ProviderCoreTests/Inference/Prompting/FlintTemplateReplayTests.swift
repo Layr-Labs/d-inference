@@ -75,12 +75,13 @@ struct FlintTemplateReplayTests {
     }
 
     func render(
-        _ request: OpenAIChatCompletionRequest, modelType: String?
+        _ request: OpenAIChatCompletionRequest, modelType: String?,
+        controls: ChatTemplateControls = .init()
     ) throws -> String {
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         let input = try ProviderPromptContractPipeline.normalizedInput(
             prepared: prepared, request: request, modelType: modelType,
-            templateControls: .init())
+            templateControls: controls)
         var context: [String: Jinja.Value] = [
             "messages": try Jinja.Value(any: input.messages),
             "add_generation_prompt": .boolean(true),
@@ -158,6 +159,28 @@ struct FlintTemplateReplayTests {
         #expect(try renderedFunction(in: prompt) == .object([
             "name": .string("capture"), "parameters": json(Self.schema),
         ]))
+    }
+
+    /// Recursive documents that Flint always chooses whether to reason. The
+    /// accepted controls reach the production context but not the prompt.
+    @Test func acceptedReasoningControlsDoNotChangeThePrompt() throws {
+        let baseline = try render(request(), modelType: "flint")
+        var body = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(request())) as? [String: Any])
+        for controls: [String: Any] in [
+            ["reasoning": ["effort": "high", "enabled": false, "exclude": true], "include_reasoning": false],
+            ["reasoning_effort": "none", "enable_thinking": false],
+            ["chat_template_kwargs": ["enable_thinking": true, "thinking": true]],
+            ["reasoning": ["effort": "minimal", "enabled": true]],
+        ] {
+            body.merge(controls) { _, new in new }
+            let data = try JSONSerialization.data(withJSONObject: body)
+            // The same body decodes, without the local endpoint's render date.
+            let typed = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: data)
+            let templateControls = try JSONDecoder().decode(ChatTemplateControls.self, from: data)
+            #expect(try render(typed, modelType: "flint", controls: templateControls) == baseline)
+            body = body.filter { !controls.keys.contains($0.key) }
+        }
     }
 
     @Test(arguments: [nil, "llama", "Flint", " flint ", "flint_mtp"] as [String?])

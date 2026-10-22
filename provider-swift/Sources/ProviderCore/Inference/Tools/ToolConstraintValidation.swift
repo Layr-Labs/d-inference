@@ -190,6 +190,11 @@ enum ToolConstraintValidation {
         .toolChoiceViolation(message)
     }
 
+    /// Response-format post-validation over the same compiled subset.
+    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema) -> Bool {
+        validate(value, against: schema)
+    }
+
     private static func validate(
         _ value: ToolArgumentJSONValue,
         against schema: ToolValueSchema

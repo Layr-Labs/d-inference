@@ -116,7 +116,16 @@ extension GLM5NextTensorParallelResidentRuntime {
     /// set of lanes or a host that cannot hold one more is this request's
     /// refusal, not a failure.
     public func reserveLane(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
-        try withExclusiveOperation {
+        let entered = DispatchTime.now().uptimeNanoseconds
+        defer {
+            // Diagnostic (`GLM5NextTensorParallelPrefillPlan.frameTiming`): the rank's own reservation time.
+            if GLM5NextTensorParallelPrefillPlan.frameTiming {
+                FileHandle.standardError.write(Data(String(format: "glm-reserve-v1 rank=%d prompt=%d reserve_ms=%.1f\n",
+                    collective.rank, value.promptTokenIDs.count,
+                    Double(DispatchTime.now().uptimeNanoseconds - entered) / 1e6).utf8))
+            }
+        }
+        return try withExclusiveOperation {
             let now = DispatchTime.now().uptimeNanoseconds
             guard lanes.batching, stage != nil else { throw ProbeError("Batch lanes are not configured for this resident owner") }
             guard value.route == nil, value.stillImages == nil, value.mimoImages == nil,

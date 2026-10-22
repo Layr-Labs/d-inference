@@ -973,6 +973,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
                      media: GLM5NextTensorParallelMedia? = nil, growing: Bool = false,
                      stop: () -> Bool = { false }) throws -> OpenedRequest {
         let rank = collective.rank
+        // Diagnostic (`GLM5NextTensorParallelPrefillPlan.frameTiming`): where the open's time goes.
+        let timing = GLM5NextTensorParallelPrefillPlan.frameTiming
+        var marks: [(String, UInt64)] = [("start", DispatchTime.now().uptimeNanoseconds)]
+        func mark(_ name: String) { if timing { marks.append((name, DispatchTime.now().uptimeNanoseconds)) } }
+        defer {
+            if timing {
+                let phases = zip(marks.dropFirst(), marks).map { String(format: "%@_ms=%.1f", $0.0, Double($0.1 - $1.1) / 1e6) }
+                FileHandle.standardError.write(Data(("glm-open-v1 rank=\(rank) prompt=\(request.promptTokenIDs.count) "
+                    + phases.joined(separator: " ") + "\n").utf8))
+            }
+        }
         guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement
             + (media.map { "|glm-media=" + $0.media.fingerprint } ?? ""))) else {
             throw ProbeError("GLM tensor-parallel ranks were given different requests")
@@ -983,9 +994,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, selectionKeepAt: 0, media: media,
                 stopped: true)
         }
+        mark("digest")
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
         let prompt = request.promptTokenIDs
         let pages = try reservePages(request, growing: growing)
+        mark("pages")
         // Every request decodes speculatively, greedy or sampled (bias and
         // penalties too: `QwenStageTokenSampler.verifyRound`). Every request
         // primes the NextN history over its prompt (cheap: no attention, MoE
@@ -999,13 +1012,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { [group] in group.allSum($0) })
         }
+        mark("speculation")
         // Prompt prefix: the longest chunk boundary both ranks hold.
         let scope = loadAgreement
         var cache = stage.newCache(account: pages?.account), start = 0
         if prefix.enabled, media == nil, prompt.count > chunk {
             let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
             let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
-            if let agreed = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates) {
+            mark("held")
+            let vote = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates)
+            mark("vote")
+            if let agreed = vote {
                 guard let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) else {
                     throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
                 }
@@ -1016,6 +1033,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
         }
         Self.boundHistories(cache, tokens: historyTokens)
+        mark("restore")
         return OpenedRequest(cache: cache, pages: pages, start: start, speculation: speculation, chunk: chunk,
             keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled && media == nil),
             selectionKeepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk,

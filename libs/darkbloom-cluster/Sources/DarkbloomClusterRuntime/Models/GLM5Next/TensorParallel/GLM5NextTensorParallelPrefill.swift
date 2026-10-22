@@ -27,7 +27,7 @@ import MLXLLM
 /// (`GLM5NextTensorParallelResidentRuntime.prefillFrameEnd`,
 /// `runPrefillFrame`); beside decoding lanes the lane loop runs a frame in
 /// layer slices (`Slices`), so a decoding lane never waits behind a long frame.
-struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
+public struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     struct Segment: Equatable, Sendable {
         let start: Int
         let end: Int
@@ -324,6 +324,8 @@ struct GLM5NextTensorParallelPrefillPlan: Equatable, Sendable {
     nonisolated(unsafe) static var frameTiming =
         ProcessInfo.processInfo.environment["DARKBLOOM_GLM_PREFILL_FRAME_TIMING"] == "1"
     static let frameTimingSwitch = ".darkbloom/cluster-setup/prefill-frame-timing"
+    /// The worker process's view of the switch (its command decode line).
+    public static var frameTimingEnabled: Bool { frameTiming }
 
     /// Turns frame timing on when `frameTimingSwitch` exists under this
     /// process's home; returns the source (`env`, `file` or `off`) for the

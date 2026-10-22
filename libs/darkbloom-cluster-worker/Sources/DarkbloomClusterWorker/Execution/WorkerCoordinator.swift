@@ -398,7 +398,17 @@ final class WorkerCoordinator: @unchecked Sendable {
                 guard normal else { throw WorkerFailure.invalid("EOF preceded explicit worker shutdown") }
                 return
             }
-            let lines = try decoder.append(chunk).map(ClusterWorkerCodec.decodeControl)
+            let lines = try decoder.append(chunk).map { line in
+                // Diagnostic (prefill frame timing on): a long command's decode time.
+                guard GLM5NextTensorParallelPrefillPlan.frameTimingEnabled, line.count >= 65_536 else {
+                    return try ClusterWorkerCodec.decodeControl(line)
+                }
+                let began = DispatchTime.now().uptimeNanoseconds
+                let decoded = try ClusterWorkerCodec.decodeControl(line)
+                FileHandle.standardError.write(Data(String(format: "glm-command-decode-v1 bytes=%d decode_ms=%.1f\n",
+                    line.count, Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6).utf8))
+                return decoded
+            }
             condition.lock()
             do {
                 // Validate every already-read command before waking the native

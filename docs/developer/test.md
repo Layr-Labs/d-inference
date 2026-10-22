@@ -378,9 +378,12 @@ event pump with two scripted requests whose terminals arrive in reverse
 observation order. `AdmissionRateEstimatorTests` covers the kill switch, the
 anchored isolated-prefill policy (floor, idle expiry, posture, stale-evidence
 expiry with or without an anchor), poisoned-sample and slow-calibration
-lockouts through the bridge and the real submission path, decode step-shape
-measurement and plumbing, the per-row charge kept for reviewed calibrations,
-and a late older cold sample. In the SDK, the unit suite
+lockouts through the bridge and the real submission path, another model's
+lease or device activity on a shared whole-Mac service budget, a fresh
+long-prompt bucket below the floor, decode step-shape measurement and plumbing
+(including the first-token step's rows), rate and shape kept coupled across
+batch widths, the per-row charge kept for reviewed calibrations, and a late
+older cold sample. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)

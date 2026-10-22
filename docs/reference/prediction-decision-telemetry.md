@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -32,8 +32,12 @@ calibration, the provider charges decode once per projected batch step
 ([deadlines](../architecture/inference.md#deadlines),
 `DARKBLOOM_TTFT_ADMISSION_FIXES`), so `projected_service_us` is usually below
 `projected_prefill_tokens / prefill_tps + projected_decode_tokens / decode_tps`,
-which is the previous per-row charge. On an MTP engine such a projection also
-caps each decode row at the depth the live planner can use, so
+the per-row charge at the same rates. There `decode_tps` is the rate implied by
+the smoothed measured decode step
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`MeasuredDecodeStep`), which can differ from the per-request
+`observed_decode_tps` the heartbeat publishes. On an MTP engine such a
+projection also caps each decode row at the depth the live planner can use, so
 `projected_decode_tokens` can count fewer than the configured `1+k` per row:
 one token per row in steps beyond the batch gate or where the automatic
 verification envelope leaves no depth. Wire fields are unchanged.

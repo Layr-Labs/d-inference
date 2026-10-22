@@ -557,16 +557,22 @@ serving Mac, so the same request can project differently on other hardware:
 
 - Decode is charged per batch step from the step shape the engine measured. On
   an MTP engine the charged depth follows the chip's automatic verification
-  envelope (`MTPAutomaticVerificationPolicy.maxRectangularTokens`,
+  envelope
+  (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`,
+  `MTPAutomaticVerificationPolicy.maxRectangularTokens`;
   [chip families](../provider/hardware-requirements.md#chip-families)): a
   smaller envelope reaches the one-token-per-row charge at fewer decode rows,
   as the live planner does.
 - An ordinary engine's isolated-prefill anchor is its own startup calibration
-  cell, measured idle at nominal posture. Expired idle evidence returns to the
-  anchor only at nominal posture (`calibrationPosturePermitsWork` in
-  `EngineV2Bridge`: no Low Power Mode, nominal thermal state); under Low Power
-  Mode or a non-nominal thermal state the anchor acts only as the
-  `IsolatedPrefillAdmissionRate.anchorFloorFraction` floor. Native engines keep
+  cell, measured idle at nominal posture. Expired evidence returns to the
+  anchor only while the whole Mac is idle at nominal posture
+  (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`,
+  `EngineV2Bridge.calibrationPosturePermitsWork`: no Low Power Mode, nominal
+  thermal state). While another resident model or device activity holds the
+  Mac, or under Low Power Mode or a non-nominal thermal state, the anchor only
+  floors the aggregate rate
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
 
 The anchor and floor shape admission only. The published isolated rate,

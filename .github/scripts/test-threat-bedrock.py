@@ -12,7 +12,7 @@ from threat_review.bedrock import BedrockCalls, MODELS
 from threat_review.budget_scan import SCHEMA, Scanner
 from threat_review.budget_runner import status_body
 from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
-from threat_review.context import SONNET, OPUS, SOL, ThreatContext
+from threat_review.context import SONNET, SOL, ThreatContext
 from threat_review.review import model_call
 from threat_review.structured_output import bedrock_schema
 from threat_review.merge_policy import clean, manual_override

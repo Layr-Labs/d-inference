@@ -263,9 +263,10 @@ standalone server runs the same sequence in
   reclaimer remains separate; it cannot refund live request or load ownership.
   Its proactive sweep (buffer cache ≥ 2 GiB) flushes only after 5 s of
   whole-Mac idleness or when the cache crowds out admission headroom
-  (`KVPoolReclaimer.proactiveWindow`); every shortfall or pressure flush also
-  asks paged pools to drop retained free KV segments. Those segments are
-  allocator-active memory, so load admission counts them as reclaimable
+  (`KVPoolReclaimer.proactiveWindow`); every shortfall reclaim or pressure
+  sweep also asks paged pools to drop retained free KV segments, even when it
+  does not flush. Those segments are allocator-active memory, so load
+  admission counts them as reclaimable
   (`CBv2RetainedKVSegments.retainedBytes`) and the load path releases them
   before it evicts or refuses.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −

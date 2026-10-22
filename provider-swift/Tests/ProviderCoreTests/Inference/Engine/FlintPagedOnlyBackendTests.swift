@@ -55,6 +55,51 @@ struct FlintPagedOnlyBackendTests {
         }
     }
 
+    @Test("default provider settings assemble a real paged Flint slot with native precision and 2048-token prefill")
+    func defaultSettingsBuildRealPagedSlot() async throws {
+        let settings = BackendSettings()
+        #expect(settings.engineV2KVBackend == "auto")
+        #expect(settings.engineV2KVCheckpointQuantization == "balanced")
+        let tokenizer = FlintProtocolTestTokenizer()
+        let container = ModelContainer(context: .init(
+            configuration: .init(id: modelID,
+                extraEOSTokens: ["<|user|>", "<|observation|>", "<|developer|>"]),
+            model: try flint(), processor: FlintSlotUnusedProcessor(), tokenizer: tokenizer))
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: modelID, modelType: "flint", isVLM: false, modelDirectory: nil,
+            container: container, tokenizer: TokenizerHandle(tokenizer),
+            // The verified model's 4096-token context must win over this hint.
+            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 0,
+                maxContextLength: 128, defaultMaxTokens: 2),
+            kvBytesCapacity: capacity, maxConcurrentRequests: 1, kvBudget: nil,
+            kvBackendConfig: settings.engineV2KVBackend,
+            kvBackendConfigByModel: settings.engineV2KVBackendByModel,
+            kvQuantizationConfig: settings.engineV2KVQuantization,
+            kvQuantizationConfigByModel: settings.engineV2KVQuantizationByModel,
+            checkpointQuantizationConfig: settings.engineV2KVCheckpointQuantization,
+            checkpointQuantizationConfigByModel: settings.engineV2KVCheckpointQuantizationByModel,
+            specDecPreparation: .init(artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            // Isolate persistent state; leave backend, precision and prefill unset.
+            environment: [PrefixCachePolicy.environmentFlag: "0",
+                KVBackendGuardStore.pathEnvKey: "/dev/null"],
+            startServingTelemetry: false, emitTelemetry: { _ in })
+        let bridge = bundle.bridge
+        #expect(await bridge.kvBackendKind == .paged)
+        #expect(await bridge.kvBackendFallbackReason == nil)
+        #expect(bridge.kvQuantization == .native)
+        #expect(bridge.kvCheckpointQuantization == .native)
+        #expect(bridge.advertisedContextTokens == 4_096)
+        let engine = await bridge.ownedEngine as? EngineV2
+        #expect(engine != nil)
+        if let engine {
+            #expect(engine.schedulerConfig.resolvedSoloPrefillStripeTokens(isMultimodal: false) == 2_048)
+            #expect(engine.schedulerConfig.prefillChunkSize <= 2_048)
+        }
+        await bridge.shutdown()
+        bundle.releaseAssistant()
+    }
+
     @Test("the automatic crash-loop guard cannot move Flint to contiguous")
     func crashLoopGuardDoesNotDegradeFlint() throws {
         let url = FileManager.default.temporaryDirectory
@@ -123,4 +168,9 @@ struct FlintPagedOnlyBackendTests {
             #expect(reason == expected, "\(selection)")
         }
     }
+}
+
+private struct FlintSlotUnusedProcessor: UserInputProcessor {
+    private struct UnexpectedInput: Error {}
+    func prepare(input: UserInput) async throws -> LMInput { throw UnexpectedInput() }
 }

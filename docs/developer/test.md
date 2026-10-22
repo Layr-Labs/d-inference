@@ -852,6 +852,13 @@ tool requests against the pinned template. The SDK fixture is generated independ
 oracle. Numeric assertions retain their declared tolerances and run with
 `MLX_ENABLE_TF32=0`.
 
+`FlintPagedOnlyBackendTests.defaultSettingsBuildRealPagedSlot` assembles a tiny
+Flint through the production slot factory with default `BackendSettings` and no
+engine override. It checks paged attention, native KV and checkpoint precision,
+the artifact's context limit despite a conflicting sizing hint, and the default
+2,048-token solo-prefill stripe. Persistent caching is disabled only for fixture
+isolation; backend, precision and prefill environment overrides are absent.
+
 Verify the prefill output seam against full-logit forward, including identical
 KV and continuation results, sliding-window wrap and both contiguous/paged
 prefix restore. Tool coverage must include schema-aware values, null-preserving

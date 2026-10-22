@@ -41,6 +41,18 @@ deployment and its cache-routing allowlist; model registration and promotion
 are separate approvals. This preparation does not tag, register, upload or
 deploy anything.
 
+Platform evidence, inspected on 2026-10-22 (recheck current `master` before
+tagging):
+
+| Claim | Source |
+|---|---|
+| Platform `master` normalizes with v9 | [`identity/contract.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| Production `74e9f989` normalizes with v8 | [`identity/contract.go` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/blob/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| A cache plan applies only to a matching prompt contract | [`registry/cache_tiers.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/cache_tiers.go) (`CapabilityMatchesPlan`) |
+| Super has a per-identity provider-version floor | [`registry/catalog_version_floor.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`, unset there; [darkbloom-platform#400](https://github.com/Layr-Labs/darkbloom-platform/pull/400) sets `0.10.0`) |
+| GLM-5.3-Flash requires `glm5_next_v1` | [`registry/provider_capabilities.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/provider_capabilities.go) (`ProviderCapabilityGLM5Next`, `embeddedRequiredProviderCapabilities`) |
+| Production `74e9f989` has neither gate | Neither symbol exists in [`coordinator/registry` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
+
 `v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
 from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was
 [published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)

@@ -83,6 +83,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
     case advertisedContextExceeded
+    /// The history has no user query its Qwen 3.5/3.6/3.8 or Bonsai 2 template
+    /// accepts. Deterministic request error, before template rendering.
+    case missingUserQuery
     /// A typed CBv2 platform/engine terminal (a monotonic deadline lease or
     /// the step watchdog) fired mid-generation. Unlike `.generationFailed`,
     /// this carries the machine-readable `cause` AND the engine-reconciled
@@ -128,6 +131,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .advertisedContextExceeded:
             return Qwen4SupportPolicy.contextRejectionMessage
+        case .missingUserQuery:
+            return "This model requires at least one user message that is not only a tool response"
         case .platformTerminal(_, let message, _):
             return message
         }

@@ -84,15 +84,41 @@ extension Start {
 
     /// Use the provider's cap, activation and minimum KV safeguards. Catalog
     /// estimates are conservative; the loader rechecks live memory before use.
-    static func pickerLoadBudgetGiB(memoryGb: Double) -> Double {
+    static func pickerLoadBudgetGiB(memoryGb: Double, modelIDs: [String]? = nil) -> Double {
         guard memoryGb.isFinite, memoryGb > 0, memoryGb <= 4096 else { return 0 }
         let gib = Double(1 << 30)
         let cap = Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: UInt64(memoryGb * gib))) / gib
-        return max(0, cap - Double(UnifiedMemoryCap.loadHeadroomBytes()) / gib)
+        return max(0, cap - Double(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: modelIDs)) / gib)
     }
 
-    static func modelFitsBudget(sizeGb: Double, memoryGb: Double) -> Bool {
-        sizeGb.isFinite && sizeGb > 0 && sizeGb <= pickerLoadBudgetGiB(memoryGb: memoryGb)
+    static func modelFitsBudget(sizeGb: Double, memoryGb: Double, modelIDs: [String]? = nil) -> Bool {
+        sizeGb.isFinite && sizeGb > 0 && sizeGb <= pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
+    }
+
+    enum PickerReserveMode {
+        case selectedModels
+        // Enrollment verifies a separate cached inventory after selection. Its
+        // existing flat reserve must also govern the preceding picker.
+        case autopilotInventory
+
+        func modelIDs(for entries: [PickerEntry]) -> [String]? {
+            switch self {
+            case .selectedModels: return entries.map(\.id)
+            case .autopilotInventory: return nil
+            }
+        }
+    }
+
+    /// Each model must fit under the complete selection's reserve. Summed
+    /// weights need not fit: runtime admission may load the models in turns.
+    static func pickerSelectionFitsBudget(
+        _ entries: [PickerEntry], memoryGb: Double,
+        reserveMode: PickerReserveMode = .selectedModels
+    ) -> Bool {
+        let modelIDs = reserveMode.modelIDs(for: entries)
+        return entries.allSatisfy {
+            modelFitsBudget(sizeGb: $0.sizeGb, memoryGb: memoryGb, modelIDs: modelIDs)
+        }
     }
 
     /// Outcome of resolving a non-TTY fallback-picker input line.
@@ -110,15 +136,22 @@ extension Start {
     static func resolveFallbackSelection(
         input rawInput: String,
         entries: [PickerEntry],
-        memoryGb: Double
+        memoryGb: Double,
+        reserveMode: PickerReserveMode = .selectedModels
     ) -> FallbackSelection {
         let input = rawInput.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return .cancelled }
-        let budget = pickerLoadBudgetGiB(memoryGb: memoryGb)
-        func fits(_ e: PickerEntry) -> Bool { modelFitsBudget(sizeGb: e.sizeGb, memoryGb: memoryGb) }
-
         if input.lowercased() == "all" {
-            let fitting = entries.filter(fits)
+            // An individually impossible row must not pin the reserve for the
+            // remaining selection. Recheck viable rows with their shared floor.
+            let candidates = entries.filter {
+                pickerSelectionFitsBudget([$0], memoryGb: memoryGb, reserveMode: reserveMode)
+            }
+            let modelIDs = reserveMode.modelIDs(for: candidates)
+            let budget = pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
+            let fitting = candidates.filter {
+                modelFitsBudget(sizeGb: $0.sizeGb, memoryGb: memoryGb, modelIDs: modelIDs)
+            }
             guard !fitting.isEmpty else {
                 return .rejected(
                     "No model fits in \(Int(memoryGb)) GB RAM (need ≤ \(String(format: "%.1f", budget)) GB per model).")
@@ -135,13 +168,16 @@ extension Start {
             guard n >= 1, n <= entries.count else {
                 return .rejected("Invalid selection: \(n) (must be 1-\(entries.count)).")
             }
-            let entry = entries[n - 1]
-            guard fits(entry) else {
+            picked.append(entries[n - 1])
+        }
+        let modelIDs = reserveMode.modelIDs(for: picked)
+        let budget = pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
+        for entry in picked {
+            guard modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb, modelIDs: modelIDs) else {
                 return .rejected(
                     "\(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB) needs more memory than this Mac has "
                         + "(\(Int(memoryGb)) GB RAM, ~\(String(format: "%.1f", budget)) GB usable). Choose a smaller model.")
             }
-            picked.append(entry)
         }
         return .selected(picked.map(\.id))
     }
@@ -250,6 +286,7 @@ extension Start {
         config: ProviderConfig,
         coordinatorURL: String,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        reserveMode: PickerReserveMode = .selectedModels,
         urlSession: URLSession = .shared,
         isInteractive: Bool? = nil,
         readInput: () -> String? = { readLine() }
@@ -313,11 +350,12 @@ extension Start {
                 memoryGb: memoryGb,
                 client: client,
                 runtimeCapabilities: runtimeCapabilities,
+                reserveMode: reserveMode,
                 readInput: readInput)
         }
 
         // Run the interactive TUI picker.
-        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb)
+        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb, reserveMode: reserveMode)
 
         guard !selectedIndices.isEmpty else {
             return []
@@ -368,6 +406,7 @@ extension Start {
         memoryGb: Double,
         client: ModelCatalogClient,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
+        reserveMode: PickerReserveMode,
         readInput: () -> String?
     ) async throws -> [String] {
         print()
@@ -386,14 +425,17 @@ extension Start {
             let ramStr = entry.minRamGb.map { " (>= \($0) GB RAM)" } ?? ""
             // Parity with the TUI: a downloaded-but-too-big model is shown but
             // flagged so a non-interactive caller knows it can't be served here.
-            let fitStr = Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb) ? "" : "  [won't fit]"
+            let fitStr = Start.pickerSelectionFitsBudget([entry], memoryGb: memoryGb, reserveMode: reserveMode)
+                ? "" : "  [won't fit]"
             print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]\(fitStr)")
         }
         print()
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")
 
         let selected: [PickerEntry]
-        switch Start.resolveFallbackSelection(input: readInput() ?? "", entries: entries, memoryGb: memoryGb) {
+        switch Start.resolveFallbackSelection(
+            input: readInput() ?? "", entries: entries, memoryGb: memoryGb, reserveMode: reserveMode
+        ) {
         case .cancelled:
             return []
         case .rejected(let message):

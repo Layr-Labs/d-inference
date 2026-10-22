@@ -35,6 +35,7 @@ enum ChatTemplateFixes {
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
             : sanitized
+        try Qwen35TemplateFix.validateUserQuery(normalized, context: context)
 
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             normalized = try GPTOSSHarmonyTemplateFix.normalizeMessages(normalized)

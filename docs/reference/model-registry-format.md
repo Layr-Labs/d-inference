@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -144,6 +144,32 @@ Response `200`:
 `cache_read_price` is the effective rate (the stored value, or the derived
 default when the request set none); the `*_usd` strings are USD per 1M tokens
 (`registerModelResponse`, `types.ModelPriceQuote`).
+
+## Nemotron Super
+
+The provider serves one Nemotron Super registration natively; its discovery and
+slot are explained in the [registry](../architecture/model-registry.md#nemotron-super-discovery)
+and [inference](../architecture/inference.md#managed-nemotron-super-slot) architecture.
+
+| Field | Value | Code |
+|---|---|---|
+| `model_id` | `nvidia-nemotron-3.5-super` (exact; no alias or other id is served) | `NemotronSuperServingPolicy.modelID` (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`) |
+| `version` | `2026-10-15-nvfp4-r1` | registration input |
+| Artifact | The complete NVIDIA NVFP4 checkpoint (revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`): 88 shards, the embedded MTP head in shard 88, plus the integrity files `ModelScanner.collectWeightFiles` selects. Published to R2 with `scripts/publish-model.sh`; no `hugging_face_artifact` | `NemotronSuperCheckpointPin` (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperCheckpointPin.swift`) |
+| `config.json` SHA-256 | `35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea`, `model_type` `nemotron_h_omni` | `NemotronSuperServingPolicy.configSHA256` |
+| `model.safetensors.index.json` SHA-256 | `c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741` | `NemotronSuperCheckpointPin.index` |
+| `chat_template.jinja` SHA-256 | `1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816` | `NemotronSuperPromptContract.templateSHA256` |
+| `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
+| `max_context_length` | `262144`, the whole verified context the slot serves (see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
+| `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
+| `min_ram_gb` | `128`; the default LOAD footprint's gate admits 128 GB ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not yet measured on a physical 128 GB Mac; only 256 GB is measured | `NemotronSuperServingPolicy.discoveryFootprint` |
+| `required_provider_capabilities` | `["apple_m5"]`; with `min_ram_gb` it limits the model to M5 Max (128 GB) and M5 Ultra; the coordinator honors `apple_m5` only for an attested M5 chip family | registration input; `ProviderRuntimeCapability.appleM5` (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
+| Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image; image requests refuse tools and `response_format`), served target-only on the speculating owner. No video | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody` |
+
+Providers without this policy drop the artifact at scan, advertisement and
+prefetch publication, but the downloader has no architecture gate: a provider
+of an earlier release that receives it as a desired build downloads the
+weights before refusing to advertise them.
 
 ## Hugging Face download artifact
 

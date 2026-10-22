@@ -138,6 +138,7 @@ extension EngineV2Bridge {
                     _testBeforeNativeTerminal = nil
                     await gate(usage)
                 }
+                if let gate = _testPersistentBeforeNativeTerminal { await gate(usage) }
                 #endif
                 sawTerminal = true
                 if reason == .stop || reason == .length {

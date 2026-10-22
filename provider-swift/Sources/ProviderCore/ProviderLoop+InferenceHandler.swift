@@ -664,6 +664,9 @@ extension ProviderLoop {
                 terminal: callbacks.terminal)
         }
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
+        // The managed Super owner renders, parses and validates through its
+        // pinned prompt contract and output parsers, never the generic engine.
+        let superOwner = slot.modelContainer.nemotronSuper
         // Logprobs passthrough: a per-request channel the bridge pump fills
         // with OpenAI-shaped entries and the frames loop below drains into
         // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
@@ -847,7 +850,14 @@ extension ProviderLoop {
             // already resolved. This keeps the engine constructor's
             // "model not loaded" path unreachable on this code path while
             // still going through the upstream library for SSE encoding.
-            let providerEngine = MultiModelBatchSchedulerEngine(
+            let providerEngine: any MLXServerEngine
+            if let superOwner {
+                // Text prefix reuse is partitioned by the authenticated scope
+                // and off without one; it emits no cache receipts or usage.
+                providerEngine = superOwner.chatEngine(body: decryptedData,
+                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope)
+            } else {
+                providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
@@ -879,6 +889,7 @@ extension ProviderLoop {
                 },
                 promptWork: promptWork
             )
+            }
 
             // Force-stream so we get SSE frames even if the original request
             // had `stream: false`. The coordinator always uses streaming
@@ -905,8 +916,15 @@ extension ProviderLoop {
             // reasoning tokens (Harmony channels, Gemma4 channels,
             // Qwen3/DeepSeek <think> tags) are parsed into
             // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
+            // Super's owner already splits its reference reasoning channel.
+            if streamingRequest.reasoningParser == nil, superOwner == nil {
                 streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
+            }
+            let floorRequest = streamingRequest
+            let promptFloor: @Sendable () -> Int = {
+                if let superOwner { return superOwner.promptTokenCount(body: decryptedData) }
+                return Self.promptTokenFloor(request: floorRequest, tokenizer: tokenizer,
+                                             modelType: modelType, templateControls: templateControls)
             }
 
             let service = MLXOpenAIService(engine: providerEngine)
@@ -1312,12 +1330,7 @@ extension ProviderLoop {
                         fullResponseText: fullResponseText
                     )
                 )
-                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
-                    request: streamingRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: templateControls
-                ))
+                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: promptFloor())
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
@@ -1356,9 +1369,13 @@ extension ProviderLoop {
 
                 // Partial billing stays tied to delivered output. Cache usage
                 // needs the native terminal that proves adoption; cancellation
-                // can end this frame loop before the bridge records it.
-                await slotEngineV2.settleCancelledStream(
-                    profile: profile, usageSignal: v2UsageSignal)
+                // can end this frame loop before the bridge records it. Super
+                // submits under its owner's own signal and reports no cache use;
+                // its stream termination cancels and joins the native request.
+                if superOwner == nil {
+                    await slotEngineV2.settleCancelledStream(
+                        profile: profile, usageSignal: v2UsageSignal)
+                }
             }
 
             // No usage chunk on a clean finish means an upstream regression.
@@ -1376,12 +1393,7 @@ extension ProviderLoop {
                     )
                 }
                 if promptTokens == 0 {
-                    promptTokens = Self.promptTokenFloor(
-                        request: streamingRequest,
-                        tokenizer: tokenizer,
-                        modelType: modelType,
-                        templateControls: templateControls
-                    )
+                    promptTokens = promptFloor()
                     if promptTokens > 0 {
                         log.warning(
                             "[\(requestId)] usage chunk missing/zero prompt tokens"

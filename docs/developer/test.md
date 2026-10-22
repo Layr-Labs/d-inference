@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -14,6 +14,16 @@ their real resource bundles; ordinary Python checks do not prove GPU correctness
 Build the relevant test products and stage matching metallibs before any
 `--skip-build` command below. Run provider commands from `provider-swift/` and
 SDK commands from `libs/mlx-swift-lm/` unless a command specifies otherwise.
+
+## Provider Terminal And Stop Signals
+
+After rebuilding the provider test products, run the focused
+`ModelPickerInputEndTests|ProviderSignalTests|ProviderStopSignalsTests` selector
+through the isolated provider test runner. The suites cover closed input,
+invalid descriptors, interrupted and temporarily unavailable reads, terminal
+hangup, and real-process SIGTERM/SIGHUP. They preserve launchd and inherited
+ignored-hangup behavior and exercise signal handling across process replacement.
+No model weights or live provider state are needed.
 
 ## Provider And SDK
 
@@ -174,6 +184,48 @@ TTFT, TPS or memory. The existing `ModelPrefixBenchmarkLiveTests` exact replay
 suite requires native live and native checkpoint precision and rejects nonnative
 specifications before loading; keep those output-hash assertions unchanged.
 
+`ModelCheckpointRestoreContentionLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
+is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
+a shared engine. It reads the first case of the same standalone
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache, and
+requires native live and checkpoint precision: a lossy checkpoint can restore
+slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
+pair it serves the fork prompt restored and cold under three conditions: idle,
+while another tenant's long prefill is running, and right after another
+tenant's donor completes. Each condition gets its own donor and cache scope,
+so a deeper checkpoint donated by one measured fork never serves another. It
+fails when a restore does not reach `demandedTokens`, restores a different
+depth than the idle restore of its pair, produces its first token later than
+the cold run under the same condition, or stages more than 1 s slower than the
+idle restore, the signature of waiting on another prefill's `evalLock`. A
+contended run also fails if the foreign prefill finished before its stage did.
+Other timings are observations. The timing gates need exclusive GPU use. Run
+it from `provider-swift/` after building tests and staging the metallib, with
+only the listed variables:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointRestoreContentionLiveTests
+```
+
+Pick `demandedTokens` at or below the deepest checkpoint that fits
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
+check rather than measuring restore latency. The contended fork is submitted
+two seconds after the foreign prefill starts, so pick a `donorTokens` long
+enough to still be prefilling then. The report records the session's runtime
+identity (`runtime`, from `makeReport`) and keeps every sample, including the
+foreign requests that create each condition. It is rewritten atomically after
+each measured run, so an interrupted run keeps every completed run's samples,
+and its `failure` records contract violations, thrown errors and teardown
+errors alike. The test qualifies provider-staged imports only, so it refuses
+MiMo specifications, which load through the native engine.
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:
@@ -219,6 +271,25 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Watchdog Launch Acknowledgement
+
+`WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
+actual `LaunchAgent.kickstartIfLoaded` adapter, `WatchdogRecoveryService` and
+the disk-backed crash-loop guard with a temporary install and scripted
+`LaunchctlControl`.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
+```
+
+A missing-service response after a successful loaded check (exit 3 text or
+launchctl's exit-113 `Could not find service`) must return
+`noLongerLoaded`, restore the exact prior guard bytes and invoke no trip
+callback. Controls cover an already absent job, a successful kickstart,
+permission errors and manual restart reload. No real launchctl, model or GPU is
+used; the scripted interleaving does not measure native race frequency.
 
 ## App Attest Provider Dispatch
 
@@ -315,6 +386,25 @@ This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
 
+## Watchdog Launch Evidence
+
+`WatchdogRecoveryIntegrationTests` exercises
+`WatchdogRecoveryService.observeHealthyProvider`, the real updater and the
+disk-backed recovery store with synthetic bundles, temporary install roots and
+loopback release HTTP. Launch snapshots, process liveness and restart callbacks
+are injected; no model or MLX kernel runs.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+```
+
+It covers missing and partial baseline evidence, intent retention before
+restart, later positive run-count or process-identity evidence, the startup
+timeout, one-time failure accounting and heartbeat promotion. It does not run
+native launchd, the controller cancellation interleaving or a signed release
+installation.
+
 ## Public Fixtures And Private Qualification
 
 Public protocol JSON and prompt golden vectors contain fixed inputs and expected
@@ -344,6 +434,27 @@ The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platf
 is historical context, not the current backend source authority.
 
 ## Focused Tooling Checks
+
+For the PR reviewer, run the seven offline suites listed in
+[threat-review verification](threat-model-review.md#verify). They cover bounded
+change context, final-review integration, fail-closed merge decisions, failure
+classification and exclusion of private response text from diagnostics. Loopback
+HTTP tests need permission to bind a local port; none of these suites call paid
+models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
+reports and merge decisions together, including truncation, call limits,
+interruption and failed report/diagnostic writes. Selective integration tests
+enforce each model's source citation scope across fresh and cached results,
+bounded exact-source replay, explicit omissions and unchanged acknowledgments.
+State tests reproduce shared-branch conflicts between different report files,
+cache immutability, bounded recovery and refusal to retry ambiguous writes.
+Request tests verify native schema projection preserves local bounds; workflow
+tests keep current trusted scanner code separate from pinned threat-model data.
+Bedrock usage tests preserve Sol cache-write input and reject malformed cache
+counts; finding-text and both scan paths' analysis tests enforce raw character
+limits including padding.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary
+while preserving already validated findings.
+Live smoke tests establish model compatibility separately.
 
 From the repository root:
 
@@ -453,6 +564,40 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
+Prompt parity uses a committed golden corpus from
+`scripts/nemotron-qualification/prompt_golden.py`; token-ID checks run only when
+`NEMOTRON_SUPER_REFERENCE_DIR` names the pinned tokenizer and template, and
+otherwise skip with that instruction.
+
+Nemotron Super image fixtures and their goldens are generated by
+`scripts/nemotron-qualification/image-goldens` (see its
+[README](../../scripts/nemotron-qualification/README.md)). PNG must match Pillow
+byte for byte and the final tensors bitwise; JPEG uses the bounds in the
+[image format reference](../reference/nemotron-super-image-formats.md).
+Regenerated fixtures must be byte-identical unless a pinned reference changes.
+
+The managed slot is covered by `NemotronSuperServingPolicyTests` and
+`NemotronSuperMediaChargeTests` (identity, discovery, image advertisement, load
+plan, footprint, media charge and capacity quotes; CPU only) and
+`NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
+coordinator and local-endpoint text and image requests on the speculating
+owner, an image beside speculating text, media refusal before allocation,
+cancellation, admission refusal and retirement). Three gated cases need the
+pinned checkpoint: `NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery
+and that the recorded LOAD constants equal the SDK quotes over every verified
+shard (hashes about 75 GB, loads no weights); adding
+`DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
+the production loader, once to serve an encrypted text request and once for PNG
+and JPEG questions and an image beside a text request. Run them only with
+exclusive GPU access.
 
 ## Related
 

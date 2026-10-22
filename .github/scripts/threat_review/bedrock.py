@@ -5,6 +5,7 @@ Adapted from Layr-Labs/bedrock-codescan-template at
 """
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from .client import ReviewUnavailable, ScanTimeout
 from .context import SONNET, OPUS, SOL
 from .paid import PaidCalls
 from .state import BudgetStopped
+from .diagnostics import ReviewFailure, request_id
+from .structured_output import bedrock_schema
 
 MODELS = {SONNET: "sonnet", OPUS: "opus", SOL: "sol"}
 PROFILE = re.compile(r"arn:aws:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile/[A-Za-z0-9]+")
@@ -43,10 +46,12 @@ class BedrockCalls:
         self.limit = bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100)
         self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS", 4096, 256, 16384)
         self.calls = self.fallbacks = self.input_tokens = self.output_used = 0
+        self.cache_read_input_tokens = self.cache_write_input_tokens = 0
         self.unknown = 0
         self.ledger = Path(env["BEDROCK_SCAN_USAGE_FILE"])
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
         self.client = client
+        self.last_request = {}
 
     @property
     def stopped(self):
@@ -65,15 +70,26 @@ class BedrockCalls:
         if not self.key:
             raise ReviewUnavailable("Bedrock unavailable and OpenRouter backup is not configured")
         self.record(event="fallback", model=payload["model"], reason=reason)
+        self.last_request = {"provider": "openrouter", "bedrock_call": self.calls}
         self.fallbacks += 1
         # This path retains the existing durable dollar reservations and pilot
         # caps. AWS token usage is never reported as OpenRouter dollar charges.
-        return self.fallback(endpoint, key, payload)
+        try:
+            return self.fallback(endpoint, key, payload)
+        finally:
+            self.last_request.update(getattr(self.fallback, "last_request", {}))
 
     def __call__(self, endpoint, key, payload):
+        self.last_request = {}
+        if self.stopped:
+            # Unknown/rejected backup accounting halts the whole attempt, even
+            # if the primary provider has recovered before the next batch.
+            raise BudgetStopped(self.stopped)
         self.alive()
         if self.calls >= self.limit:
-            raise BudgetStopped("Bedrock request allowance reached; no fallback around the limit")
+            error = BudgetStopped("Bedrock request allowance reached; no fallback around the limit")
+            error.diagnostic = {"code": "BEDROCK_CALL_LIMIT", "call_limit": self.limit}
+            raise error
         alias = MODELS[payload["model"]]
         if self.env.get("BEDROCK_SCAN_CREDENTIALS_READY") != "true" and self.client is None:
             return self.backup(endpoint, key, payload, "credentials unavailable")
@@ -89,15 +105,23 @@ class BedrockCalls:
                    "system": [{"text": system + "\nReturn only JSON matching this schema:\n" + json.dumps(schema)}],
                    "messages": [{"role": "user", "content": [{"text": payload["messages"][1]["content"]}]}],
                    "inferenceConfig": {"maxTokens": self.output_tokens},
+                   "outputConfig": {"textFormat": {"type": "json_schema", "structure": {
+                       "jsonSchema": {"name": "threat_review", "schema": json.dumps(bedrock_schema(schema))}}}},
                    "requestMetadata": {"repository": self.env["GITHUB_REPOSITORY"],
                                        "run": self.env["GITHUB_RUN_ID"], "model": alias}}
+        if payload["model"] == SOL:
+            # Sol's Converse contract requires strict mode separately from
+            # outputConfig; Claude does not accept OpenAI-specific fields.
+            request["additionalModelRequestFields"] = {"text": {"format": {"strict": True}}}
         if len(json.dumps(request, ensure_ascii=False).encode()) > 180_000:
             raise BudgetStopped("Bedrock request exceeds conservative context bound")
-        # Prompt schema plus the scanner's strict validator works uniformly;
-        # native structured output is not assumed to work for every model.
+        # Constrain JSON generation; the original local validator still checks
+        # omitted bounds, exact coverage, citations and the review decision.
         self.calls += 1
+        self.last_request = {"provider": "bedrock", "call": self.calls, "response_format": "json_schema"}
         self.record(event="attempt", model=alias, profile=self.profiles[alias])
         self.unknown += 1
+        started = time.monotonic()
         try:
             response = self.client.converse(**request)
         except ScanTimeout:
@@ -105,25 +129,53 @@ class BedrockCalls:
             raise
         except Exception as error:
             detail = getattr(error, "response", {})
-            code = detail.get("Error", {}).get("Code") if isinstance(detail, dict) else None
-            safe = code if code in UNAVAILABLE else "RequestFailure"
-            self.record(event="error", model=alias, reason=safe, usage_unknown=True)
+            error_detail = detail.get("Error") if isinstance(detail, dict) else None
+            code = error_detail.get("Code") if isinstance(error_detail, dict) else None
+            code = code if isinstance(code, str) else None
+            safe = code if code in UNAVAILABLE | {
+                "ValidationException", "ModelTimeoutException", "InternalServerException"} else "RequestFailure"
+            self.last_request.update(sdk_code=safe, request_id=request_id(detail))
+            self.record(event="error", model=alias, reason=safe, usage_unknown=True,
+                        request_id=self.last_request["request_id"])
             if code in UNAVAILABLE:
                 return self.backup(endpoint, key, payload, safe)
-            raise ReviewUnavailable("Bedrock request failed with uncertain outcome; no automatic fallback") from None
+            raise ReviewFailure("Bedrock request failed with uncertain outcome; no automatic fallback",
+                                "BEDROCK_REQUEST_FAILED") from None
+        if not isinstance(response, dict):
+            raise ReviewFailure("Bedrock returned an invalid envelope", "BEDROCK_ENVELOPE_INVALID")
+        stop = response.get("stopReason")
+        safe_stop = stop if isinstance(stop, str) and stop in {
+            "end_turn", "max_tokens", "stop_sequence", "tool_use", "guardrail_intervened", "content_filtered"} else "unknown"
+        self.last_request.update(request_id=request_id(response), stop_reason=safe_stop,
+                                 latency_ms=round((time.monotonic() - started) * 1000))
         usage = response.get("usage", {})
+        if not isinstance(usage, dict):
+            usage = {}
         incoming, outgoing = usage.get("inputTokens"), usage.get("outputTokens")
-        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing))
+        # Cache tokens are separate input categories in Converse usage. Sol can
+        # report nearly all input as cache writes, even on its first request.
+        cache_read = usage.get("cacheReadInputTokens", 0)
+        cache_write = usage.get("cacheWriteInputTokens", 0)
+        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing, cache_read, cache_write))
         self.record(event="response", model=alias, usage_unknown=not known,
-                    input_tokens=incoming if known else None, output_tokens=outgoing if known else None)
+                    input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
+                    cache_read_input_tokens=cache_read if known else None,
+                    cache_write_input_tokens=cache_write if known else None,
+                    **{key: value for key, value in self.last_request.items() if key != "call"})
         if not known:
-            raise ReviewUnavailable("Bedrock usage missing; no complete result")
+            raise ReviewFailure("Bedrock usage missing; no complete result", "BEDROCK_USAGE_MISSING")
         self.unknown -= 1
         self.input_tokens += incoming
         self.output_used += outgoing
+        self.cache_read_input_tokens += cache_read
+        self.cache_write_input_tokens += cache_write
         if response.get("stopReason") != "end_turn":
-            raise ReviewUnavailable("Bedrock response incomplete or refused; no automatic fallback")
-        text = "".join(b["text"] for b in response["output"]["message"]["content"] if "text" in b)
+            raise ReviewFailure("Bedrock response incomplete or refused; no automatic fallback",
+                                "BEDROCK_RESPONSE_INCOMPLETE")
+        try:
+            text = "".join(b["text"] for b in response["output"]["message"]["content"] if "text" in b)
+        except (KeyError, TypeError):
+            raise ReviewFailure("Bedrock returned invalid text blocks", "BEDROCK_ENVELOPE_INVALID") from None
         fenced = re.fullmatch(r"\s*```json\r?\n(.*)\r?\n```\s*", text, re.S)
         if fenced:
             text = fenced.group(1)
@@ -132,4 +184,6 @@ class BedrockCalls:
     def metrics(self):
         return {**self.fallback.metrics(), "bedrock_requests": self.calls,
                 "bedrock_unknown_usage": self.unknown, "bedrock_input_tokens": self.input_tokens,
+                "bedrock_cache_read_input_tokens": self.cache_read_input_tokens,
+                "bedrock_cache_write_input_tokens": self.cache_write_input_tokens,
                 "bedrock_output_tokens": self.output_used, "openrouter_fallbacks": self.fallbacks}

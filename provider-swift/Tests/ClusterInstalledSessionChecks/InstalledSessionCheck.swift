@@ -21,7 +21,7 @@ final class TokenBox: @unchecked Sendable {
     func add(_ event:DistributedResidentEvent,at time:Duration) {
         lock.withLock {
             switch event {
-            case .token(let token): tokens.append((token,time))
+            case .token(let token), .loggedToken(let token, _): tokens.append((token,time))
             case .finished(let reason): finish=time; if case .error = reason { failure=true }
             case .promptCache, .telemetry: break
             }

@@ -1,0 +1,21 @@
+=== 11:23:34 gpt-oss-20b arm A bundle=io.darkbloom.ttftw3.final.gptoss20b.off.1792604309 warmup=off cache_dir_before=no
+[alone] waited 46s; other-slots=2 thermal=fair load=27.42 other-server=yes
+[gpt-oss-20b-A] other servers: 1
+[gpt-oss-20b-A] ready after 10.6s
+[gpt-oss-20b-A] hi {"hi_total_ms": 3315.9, "hi_first_ms": 33.3}
+[gpt-oss-20b-A] r0 ttft_ms=5276.9 prompt 8162 dec 20.5
+[gpt-oss-20b-A] r1 ttft_ms=1668.9 prompt 8176 dec 49.9
+[gpt-oss-20b-A] r2 ttft_ms=1388.0 prompt 8190 dec 102.5
+[A] cache_dir_after= 23M
+=== 11:24:55 gpt-oss-20b arm B bundle=io.darkbloom.ttftw3.final.gptoss20b.on.1792604309 warmup=on cache_dir_before=no
+[alone] waited 46s; other-slots=2 thermal=fair load=39.00 other-server=yes
+[gpt-oss-20b-B] other servers: 2
+[gpt-oss-20b-B] ready after 15.7s
+[gpt-oss-20b-B] waited for warmup log 0.1s
+[gpt-oss-20b-B] hi {"hi_total_ms": 149.0, "hi_first_ms": 11.4}
+[gpt-oss-20b-B] r0 ttft_ms=1634.6 prompt 8181 dec 81.7
+[gpt-oss-20b-B] r1 ttft_ms=1944.0 prompt 8087 dec 63.6
+[gpt-oss-20b-B] r2 ttft_ms=1639.9 prompt 8142 dec 107.0
+2026-10-21T11:25:56-0700 info darkbloom.ShapeWarmup: [ProviderCore] Shape warmup gpt-oss-20b: complete 2/2 cells in 7375 ms (attempt 1, probe 2660/54 ms)
+[B] cache_dir_after= 23M
+=== 11:26:14 done

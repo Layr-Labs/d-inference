@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -958,16 +958,13 @@ once per loaded engine (`ModelCalibrationPolicy.shapeWarmup`). MLX compiles
 each kernel specialization from source on first use in a process, and macOS
 caches the compiled libraries per app, keyed by source and GPU compiler. With a
 cold cache (a new install, or the first start after macOS or the MLX kernel
-sources change), the first long customer prompt paid those compiles. On an M3
-Ultra the first 8K-token request took 4.4 s for Gemma 4 QAT and 4.1-4.2 s for
-GPT-OSS without the warmup, and 2.9-3.0 s and 3.4 s with it, the same as later
-requests. On a shared M5 Ultra it took 3.2 s and 5.3 s without it, 1.1 s and
-1.6 s with it. A warm cache leaves no measurable first-request penalty, so the
+sources change), the first long customer prompt paid those compiles; with the
+warmup it matched later requests (measurements in the
+[startup shape warmup report](../reports/2026-10-21-startup-shape-warmup-first-request.md)).
+A warm cache leaves no measurable first-request penalty, so the
 warmup first runs a greedy 128-token probe twice. Only a first run that
 exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
-shape cells; otherwise they are skipped. Cold first runs measured 1.2-1.6 s on
-an M3 Ultra and 2.3-2.7 s on an M5 Ultra, warm ones at most 0.44 s. On a cold cache
-the whole warmup took 5.4-7.4 s per engine. One solo prompt covers stripe-wide
+shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
 chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
 One cell at the served width covers plain chunks beside decoding rows and decode
 or MTP verify at that width. Both use the artifact's default sampling. No probe

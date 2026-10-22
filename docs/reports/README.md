@@ -1,9 +1,10 @@
 # Provider And Native Evidence
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
+- [Startup shape warmup: first-request TTFT](2026-10-21-startup-shape-warmup-first-request.md)
 - [GLM-5.3-Flash single-Mac qualification record](2026-10-21-glm53-flash-single-mac-qualification.md)
 - [Bonsai 9B publication delay](2026-10-15-bonsai9b-publication.md)
 

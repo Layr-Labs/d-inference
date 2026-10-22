@@ -324,7 +324,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Only invalid native-control evidence warrants this extra read-only
         // resident lookup. It must never load/provision, infer type from the
         // requested name, or convert cancellation into a cold-model fallback.
-        if templateControls.rawMiMoControls.invalid {
+        if templateControls.rawMiMoControls.invalid || templateControls.rawFlintControls.invalid {
             let knownType: String?
             if let tokenizerProvider {
                 do { knownType = try await tokenizerProvider(request.model).modelType }
@@ -900,6 +900,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
+        let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
@@ -930,7 +931,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         logprobs: engineV2Logprobs != nil ? true : nil,
                         topLogprobs: engineV2Logprobs?.topLogprobs,
                         logitBias: engineV2Sampling?.logitBias,
-                        seed: engineV2Sampling?.seed),
+                        seed: engineV2Sampling?.seed,
+                        // Exact Flint matches stops on its answer channel only.
+                        engineStopStrings: modelType != "flint"),
                     requestId: requestId,
                     // Same per-tenant scope the legacy submit threads into the
                     // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
@@ -994,7 +997,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeMiMoChannels: modelType == "mimo_v2",
             nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
-                .init(modelId: modelId, modelType: modelType))
+                .init(modelId: modelId, modelType: modelType)),
+            answerStopFilter: answerStopFilter,
+            withholdReasoning: FlintRequestPolicy.withholdsReasoning(
+                request, controls: templateControls, modelType: modelType)
         )
     }
 
@@ -1107,7 +1113,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
-        absorbStrayThinkClose: Bool = false
+        absorbStrayThinkClose: Bool = false,
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1131,7 +1139,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
                 nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
-                absorbStrayThinkClose: absorbStrayThinkClose)
+                absorbStrayThinkClose: absorbStrayThinkClose,
+                answerStopFilter: answerStopFilter,
+                withholdReasoning: withholdReasoning)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1163,7 +1173,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
         nativeMediaTerminalDrain: Bool = false,
-        absorbStrayThinkClose: Bool = false
+        absorbStrayThinkClose: Bool = false,
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1192,7 +1204,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoChannels: nativeMiMoChannels,
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
-                    absorbStrayThinkClose: absorbStrayThinkClose)
+                    absorbStrayThinkClose: absorbStrayThinkClose,
+                    withholdReasoning: withholdReasoning)
+                // Raw output passes this holdback before channel/tool parsing,
+                // so a matched answer stop and its tail are never parsed.
+                var answerStops = answerStopFilter
+                var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
                 startedAt = Date()
 
                 #if DEBUG
@@ -1248,12 +1265,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         }
                     }
                     switch event {
-                    case .chunk(let text):
+                    case .chunk(let generated):
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
+                        let text = answerStops?.ingest(generated) ?? generated
                         if !text.isEmpty {
                             do {
-                                for routed in try router.process(text) { continuation.yield(routed) }
+                                let events = try router.process(text)
+                                // Before any later frame: see recordWithheldReasoning.
+                                usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                                for routed in events {
+                                    formatOutput?.observe(routed)
+                                    continuation.yield(routed)
+                                }
                             } catch {
                                 await cancelUpstream()
                                 if nativeMediaTerminalDrain {
@@ -1357,7 +1381,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // and fail closed here before a call is exposed. This remains
                 // defense in depth for every mode.
                 do {
-                    for routed in try router.finishText() { continuation.yield(routed) }
+                    var events: [MLXServerGenerationEvent] = []
+                    if let tail = answerStops?.finish(), !tail.isEmpty {
+                        events += try router.process(tail)
+                    }
+                    events += try router.finishText()
+                    usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                    for routed in events {
+                        formatOutput?.observe(routed)
+                        continuation.yield(routed)
+                    }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1375,7 +1408,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    continuation.yield(router.visibleEvent(residual))
+                    let visible = router.visibleEvent(residual)
+                    formatOutput?.observe(visible)
+                    continuation.yield(visible)
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
@@ -1391,6 +1426,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
+                do {
+                    // Exact-Flint response_format: the completed content, not
+                    // a truncated or schema-invalid prefix, reaches success.
+                    try formatOutput?.validate(finishReason: stopReason)
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
                 if prepared.mode.requiresInferenceConstraint {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
@@ -1400,6 +1444,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.yield(.toolCall(toolCall))
                 }
 
+                if let matched = answerStops?.matchedSequence {
+                    // OpenAI semantics, even if the match landed on the final
+                    // budgeted token: the stop sequence ended the answer.
+                    stopReason = "stop"
+                    usageSignal.record(matchedStopSequence: matched)
+                }
                 let now = Date()
                 let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
                 let generateTime = (lastTokenAt ?? now)
@@ -1460,11 +1510,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
         reasoningPrefix: String? = nil,
-        toolHandler: BatchedToolStreamHandler? = nil
+        toolHandler: BatchedToolStreamHandler? = nil,
+        nativeReasoningPrefix: String? = nil,
+        usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
+        answerStopFilter: FlintAnswerStopFilter? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
-            usageSignal: EngineV2RequestUsageSignal(), reasoningPrefix: reasoningPrefix)
+            usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: nativeReasoningPrefix, answerStopFilter: answerStopFilter)
     }
     #endif
 

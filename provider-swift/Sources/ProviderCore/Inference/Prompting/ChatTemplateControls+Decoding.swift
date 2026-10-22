@@ -32,5 +32,6 @@ extension ChatTemplateControls: Decodable {
         rawMiMoControls = MiMoV26RawControlEvidence.capture(from: decoder, surface: .chat)
         rawMiMoTools = MiMoV26ToolEvidence(from: decoder)
         rawGLM5Controls = GLM5NextPromptPolicy.RawControls.capture(from: decoder)
+        rawFlintControls = FlintRequestPolicy.RawControls.capture(from: decoder)
     }
 }

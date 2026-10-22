@@ -13,5 +13,6 @@ struct LocalResponseRequest: Decodable {
         templateControls = ChatTemplateControls()
             .withRawMiMoControls(MiMoV26RawControlEvidence.capture(from: decoder, surface: .responses))
             .withRawGLM5Controls(GLM5NextPromptPolicy.RawControls.capture(from: decoder))
+            .withRawFlintControls(FlintRequestPolicy.RawControls.capture(from: decoder))
     }
 }

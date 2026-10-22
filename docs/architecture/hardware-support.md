@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -118,7 +118,7 @@ owns the limits and their source mappings.
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16. The gpt-oss-20b floor is max(2.56 GiB eager, 3.20 GiB compiled) B=8 peak over resident plus slack, from the 2026-07-10 M4 Max sweep (`libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-paged-gate-2026-07-09.md`, added in SDK commit `d72ce578`). That SDK revision still clamped the expert SwiGLU with float32 `MLXArray(limit)` bounds (introduced in `51ea0c4b`, removed in `f2eb29b8`, SDK #326), so the sweep ran with float32 activations after layer 0. No sweep has re-measured the floor with bf16 activations | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
@@ -171,6 +171,32 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
 ([`prefix-cache.md`](prefix-cache.md)).
+
+Fused causal prompt attention changes the prefill transient, not these
+constants. An eligible full-attention prompt chunk takes one `.causal` SDPA
+call instead of 128-query blocks. The fused kernel materializes no scores, so
+the route drops the per-block score tensors of MLX's composed path (head_dim
+256), the per-block BOOL masks on paged storage and the output concat; it adds
+no allocation
+([eligibility](inference.md#scheduler-and-loop-configuration); `usesFusedCausalPrefill` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift`).
+On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
+13.86 GB to 12.03 GB because its head_dim 256 layers take the fused kernel.
+`defaultActivationReserveBytes`, `measuredActivationFloorsBytes`,
+`minimumLoadKVBytes` and the KV slot grants are intentionally unchanged:
+
+- The default reserve is sized from gemma-4, whose layers keep the blocked
+  path. The gpt-oss-20b floor comes from the 2026-07-10 sweep, which ran the
+  blocked path; the fused route only removes allocations from that path, so
+  the floor stays an upper bound. The Nemotron Super floor is the residue its
+  request and prefill-lane charges do not hold, not a prompt-attention
+  transient. No floor has been re-measured on the fused route, and a lower
+  floor needs a new measurement.
+- `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores the blocked path that the
+  2026-07-10 sweep ran.
+- K/V layout and dtype do not change, so KV bytes per token, slot grants and
+  advertised capacity do not change. A lower live transient shows up only
+  through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
 
 ### Load gate (`ModelLoadAdmission`)
 

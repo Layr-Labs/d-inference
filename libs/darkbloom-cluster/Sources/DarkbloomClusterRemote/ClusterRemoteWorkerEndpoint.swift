@@ -335,7 +335,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 var wrote = false
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
-                    var writeDeadline = min(ownerRetirementDeadlineUptimeNanoseconds, now + 500_000_000)
+                    var writeDeadline = Self.ownerWriteDeadline(now: now, ownerRetirement: ownerRetirementDeadlineUptimeNanoseconds)
                     if work.2 && !sentRelease {
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
@@ -361,7 +361,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                     } else if let (command, deadline) = work.3 {
                         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
                         frame = try OwnerWire.command(command, lease: leaseID, incarnation: incarnation, sequence: sequence, now: now, deliveryDeadline: deadline)
-                        writeDeadline = min(writeDeadline, deadline)
+                        writeDeadline = Self.ownerWriteDeadline(now: now, ownerRetirement: ownerRetirementDeadlineUptimeNanoseconds,
+                            commandDelivery: deadline)
                     } else { frame = nil }
                     if let frame {
                         try pipe.write(frame.encoded(commandStream: true), until: writeDeadline)
@@ -386,6 +387,16 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
             pipe.closeOutput(); try? input.fileHandleForWriting.close()
         }
     }
+    /// How long the writer may take to build and write one owner record: a
+    /// control record (renewal, fence, release, bootstrap reply) half a
+    /// second; a command until its own delivery deadline. A native-context
+    /// reservation's record is ~7 MB: building it and the owner reading it
+    /// took longer than half a second (candidate 35, ~1,040,000 tokens: the
+    /// writer gave up, the endpoint failed and the pair ended).
+    static func ownerWriteDeadline(now: UInt64, ownerRetirement: UInt64, commandDelivery: UInt64? = nil) -> UInt64 {
+        min(ownerRetirement, commandDelivery ?? (now + 500_000_000))
+    }
+
     private func readLoop(_ pipe: ClusterOwnerPipe) {
         defer {
             // Reaping ssh owns transport only; this never leaves nativeEnded.

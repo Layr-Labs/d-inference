@@ -67,8 +67,10 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
         // Leader to follower.
         case open, command, renew, fence, bootstrapReply
-        // Follower to leader.
-        case accepted, refused, invalidated, event, bootstrapRound, cleanup, released
+        // Follower to leader. `commandRefused`: the follower's own owner could
+        // not take a reservation the leader relayed (its queue or its carrier);
+        // nothing reached the worker, and that request alone is refused.
+        case accepted, refused, invalidated, event, bootstrapRound, cleanup, released, commandRefused
         var fromLeader: Bool { [.open, .command, .renew, .fence, .bootstrapReply].contains(self) }
     }
 
@@ -100,6 +102,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     public var termination: String?
     public var status: Int32?
     public var releasedCleanly: Bool?
+    /// The request a `commandRefused` names.
+    public var requestID: UUID?
 
     init(kind: Kind, epoch: UUID, session: UUID, sequence: UInt64) {
         version = Self.version; self.kind = kind; self.epoch = epoch; self.session = session; self.sequence = sequence
@@ -124,6 +128,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if termination != nil { set.insert("termination") }
         if status != nil { set.insert("status") }
         if releasedCleanly != nil { set.insert("releasedCleanly") }
+        if requestID != nil { set.insert("requestID") }
         return set
     }
 
@@ -146,6 +151,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         case .bootstrapRound: required = ["bootstrapSequence", "bootstrapBytes", "ownerIncarnation", "ownerLease"]; optional = []
         case .bootstrapReply: required = ["bootstrapSequence", "bootstrapBytes"]; optional = []
         case .released: required = ["releasedCleanly"]; optional = ["termination", "status", "detail"]
+        case .commandRefused: required = ["requestID", "detail"]; optional = []
         }
         let present = presentFields
         guard required.isSubset(of: present), present.isSubset(of: required.union(optional)) else {
@@ -173,6 +179,11 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if let bootstrapSequence { guard bootstrapSequence < UInt64(ClusterOwnerBootstrapProfile.maximumRounds) else { throw fail("Bootstrap round outside its bound") } }
         if let bootstrapBytes { guard (1...131_072).contains(bootstrapBytes.count) else { throw fail("Bootstrap payload exceeds its bound") } }
         if let detail { guard detail.utf8.count <= 256, !detail.utf8.contains(0) else { throw fail("Detail exceeds its bound") } }
+        if kind == .commandRefused {
+            guard let reason = detail.flatMap(ClusterWorkerRefusal.init(rawValue:)), reason != .unavailable else {
+                throw fail("A refused command names a request-scoped refusal")
+            }
+        }
         if let termination {
             guard ["launchFailed", "exited", "signalled"].contains(termination), (termination == "launchFailed") == (status == nil) else {
                 throw fail("Owner termination differs")
@@ -259,6 +270,17 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
             requestID: requestID, command: sent))
         return wire
+    }
+
+    /// The refusal a relayed command's failure is, when it is one request's:
+    /// a reservation the follower's own owner could not take now (`busy`, its
+    /// queue) or could not encode (`profile`). Nothing reached the worker. Any
+    /// other failure (a malformed wire, a closed owner) fences the session.
+    static func requestRefusal(relaying command: ClusterWorkerCommand, failure error: Error) -> ClusterWorkerRefusal? {
+        guard case .reserve = command else { return nil }
+        if case .refused(let reason)? = error as? ClusterWorkerOwnerError, reason != .unavailable { return reason }
+        if error is ClusterWorkerProtocolError { return .profile }
+        return nil
     }
 
     /// The command on this Mac's clock, and its delivery deadline.
@@ -625,6 +647,18 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     } else { guard nextNativeEvent > 0 else { throw ClusterLinkWorkerError.invalid("Event precedes readiness") } }
                     incoming.append(event); nextNativeEvent += 1
                     switch event.event { case .failed, .unavailable: invalidate = true; default: break }
+                case .commandRefused:
+                    // The follower's owner could not take a relayed reservation:
+                    // the worker never saw it and its own event sequence is
+                    // untouched. The pair hears it as that rank's refusal of
+                    // the request (`ClusterWorkerRequest.admit`), which gives
+                    // back what rank 0 admitted; the session goes on.
+                    guard accepted, !cleanup, ready != nil, let id = wire.requestID,
+                          let reason = wire.detail.flatMap(ClusterWorkerRefusal.init(rawValue:)), incoming.count < 32 else {
+                        throw ClusterLinkWorkerError.invalid("Refused command outside the session")
+                    }
+                    incoming.append(ClusterWorkerEventFrame(membershipEpoch: expectedIdentity.membershipEpoch,
+                        sequence: nextNativeEvent, requestID: id, event: .refused(reason)))
                 case .bootstrapRound:
                     guard accepted, let relay = bootstrapRelay, ready == nil, !cleanup, !bootstrapBusy,
                           wire.bootstrapSequence == nextBootstrap, let bytes = wire.bootstrapBytes,
@@ -929,9 +963,16 @@ private final class ServerSession: @unchecked Sendable {
             guard let sequence = wire.bootstrapSequence, let bytes = wire.bootstrapBytes else { return }
             proxy?.deliverReply(sequence: sequence, bytes: bytes)
         case .command:
+            let local: (command: ClusterWorkerCommand, requestID: UUID?, deliveryDeadline: UInt64)
+            do { local = try wire.localCommand(now: now) } catch { fence(reason: "command refused"); return }
             do {
-                let local = try wire.localCommand(now: now)
                 try endpoint?.sendWorkerCommand(local.command, requestID: local.requestID, deadline: local.deliveryDeadline)
+            } catch let error where ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error) != nil {
+                // A reservation this Mac's owner could not take: nothing reached
+                // the worker (no command sequence was spent), so that request
+                // alone is refused and the session goes on.
+                let reason = ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error)!
+                send({ $0.requestID = local.requestID; $0.detail = reason.rawValue }, kind: .commandRefused)
             } catch { fence(reason: "command refused") }
         default:
             fence(reason: "unexpected message")

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -580,7 +580,12 @@ The JSON report records `promptMode` (`"rotating"` or `"fixed"`),
 seed length. These optional fields extend schema `4`; absent metadata in older
 reports remains unspecified. The flag is rejected outside `--scheduler-prefill`
 before runtime loading (`provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift`,
-`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`).
+`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`). Schema `5` adds
+`prefillChunkTokens` and `maxBatchedTokensPerStep`; with
+`soloPrefillStripeTokens` they record the scheduler the production build handed
+the warm-up engine, after serving, calibration and GLM policy
+(`EngineV2Factory.ProductionBuild.prefillGeometry`), and a measured engine built
+with different geometry fails the run.
 
 Scheduler prefill installs `MLXMemoryGuard.configureOnce` before loading weights,
 matching serving and the throughput sweep. Stderr records the selected allocator

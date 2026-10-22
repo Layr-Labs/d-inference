@@ -288,6 +288,32 @@ struct EngineV2PrefillGeometryEngineTests {
         }
     }
 
+    @Test("a production build reports the geometry its engine was handed")
+    func productionBuildReportsHandedGeometry() async throws {
+        // Benchmark receipts record this. Policy that runs after
+        // `prefillGeometry` (GLM's step limits, the calibrated Nemotron clamp)
+        // is visible here and not in `prefillGeometry(model:environment:)`.
+        let model = try geometryGPTOSS()
+        func build(_ policy: ((inout CBv2SchedulerConfig) -> Void)?) throws -> EngineV2Factory.ProductionBuild {
+            try EngineV2Factory.makeProductionBuild(
+                model: model, tokenizer: StubBridgeTokenizer(), kvBytesCapacity: 64 << 20,
+                maxConcurrentRequests: 2, kvBackend: .paged, maxContextLength: 2_048,
+                environment: Self.environment, schedulerPolicy: policy)
+        }
+        let plain = try build(nil)
+        await plain.engine.shutdown()
+        #expect(plain.prefillGeometry == EngineV2Factory.prefillGeometry(model: model, environment: Self.environment))
+        let narrowed = try build { scheduler in
+            scheduler.prefillChunkSize = 256
+            scheduler.maxBatchedTokensPerStep = 1_024
+            scheduler.soloPrefillStripeTokens = nil
+        }
+        await narrowed.engine.shutdown()
+        #expect(narrowed.prefillGeometry == Geometry(
+            prefillChunkTokens: 256, maxBatchedTokensPerStep: 1_024, soloPrefillStripeTokens: nil,
+            bidirectionalMediaPrefillChunkCeiling: nil))
+    }
+
     private static func textRequest(_ id: CBv2RequestID, tokens: Int) -> CBv2Request {
         CBv2Request(
             id: id, promptTokens: (0..<tokens).map { $0 % 100 + 1 },

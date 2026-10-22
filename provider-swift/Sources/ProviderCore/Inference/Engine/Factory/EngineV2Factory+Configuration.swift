@@ -385,3 +385,14 @@ extension EngineV2Factory {
         return overflow ? Int.max : doubled
     }
 }
+
+extension EngineV2Factory.PrefillGeometry {
+    /// The geometry a built scheduler configuration carries.
+    init(scheduler: CBv2SchedulerConfig) {
+        self.init(
+            prefillChunkTokens: scheduler.prefillChunkSize,
+            maxBatchedTokensPerStep: scheduler.maxBatchedTokensPerStep,
+            soloPrefillStripeTokens: scheduler.soloPrefillStripeTokens,
+            bidirectionalMediaPrefillChunkCeiling: scheduler.bidirectionalMediaPrefillChunkCeiling)
+    }
+}

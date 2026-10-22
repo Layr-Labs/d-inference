@@ -19,29 +19,45 @@ checkpoint does not waive that policy. Sources:
 
 The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
 claims, before allocation, the pinned checkpoint's resident installation and
-head payloads (73,213,230,600 and 1,769,654,296 bytes), the owner's serving
+head payloads (73,217,162,760 and 1,769,654,296 bytes), the owner's serving
 room and only the part of its load transient beyond that room
 (`NemotronSuperLoadClaim`). The serving room is the 8.5 GiB owner-wide prefill
 lane, any prefix bank and `NemotronSuperServingPolicy.admissionKVBytes` of KV
 headroom: 15.7 GiB for eight speculative requests at the served 262,144-token
 context (576 MiB of fixed bytes per request, the speculating owner's 9.87 GB of
 round work once, and 2 GiB; 11.2 GiB at 65,536 tokens). The transient is the larger of the installation's
-staging with its 2 GiB backend allowance (8,887,435,264 bytes) and the head's
+staging with its 2 GiB backend allowance (8,903,163,904 bytes) and the head's
 construction allowance (7,078,617,184 bytes), never both, because each phase
 returns its freed buffers from MLX's cache before the next phase or serving
 uses that room; for the default configuration the room is larger, so the
-transient adds nothing. Its default discovery footprint, 97.6 GiB, is the
-resident payloads plus the serving room with the worst-case media reservation
-of one single-image request (`NemotronSuperServingPolicy.mediaChargeBytes`,
-3.62 GiB: a 64 Mi-pixel decode workspace, the encoded body copies, a
-13,312-patch image's tokens and its tower and projector bound), so a loaded
-slot can serve an image at once. With Super's measured 2 GiB activation floor
-(below) and 1 GiB minimum KV the load gate needs 100.6 GiB under the 90% cap: at
-least 111.8 GiB (120.1 GB) of physical memory before macOS and other processes
-take any. A 128 GB Mac (115.2 GiB cap) therefore admits the default load with
-14.6 GiB to spare, though not a 16-image request (24.5 GiB of media) beside it.
-At 65,536 tokens the round work would be 4.7 GiB and the gate 96.1 GiB. 192 GB
-leaves 72.2 GiB under the cap. A dedicated 128 GiB Mac was emulated on the 256 GB
+transient adds nothing. Super's LOAD claims keep no OS reserve beyond 3 GiB of
+admission slack and its measured 2 GiB activation floor (below), in place of
+the provider's 10% load reserve, unless the operator raised `memory_reserve_gb`
+above its 4 GiB default (`NemotronSuperLoadFit.systemReserveBytes`). Available
+memory (what macOS reports) a 128 GB Mac needs: about 104 GiB for the default
+owner (eight requests and a prefix bank, about 99 GiB claimed); with less the
+load drops the bank (eight requests, 99.0 GiB), then serves four (95.3), two
+(90.8) or one (89.3) concurrent request, then one with 1,024-token prompt
+chunks (85.6 GiB, `NemotronSuperLoadFit.minimumAvailableBytes`), so a 128 GB
+Mac running other work loads a narrower owner instead of refusing. Super's
+pre-accept, eviction and startup preload decide on the claim's own ledger room
+(`ProviderLoop.nemotronSuperLoadRequirements`, `loadClaimRemainingBytes`), not
+on `freeForLoadGb`: they admit from 85.6 GiB available and evict idle models
+toward the widest configuration that evicting them can reach. The discovery
+footprint (`estimated_memory_gb`) is the narrowest configuration's
+requirement, 83.6 GiB on every Mac; cold capacity quotes and the coordinator's
+cold-load routing, which compare it and the 3 GiB load headroom with
+`free_for_load_gb` (net of the 10% load reserve), admit only from about 99.4
+GiB available on 128 GB until the platform adopts a Super-specific rule. The
+footprint holds no media, and an image request is
+charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
+3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
+copies, a 13,312-patch image's tokens and its tower and projector bound; a
+video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
+owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
+request (24.5 GiB of media) does not fit beside it. A resident slot's media
+probe is quoted against the ledger room its reservation is admitted by.
+At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
 limits of the smaller Mac, before the speculating admission split); prompts
 beyond about 64K tokens on 128 GB are unmeasured. Eight default requests (two 58K-token prompts,
@@ -456,7 +472,10 @@ Provider full-load quotations, measured activation floors and reported capacity 
 5. A load passes only if `weights × memoryOverheadFactor + activations +
    minimumLoadKVBytes ≤ freeForLoadGb` and, after loading, measured live KV
    headroom is ≥ `minimumLoadKVBytes` — `canLoad`, `loadIsServeable`,
-   `KVHeadroomProbe.hasServeableKVHeadroom`.
+   `KVHeadroomProbe.hasServeableKVHeadroom`. The managed Nemotron Super load
+   replaces the first term with its own claim's ledger room, which keeps no
+   load reserve — `ProviderLoop.evictUntilNemotronSuperFits`,
+   `nemotronSuperLoadIsCertainToFail`.
 6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
    below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
@@ -473,6 +492,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
+| Nemotron Super refused: "Insufficient memory (… GB of LOAD room, need … GB) …" | The claim's ledger room cannot hold its narrowest configuration, even after evicting every idle model | `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |
 | Raising `DARKBLOOM_ACTIVATION_RESERVE_GB` shrinks KV, lowering it does nothing | Raise-only semantics | `UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) |
 | `darkbloom doctor` warns about macOS | Below `recommendedMacOSMajorVersion` ([Constants](#constants)); warning only | `BootSecurity.swift` |
@@ -482,7 +502,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |

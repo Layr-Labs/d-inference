@@ -11,16 +11,17 @@ import ImageIO
 /// The IDCT and chroma upsampling are ImageIO's, not libjpeg-turbo's, so
 /// decoded samples differ from Pillow by a few levels; with 2x2 chroma
 /// subsampling ImageIO also replicates chroma at 16-pixel MCU edges.
+/// ImageIO sees only the primary image (SOI through its EOI), and its
+/// metadata is never requested: the container supplies the geometry and the
+/// orientation, and the image is created lazily, so its size is checked
+/// before samples are decoded.
 enum NemotronSuperJPEGRaster {
     static func decode(_ data: Data, _ jpeg: NemotronSuperJPEGContainer,
                        orientation: Int) throws -> NemotronSuperOrientedRGBWriter {
         typealias Failure = NemotronSuperImageDecode.Failure
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithData(data as CFData, options),
-              CGImageSourceGetType(source) as String? == "public.jpeg", CGImageSourceGetCount(source) >= 1,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
-              properties[kCGImagePropertyPixelWidth] as? Int == jpeg.width,
-              properties[kCGImagePropertyPixelHeight] as? Int == jpeg.height
+        guard let source = CGImageSourceCreateWithData(data.prefix(jpeg.primaryLength) as CFData, options),
+              CGImageSourceGetType(source) as String? == "public.jpeg", CGImageSourceGetCount(source) >= 1
         else { throw Failure.invalidRaster }
         try Task.checkCancellation()
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options),

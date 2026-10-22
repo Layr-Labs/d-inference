@@ -25,7 +25,8 @@ test runner, a release build) and it adds no file to `ProviderCore`. It uses
 | `--checkpoint DIR` | `NemotronSuperLocalLoad.load`: pinned config/index/shard identity, `NemotronSuperInstallation.requiredLoadBytes` quote, pending LOAD claim, fenced staging, `NemotronSuperLocalBridgeBuilder.make`, LOAD finish | the process `GlobalKVCacheBudget` with the provider's default cap and the activation reserve the provider holds for a lone Super slot (its measured floor) |
 | `--synthetic` | the same steps in the same order on the tiny fixture (the transaction pins the real identity, so it cannot stage a fixture) | same |
 
-Isolation: the state directory must be new or empty; `HOME`, `TMPDIR`,
+Isolation: the state directory must be new or empty and its parent must
+exist (the runner creates only the directory itself); `HOME`, `TMPDIR`,
 `DARKBLOOM_STATE_FILE` and `DARKBLOOM_LOADED_MODELS_FILE` point inside it;
 credential-shaped environment variables are removed (names are logged). The
 runner creates no provider config, coordinator client, discovery record or
@@ -81,8 +82,8 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--port`, `--diagnostics-port` | 0 (ephemeral) | 127.0.0.1 listeners |
 | `--max-context` | 262144 | the managed slot's context, also the most the builder accepts; prompt plus output must fit |
 | `--default-max-tokens` | 512 | when a request omits `max_tokens` |
-| `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission for N requests, the depth table and `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`, about 15.7 for N = 8 at 262144), when larger; plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim unless `--managed-load-claim` (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes`, `serving_concurrency`, and the per-token rates each request's reservation adds for its prompt plus `max_tokens` (`kv_bytes_per_token`, of which `auxiliary_bytes_per_token` is the speculating assistant's history), and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
-| `--managed-load-claim` | off | the LOAD claim holds the managed slot's KV headroom instead of the whole grant: every configured request's fixed bytes, 2 GiB and the default prefix bank (`NemotronSuperServingPolicy.loadPlan`), recorded as `admission_kv_bytes` in `load.quote`. A large grant then loads as it would in the provider; as there, the claim also holds the prefill lane and the bank once, and hands the installation's share to live usage once it is resident |
+| `--kv-capacity-gib` | 4; with speculation 12 or the managed slot's admission for N requests, the depth table and `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`, about 15.7 for N = 8 at 262144), when larger; plain 1 + 3 x N with `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT=N` > 1 | bridge KV capacity, also the minimum KV in the LOAD claim unless `--managed-load-claim` (at least 1). Every request's fixed bytes are carved from it; the ready file's identity `kv_grant` reports `requests`, `minimum_grant_bytes` (for that many requests), `fixed_request_bytes`, `serving_concurrency`, and the bridge's per-token rates for its advertised token budget (`kv_bytes_per_token`, of which `auxiliary_bytes_per_token` is the speculating assistant's history; the paged bridge reserves no per-request bytes), and a too-small grant fails the load with `kv_grant_refused` (the same fields and `suggested_kv_capacity_gib`, `null` when no grant is provable) in `load.failed` and on stderr |
+| `--managed-load-claim` | off | the LOAD claim holds the managed slot's KV headroom instead of the whole grant: every configured request's fixed bytes, 2 GiB and the default prefix bank within the grant, and a speculating owner's round work beside it (`NemotronSuperServingPolicy.loadPlan`), recorded as `admission_kv_bytes` in `load.quote`. A large grant then loads as it would in the provider; as there, the claim also holds the prefill lane and the bank once, and hands the installation's share to live usage once it is resident. As in the provider, a claim the gate refuses is asked again once after MLX's cached buffers are returned, then falls back to no prefix bank, then half the requests at a time down to one, then that request with 1,024-token prompt chunks (`NemotronSuperLoadFit`), each asked with 3 GiB of admission slack and no OS reserve beyond it and the activation reserve (`system_reserve_bytes`, zero: the runner's budget has no `memory_reserve_gb`; 85.6 GiB available for the narrowest); the `load.fit` event (also the ready identity's `fit`) lists each attempt's `requests`, `prefix_bank_bytes`, `chunk_tokens`, `claim_bytes`, `admitted` and `lost_after_installation` (the builder then refused that admitted owner beside the installed weights, and any narrower configuration left was asked beside them; a later attempt's `claim_bytes` stays its whole claim, though the gate weighed it less the resident payloads), with `served_requests` (null unless the load completed), `admission_slack_bytes`, `system_reserve_bytes`, `minimum_available_bytes`, the provider's `load_reserve_bytes` and `available_for_load_gb` (both net of that reserve, which Super does not keep) and the ledger, on success and on refusal |
 | `--backend-allowance-gib` | 2 | added to the LOAD quote; an unmeasured runner default |
 | `--kv-bytes-per-token` | from config | full-attention layers x 2 x KV heads x head_dim x 2 (8192 for the pinned config); an override may only raise it |
 | `--cap-fraction` | provider default (0.90) | may only lower the cap; an inherited `DARKBLOOM_MEM_CAP_FRACTION` is removed |
@@ -90,7 +91,7 @@ themselves (`--launch-runner`), which keeps the lane held only while measuring.
 | `--drain-timeout-seconds` | 600 | bound on waiting for in-flight work after a shutdown signal |
 | `--verify-parallelism` | 4 | concurrent shard SHA-256 checks (whole-shard reads) |
 | `--engine-env KEY=VALUE` | none | runtime-policy entries, for plain/speculative A/B |
-| `--emulate-physical-gib N` | off | behave as a dedicated Mac with N GiB (at most this machine's): the process budget's total is N GiB and its OS-available memory N GiB minus the runner's footprint (never above what this machine has), `MLXMemoryGuard`'s limits are N GiB's, the managed load gate (scan-time footprint plus activation reserve and minimum KV against available-for-load memory) runs before loading and refuses as the provider would (`emulation.load_gate` event), and the default prefix bank is sized for N GiB; `load.quote` adds the KV grant the provider's re-slice would give (`emulated_production_grant_bytes`) |
+| `--emulate-physical-gib N` | off | behave as a dedicated Mac with N GiB (at most this machine's): the process budget's total is N GiB and its OS-available memory N GiB minus the runner's footprint (never above what this machine has), `MLXMemoryGuard`'s limits are N GiB's, the managed load gate (the ledger room a Super LOAD claim could take, `load_claim_room_bytes`, against the narrowest configuration's `required_bytes`) runs before loading and refuses as the provider would (`emulation.load_gate` event), and the default prefix bank is sized for N GiB; `load.quote` adds the KV grant the provider's re-slice would give (`emulated_production_grant_bytes`) |
 
 `load.quote` reports the installation's payload and staging, the head's
 payload and construction allowance and their sequential sum
@@ -108,7 +109,7 @@ file cache, and the receipt cannot tell which you had.
 | Path | Content |
 |---|---|
 | `<state>/runner-ready.json` | written after both listeners bind: URLs, pid, executable, build configuration, identity, settings, load seconds and phases |
-| `<state>/runner-events.jsonl` | `runner.start`, `load.begin`, `load.phase.*`, `load.quote`, `load.end` (with the load memory window), `serve.ready`, `charge.opened`/`charge.retired`, `shutdown.*`, `retirement`, `runner.exit` |
+| `<state>/runner-events.jsonl` | `runner.start`, `load.begin`, `load.phase.*`, `load.quote`, `load.fit`, `load.end` (with the load memory window), `serve.ready`, `charge.opened`/`charge.retired`, `shutdown.*`, `retirement`, `runner.exit` |
 | `GET /runner/memory` | fresh sample: process footprint (current, kernel interval max, lifetime max), MLX active/cache/peak, ledger (charged, materialized, remaining, cap, activation reserve, owners), charge rows and sums by kind, `unattributed_bytes` (ledger charge outside the rows, e.g. engine owners), maxima since the last reset including `sampled_max_request_charges_held` (request kinds held at the same time), HTTP/bridge activity |
 | `POST /runner/peaks/reset` | returns the closing window, then resets the kernel interval footprint, MLX peak and sampled maxima |
 | `POST /runner/ballast` | `{"bytes": N}` holds a real ledger reservation that shrinks the remainder (near-limit probes); released at drain |
@@ -117,18 +118,20 @@ file cache, and the receipt cannot tell which you had.
 | `POST /runner/engine/profile/reset` | clears the step profiler's samples (speculation counters stay cumulative) |
 
 Charge kinds: `load` (pending LOAD claim), `media_ingress` and `media` (the
-image binding's `-ingress`/`-media` reservations), `kv` (bridge request
-reservations: recurrent state, any speculation charge, one decode row and KV),
+image binding's `-ingress`/`-media` reservations), `kv` (any other request
+reservation; the owner's paged bridge makes none, so its KV pages and recurrent
+rows appear in `unattributed_bytes`),
 `prefill_lane` (the owner's one prompt-chunk activation allowance, held from
 before the first request until retirement; the checkpoint path charges the
 SDK's full-model `prefillActivationBoundBytes` for the configured chunk),
-`prefix_bank` (the owner's resident checkpoint bank budget, held like the lane
+`decode_rows` (one decode-row workspace per configured request, held like the
+lane), `prefix_bank` (the owner's resident checkpoint bank budget, held like the lane
 when prefix caching is on), `mtp_round` (a speculating owner's round work,
 verify window, captured-window generations and history copies, held once like
 the lane; the ready file's `request_charge.mtp_projected` reports its exact
 `owner` bytes beside the serving policy's `policy_owner_bound`), `ballast`.
-`sampled_max_request_charges_held` includes the lane and the round, not the
-bank.
+`sampled_max_request_charges_held` includes the lane, the decode rows and the
+round, not the bank.
 Request bytes come from the budget's read-only `reservationBytesSnapshot()` and
 the hook from `NemotronSuperLocalLoad.localImageHTTP(templateBytes:)`
 (`RunnerChargeRows.swift`, `RunnerCheckpointLoad.swift`). The owner serves one
@@ -160,12 +163,15 @@ requests at `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`,
 15.7 GiB for eight at 262,144 tokens), at least 12 GiB; otherwise pass `--kv-capacity-gib` from the ready file's `kv_grant`,
 or from `suggested_kv_capacity_gib` after a `kv_grant_refused` load.
 
-KV storage is the same kind of switch: `--engine-env
-DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND=paged` stores the attention KV in the
-segmented native paged backend. Its pages and recurrent rows are charged by the
-engine's process-memory owner (reported in `unattributed_bytes`, not as `kv`
-rows) and the owner holds the decode rows as `decode_rows` from load to
-retirement. The prefix bank composes with it. The gated
+KV storage is not a switch: the owner stores the attention KV in the segmented
+native paged backend only. `--engine-env DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`
+may be omitted or `paged`; `contiguous` is no longer supported and, like any
+other value or `DARKBLOOM_CBV2_PAGED_KV=0`, fails the load (with
+`--checkpoint`, before its LOAD claim and installation). Pages and recurrent
+rows are charged by the engine's
+process-memory owner (reported in `unattributed_bytes`, not as `kv` rows) and
+the owner holds the decode rows as `decode_rows` from load to retirement. The
+prefix bank composes with it. The gated
 `NemotronSuperPagedLiveTests` (`DARKBLOOM_SUPER_PAGED_LIVE=1` and
 `NEMOTRON_SUPER_CHECKPOINT_DIR`, exclusive GPU) stages the pinned checkpoint
 once and compares paged against contiguous logits at every 2,048-token chunk

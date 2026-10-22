@@ -1129,6 +1129,20 @@ struct EngineV2VisionRoutingTests {
         #expect(outstanding == 0)
     }
 
+    @Test("typed client errors from preparation keep their 400, not a retryable 503")
+    func typedClientErrorKeepsItsMapping() async throws {
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort },
+            emitTelemetry: VisionTelemetrySink().callback())
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine), plumbing: plumbing)
+        await #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
+            _ = try await collectContent(try await router.streamChatCompletion(request: imageRequest()))
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
     @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback",
           arguments: [false, true])
     func constructionFailureRefusesLoudly(typedVisionFailure: Bool) async throws {

@@ -2,7 +2,9 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-private final class SSDReservationBarrier: @unchecked Sendable {
+/// Parks the budget actor inside the next armed memory sample, so every
+/// later budget call queues behind it until `release` is signalled.
+final class SSDReservationBarrier: @unchecked Sendable {
     private let lock = NSLock()
     private var armed = false
     let entered = DispatchSemaphore(value: 0)

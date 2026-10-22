@@ -854,8 +854,11 @@ extension ProviderLoop {
             if let superOwner {
                 // Text prefix reuse is partitioned by the authenticated scope
                 // and off without one; it emits no cache receipts or usage.
+                // Schema metadata passed the protocol check above, so it is
+                // trusted as on the generic engine.
                 providerEngine = superOwner.chatEngine(body: decryptedData,
-                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope)
+                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
+                    trustsSchemaMetadata: true)
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -922,7 +925,9 @@ extension ProviderLoop {
             }
             let floorRequest = streamingRequest
             let promptFloor: @Sendable () -> Int = {
-                if let superOwner { return superOwner.promptTokenCount(body: decryptedData) }
+                if let superOwner {
+                    return superOwner.promptTokenCount(body: decryptedData, trustsSchemaMetadata: true)
+                }
                 return Self.promptTokenFloor(request: floorRequest, tokenizer: tokenizer,
                                              modelType: modelType, templateControls: templateControls)
             }

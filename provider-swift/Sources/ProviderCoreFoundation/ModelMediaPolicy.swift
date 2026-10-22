@@ -20,9 +20,9 @@ public enum ModelMediaPolicy {
 
     public static func advertisesMedia(_ configuration: [String: Any], modelID: String? = nil) -> Bool {
         // Only the managed native owner of the exact registry id serves image
-        // input; discovery further requires its pinned configuration. Other
-        // ids, aliases and spellings of the architecture stay text-only, and
-        // that owner's image boundary refuses video.
+        // and video input; discovery further requires its pinned
+        // configuration. Other ids, aliases and spellings of the architecture
+        // stay text-only.
         if (configuration["model_type"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == nemotronSuperModelType {
             return configuration["model_type"] as? String == nemotronSuperModelType

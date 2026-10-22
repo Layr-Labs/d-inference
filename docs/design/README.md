@@ -1,6 +1,6 @@
 # Provider Design Records
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Retained bodies and evidence remain unchanged; status is historical, not a rollout claim. Retired dependent records are indexed in the [record archive](../reports/README.md#retired-original-records).
 
@@ -9,6 +9,7 @@ Retained bodies and evidence remain unchanged; status is historical, not a rollo
 - [Gemma 4 26B-A4B Inference Optimization — Plan, 2026-08-03](gemma4-26b-inference-optimization.md)
 - [Gemma 4 Frozen-KV MTP on Continuous Batching V2](gemma4-cbv2-mtp.md)
 - [GPT-OSS 20B prefill and decode optimization](gptoss20b-prefill-decode-optimization.md)
+- [Native GLM-5.3-Flash integration](glm53-flash-native.md) — incomplete native execution and qualification boundary
 - [KV-cache lookup shadowing on small-window hybrid models](kv-cache-lookup-shadowing.md)
 - [MDM-optional provider authorization](mdm-optional-provider-authorization.md)
 - [Native inference with independently quantized checkpoints](https://github.com/Layr-Labs/d-inference/blob/f35743857cb2fd9d408617e9f9da884ad166e8e2/docs/design/native-inference-quantized-checkpoints.md) (archived original; depends on retired backend documentation)

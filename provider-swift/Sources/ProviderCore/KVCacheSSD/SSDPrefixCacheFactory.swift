@@ -19,7 +19,10 @@ import MLXLMCommon
 import os
 #endif
 
-enum SSDPrefixCacheConstructionFailure: String, Sendable {
+/// Typed SSD store construction refusal. Telemetry and the local `/metrics`
+/// `prefix_cache_status` `detail` label carry the raw value; the heartbeat
+/// status keeps the coordinator's closed `PrefixCacheStatusReason` vocabulary.
+public enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case missingWeightHash = "missing_weight_hash"
     case unsupportedPlan = "unsupported_plan"
     case unsafePath = "unsafe_path"
@@ -28,6 +31,7 @@ enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case blockContractMismatch = "block_contract_mismatch"
     case epochUnavailable = "epoch_unavailable"
     case promptContractUnavailable = "prompt_contract_unavailable"
+    case identityUnavailable = "identity_unavailable"
     case layoutUnavailable = "layout_unavailable"
     case writeBudgetUnavailable = "write_budget_unavailable"
 }

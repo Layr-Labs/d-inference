@@ -281,6 +281,11 @@ public actor ProviderLoop {
     /// container EOS snapshot, and the production CBv2 engine builder used
     /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
+    #if DEBUG
+    /// Replaces the GLM publication verdict so its unwind is testable without
+    /// an undersized real pool.
+    internal var glm5NextPublicationRefusalForTesting: (@Sendable (EngineV2Bridge) async -> String?)?
+    #endif
 
     /// Operator-configured hard cap on concurrent model slots
     /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
@@ -809,7 +814,11 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(model: model) {
+            // GLM serves only with its embedded MTP; never advertise a build
+            // whose every load would refuse under this MTP configuration.
+            if EngineV2SupportedModels.isSupported(model: model),
+                GLM5NextLocalServing.isLoadable(model, mode: config.config.backend.mtpMode)
+            {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)

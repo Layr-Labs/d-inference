@@ -621,7 +621,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates; refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -631,6 +631,246 @@ Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
 grant. These [workspace-aware floors](hardware-support.md#kv-slot-grants) do not
 lower the activation reserve or replace actual per-request byte admission.
+
+### GLM5Next implementation boundary
+
+`glm5_next` is in the production supported set only as the exact catalog build
+`glm-5.3-flash` (`EngineV2SupportedModels`, `GLM5NextCoordinatorServing`). The native SDK has an
+unregistered `GLM5NextTextModel`, trained `GLM5NextMTP`, vision tower and
+`GLM5NextModel` wrapper. `GLM5NextArtifactLoader` validates the pinned file
+inventory and reads bounded tensor ranges instead of materializing a second
+whole-model dictionary. Provider integration uses a model-bound
+`GLM5NextNativeOperationOwner` for protected MTP bridge admission; it does not
+borrow a MiMo transaction or bypass its checks. Shutdown consumes the actual
+native engine/contract receipt before releasing the root or growing survivor
+grants. Missing ownership or unproven completion refuses work and retains the
+affected owners. Standing wired residency checks platform support before
+creating a ticket. Once a backend start or end has been attempted, a fault
+retains the ticket, policy registration and actual native owner until process
+restart. Factory publication requires a settled successful start; shutdown joins
+pending ticket work and requires successful end before releasing the owner's
+model/resources. The bridge also retains its engine, nonzero KV claim and activity
+guards until that settlement succeeds; a failed end keeps the unpublished
+retirement charge instead of reporting zero capacity. A native quiescence receipt alone cannot settle a failed
+residency operation (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+Synthetic tests do not establish full-model output parity or
+full-artifact qualification. Source lives under
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/` and
+`libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
+[in-progress integration contract](../design/glm53-flash-native.md) for the
+required paged, complete-prefix and trained-MTP gates.
+
+An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
+can admit the exact pinned local artifact into standalone discovery without
+changing coordinator advertisement. The local selection cannot bypass managed
+loading, native ownership, memory admission or backend requirements.
+
+Coordinator-connected mode serves only catalog model `glm-5.3-flash`, delivered
+through the ordinary model-revision download, through the same managed load
+(`ProviderLoop.coordinatorGLM5NextPlan`, `GLM5NextCoordinatorServing.resolvePlan`).
+Before any reservation it requires Apple M5 Max or M5 Ultra with at least
+256 GiB (`GLM5NextHardwareRequirement`; the provider reports `glm5_next_v1`
+only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
+(`ModelRuntimeRequirements`), the native step-scratch price
+(`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
+version and aggregate, the revision receipt must match it and hash to that
+aggregate, and the admitted load hashes every file against the same manifest.
+An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
+reviewed shipped template remains mandatory. The enforced context is 262,144
+tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
+`max_context_length` lowers it and a larger one refuses the load. A revision
+swap borrows the activation's writer lease
+(`GLM5NextArtifactOwnership.borrowingCallerLease`). GLM MTP is on under the default `mtp_mode = "auto"`;
+local startup skips GLM only when `mtp_mode = "off"` or the `DARKBLOOM_CBV2_MTP`
+kill switch disables MTP (`GLM5NextLocalServing`).
+A GLM slot is published only when its bundle and engine report
+MTP active and the bridge carries the native operation owner; disabled MTP, the
+kill switch, the assistant re-slice floor, post-build headroom fallback and
+wedge recovery never rebuild GLM target-only, because target-only GLM has no
+checked completion receipt. `prepareProductionBackend` also refuses a
+target-only GLM engine for serving construction; only benchmarks build one.
+
+Every GLM load fixes `GLM5NextExecutionPolicy.serving` on the target and its
+embedded MTP layer (`GLM5NextManagedLoad.executionPolicy`); the reference
+per-token KDA and selection graphs exceed MLX's Metal resource limit at real
+prompt lengths. Routed-expert prefill on Neural-Accelerator GPUs runs the NAX
+expert kernel for affine 4-bit and NVFP4 banks (`RoutedExperts.fusedDecodeNAXPrefill`;
+other GPUs keep MLX's sorted gather), and prefill chunks past position 2,048 run the
+native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). The policy is part of the encrypted checkpoint storage identity
+(`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
+engine prices one worst-case step at setup and stays inactive when it exceeds
+the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
+with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
+selection row per query, retained until the step fence (about 46 MB per query
+across 11 DSA layers). A longer row whose selection rows would read at least
+its history instead reads its whole latent plane once per layer through
+the page table and runs the contiguous arithmetic over it
+(`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),
+so its retained reads are bounded by the history, not the chunk. The GLM
+scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
+and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
+`glm5NextServingScheduler`). The price splits into setup bytes for the step
+geometry and a rate per context token of each request, which covers the
+request's index metadata reads, pooled index planes, latent reads and page
+tables in both its step and the chained decode successor
+(`GLM5NextStepScratch`, `PagedKVBackend.glm5NextStepScratch`). The setup check
+charges that rate for the most history the step's rows can hold: every row at
+the context limit, or the pool's whole token capacity when smaller
+(`GLM5NextPagedModelBinding.validateStepEnvelope`), or the all-rows-at-context
+price when that is smaller. Reads, writes and tables the step owner retains
+count for every DSA layer; a layer's temporaries (scores, pooled index planes,
+selections, gather blocks) count once, twice for overlap with a neighbour
+(`GLM5NextStepBytes`). With FP32 sparse KV that price stays at least 1.5
+times every peak measured on the real artifact (1 to 4 rows, 512- and
+2,048-token steps, 32K to 261K context, MTP verification; smallest 1.57x). For 2,048-token
+steps at a 262,144-token context the setup is about 5.6, 7.4 and 11.0 GB for
+1, 2 and 4 rows, and the rate about 55 KB per context token
+(`GLM5NextStepPriceTests`). A refused activation names the native reason (for example
+`capacityExhausted(needed:available:)`) and the step geometry in the load error
+(`EngineV2Factory.glm5NextActivationRefusal`).
+
+Automatic KV selection resolves paged for every GLM target; an explicit
+contiguous selection, the paged kill switch or the crash-loop guard refuses the
+GLM load rather than degrading (`EngineV2Factory.prepareProductionBackend`).
+GLM request memory is per reserved token (prompt + max output) plus fixed
+request charges. Target KV is 33,836 bytes per token: each of the 11 DSA layers
+stores one FP32 row of the 512-wide latent (no rotary part) plus 128 index-key,
+128 pool-gate and one validity column; a full 262,144-token request stores
+8,869,904,384 bytes. The 34 KDA layers carry fixed recurrent state
+(155,975,680 bytes per generation, three live generations). The embedded MTP
+layer stores 3,074 bytes of history per token; its serving plan charges
+33,900 bytes per reserved token across its resident, working and host copies
+plus a fixed part (`GLM5NextMTPExecution.memoryPlan`,
+`EngineV2.resolvedAuxiliaryBytesPerToken`). Native step scratch splits into a
+setup envelope and a price per context token (`PagedKVBackend.glm5NextStepScratch`).
+The bridge prices and reports `kv_bytes_per_token` = target KV + step scratch
++ MTP per token (`EngineV2SlotFactory`, `EngineV2MTPAdmissionCharges`) beside the
+engine's fixed request bytes; that rate drives `active_token_budget_max`, the
+oversized-request refusal and the publication check. It is not a second
+reservation, so step scratch is never charged twice: a paged GLM bridge makes no
+shared-budget claim of its own (`EngineV2Bridge.submitTokenized` reserves only
+for contiguous slots). One ledger, the engine's `AdmissionV2` bound to the GLM
+process-memory owner, charges each request's target KV, MTP state and fixed
+bytes at admission, and charges each step's scratch as a transient reservation
+when the step is built (`PagedKVBackend` step work, `AdmissionV2.reserveTransient`).
+Admission does not yet pre-reserve the per-token scratch, so a full ledger
+refuses the step rather than the request; that native change is deferred. Coordinator publication requires the slot pool to
+hold one full-bound request (`GLM5NextCoordinatorServing.fullContextRefusal`).
+The bridge refuses a request whose reservation exceeds the whole pool
+(`request_exceeds_slot_capacity`) or would not fit beside held requests
+(`slot_capacity_committed`) instead of queueing it: `EngineV2Bridge.submitTokenized`
+throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
+(`EngineV2Bridge.glm5NextSlotRefusal`) before any stream exists. Local HTTP
+answers 503 with the fixed capacity message before response headers
+(`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
+503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
+The engine's activation check prices step scratch for every row at the full
+context against the same capacity, so the protected scheduler's running-row
+cap is the largest value that check admits
+(`EngineV2Factory.glm5NextActivatableRows`, `glm5NextActivationAdmits`). With
+2048-token steps at 262,144 context the calibrated price is 55,057 bytes per
+context token plus 5.59, 7.40 and 11.02 GB of setup for one, two and four rows,
+so a 56.8 GB grant runs two or three rows; four need about 72.4 GB, because pool
+tokens and the admissible ceiling derive from the same capacity. Publication
+also charges one step's setup and the admission watermark
+(`GLM5NextCoordinatorServing.fullContextRefusal`).
+
+Request concurrency follows `engine_v2_max_concurrent` (default 4, at most 8
+without a reviewed profile); GLM adds no width-1 pin, and native step pricing
+and per-request admission bound what runs together. The protected profile is
+rectangular MTP verification: each round drafts up to three proposals with the
+trained MTP layer (proposals after the first reuse step 0's sparse selection) and
+verifies them in one captured target forward over the window, whose KDA layers
+stage every position's recurrent state so any accepted prefix commits without a
+repair forward. An adaptive controller picks the depth (0 to 3) from measured
+cost and acceptance; sampled requests speculate through exact target-prefix
+acceptance. The window runs the batched multi-token kernels, so greedy output is
+not token-identical to target-only decode (near-ties can flip). The speculative
+batch is 1, and the profile composes with the complete-prefix store
+(`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
+`DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
+serial-target single-proposal profile
+(`GLM5NextProtectedModel.resolvedMTPConfiguration`). Prefill interleave keeps the global
+one-partial-prefill default. The bridge advertises the enforced
+context, so an over-length request is refused with 400 before native admission,
+and an omitted `max_tokens` defaults to the smaller of the model's default output budget (4,096 for this artifact) and half the bound (`GLM5NextCoordinatorServing.boundedSizing`). Omitted sampling fields
+use the artifact's `generation_config.json` (`EngineV2SamplingDefaults`).
+
+GLM images use ordinary causal token positions: the text tower has no
+positional encoding, so a submission carries causal spans and no position
+state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
+The original request is normalized by the GLM prompt policy exactly as text is,
+with symbolic image and video parts, and the processor expands each `<|image|>`
+to its feature count (16 to 8000 per image). A video's single constant-frame-rate
+MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+sample is converted to RGB8 and kept, within the processor's decoded-frame cap
+(`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
+pair of sampled frames becomes one image-token span between
+`<|begin_of_image|>` and `<|end_of_image|>`, followed by its timestamp text
+(`GLM5NextProcessor.expandPrompt`). Every placement is validated before tower
+work; the tower then runs one image or frame pair at a time with MLX fused attention on the
+GPU (`GLM5NextVisionAttentionKernel.automatic`; query-tiled elsewhere), so no
+frame-square score tensor is allocated, and every evaluation checks the scoped
+MLX fault box. The reservation below still prices the tiled working set. The scheduler's `VisionMemoryGate` reservation adds the
+processor's prepared-pixel cap, the tower working set of a full 32,000-patch
+frame, every image at its token cap, every video at its token ceiling and,
+because videos decode one at a time, one decoded-frame cap when any video is
+present (`GLM5NextVisionBudget.mediaReservation`,
+`GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
+processor's prepared-pixel cap of 28,532 visual tokens.
+Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
+retriable refusal. Media requests are excluded from prefix lookup and capture
+(`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
+they decode without MTP speculation. A GLM slot serves media only when its
+engine accepts prepared causal media (`EngineV2Bridge.servesGLM5NextMedia`); the
+embedded-MTP native engine issues that permission, so media rows prefill and
+decode target-only next to speculating text rows.
+
+An unproven retirement, including one during a post-build unwind, retains the
+bridge, newcomer, artifact ownership, pending-load lease, loading marker and
+device activity. It never refunds the lease, clears the cache or regrows
+survivors for that load. Retained GLM faults quarantine GLM work and grant
+growth, but do not quarantine MiMo or other families. Their unpublished weight
+and KV bytes are charged into every fleet KV budget, so other families' new and
+regrown grants cannot reuse that memory. Allocator-cache trimming only frees
+unowned cached allocations and is not native-retirement proof. Local `/metrics`
+reports the retained-fault state, retained owner-object count and charged bytes
+(`GLM5NextLoadFaultState`). `GLM5NextNativeOperationOwner.beginClosing`
+refuses a second close attempt, so a retained close is never re-driven.
+
+Before weight allocation, `GLM5NextTokenizerPreflight.validate` renders through
+the selected local tokenizer using the provider's actual GLM defaults,
+reasoning controls and tool/history normalization. The generic template check
+also remains mandatory; neither check repairs or substitutes a template.
+These boundaries are implemented in
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/` and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+NativeLifecycle.swift`.
+
+Raw same-directory GLM discovery uses a
+[complete header-derived LOAD quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation),
+including full expert-bank, vision, MTP and tokenizer accounting plus a
+measured residual above raw source bytes instead of disk × 1.2. This does not
+enable the native serving path. The local selection refuses a separate
+tokenizer, which this raw quote does not cover, and the provider has no
+tokenizer-composition load path; the resolved source
+must pass the scanner recheck and the managed native loader's independent
+validation before allocation.
+
+The low-level `glm5` tool parser uses the official XML framing with
+schema-disambiguated string/JSON arguments. `GLM5ToolStream` withholds the tool
+suffix until EOS so quoted XML delimiters and a later malformed call cannot
+commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
+returns the original text through the existing parser-failure path. Ambiguous
+string unions and unsupported indirect schemas are not inferred. This parser
+does not implement constrained decoding or advertise function calling.
+The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
+also preserves original schema values only after a trusted loaded-model check.
+`GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
+template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
+unpatched. It is the official template with numeric attribute access written as
+`[0]` subscripts; the official hash remains the golden rendering authority and
+fails the load-time render check. See the [build boundary](../developer/build.md).
 
 ## Mechanism
 
@@ -1231,7 +1471,15 @@ Other model identities keep the legacy defaults in the table byte-for-byte. `do_
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
-### Streaming reasoning state
+### Collected and streaming reasoning state
+
+The local HTTP responder selects an omitted reasoning parser from the model
+type supplied by its application, using `ProviderLoop.inferReasoningParser`.
+An explicit parser, including `none`, is preserved, and selecting a Responses
+parser preserves the request's reasoning effort. The raw request wrappers keep
+template controls while allowing parser selection before service creation
+(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`resolveReasoningParser`, `respond`; `LocalChatRequest`, `LocalResponseRequest`).
 
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
@@ -1249,7 +1497,7 @@ families retain their previous literal-close behavior
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
 decodes only the final eight prompt tokens to initialize Qwen/DeepSeek
-streaming parsing. A prompt ending in `<think>` receives an opening marker;
+collected and streaming parsing. A prompt ending in `<think>` receives an opening marker;
 a prompt ending in `</think>` receives an empty closed block. The downstream
 think parser consumes these prefixes as state transitions, so reasoning or
 ordinary answer text streams immediately. The prefix bypasses tool parsing
@@ -1260,8 +1508,27 @@ probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker. Explicit `.none`, other
-parser families, non-streaming requests, and unrecognized prompt tails receive
-no prefix. Unknown tails preserve legacy close-only reasoning parsing.
+parser families and unrecognized prompt tails receive no prefix from the
+probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
+for a streamed think-format request with an unknown tail, `contentSeed` starts
+the parser in content mode. A generated `<think>` can still open reasoning.
+Other callers keep the default fallback disabled. Native parsed channels
+bypass this synthetic prefix (`MultiModelBatchSchedulerEngine.makeEventStream`).
+
+For a token-limit stop inside an open think block, the collected SDK parser
+keeps the unfinished text in `reasoning_content`, retaining any answer text
+that preceded the block. Chat and Responses collection, retrieval and continued
+history preserve that separation; usage and the length-stop status still
+describe generated tokens (`libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ReasoningParser.swift`,
+`parseThinkTags`; `MLXOpenAIService.collectChatOutput`, `responseObject`).
+This requires the SDK parser's unclosed-block handling as well as the provider
+prompt seed. The [local API tests](../developer/test.md#local-responses-and-reasoning-regressions)
+check their composition.
+
+Responses continuation reconstructs input history before tokenization; it does
+not restore native KV state or grant model capacity. Its application-local
+history LRU and the SDK response-object store have different retention rules;
+see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
 ### Tool-call parsers
 
@@ -1544,6 +1811,32 @@ native frontend then resamples and mixes. The decoder honors one container trim,
 including AAC priming, and validates contiguous output timing and the complete
 presented sample count. Multiple tracks, gaps and retiming remain refused.
 
+Native MiMo preserves original function-tool schemas across model-blind provider
+and local Chat ingress. `MiMoV26ToolEvidence` captures typed declarations beside
+`ChatTemplateControls`; after the loaded model resolves to exact `mimo_v2`,
+`restoring` replaces normalized tools before tool-choice preparation in serving,
+provider-body tokenization, prompt recount and benchmark rendering. Typeless
+enums and Boolean property schemas consequently reach the native template with
+their original values. Other model families keep their existing normalization.
+
+Capture shares `InboundChatNormalization.isRepresentableTool` with ingress
+repair: entries with a function object or string name are retained for SDK
+decoding, while unrepresentable hosted entries follow the existing fallback.
+Malformed retained declarations fail. Client-supplied reserved schema metadata
+is rejected before tool-choice handling, including `none`; restoring original
+schemas grants no tool, media or memory-admission bypass. The bounded raw-control
+refusal capsule remains separate from the typed tool declarations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift`
+(`MiMoV26ToolEvidence.restoring`),
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+(`tokenizeProviderBody`),
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`
+(`promptTokenFloor`) and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
+(`benchmarkPrompt`). See the [schema regression procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the public fixture boundary.
+
 MiMo accepts the Boolean `chat_template_kwargs.thinking` alias used by OpenRouter.
 `reasoning.enabled` takes precedence, followed by top-level `enable_thinking`,
 kwargs `enable_thinking`, then kwargs `thinking`. Every supplied value is type
@@ -1756,6 +2049,133 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
+### Native Flint
+
+`model_type: flint` resolves to `FlintModel` and the production CBv2 adapter.
+The model derives its full/sliding layer map from the checkpoint: per-head QK
+normalization, learned attention sinks, RoPE only on sliding layers, dense early
+MLPs and sigmoid-routed experts with a shared expert. Router correction bias
+changes selection only; selected sigmoid probabilities are normalized. The
+output head and routed weighted reduction use FP32 arithmetic inputs/reduction.
+
+`FlintModel.cbv2Prefill` implements `CBv2LanguageModelPrefillForwardable`: every
+prompt token traverses the full trunk and writes KV. Evaluation-only chunks omit
+the vocabulary projection; a chunk requiring logits projects only its last
+position, with FP32 head inputs. Ordinary forward retains full logits and packed
+prefill remains disabled. This removes unused head work; its throughput effect
+requires a matched benchmark. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`.
+
+The strict model-owned loader accepts the documented BF16 layout or Recursive's
+mixed affine export (group-64 INT4 projections/experts, INT8 embeddings, BF16
+sensitive tensors), with native BF16 KV for the official export. It rejects
+missing/extra/duplicate tensors, conflicting aliases and unsupported geometry
+rather than silently filling a checkpoint.
+This format is not NVFP4. Native KV and native checkpoint precision are required;
+select both explicitly when the provider's general checkpoint setting is
+`balanced`. `EngineV2KVQuantizationPolicy.resolve` rejects non-native selections;
+the production factory also checks an explicitly supplied checkpoint selection.
+Reduced KV and MTP are not supported by this integration.
+
+Select `engine_v2_kv_backend = "paged"` for paged serving and pass
+`--kv-backend paged` to its qualification benchmarks. Explicit selection refuses
+paged construction failures; automatic selection follows the general artifact
+allowlist and does not establish that a Flint slot used paged attention. Record
+the resolved backend in every performance receipt. Contiguous measurements are
+separate reference results, not evidence of paged throughput.
+
+Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
+reasoning effort/enabled controls, media and combined JSON response-format/tool
+requests. Output limits remain ordinary completion-token limits.
+`ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
+exact `model_type: flint` request, including requests without tools. It verifies
+the rendered assistant boundary and pinned tokenizer markers. Custom stop
+strings are rejected because independent stop-string matching could terminate
+an unfinished reasoning span or call. Other model families retain their policies.
+
+| Prepared tool choice | Native output boundary |
+|---|---|
+| `none` | Optional initial reasoning, then ordinary content; no top-level call |
+| `auto` | Optional initial reasoning, then content or declared calls; content may precede calls |
+| `required` | Optional initial reasoning, then at least one declared call; visible prose is prohibited |
+| Named function | Required-call behavior restricted to the selected function |
+
+Because this constraint enforces required/named framing,
+`ToolChoicePromptPolicy.prepare` keeps the caller's messages and the trained
+template for exact `flint` rather than adding the generic tool-only instruction
+to system and user text. Named choice still renders only the selected
+declaration, and name, schema and cardinality validation are unchanged. The
+verified artifact type selects this path, never the catalog ID or a request
+field. With the generic instruction, a greedy paged named-tool request wrote
+its call inside an unclosed reasoning span; reasoning masks the observation
+stop, so the call repeated until the 512-token budget and the request failed.
+With native framing the same request closed reasoning and emitted one valid
+call. The model can still quote calls inside reasoning; that text stays
+reasoning and stops stay masked there, as in rec. The prompt-token change is
+request-normalization v9, mirrored by the platform prompt sidecar.
+
+`parallel_tool_calls=false` prevents a second call. The byte-level boundary
+machine recognizes markers split across tokens and checks the entire candidate
+piece, including text after a close. Effective EOS token IDs are masked while
+reasoning or a call is open. Answer termination permits end-of-text/user EOS;
+observation EOS is permitted only after a completed call. Developer EOS is never
+a successful assistant terminator. Reasoning also excludes textual stop-marker
+spellings, including spellings assembled from ordinary tokens. A tool-looking
+quotation inside reasoning remains reasoning; the first `</think>` closes that
+channel, without enabling nested-reasoning semantics.
+
+The constraint receives the exact prepared tool specifications. Declared string
+arguments retain raw whitespace even when they begin with `{` or `[`. Structured
+JSON values protect quoted delimiters and escapes; payload text cannot switch
+channels or create nested calls. Dedicated EOS tokens remain unavailable inside
+payloads because the engine terminates on their IDs. Their literal spellings can
+still be represented by ordinary token pieces inside opaque values.
+
+This is an envelope constraint, not a full JSON-Schema sampler. The `.flint`
+complete-frame parser and `ToolConstraintValidation.validate` still reject
+malformed JSON, duplicate arguments, schema violations and invalid call sets
+before tool calls are exposed. Auto mode does not require the finite schema
+compiler to accept every schema. Native `<think>` output is separated from
+content, and `FlintTemplateNormalization` preserves null object values and array
+positions during template replay. A valid envelope does not prove a useful
+answer: output-budget exhaustion does not synthesize a close, and the constraint
+does not force nonempty visible content.
+
+The protocol design credits Recursive's Apache-2.0
+[pinned rec grammar](https://github.com/recursive-oss/rec/blob/e53663b262af4cb1ca498e596ca8b1a2d79e0800/engine/src/rec_mlx/grammar_builder.py).
+The independent Swift implementation adds required/named and single-call policy,
+covers the artifact's developer EOS in addition to rec's three stop markers,
+and retains full JSON/schema post-validation. It does not import rec's scheduler
+or XGrammar runtime. Constraint memory and decode scheduling costs are described
+under [Flint memory admission](hardware-support.md#flint-memory-admission).
+
+The published tool protocol has no escape for a literal `</arg_value>` in a
+top-level raw string value. `FlintRequestPolicy` rejects such historical
+arguments; syntactically indistinguishable generated frames cannot be recovered
+unambiguously. Arbitrary delimiter-bearing strings are not a supported
+round-trip contract. Malformed or incomplete frames fail closed.
+
+The loaded Flint configuration supplies the context bound to both backend
+sizing and bridge admission. Prompt tokens plus the reserved output budget
+must fit that bound; excess requests return HTTP 400 before success or SSE
+headers. The limit is not replaced with the largest locally tested prompt.
+Native memory admission still bounds executable work on the current host. [Physical validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+is separate from architecture registration and public catalog activation.
+
+Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintRequestPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintTemplateNormalization.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ToolChoicePromptPolicy.swift` (`prepare`),
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift` (`make`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift` (`FlintNativeProtocolConstraint`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift` (`FlintNativeProtocolBoundary`),
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
+`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,
+and [SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) (Prince Canuma/mlx-vlm, MIT;
+Recursive rec, Apache-2.0, immutable revisions and full license texts).
+
 ## Related
 
 - [`prefix-cache.md`](prefix-cache.md) — KV layouts, resident prefix reuse, SSD tier
@@ -1792,3 +2212,11 @@ Both exact identifiers use `Bonsai9BModelPolicy`. The copy preserves publisher
 weights and runtime metadata, including the sidecar layer-count declaration.
 Artifact copying does not grant catalog or hosted-serving qualification.
 No family-name or substring alias is accepted.
+
+GLM tool output uses the SDK GLM parser to validate the complete tool suffix at
+end of stream. Malformed suffixes fail before residual text or any parsed call is
+published, including when a valid call precedes the malformed suffix. Auto mode
+returns a generation error. Forced-mode output validation maps failure to tool
+noncompliance (422), but public GLM required/named admission remains unsupported;
+this defense does not advertise constrained decoding. Void bridge shutdown logs
+a fixed retirement-failure diagnostic without including the caught error payload.

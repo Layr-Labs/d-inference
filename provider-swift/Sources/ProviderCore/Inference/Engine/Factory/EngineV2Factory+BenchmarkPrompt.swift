@@ -17,12 +17,13 @@ extension EngineV2Factory {
         body: Data, tokenizer: any MLXLMCommon.Tokenizer, modelType: String?,
         defaultDate: PromptRenderDate
     ) throws -> BenchmarkPrompt {
-        let request = try ProviderLoop.decodeOpenAIRequest(body)
-        guard !MediaIngest.hasMedia(request) else {
+        let decodedRequest = try ProviderLoop.decodeOpenAIRequest(body)
+        guard !MediaIngest.hasMedia(decodedRequest) else {
             throw BenchmarkPromptError.mediaRequiresHTTP
         }
         let supplied = ProviderLoop.extractChatTemplateControls(from: body)
         let controls = supplied.promptDate == nil ? supplied.withPromptDate(defaultDate) : supplied
+        let request = try controls.rawMiMoTools.restoring(decodedRequest, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         let overrides = ProviderLoop.extractSamplingOverrides(from: body)
         let logprobs = ProviderLoop.extractLogprobsSpec(from: body)

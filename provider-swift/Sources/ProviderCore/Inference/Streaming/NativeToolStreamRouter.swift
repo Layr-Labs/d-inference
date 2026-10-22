@@ -15,7 +15,10 @@ struct NativeToolStreamRouter {
     private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
 
+    // Pass the same prepared schemas used by the handler: Flint's raw-string
+    // boundaries must agree before and after reasoning-channel separation.
     init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
+         tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
@@ -31,6 +34,8 @@ struct NativeToolStreamRouter {
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
+                flintFrames: handler?.format == .flint,
+                tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose)
         }
@@ -51,7 +56,16 @@ struct NativeToolStreamRouter {
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
-        return try route(pieces)
+        let events = try route(pieces)
+        if handler?.format == .flint {
+            // EOF can expose an incomplete frame only when the handler flushes.
+            // Validate it here, before the caller's generic auto-mode residual
+            // fallback can publish tool syntax as ordinary content. finish() is
+            // idempotent for completed frames and does not drain validated calls.
+            _ = handler?.finish()
+            try checkNativeToolFailure()
+        }
+        return events
     }
 
     private func checkReasoningState() throws {
@@ -76,9 +90,13 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
-    private func checkNativeToolFailure() throws {
-        guard nativeMiMoChannels, (handler?.parseFailureCount ?? 0) > 0 else { return }
-        let message = "native MiMo tool output is invalid"
+    /// Also called after the SDK EOS flush, before residual text or any call
+    /// is published. GLM validates the entire retained suffix only at EOS.
+    func checkNativeToolFailure() throws {
+        guard nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint,
+            (handler?.parseFailureCount ?? 0) > 0 else { return }
+        let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
+        let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }

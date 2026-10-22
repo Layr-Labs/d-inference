@@ -160,10 +160,11 @@ struct Start: AsyncParsableCommand {
         }
         // Diagnose once from the already-bound immutable snapshot and carry
         // this exact set through every serving mode and registration path.
-        let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectPrepared(
-            hardware: hardware,
-            boundMetallibHash: boundMetallibHash
-        )
+        let runtimeCapabilities = GLM5NextLocalServing.gatingCapabilities(
+            ProviderRuntimeCapabilityDetector.detectPrepared(
+                hardware: hardware,
+                boundMetallibHash: boundMetallibHash),
+            mode: effectiveConfig.backend.mtpMode)
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
         // loop left standalone operators with no notice at all.

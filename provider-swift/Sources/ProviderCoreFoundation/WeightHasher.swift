@@ -241,7 +241,7 @@ public struct WeightHasher: Sendable {
     #if canImport(Darwin)
     /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
     /// failure so the caller's existing readers run.
-    private static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }

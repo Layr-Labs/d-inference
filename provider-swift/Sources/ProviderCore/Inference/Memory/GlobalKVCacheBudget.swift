@@ -65,8 +65,8 @@ public actor GlobalKVCacheBudget {
     /// The reclaimer's fenced flush of MLX's buffer cache.
     private nonisolated let flushCache: @Sendable () -> Void
     /// Engine-owned charge refusals (paged growth) signal the same
-    /// shortfall-gated reclaim as request reservations, because busy engines
-    /// no longer get a proactive sweep.
+    /// shortfall-gated reclaim as request reservations, because the proactive
+    /// sweep no longer flushes for busy engines while headroom is healthy.
     nonisolated let signalsEngineRefusals: Bool
 
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0` restores the threshold-only sweep,
@@ -419,8 +419,9 @@ public actor GlobalKVCacheBudget {
 
     /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
     /// reclaimable MLX pool so admission headroom stays healthy under sustained
-    /// load without any inline flush, and freed KV/activation buffers are
-    /// returned to the OS instead of accumulating below the cache limit.
+    /// load without any inline flush. Its `KVPoolReclaimer.SweepWindow` returns
+    /// freed KV/activation buffers to the OS once the Mac idles; while engines
+    /// serve, the pool stays up to the cache limit unless it crowds out headroom.
     /// Non-blocking and `nonisolated` (it touches no actor state — only the
     /// immutable reclaimer). Driven periodically by ProviderLoop's
     /// capacity-refresh tick and StandaloneServer's sweep task.

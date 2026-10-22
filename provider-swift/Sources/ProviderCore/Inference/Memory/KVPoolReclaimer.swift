@@ -217,7 +217,7 @@ actor KVPoolReclaimer {
         telemetry.snapshot()
     }
 
-    private func flushIfDue(_ clearCache: @Sendable () -> Void) -> Bool {
+    private func flushIfDue(_ flush: @Sendable () -> Void) -> Bool {
         guard isReclaimAllowed() else { return false }
         let now = ContinuousClock.now
         if let last = lastReclaimAt, now - last < minInterval { return false }
@@ -229,7 +229,7 @@ actor KVPoolReclaimer {
         guard isReclaimAllowed() else { return false }
         lastReclaimAt = now
         let startedAt = ContinuousClock.now
-        clearCache()
+        flush()
         let elapsed = ContinuousClock.now - startedAt
         let cacheAfter = reclaimableBytes()
         let reclaimed = cacheBefore > cacheAfter ? cacheBefore - cacheAfter : 0

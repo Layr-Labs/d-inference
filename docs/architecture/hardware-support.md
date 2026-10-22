@@ -99,6 +99,14 @@ Weights, KV cache and activations share unified memory, so the provider owns one
 byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`).
 
+Local HTTP Responses also retain host-side JSON. The continuation-history LRU
+limits its saved histories, while the SDK response-object store has an
+independent lifetime and no matching eviction. In-flight request copies are
+outside that history cap. Treat these as application memory when assessing
+process usage; the history limit is not a native KV grant or a total process
+bound. [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention)
+owns the limits and their source mappings.
+
 ## Mechanism
 
 ### Constants
@@ -165,6 +173,46 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 ([`prefix-cache.md`](prefix-cache.md)).
 
 ### Load gate (`ModelLoadAdmission`)
+
+GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
+layer charges `(headDim + valueHeadDim) * kvHeads * 4` bytes per token, not the
+generic symmetric FP16 estimate. KDA remains a separate fixed request charge
+including the engine's three-generation reservation; it is neither a weight nor
+a marginal KV token charge
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
+`GLM5NextLoadFunnel.kvBytesPerToken`).
+
+GLM-5.3-Flash loads only on Apple M5 Max or M5 Ultra with at least 256 GiB
+(`GLM5NextHardwareRequirement`, runtime capability `glm5_next_v1`). Its
+[native integration](../design/glm53-flash-native.md) prices the raw source
+bytes plus native construction/tokenizer transients
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
+`GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
+unchanged. The activated expert count is not a resident-weight estimate.
+Standing GLM wired residency is optional only when disabled or unsupported
+before ticket creation (macOS 15 or later with Metal 3 support). A backend
+start/end fault is unproven application or restoration, not unsupported
+hardware: the provider retains the actual owner and policy entry and refuses
+GLM publication or clean retirement until restart. Pending operations are joined
+before settlement; no timeout or cancellation is restoration proof
+(`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+
+`GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
+`GLM5NextArtifactLoadRoots` retires individual expert sources only after the
+packed bank's checked evaluation, then retains completed modules instead of a
+parallel weight dictionary. A failed cleanup fence retains these roots, the
+pending permit, writer ownership and activity; it is not permission to clear
+the allocator cache or regrow survivor grants. The owner and native reader live
+in `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextConstructionOwner.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextArtifactLoader.swift`.
+
+The raw same-directory [discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+now carries that complete allowance into scanner-based memory consumers.
+`ModelScanner.glm5NextLoadEstimate` refuses malformed profiles instead of
+falling back to the generic disk × 1.2, and prices only the tokenizer shipped in
+the snapshot. It remains a metadata
+bound, not native validation, a hardware qualification or permission to bypass
+the actual managed-load reservation and post-load guards.
 
 ```text
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
@@ -265,6 +313,16 @@ standalone server runs the same sequence in
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
   refuses work.
+
+### MiMo prompt recount
+
+For exact `mimo_v2`, `ProviderLoop.promptTokenFloor` restores captured original
+tool schemas before the shared native tokenization path. The floor therefore
+counts the schema rendered by serving rather than the model-blind normalized
+schema (`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
+This changes prompt-count correctness, not the load allowance, activation
+reserve, KV byte rate or ownership gates below. See the
+[native MiMo prompt contract](inference.md#native-mimo-v26-candidate).
 
 ### KV slot grants
 
@@ -371,6 +429,14 @@ constructing EngineV2. Its bridge skips duplicate per-request reservations;
 contiguous slots retain their existing provider reservation path. Recurrent and
 MTP auxiliary state stays charged without materialization credit. Current load
 and provider headroom readers use the same shared ledger.
+An admitted MTP context is bound to one request generation. Both ordinary
+release and native reservation detachment retire that context immediately;
+reusing the request ID cannot revive it. Target retirement and outstanding
+assistant allocation leases then release their separate portions of the
+original prepaid charge, in either order
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`,
+`detachReservation`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/AdmittedMTPBinding.swift`).
 Native segmented allocation reserves an allocator-owned upper bound for each
 new backing before construction, including rounding and permitted cached-buffer
 reuse. After evaluating and draining the captured allocation stream, the fresh

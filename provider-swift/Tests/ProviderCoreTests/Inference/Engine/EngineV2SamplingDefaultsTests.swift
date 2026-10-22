@@ -82,6 +82,25 @@ struct EngineV2SamplingDefaultsTests {
         #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: "flint", modelType: "unknown"))
     }
 
+    /// The exact locally qualified GLM artifact declares temperature 1.0 and
+    /// top_p 0.95 without `do_sample`; other GLM IDs or types stay legacy.
+    @Test func gateAdmitsOnlyTheQualifiedGLMArtifact() throws {
+        let id = GLM5NextLocalQualification.modelID
+        #expect(EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: "glm5_next"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id + "-other", modelType: "glm5_next"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: "glm5_next_text"))
+        #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: nil))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"eos_token_id":[154820,154827,154829],"pad_token_id":154820,"temperature":1.0,"top_p":0.95}"#.utf8)
+            .write(to: directory.appendingPathComponent("generation_config.json"))
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: id, modelType: "glm5_next", modelDirectory: directory)
+        #expect(defaults.temperature == 1.0 && defaults.topP == 0.95)
+        #expect(defaults.topK == nil && defaults.repetitionPenalty == nil)
+    }
+
     // MARK: parse
 
     @Test func parseReadsTheNemotronArtifactDefaults() {

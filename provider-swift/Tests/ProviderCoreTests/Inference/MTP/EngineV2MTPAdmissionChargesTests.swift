@@ -30,6 +30,21 @@ final class EngineV2MTPAdmissionChargesTests: XCTestCase {
         }
     }
 
+    /// Per-reserved-token MTP growth is part of the engine's charge, so the
+    /// bridge reserves and reports it beside target KV, exactly once.
+    func testBoundedPerTokenGrowthJoinsTheReservedRate() throws {
+        let growing = CBv2MTPAdmissionResolution.bounded(.init(
+            limits: .init(maximumPrefillTokens: 2048, maximumDraftTokens: 1),
+            residentBytes: 100, workingBytes: 200, hostBytes: 20, fixedBytesPerRequest: 320,
+            auxiliaryBytesPerToken: 33_900))
+        let actual = try EngineV2MTPAdmissionCharges.resolve(
+            resolution: growing, legacyMTPBytesPerToken: 0, kvBytesPerToken: 33_836,
+            auxiliaryBytesPerToken: 0, auxiliaryTokenGranularity: 1,
+            auxiliaryTokenAllocationPadding: 0, fixedRequestBytes: 420)
+        XCTAssertEqual(actual, .init(kvBytesPerToken: 67_736, auxiliaryBytesPerToken: 33_900,
+            auxiliaryTokenGranularity: 1, auxiliaryTokenAllocationPadding: 0, fixedRequestBytes: 420))
+    }
+
     func testIndependentCallerAuxiliaryStateRetainsItsRounding() throws {
         let actual = try EngineV2MTPAdmissionCharges.resolve(
             resolution: bounded, legacyMTPBytesPerToken: 20, kvBytesPerToken: 127,

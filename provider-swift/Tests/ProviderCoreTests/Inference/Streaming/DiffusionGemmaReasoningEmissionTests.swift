@@ -98,10 +98,11 @@ struct DiffusionGemmaReasoningEmissionTests {
                             headers: [.contentType: "application/json", .authorization: "Bearer \(token)"], body: body)
                         let text = String(buffer: response.body)
                         #expect(native.submissionCount == 1)
-                        // Responses objects echo the caller's own `tools` and `tool_choice`
-                        // (OpenAI spec). Generated thought, calls and arguments stay forbidden.
+                        // Responses objects echo the request's `tools` and `tool_choice`,
+                        // so there the tool name alone is not a leaked call.
                         #expect(!text.contains("Paris") && !text.contains("<|channel>"))
-                        #expect(!(try withoutEchoedRequestTools(text)).contains("get_weather"))
+                        #expect(!text.contains("\"function_call\"") && !text.contains("\"arguments\""))
+                        #expect(responses || !text.contains("get_weather"))
                         #expect(!text.contains("reasoning_summary_text.delta") && !text.contains("reasoning_content"))
                         if streaming {
                             #expect(response.status == .ok)

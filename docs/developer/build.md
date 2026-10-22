@@ -45,6 +45,33 @@ resources, not provider product resources. MiMo provider fixture preparation
 uses bounded synthetic weights; the genuine audio codec is a separately
 hash-verified input. See [provider and SDK tests](test.md#provider-and-sdk).
 
+Building the GLM5Next target, media, MTP and loader candidates does not
+register the architecture with the model factories or provider. Follow the
+[prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
+successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
+
+The GLM official template uses numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
+the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact instead ships a
+separately identified template that writes those accesses as `[0]` subscripts.
+Its derivation and equivalence evidence are in
+`fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
+rewrite another artifact's template to hide the parser limitation.
+
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
+
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
+
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
 [checkpoint-storage gates](test.md#native-inference-checkpoint-storage-qualification);

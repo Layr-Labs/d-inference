@@ -27,9 +27,8 @@ No model weights or live provider state are needed.
 
 ## Provider And SDK
 
-```bash
-make provider-test
-```
+From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
+to prepare the inputs and run `make provider-test`.
 
 The Make target builds test products, stages source-matched metallibs and uses
 `scripts/run-provider-tests.sh`. The runner isolates daemon-state and loaded-model
@@ -42,23 +41,284 @@ native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
-MiMo preparation uses `scripts/prepare-mimo-prompt-fixtures.py` for metadata,
-`scripts/prepare-mimo-provider-fixtures.py` for bounded synthetic target/vision
-weights, and `scripts/prepare-mimo-audio-fixtures.py` for hash-pinned public inputs
-including the genuine audio codec. Keep output directories isolated. Routine
-fixtures use symmetric 128-context geometry; the separate complete-prefix
-process uses `--asymmetric` for K64/V128 and 1,024-context geometry. Audio gates
-exercise PCM8 and AAC-video with a small target, not full-model quality or peak
-memory. Release-only builds do not provision test fixtures or opt into native
-qualification.
+### Local Responses and reasoning regressions
+
+After building the exact provider/SDK test products, run these focused suites
+from `provider-swift/`. Keep the test state isolated as in
+`scripts/run-provider-tests.sh`; the helper/router fixtures use synthetic
+credentials and no live provider endpoint.
+
+```bash
+../scripts/run-nested-suite.sh 'LocalResponseConversationTests|ReasoningPromptProbeTests|LocalOpenAIObjectCompatibilityTests' --no-parallel
+```
+
+`LocalResponseConversationTests` executes the real helper and authenticated
+Hummingbird `.router` responder. Its acquisition counter must remain zero for
+non-null invalid ID types and unknown/empty strings, on both URL aliases and
+both response modes. Null and omitted IDs must reach acquisition. Retain the
+known-ID, tool-history, storage opt-out and bounded-LRU controls.
+`ReasoningPromptProbeTests` composes the actual prompt probe, service and
+continued history for a prompt-open length stop; it must retain reasoning and
+leave answer text empty. These sources are in
+`provider-swift/Tests/ProviderCoreTests/Server/LocalResponseConversationTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ReasoningPromptProbeTests.swift`.
+
+Use an SDK revision whose `ReasoningParser.parseThinkTags` handles unclosed
+blocks. Run `CollectedReasoningTests` through the same suite runner from
+`libs/mlx-swift-lm/` after rebuilding its test product. Provider-only prompt
+seeding cannot close this regression against the older parser.
+`LocalOpenAIObjectCompatibilityTests` additionally requires stable fallback
+model creation values in `MLXOpenAIService` and flat tool configuration in
+`OpenAIResponsesProtocol` and `ResponsesStreamWriter`. A provider test host
+does not provide those SDK changes; select the corresponding immutable SDK
+revision before treating these assertions as a gate.
+
+Record actual discovered/executed counts and failures separately. Syntax
+parsing and extracted CPU probes do not execute the package router or scheduler.
+Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
+isolation and retrieval-after-history-eviction checks in product qualification;
+the history LRU and object store have
+[different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### SSD test working volume
+
+Fixtures that call `SSDTestDirectory.parent()` use Foundation's resolved temporary
+directory unless `DARKBLOOM_SSD_TEST_TMPDIR` selects another test working volume.
+The shared SSD-prefix fixtures and bridge fixtures that require successful
+cache donations honor this selector. It does not configure the provider cache
+or change the process-wide `TMPDIR`.
+
+When the default volume lacks the free space required for real cache writes,
+create a task-owned directory on a suitable volume and pass its canonical,
+absolute path to the test runner. The parent directory must already exist and
+be writable. Empty, relative, missing, file and symlink paths are rejected;
+selection or directory-creation errors fail fixture setup instead of falling
+back silently.
+
+```bash
+mkdir -p "/Volumes/Test Scratch/darkbloom-tests"
+DARKBLOOM_SSD_TEST_TMPDIR="/Volumes/Test Scratch/darkbloom-tests" make provider-test
+```
+
+Leave the variable unset for the normal temporary directory. The production
+free-space checks, write limits, assertions and cleanup still apply. Raw-codec
+fixtures that do not call the selector keep their existing temporary paths.
+Rebuild changed test products before using `--skip-build`; see the
+[build guide](build.md#build).
+
+### GLM5Next prerequisite tests
+
+Provider ownership regressions are in `GLM5NextManagedKernelTests`. In a fresh,
+isolated test process, set `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1` and select
+that suite to exercise actual bridge MTP submission, checked partial-load
+cleanup, expert-source retirement, and the resolved-tokenizer preallocation
+probe. These use tiny local fixtures, not the full downloaded model. With the
+same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
+opt-in refuses target-only GLM before any load state exists. The pure
+`GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
+the KV rate derived from the pinned architecture evidence.
+
+The retained-fault tests deliberately poison their process and must run **one
+selector per fresh process**, never as flags on the full suite:
+
+| Selector | Required flag | Evidence |
+|---|---|---|
+| `failedCleanupFenceRetainsPartialNativeRootsAndPermit` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | Partial tensor roots and the real pending permit survive failed cleanup |
+| `glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor` | `DARKBLOOM_TEST_GLM5_RETAINED_RESLICE=1` | Inner load failure keeps the newcomer and charges it, so survivors cannot regrow into it |
+| `unprovenPostBuildUnwindKeepsLeaseOwnershipAndCharge` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | A refused post-build unwind keeps the pending lease, loading marker, ownership and activity; fleet budgets exclude the charge; other families still build |
+| `ordinaryFactoryRunsTextHTTPImageAndProtectedEmbeddedMTP` | `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1`, `DARKBLOOM_TEST_GLM5_RETAINED_SHUTDOWN=1` | A refused bridge retirement retains its actual native owner |
+
+The last flag is omitted for the ordinary successful bridge/retirement test.
+No test manufactures a positive native completion receipt. See
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextManagedLoadTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextLocalLoadPolicyTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2ProductionWiringTests.swift`.
+
+`GLM5NextResidencyIntegrationTests` exercises the actual factory, bridge and
+native owner with tiny model fixtures. Reserve the exclusive GPU lane, set
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1`, and run its selector in a fresh process
+for each `DARKBLOOM_TEST_GLM_RESIDENCY_INTEGRATION` value: `start-fault`,
+`complete-success` and `end-fault`. The fault cases intentionally retain native
+roots until exit. They verify that pending or failed residency settlement keeps
+the bridge's KV claim and activity guards; successful concurrent completion
+releases ownership once. Do not enable these flags on the full test suite.
+
+After building the SDK test product and staging its source-matched Metal
+library, run the initial configuration and mathematical-reference suites from
+`libs/mlx-swift-lm/` under the exclusive native test lease:
+
+```bash
+MLX_ENABLE_TF32=0 ../../scripts/run-nested-suite.sh 'GLM5NextConfigurationTests|GLM5NextHyperConnectionTests|GLM5NextLinearAttentionTests|GLM5NextSparseAttentionTests|GLM5NextMoETests|GLM5NextGPUParityTests|GLM5ToolCallParserTests|GLM5ToolStreamingTests|GLM5ServerToolParserTests' --no-parallel
+```
+
+These suites exercise fixed synthetic tensors, configuration validation,
+state continuation, tiny CPU/Metal comparisons and low-level tool parsing. They
+do not load the real checkpoint or qualify a provider, MTP, sparse paging, prefix persistence,
+multimodal behavior or throughput. Keep the
+[GLM integration gates](../design/glm53-flash-native.md) incomplete until their
+actual execution evidence exists.
+
+The continuation suites (`GLM5NextTextModelTests`, `GLM5NextMTPTests`,
+`GLM5NextArtifactLoaderTests`, `GLM5NextVisionTests`,
+`GLM5NextMultimodalTests`, `GLM5NextSparseStateTests` and
+`GLM5NextPagedSparseStateTests`) cover tiny assembled components and ownership.
+They are not full-checkpoint or provider acceptance tests. Keep their receipts
+separate from the earlier prerequisite suites; a previous passing binary does
+not validate newly added source. The provider's `GLM5NextPromptPolicyTests`
+renders the shipped `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` template with the
+unpatched pinned Swift-Jinja. It must match every official-template golden byte
+for byte, including list-shaped tool results that reach each rewritten `[0]`
+access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
+only the shipped template is recognized and passes the load-time render check.
+
+`fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
+`minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
+`GLM5NextPromptPolicyTests` checks those fixed bytes through the shipped
+renderer. No image is fetched or processed, so these vectors do not qualify
+native vision. The fixture metadata's `media: false` is an evidence limit, not
+a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
+suffix rejection, including a valid call followed by malformed output, before
+fallback text or partial calls can escape.
+
+The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
+(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
+filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
+and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
+two suites exercise real files without creating MLX arrays. The loader suite
+creates arrays and belongs in an authorized native test window. Sources live in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
+Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
+`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
+descriptor-policy test initializer. An older SDK pin cannot compile this host;
+resolve the dependency in the SDK rather than weakening the tests or importing
+cluster-stage APIs. These tests retain full-artifact verification, aligned
+windows, mutation/truncation refusal, cancellation and resource charges.
+
+The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
+`GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
+compare the raw same-directory LOAD formula and wire values without evaluating
+native arrays. Run them from `provider-swift/` only in an authorized build/test
+window:
+
+```bash
+GLM53_RAW_HEADER_FIXTURE_DIR=/path/to/retained-raw-header-bundle \
+  xcrun swift test --jobs 2 --force-resolved-versions --no-parallel \
+  --filter 'GLM5NextDiscoveryLoadFootprintTests|GLM5NextDiscoveryTests|rawDiscoveryQuotationMatchesManagedTinyFixture'
+```
+
+The optional bundle contains `config.json`, `model.safetensors.index.json`,
+`metadata.json`, `header-audit.json` and `headers/*.safetensors.json` at the
+recorded raw revision. Header hashes are checked; no tensor payload is read.
+Without the variable, that full-header test is explicitly disabled; the compact
+projection and tiny-fixture tests remain enabled. Neither proves managed
+serving integration or a hardware tier. See the [raw quotation contract](../reference/model-registry-format.md#raw-glm-discovery-quotation).
+
+`scripts/prepare-glm53-fixtures.py` prepares synthetic numerical oracles using
+the pinned official Transformers CPU implementation, never real BF16 weights.
+Its environment and generated manifest record source hashes, fixture transforms
+and precision. `scripts/test-prepare-glm53-fixtures.py` checks fixture tooling;
+passing it alone is not a native numerical comparison. MTP requires a separate
+oracle because that Transformers revision has no trained NextN implementation.
+
+For the official synthetic-oracle comparisons, supply the complete prepared
+canonical bundle, including its original and mapped weights, expected tensors,
+configuration and provenance receipts. After rebuilding the SDK test product:
+
+```bash
+GLM53_REFERENCE_FIXTURE_DIR=/path/to/canonical-oracle MLX_ENABLE_TF32=0 \
+  ../../scripts/run-nested-suite.sh 'GLM5NextOfficial(Reference|VisionReference)Tests' --no-parallel
+```
+
+An absent bundle skips this optional lane; an explicitly supplied invalid bundle
+fails. Keep image/video preprocessing, fixed-patch tower checks and root-model
+outputs separate when diagnosing differences. The programmatic
+`GLM5NextProcessorConfiguration.videoSamplingPolicy` defaults to `.official`;
+use `.disabled` only when the reference supplies already-selected frames.
+Both modes retain frame, token and byte limits. This is not a provider request
+option or a serving-capability declaration
+(`libs/mlx-swift-lm/Libraries/MLXVLM/Models/GLM5NextProcessor.swift`).
+
+Real-checkpoint image correctness is a separate, explicit lane
+(`libs/mlx-swift-lm/Tests/MLXLMTests/Kernel/LLM/GLM5NextRealVisionTests.swift`).
+It generates shapes, counting, rendered-text, bar-chart, two-image and
+8000-token images in process and checks the greedy answers through the direct
+multimodal forward and the paged CBv2 engine with the `.serving` policy, next to
+a concurrent text request:
+
+```bash
+GLM53_REAL_VISION=1 GLM53_REAL_MODEL_DIR=/path/to/artifact \
+GLM53_REAL_PROFILE_DIR=/path/with/identity.json \
+  ../../scripts/run-nested-suite.sh 'GLM5NextRealVisionTests' --no-parallel
+```
+
+`GLM53_VISION_REFERENCE_DIR` adds the official Transformers processor/tower
+comparison for the same artifact's vision weights; `GLM53_REAL_STORAGE=q4`
+selects the affine layout, `GLM53_REAL_VISION_TOKENS` the answer budget and
+`GLM53_REAL_VISION_LARGE=0` skips the 8000-token image.
+
+The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
+(`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof
+of an ordinary serving default or of full-model performance.
+
+### MiMo regression fixtures
+
+Before the full provider test gate, provision its ordinary MiMo regression
+inputs from the repository root in fresh directories:
+
+- `scripts/prepare-mimo-provider-fixtures.py` creates bounded synthetic weights
+  offline.
+- `scripts/prepare-mimo-prompt-fixtures.py` downloads four hash-pinned public
+  metadata files, not trained model weights or the genuine audio codec. These
+  inputs require no private model or credentials.
+
+```bash
+FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-test-fixtures.XXXXXX")"
+python3 -B scripts/prepare-mimo-provider-fixtures.py --output "$FIXTURE_ROOT/provider"
+python3 -B scripts/prepare-mimo-prompt-fixtures.py --output "$FIXTURE_ROOT/prompt"
+export MIMO_V26_SERIAL_LOAD_FIXTURES="$FIXTURE_ROOT/provider"
+export MIMO_V26_WIRED_METADATA_FIXTURE="$FIXTURE_ROOT/provider/tiny-bf16"
+export MIMO_PROMPT_ARTIFACT_DIRECTORY="$FIXTURE_ROOT/prompt"
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/fixtures/prompt-contract/mimo-v26-additional20.json"
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 DARKBLOOM_NO_UPDATE_CHECK=1 MLX_ENABLE_TF32=0 make provider-test
+```
+
+These inputs do not enable the separately opted-in native/audio qualification
+suites and do not establish full-model quality. An unset fixture path can fail
+ordinary regression tests before model construction; do not turn those failures
+into skips or substitute a live provider's cache.
 
 The MiMo FP32 preflight-refusal fixtures convert both ordinary and router
 weights, so they update `dtype` and `moe_router_dtype` together. This keeps the
 inventory valid until the strict BF16-only load-profile gate rejects it;
 an earlier inventory error does not exercise that gate. The four `testFP32`
-cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` require
-`MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to
-the symmetric synthetic fixture directory.
+cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` use
+`MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to the symmetric synthetic fixture
+directory and require `MIMO_V26_SERIAL_NATIVE_TESTS=1` through their fixture
+rewrite helper. The fixture-path check occurs before that opt-in check, so an
+unprovisioned general run can fail rather than skip. Run these separately in the
+native lane; they verify refusal before native ownership, not successful FP32
+serving.
+
+#### MiMo tool-schema parity
+
+After building the current provider test product, use the
+[tool-schema ingress regression recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the five schema regressions, adjacent prompt/decode suites and nine current
+consumer cases. Required focused selections reject zero tests and any skip.
+The optional historical two-case corpus runs separately and cannot supply a
+passing result when absent. These metadata-only, scripted-generation checks
+exercise real provider preparation but do not load a model or prove live
+platform parity.
+
+#### Separate native and audio qualification
+
+Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix
+process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
+`scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
+including the genuine audio codec. Keep these output directories isolated from
+the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
+small target, not full-model quality or peak memory. Release-only builds do not
+provision test fixtures or opt into native qualification.
 
 ## Startup Performance Recovery
 

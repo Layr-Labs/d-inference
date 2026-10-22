@@ -26,6 +26,28 @@ struct FlintReasoningVisibilityTests {
     /// One handle, so the native protocol vocabulary is built once.
     static let tokenizer = TokenizerHandle(FlintVisibilityTokenizer())
 
+    @Test func reasoningLogprobsFilterDropsOnlyTheInitialThought() {
+        func entries(_ tokens: [String]) -> [SSETokenLogprob] {
+            tokens.map { SSETokenLogprob(token: $0, logprob: -1, bytes: Array($0.utf8).map(Int.init), topLogprobs: []) }
+        }
+        // Markers assembled from ordinary tokens, split across drains.
+        var split = FlintReasoningLogprobsFilter()
+        #expect(split.visible(entries(["<th", "ink>", "plan"])).isEmpty)
+        #expect(split.visible(entries([" </thi", "nk>"])).isEmpty)
+        #expect(split.visible(entries(["Answer", "."])).map(\.token) == ["Answer", "."])
+        // Dedicated marker tokens.
+        var dedicated = FlintReasoningLogprobsFilter()
+        #expect(dedicated.visible(entries(["<think>", "a", "</think>", "B"])).map(\.token) == ["B"])
+        // A direct answer keeps every entry, including a held "<" prefix.
+        var direct = FlintReasoningLogprobsFilter()
+        #expect(direct.visible(entries(["<", "Hi"])).map(\.token) == ["<", "Hi"])
+        // An undecided prefix is never released early, and an unclosed thought never.
+        var pending = FlintReasoningLogprobsFilter()
+        #expect(pending.visible(entries(["<thi"])).isEmpty)
+        var unclosed = FlintReasoningLogprobsFilter()
+        #expect(unclosed.visible(entries(["<think>", "</thin", "k"])).isEmpty)
+    }
+
     @Test func localChatAndResponsesWithholdDeclinedReasoningButCountIt() async throws {
         for control in Self.declining + [nil] as [String?] {
             for responses in [false, true] {
@@ -133,6 +155,29 @@ extension FlintReasoningVisibilityTests {
         }
     }
 
+    /// Logprobs cover every sampled token. Visible reasoning keeps today's
+    /// attachment to the first content frame; withheld reasoning never
+    /// returns as entry tokens.
+    @Test func coordinatorRelayLogprobsOmitWithheldReasoning() async throws {
+        let ids = [150006, 5, 5, 150007, 5]
+        for control in Self.declining + [nil] as [String?] {
+            let label = control ?? "visible"
+            let fields = [control, #""logprobs":true,"top_logprobs":1"#].compactMap { $0 }.joined(separator: ",")
+            let run = try await relay(fields) { continuation in
+                for (chunk, id) in zip(Self.chunks, ids) {
+                    continuation.yield(.delta(text: chunk, tokens: [5],
+                        logprobs: [.init(token: id, logprob: -0.5, topLogprobs: [(token: id, logprob: -0.5)])]))
+                }
+                continuation.yield(.finished(reason: .stop,
+                    usage: .init(promptTokens: 1, completionTokens: 20)))
+                continuation.finish()
+            }
+            #expect(run.errors.isEmpty && run.content == "Answer.", "\(label)")
+            #expect(run.logprobTokens == (control == nil ? ["<think>", "x", "x", "</think>", "x"] : ["x"]),
+                "\(label): \(run.logprobTokens)")
+        }
+    }
+
     /// Withheld reasoning is generated output, so a long hidden reasoning
     /// phase cannot turn the first visible answer into a pre-content refusal.
     @Test func withheldReasoningEndsThePreContentDeadline() async throws {
@@ -161,6 +206,7 @@ extension FlintReasoningVisibilityTests {
         var content = ""
         var reasoning = ""
         var deltaKeys: Set<String> = []
+        var logprobTokens: [String] = []
         var usageFrame: (completion: Int?, reasoning: Int?)?
         var complete: (usage: UsageInfo, hash: String?)?
         var errors: [InferenceFailure] = []
@@ -227,6 +273,8 @@ extension FlintReasoningVisibilityTests {
                 for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {
                     guard let object = try JSONSerialization.jsonObject(
                         with: Data(line.dropFirst(6).utf8)) as? [String: Any] else { continue }
+                    let entries = ((object["choices"] as? [[String: Any]])?.first?["logprobs"] as? [String: Any])?["content"]
+                    run.logprobTokens += (entries as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
                     if let delta = (object["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any] {
                         run.deltaKeys.formUnion(delta.keys)
                         run.content += delta["content"] as? String ?? ""

@@ -673,6 +673,9 @@ extension ProviderLoop {
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
+        // Withheld Flint reasoning must not return as logprob entry tokens.
+        let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
+            chatRequest, controls: templateControls, modelType: modelType)
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -1109,6 +1112,7 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
+            var reasoningLogprobs = filtersReasoningLogprobs ? FlintReasoningLogprobsFilter() : nil
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
@@ -1242,7 +1246,8 @@ extension ProviderLoop {
                     // never alter `delta.content`, so the response hash and
                     // billing extraction are unaffected.
                     if let logprobsChannel {
-                        pendingLogprobs += logprobsChannel.drain()
+                        let drained = logprobsChannel.drain()
+                        pendingLogprobs += reasoningLogprobs?.visible(drained) ?? drained
                         // Re-cap after every drain: without a content-bearing
                         // frame this buffer would grow unbounded past the
                         // channel's own cap (see the declaration comment).

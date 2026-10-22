@@ -925,8 +925,13 @@ public-CI and signed-release evidence.
 the parameters OpenRouter lists for Flint over loopback HTTP: reasoning effort,
 enabled and exclude controls (chat, streaming and Responses), `stop`,
 `json_object` and strict `json_schema` (alone and with tools), named tools,
-`logprobs`/`top_logprobs` and `seed`. Source:
-`provider-swift/Tests/ProviderCoreTests/Server/FlintOpenRouterLiveTests.swift`.
+`logprobs`/`top_logprobs` and `seed`. Only the coordinator relay emits
+logprobs, so `FlintRelayLogprobsLiveTests` (same gate; optional
+`DARKBLOOM_FLINT_RELAY_RECEIPTS`) sends sealed requests to the production
+handler on a paged slot and checks the entries, with and without withheld
+reasoning. Sources:
+`provider-swift/Tests/ProviderCoreTests/Server/FlintOpenRouterLiveTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Server/FlintRelayLogprobsLiveTests.swift`.
 
 Keep adversarial history assertions on visible answer content and unintended
 calls. Do not replace a failed answer with a reasoning-only assertion. An

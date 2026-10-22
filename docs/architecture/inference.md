@@ -2081,7 +2081,11 @@ withholds the generated reasoning, so chat completions, the Responses API and
 the coordinator relay return only content and tool calls. The withheld tokens
 still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
 the response hash covers only emitted output, and withheld reasoning counts as
-first output for the first-content deadline. Output limits remain ordinary
+first output for the first-content deadline. Relay logprobs cover every sampled
+token and attach to the next content frame; for withheld reasoning,
+`FlintReasoningLogprobsFilter` drops the entries of the initial
+`<think>…</think>` span, matched on bytes like the native boundary, so hidden
+reasoning never returns as entry tokens. Output limits remain ordinary
 completion-token limits.
 
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
@@ -2191,6 +2195,7 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/FlintReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,

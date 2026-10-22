@@ -79,6 +79,16 @@ struct FlintOpenRouterLiveTests {
         func reasoning(_ message: [String: Any]) -> String {
             (message["reasoning_content"] as? String ?? "") + (message["reasoning"] as? String ?? "")
         }
+        /// Concatenated `delta.content` of an SSE body; ids and timestamps excluded.
+        func streamContent(_ data: Data) -> String {
+            String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
+                guard line.hasPrefix("data: "), line != "data: [DONE]",
+                      let object = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(6).utf8)) as? [String: Any],
+                      let delta = (object["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any]
+                else { return nil }
+                return delta["content"] as? String
+            }.joined()
+        }
         let reasoningPrompt = "A train leaves at 3:40 PM and arrives at 6:15 PM. How many minutes is the trip? Answer with the number."
 
         try await server.start()
@@ -150,7 +160,8 @@ struct FlintOpenRouterLiveTests {
             let (stopStreamCode, stopStreamData) = try await post(stopStream, name: "stop-content-stream")
             let stopStreamText = String(decoding: stopStreamData, as: UTF8.self)
             #expect(stopStreamCode == 200 && stopStreamText.contains("[DONE]"))
-            #expect(!stopStreamText.contains("\"content\":\"7") && !stopStreamText.contains("12"))
+            let streamed = streamContent(stopStreamData)
+            #expect(streamed.contains("6") && !streamed.contains("7") && !streamed.contains("12"), "\(streamed)")
 
             // JSON response_format is enforced on the answer after reasoning.
             var jsonObject = chat("Give the capital of France and its country as a JSON object with keys city and country.")
@@ -195,16 +206,14 @@ struct FlintOpenRouterLiveTests {
             #expect((namedMessage["tool_calls"] as? [[String: Any]] ?? []).count == 1)
             #expect(reasoning(namedMessage).isEmpty)
 
-            // logprobs / top_logprobs.
+            // logprobs / top_logprobs are accepted here; only the coordinator
+            // relay emits entries (EngineV2Logprobs.swift), which
+            // FlintRelayLogprobsLiveTests checks on real weights.
             var logprobs = chat("What is 2 + 2? Answer with the number.", maxTokens: 512)
             logprobs["logprobs"] = true
             logprobs["top_logprobs"] = 3
             let (logprobsCode, logprobsData) = try await post(logprobs, name: "logprobs")
-            try #require(logprobsCode == 200, "logprobs: \(String(decoding: logprobsData, as: UTF8.self))")
-            let entries = ((try choice(logprobsData)["logprobs"] as? [String: Any])?["content"] as? [[String: Any]]) ?? []
-            #expect(!entries.isEmpty)
-            #expect(entries.allSatisfy { ($0["logprob"] as? Double).map { $0 <= 0 } == true })
-            #expect(entries.contains { ($0["top_logprobs"] as? [[String: Any]])?.count == 3 })
+            #expect(logprobsCode == 200, "logprobs: \(String(decoding: logprobsData, as: UTF8.self))")
 
             // seed: same seed and sampling settings reproduce the output.
             var seeded = chat("Name one primary color.", maxTokens: 512)

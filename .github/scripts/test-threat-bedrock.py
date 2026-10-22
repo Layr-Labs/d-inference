@@ -13,6 +13,7 @@ from threat_review.budget_scan import SCHEMA
 from threat_review.budget_runner import status_body
 from threat_review.client import APIError, ReviewUnavailable, ScanTimeout
 from threat_review.context import SONNET, SOL
+from threat_review.review import model_call
 from threat_review.structured_output import bedrock_schema
 from threat_review.merge_policy import clean, manual_override
 from threat_review.membership import active_member, ORGANIZATION_ID
@@ -120,12 +121,18 @@ class BedrockTests(unittest.TestCase):
         for field in ("cacheReadInputTokens", "cacheWriteInputTokens"):
             for invalid in (None, True, -1, "2", 1.5):
                 with self.subTest(field=field, invalid=invalid):
+                    self.calls = BedrockCalls(None, 1, "123-1", "synthetic", "index", self.env,
+                                             client=self.client, fallback_factory=Backup)
+                    before = len(self.client.requests)
                     self.client.response["usage"] = {"inputTokens": 2, "outputTokens": 123, field: invalid}
-                    with self.assertRaises(ReviewUnavailable):
+                    self.assertEqual(self.invoke()["choices"][0]["message"]["content"], '{"findings":[]}')
+                    self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
+                    self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 0)
+                    self.assertEqual(self.calls.stop_diagnostic["code"], "BEDROCK_USAGE_MISSING")
+                    with self.assertRaises(BudgetStopped):
                         self.invoke()
-        self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 10)
-        self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 0)
-        self.assertEqual(self.calls.fallback.calls, [])
+                    self.assertEqual(len(self.client.requests), before + 1)
+                    self.assertEqual(self.calls.fallback.calls, [])
 
     def test_explicit_availability_rejection_uses_backup_once(self):
         self.client.error = SDKError("ThrottlingException")
@@ -176,7 +183,10 @@ class BedrockTests(unittest.TestCase):
             replies.append(message["stage"])
             schema = json.loads(request["system"][0]["text"].split(
                 "\nReturn only JSON matching this schema:\n", 1)[1])
-            self.assertEqual(schema, SCHEMA)
+            expected_schema = copy.deepcopy(SCHEMA)
+            if message["stage"] == "integration":
+                expected_schema["properties"]["covered_units"]["items"]["enum"] = [u["id"] for u in message["units"]]
+            self.assertEqual(schema, expected_schema)
             result = {"findings": [], "covered_units": [u["id"] for u in message["units"]],
                       "analysis": "The arithmetic result is unchanged.", "needs_deeper_review": False}
             if invalid is not None:
@@ -229,9 +239,55 @@ class BedrockTests(unittest.TestCase):
 
     def test_missing_usage_cannot_be_reported_as_zero(self):
         self.client.response["usage"] = {}
-        with self.assertRaises(ReviewUnavailable):
+        self.assertEqual(self.invoke()["choices"][0]["message"]["content"], '{"findings":[]}')
+        self.assertTrue(self.calls.stopped)
+        self.assertEqual(self.calls.stop_diagnostic["code"], "BEDROCK_USAGE_MISSING")
+        with self.assertRaises(BudgetStopped) as caught:
             self.invoke()
+        self.assertEqual(caught.exception.diagnostic, self.calls.stop_diagnostic)
+        self.assertEqual(len(self.client.requests), 1)
         self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_response_usage_write_failure_preserves_text_but_stops_all_later_requests(self):
+        record = self.calls.record
+        def unavailable(**fields):
+            if fields["event"] == "response":
+                raise OSError("PRIVATE_USAGE_PATH")
+            return record(**fields)
+        with patch.object(self.calls, "record", side_effect=unavailable):
+            response = self.invoke()
+        self.assertEqual(response["choices"][0]["message"]["content"], '{"findings":[]}')
+        self.assertEqual(self.calls.stop_diagnostic["code"], "BEDROCK_USAGE_RECORD_FAILED")
+        self.assertEqual(self.calls.metrics()["bedrock_unknown_usage"], 1)
+        self.assertEqual(self.calls.metrics()["bedrock_input_tokens"], 0)
+        self.assertNotIn("PRIVATE_USAGE_PATH", json.dumps(self.calls.stop_diagnostic))
+        self.assertNotIn("PRIVATE_USAGE_PATH", self.calls.stopped)
+        # Even recovered native service or unavailable credentials cannot spend.
+        self.calls.client = None
+        with self.assertRaises(BudgetStopped):
+            self.invoke()
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_unknown_usage_does_not_bypass_response_validation(self):
+        self.client.response["usage"] = {}
+        self.client.response["output"]["message"]["content"] = [{"text": "PRIVATE_INVALID_JSON"}]
+        with self.assertRaises(ReviewUnavailable) as caught:
+            model_call("source", {}, "", "synthetic", SONNET, self.calls)
+        self.assertEqual(caught.exception.diagnostic["code"], "RESPONSE_JSON_INVALID")
+        self.assertTrue(self.calls.stopped)
+        self.assertEqual(len(self.client.requests), 1)
+        self.assertEqual(self.calls.fallback.calls, [])
+
+    def test_unknown_usage_does_not_accept_truncated_response(self):
+        self.client.response["usage"] = {}
+        self.client.response["stopReason"] = "max_tokens"
+        with self.assertRaises(ReviewUnavailable) as caught:
+            self.invoke()
+        self.assertEqual(caught.exception.diagnostic["code"], "BEDROCK_RESPONSE_INCOMPLETE")
+        self.assertTrue(self.calls.stopped)
+        self.assertEqual(len(self.client.requests), 1)
         self.assertEqual(self.calls.fallback.calls, [])
 
     def test_request_limit_cannot_be_bypassed_with_backup(self):
@@ -452,13 +508,15 @@ class MemberGateTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         event, report = root / "event.json", root / "report.json"
+        self.report_path = report
         event.write_text(json.dumps({"pull_request": self.pull}))
-        report.write_text(json.dumps({"repository": "Layr-Labs/d-inference", "head": self.head,
+        report.write_text(json.dumps({"repository": "Layr-Labs/d-inference", "run": "123-1", "head": self.head,
           "base": self.base, "diff_base": self.base, "review": {"integration_completed": True,
           "covered_units": 1, "total_units": 1, "depth_batches_pending": 0,
           "findings": [], "errors": [], "limited_files": [], "manual_review_reasons": []}}))
         self.env = {"THREAT_REVIEW_REQUIRE_CLEARANCE": "true", "GITHUB_EVENT_PATH": str(event),
                     "THREAT_REVIEW_RESULT_FILE": str(report), "GITHUB_REPOSITORY": "Layr-Labs/d-inference",
+                    "GITHUB_RUN_ID": "123",
                     "GH_TOKEN": "repo-only", "THREAT_REVIEW_MEMBERSHIP_TOKEN": "membership-only"}
         self.main = runpy.run_path(str(Path(__file__).with_name("threat-review-gate.py")))["main"]
 
@@ -488,6 +546,25 @@ class MemberGateTests(unittest.TestCase):
         self.member = False
         self.assertEqual(self.evaluate(), 1)
         self.assertEqual(self.lookups, 2)
+
+    def test_stale_or_unattributed_result_cannot_clear_matching_head_and_base(self):
+        report = json.loads(self.report_path.read_text())
+        for run in (None, "999-1", "123-2"):
+            with self.subTest(run=run):
+                stale = dict(report, run=run)
+                if run is None:
+                    del stale["run"]
+                self.report_path.write_text(json.dumps(stale))
+                self.assertEqual(self.evaluate(), 1)
+        self.assertEqual(self.lookups, 0)
+
+    def test_rerun_requires_this_attempts_result(self):
+        self.env["GITHUB_RUN_ATTEMPT"] = "2"
+        self.assertEqual(self.evaluate(), 1)
+        report = json.loads(self.report_path.read_text())
+        report["run"] = "123-2"
+        self.report_path.write_text(json.dumps(report))
+        self.assertEqual(self.evaluate(), 0)
 
     def test_outsider_still_has_explicit_independent_human_review_path(self):
         self.member = False

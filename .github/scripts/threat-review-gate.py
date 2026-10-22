@@ -31,6 +31,8 @@ def main():
         print(f"Manual security override approved by {reviewer} for {pull['head']['sha']}. Findings remain in the PR.")
         return 0
     report = json.loads(Path(env["THREAT_REVIEW_RESULT_FILE"]).read_text())
+    if report.get("run") != f"{env['GITHUB_RUN_ID']}-{env.get('GITHUB_RUN_ATTEMPT', '1')}":
+        return 1
     if report.get("repository") != env["GITHUB_REPOSITORY"]:
         return 1
     verify_diff(github, pull, expected["base"]["sha"], expected["head"]["sha"], report["diff_base"])

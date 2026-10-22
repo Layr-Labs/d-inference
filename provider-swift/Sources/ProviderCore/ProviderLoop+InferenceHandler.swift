@@ -673,6 +673,9 @@ extension ProviderLoop {
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
+        // Withheld Flint reasoning must not return as logprob entry tokens.
+        let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
+            chatRequest, controls: templateControls, modelType: modelType)
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -1084,6 +1087,11 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             var reasoningText = ""
             var reasoningTokens = 0
+            // Reasoning the request asked not to receive is never framed, but
+            // it is still generated: count it with the visible reasoning.
+            func generatedReasoningText() -> String {
+                reasoningText + v2UsageSignal.withheldReasoning
+            }
 
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
@@ -1104,13 +1112,17 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
+            var reasoningLogprobs = filtersReasoningLogprobs ? FlintReasoningLogprobsFilter() : nil
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
-                    // reasoning, or tool delta has been observed.
-                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                    // reasoning, or tool delta has been observed. Withheld
+                    // reasoning is generated output too, though never framed.
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldReasoningAt == nil,
+                        rejectExpiredDeadline()
+                    {
                         return
                     }
                     if token.isCancelled {
@@ -1140,6 +1152,8 @@ extension ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    // - Reasoning withheld at the request's direction is never
+                    //   framed, so the hash commits to exactly what is emitted.
                     var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
@@ -1167,7 +1181,9 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                // Withheld reasoning was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldReasoningAt ?? .now
+                                let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0
                                     + Double(elapsed.components.attoseconds) / 1e15
@@ -1190,14 +1206,15 @@ extension ProviderLoop {
                             // (OpenAI shape). The coordinator forwards this
                             // chunk verbatim, so no coordinator change is
                             // needed for the streaming path.
-                            if !reasoningText.isEmpty {
+                            let generatedReasoning = generatedReasoningText()
+                            if !generatedReasoning.isEmpty {
                                 // Re-tokenizing detokenized text isn't a perfect
                                 // identity (whitespace/special-token merges), so
                                 // clamp to the engine's completion count — a
                                 // reasoning subset can never exceed the total.
                                 reasoningTokens = min(
                                     tokenizer.inner.encode(
-                                        text: reasoningText, addSpecialTokens: false
+                                        text: generatedReasoning, addSpecialTokens: false
                                     ).count,
                                     max(0, completionTokens)
                                 )
@@ -1229,7 +1246,8 @@ extension ProviderLoop {
                     // never alter `delta.content`, so the response hash and
                     // billing extraction are unaffected.
                     if let logprobsChannel {
-                        pendingLogprobs += logprobsChannel.drain()
+                        let drained = logprobsChannel.drain()
+                        pendingLogprobs += reasoningLogprobs?.visible(drained) ?? drained
                         // Re-cap after every drain: without a content-bearing
                         // frame this buffer would grow unbounded past the
                         // channel's own cap (see the declaration comment).
@@ -1310,12 +1328,13 @@ extension ProviderLoop {
             }
 
             if cancelledMidStream {
-                if reasoningTokens == 0 && !reasoningText.isEmpty {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
                         reasoningTokens = min(
                             tokenizer.inner.encode(
-                                text: reasoningText, addSpecialTokens: false
+                                text: generatedReasoning, addSpecialTokens: false
                             ).count,
                             completionFloor
                         )
@@ -1408,10 +1427,11 @@ extension ProviderLoop {
                     }
                 }
                 // Re-tokenize reasoning here too when the usage frame is missing.
-                if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(
-                            text: reasoningText, addSpecialTokens: false
+                            text: generatedReasoning, addSpecialTokens: false
                         ).count,
                         completionTokens
                     )

@@ -103,6 +103,11 @@ final class GLM5NextTensorParallelSpeculation {
     /// the whole head's bits, so the tokens are those of the whole head.
     /// `rounds` takes the first lane's choice, for all-greedy lanes only.
     var splitsVocabulary = true
+    /// `rounds` builds every lane's NextN proposal steps together and applies
+    /// each step's head to all lanes in one launch (`GLM5NextMTP
+    /// .primeAndProposeLanes`); each lane's proposals are bitwise its own.
+    /// `rounds` takes the first lane's choice.
+    var batchesProposalHeads = true
     /// Per round, when set: host seconds building the graph, encoding it
     /// (`asyncEval` returning) and then waiting for the result. A wait near
     /// zero means the round is host-bound; a long wait, GPU-bound.
@@ -379,6 +384,16 @@ final class GLM5NextTensorParallelSpeculation {
     /// NextN logits for the draft probe.
     private func prepareProposals(_ verified: (tokens: MLXArray, hidden: MLXArray), window: Int,
                                   propose: GLM5NextMTP.ProposalSelection?) throws -> MLXArray? {
+        let lane = proposalLane(verified, window: window, propose: propose)
+        let proposals = try mtp.primeAndPropose(shiftedTokens: lane.shiftedTokens, targetHidden: lane.targetHidden,
+            at: lane.position, state: lane.state, depth: lane.depth, select: lane.select)
+        return window > 0 ? proposals[0..., ..<window] : nil
+    }
+
+    /// `prepareProposals`' arguments for the NextN layer (at least one step,
+    /// for the priming), with the draft probe's capture of step 0's logits.
+    private func proposalLane(_ verified: (tokens: MLXArray, hidden: MLXArray), window: Int,
+                              propose: GLM5NextMTP.ProposalSelection?) -> GLM5NextMTP.ProposalLane {
         probeLogits = nil
         let select: GLM5NextMTP.ProposalSelection? = propose.map { propose in
             { [unowned self, probing = draftProbe != nil && window > 0] logits, step in
@@ -386,9 +401,8 @@ final class GLM5NextTensorParallelSpeculation {
                 return propose(logits, step)
             }
         }
-        let proposals = try mtp.primeAndPropose(shiftedTokens: verified.tokens, targetHidden: verified.hidden,
-            at: state.committedInputCount, state: state, depth: max(1, window), select: select)
-        return window > 0 ? proposals[0..., ..<window] : nil
+        return .init(shiftedTokens: verified.tokens, targetHidden: verified.hidden, position: state.committedInputCount,
+            state: state, depth: max(1, window), select: select)
     }
 
     /// Counts a decided round of `window` proposals and scores the draft
@@ -483,14 +497,30 @@ extension GLM5NextTensorParallelSpeculation {
         let started = DispatchTime.now().uptimeNanoseconds
         var inputs: [GLM5NextTextStageLane] = []
         var drafts: [MLXArray?] = []
-        for lane in lanes {
-            let speculation = lane.speculation
-            let verified = speculation.pending!
-            speculation.pending = nil
-            // Each lane's own priming and proposals (as in `round`): its own
-            // NextN state and, for a sampled lane, its own sampler's round.
-            let draft = try speculation.prepareProposals(verified, window: lane.window, propose: lane.propose)
-            drafts.append(draft)
+        // Each lane's own priming and proposals (as in `round`): its own NextN
+        // state and, for a sampled lane, its own sampler's round. Lanes of one
+        // NextN layer step together, sharing each step's head launch
+        // (`GLM5NextMTP.primeAndProposeLanes`: each lane's proposals bitwise
+        // its own).
+        let together = first.batchesProposalHeads && lanes.count > 1
+            && lanes.allSatisfy { $0.speculation.mtp === first.mtp }
+        if together {
+            let proposalLanes = lanes.map { lane -> GLM5NextMTP.ProposalLane in
+                let verified = lane.speculation.pending!
+                lane.speculation.pending = nil
+                return lane.speculation.proposalLane(verified, window: lane.window, propose: lane.propose)
+            }
+            let proposals = try first.mtp.primeAndProposeLanes(proposalLanes)
+            drafts = zip(lanes, proposals).map { lane, value in lane.window > 0 ? value[0..., ..<lane.window] : nil }
+        } else {
+            for lane in lanes {
+                let speculation = lane.speculation
+                let verified = speculation.pending!
+                speculation.pending = nil
+                drafts.append(try speculation.prepareProposals(verified, window: lane.window, propose: lane.propose))
+            }
+        }
+        for (lane, draft) in zip(lanes, drafts) {
             inputs.append(.init(tokens: concatenated([MLXArray([Int32(lane.last)], [1, 1])] + (draft.map { [$0] } ?? []),
                 axis: 1), cache: lane.cache))
         }

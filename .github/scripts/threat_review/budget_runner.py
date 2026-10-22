@@ -14,6 +14,13 @@ from .state import State
 from .diagnostics import ReviewFailure, failure_record, write_diagnostics
 
 
+class ResultWriteFailure(ReviewUnavailable):
+    """Carry saved scan evidence to the CLI when local result delivery fails."""
+    def __init__(self, snapshot, summary):
+        super().__init__("Final result could not be written; automatic clearance unavailable")
+        self.snapshot, self.summary = snapshot, summary
+
+
 def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
     errors = snapshot.get("errors", [])
     complete = (snapshot.get("integration_completed", False)
@@ -39,7 +46,7 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
     if snapshot.get("response_repairs"):
         repairs = snapshot["response_repairs"]
         completed = sum(item["status"] == "completed" for item in repairs)
-        body += (f"\n\nAnalysis repair: {completed}/{len(repairs)} completed; "
+        body += (f"\n\nResponse repair: {completed}/{len(repairs)} completed; "
                  "one extra request maximum per scan, charged within the existing provider limits. "
                  "Earlier findings and uncertainty are retained.")
     # The legacy renderer's full-text-model claim does not describe this engine.
@@ -148,7 +155,7 @@ def run(event, env, github=None, state=None, paid_factory=PaidCalls):
         # Preserve local progress before a remote checkpoint/publication can fail.
         write_diagnostics(env, snapshot)
         # Save even when the PR head moved. Publication alone needs a live head.
-        history = state.checkpoint(run_id, {"repository": repository, "head": head, "base": base,
+        history = state.checkpoint(run_id, {"repository": repository, "run": run_id, "head": head, "base": base,
                                            "diff_base": diff_base, "previous_comment": previous,
                                            "review": snapshot})
         publish()
@@ -216,8 +223,23 @@ def run(event, env, github=None, state=None, paid_factory=PaidCalls):
                 pass
     write_diagnostics(env, snapshot)
     if env.get("THREAT_REVIEW_RESULT_FILE"):
-        Path(env["THREAT_REVIEW_RESULT_FILE"]).write_text(json.dumps({
-            "repository": repository, "head": head, "base": base, "diff_base": diff_base,
-            "review": snapshot}))
+        path = Path(env["THREAT_REVIEW_RESULT_FILE"])
+        try:
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(json.dumps({
+                "repository": repository, "run": run_id, "head": head, "base": base, "diff_base": diff_base,
+                "review": snapshot}))
+            temporary.replace(path)
+        except OSError:
+            snapshot.setdefault("errors", []).append("Final result unavailable; automatic clearance blocked")
+            snapshot.setdefault("diagnostics", []).append({"code": "RESULT_WRITE_FAILED", "phase": "result"})
+            write_diagnostics(env, snapshot)
+            try:
+                checkpoint(snapshot)
+            except Exception:
+                pass  # Saved scan diagnostics remain authoritative; never restart paid work.
+            raise ResultWriteFailure(snapshot, status_body(
+                repository, head, base, diff_base, snapshot, evidence, history,
+                clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")) from None
     return status_body(repository, head, base, diff_base, snapshot, evidence, history,
                        clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")

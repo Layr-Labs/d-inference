@@ -19,13 +19,13 @@ MAX_STATE_BYTES = 500_000
 USD = 1_000_000  # integer microdollars, rounded up at reservation boundaries
 CAPS = {"normal": USD, "deep": 3 * USD, "pr_day": 5 * USD,
         "repo_day": 25 * USD, "pilot": 25 * USD, "prs": 10}
-WRITE_ATTEMPTS = 8
+WRITE_ATTEMPTS = 12
 
 
 def conflict_backoff(attempt):
     # Different PRs share one branch even when they update different files.
     # Retry only explicit conflicts, never an ambiguous paid request/write.
-    time.sleep(uniform(0.1, min(2.0, 0.2 * 2 ** attempt)))
+    time.sleep(uniform(0.5, min(8.0, 0.5 * 2 ** attempt)))
 
 
 class BudgetStopped(ReviewUnavailable):
@@ -182,6 +182,7 @@ class State:
                 self.write(f"cache/{fingerprint}.json", value)
                 return
             except APIError as error:
+                error.diagnostic.update(write_attempts=attempt + 1, write_limit=WRITE_ATTEMPTS)
                 if error.status not in (409, 422):
                     raise
                 # Immutable cache: another identical request may have won the
@@ -202,6 +203,7 @@ class State:
                 result = self.write(path, copy.deepcopy(value), sha)
                 break
             except APIError as error:
+                error.diagnostic.update(write_attempts=attempt + 1, write_limit=WRITE_ATTEMPTS)
                 if error.status != 409 or attempt + 1 == WRITE_ATTEMPTS:
                     raise
                 conflict_backoff(attempt)

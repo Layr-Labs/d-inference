@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import runpy
@@ -28,7 +29,7 @@ from threat_review.merge_policy import clean
 from threat_review.preflight import check as preflight
 from threat_review.report import COMMENT_LIMIT, plain
 from threat_review.source import complete_files
-from threat_review.state import State, BudgetStopped, fresh
+from threat_review.state import State, BudgetStopped, fresh, WRITE_ATTEMPTS
 
 spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_name("test-threat-model-review.py"))
 fixtures = importlib.util.module_from_spec(spec)
@@ -107,7 +108,12 @@ class LocalService:
                 if isinstance(result, int):
                     return self.send(result, {"secret": "never print this"})
                 return self.send(200, result)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class ConcurrentHTTPServer(ThreadingHTTPServer):
+            # Admit the whole contention fixture before any handler waits at
+            # the barrier; the default five-connection backlog can starve it.
+            request_queue_size = 32
+
+        self.server = ConcurrentHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -163,9 +169,29 @@ class BudgetTests(unittest.TestCase):
         self.service.branch_conflicts = 100
         with patch("threat_review.state.conflict_backoff"), self.assertRaises(APIError) as caught:
             self.state.checkpoint("1-1", {"private": "source"})
-        self.assertEqual(self.service.write_attempts.count("reports/1-1.json"), 8)
+        self.assertEqual(self.service.write_attempts.count("reports/1-1.json"), WRITE_ATTEMPTS)
         self.assertEqual(caught.exception.diagnostic, {
-            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "report", "http_status": 409})
+            "code": "STATE_WRITE_FAILED", "service": "github", "operation": "report", "http_status": 409,
+            "write_attempts": WRITE_ATTEMPTS, "write_limit": WRITE_ATTEMPTS})
+
+    def test_report_recovers_a_conflict_burst_longer_than_the_old_window(self):
+        self.service.branch_conflicts = 9
+        with patch("threat_review.state.conflict_backoff"):
+            self.state.checkpoint("1-1", {"coverage": "preserved"})
+        self.assertEqual(self.service.conflicts, 9)
+        self.assertEqual(self.state.read("reports/1-1.json")[0], {"coverage": "preserved"})
+        self.assertFalse(self.service.calls)
+
+    def test_twelve_simultaneous_report_writers_preserve_each_others_data(self):
+        self.service.write_barrier = threading.Barrier(12)
+        self.service.barrier_writers = 12
+        with ThreadPoolExecutor(12) as pool:
+            reports = list(pool.map(lambda n: self.state.checkpoint(f"{n}-1", {"writer": n}), range(1, 13)))
+        self.assertEqual(len(reports), 12)
+        self.assertGreaterEqual(self.service.conflicts, 11)
+        for n in range(1, 13):
+            self.assertEqual(self.state.read(f"reports/{n}-1.json")[0], {"writer": n})
+        self.assertFalse(self.service.calls)
 
     def test_unknown_checkpoint_failure_is_never_retried(self):
         transport = self.service.github.transport
@@ -188,7 +214,7 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(self.state.read_ledger(), before)
         self.assertEqual(caught.exception.diagnostic, {
             "code": "STATE_WRITE_FAILED", "service": "github", "operation": "ledger",
-            "http_status": 409, "write_attempts": 8})
+            "http_status": 409, "write_attempts": WRITE_ATTEMPTS})
 
     def test_atomic_reservations_for_same_run_over_real_http(self):
         # Both clients read the SAME ledger version before either writes it.
@@ -531,9 +557,9 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(result["errors"])
         self.assertFalse(result["integration_completed"])
 
-    def test_invalid_citations_coverage_and_decision_never_authorize_repair(self):
+    def test_invalid_citations_coverage_shape_and_decision_never_authorize_repair(self):
         for changes in ({"findings": [dict(fixtures.FINDING, line=999)]},
-                        {"covered_units": []}, {"needs_deeper_review": "false"}):
+                        {"covered_units": None}, {"needs_deeper_review": "false"}):
             with self.subTest(changes=changes):
                 self.service.calls.clear()
                 self.service.reply = lambda body: self.change_response(
@@ -542,6 +568,72 @@ class ScanTests(unittest.TestCase):
                 self.assertEqual(len(self.service.calls), 1)
                 self.assertEqual(result["response_repairs"], [])
                 self.assertTrue(result["errors"])
+
+    def test_integration_cannot_confuse_replayed_source_ids_with_primary_ids(self):
+        self.files[0]["filename"] = "docs/guide.md"
+        wrong = False
+        def reply(body):
+            nonlocal wrong
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            if sent["stage"] == "integration":
+                self.assertEqual(body["response_format"]["json_schema"]["schema"]["properties"]
+                                 ["covered_units"]["items"]["enum"], [u["id"] for u in sent["units"]])
+                self.assertTrue(all("id" not in u for u in sent["integration_source"]["units"]))
+                if not wrong:
+                    wrong = True
+                    return self.change_response(response, covered_units=[u["source_id"] for u in
+                                                                          sent["integration_source"]["units"]])
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(result["integration_completed"])
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(result["response_repairs"][0]["code"], "BATCH_ACKNOWLEDGMENT_INVALID")
+        self.assertEqual(result["response_repairs"][0]["status"], "completed")
+
+    def test_repeated_wrong_integration_ids_remain_incomplete(self):
+        def reply(body):
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            return (self.change_response(response, covered_units=["source-only-id"])
+                    if sent["stage"] == "integration" else response)
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(result["covered_units"], result["total_units"])
+        self.assertFalse(result["integration_completed"])
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(result["response_repairs"][0]["status"], "failed")
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
+
+    def test_analysis_and_acknowledgment_share_one_repair_allowance(self):
+        def reply(body):
+            sent = json.loads(body["messages"][1]["content"])
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, analysis="")
+            return (self.change_response(response, covered_units=[])
+                    if sent["stage"] == "integration" else response)
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertEqual(len(self.service.calls), 3)
+        self.assertEqual(len(result["response_repairs"]), 1)
+        self.assertTrue(result["errors"])
+
+    def test_wrong_source_ack_repair_preserves_citation_valid_findings(self):
+        def reply(body):
+            response = self.service.completion(body)
+            if len(self.service.calls) == 1:
+                return self.change_response(response, covered_units=[], findings=[fixtures.FINDING])
+            return response
+        self.service.reply = reply
+        result, _ = self.scan()
+        self.assertFalse(result["errors"])
+        self.assertTrue(result["findings"])
+        self.assertFalse(clean({"head": fixtures.HEAD, "base": fixtures.BASE, "review": result},
+                               fixtures.HEAD, fixtures.BASE))
 
     def test_identical_inputs_reuse_every_batch_without_spend(self):
         self.scan()
@@ -939,6 +1031,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(report["review"]["diagnostics"][0]["http_status"], 503)
         self.assertIn("DIAGNOSTICS_WRITE_FAILED", errors.getvalue())
         self.assertNotIn(str(self.root), errors.getvalue())
+
+    def test_cli_result_write_failure_preserves_original_error_and_findings(self):
+        blocked = self.root / "blocked-result"
+        blocked.mkdir()
+        event = self.root / "event.json"
+        event.write_text(json.dumps(fixtures.EVENT))
+        diagnostic_path = self.root / "diagnostics.json"
+        self.env.update(GITHUB_EVENT_PATH=str(event), THREAT_REVIEW_RESULT_FILE=str(blocked),
+                        THREAT_REVIEW_DIAGNOSTICS_FILE=str(diagnostic_path))
+        self.service.reply = lambda body: (self.service.completion(body, [fixtures.FINDING])
+                                          if len(self.service.calls) == 1 else 503)
+        actual_run = lambda event, env: run(event, env, self.github, self.service.state, self.factory)
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env), patch("threat_review.budget_runner.run", side_effect=actual_run), \
+                patch("signal.signal"), patch("signal.alarm"), redirect_stdout(output), \
+                self.assertRaises(SystemExit) as caught:
+            runpy.run_path(str(Path(__file__).with_name("threat-model-review.py")), run_name="__main__")
+        self.assertEqual(caught.exception.code, 1)
+        diagnostic = json.loads(diagnostic_path.read_text())
+        codes = [item["code"] for item in diagnostic["diagnostics"]]
+        self.assertIn("OPENROUTER_API_ERROR", codes)
+        self.assertIn("RESULT_WRITE_FAILED", codes)
+        self.assertGreater(diagnostic["covered_units"], 0)
+        self.assertIn("HTTP 503", output.getvalue())
+        self.assertNotIn("setup or GitHub API failed", output.getvalue())
+        saved = self.service.state.read("reports/123-1.json")[0]
+        self.assertTrue(saved["review"]["findings"])
+        self.assertFalse(clean(saved, fixtures.HEAD, fixtures.BASE))
     def test_progress_comment_precedes_source_collection(self):
         files = self.github.files
         def collect(count):
@@ -1077,7 +1197,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(diagnostic["response_repairs"][0]["status"], "completed")
                 self.assertEqual(diagnostic["response_repairs"][0]["request_id"],
                                  "12345678-1234-1234-1234-123456789abc")
-                self.assertIn("Analysis repair: 1/1 completed", body)
+                self.assertIn("Response repair: 1/1 completed", body)
                 self.assertFalse(self.service.calls)
 
     def test_bedrock_analysis_repair_cannot_exceed_call_cap(self):
@@ -1094,6 +1214,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(report["review"]["findings"])
         self.assertEqual(diagnostic["response_repairs"][0]["status"], "failed")
         self.assertFalse(self.service.calls)
+
+    def test_native_accounting_failures_retain_valid_findings_and_block_clearance(self):
+        self.env["THREAT_REVIEW_REQUIRE_CLEARANCE"] = "true"
+        original_record = BedrockCalls.record
+        for cause, code in (("missing", "BEDROCK_USAGE_MISSING"), ("write", "BEDROCK_USAGE_RECORD_FAILED")):
+            with self.subTest(cause=cause):
+                def record(adapter, **fields):
+                    if cause == "write" and fields.get("event") == "response":
+                        raise OSError("PRIVATE_ACCOUNTING_ERROR")
+                    return original_record(adapter, **fields)
+                def reply(request):
+                    response = self.bedrock_response(request)
+                    result = json.loads(response["output"]["message"]["content"][0]["text"])
+                    result["findings"] = [fixtures.FINDING]
+                    response["output"]["message"]["content"][0]["text"] = json.dumps(result)
+                    if cause == "missing":
+                        response["usage"] = {}
+                    return response
+                with patch.object(BedrockCalls, "record", record):
+                    body, report, diagnostic, requests = self.bedrock_run(reply)
+                self.assertEqual(len(requests), 1)
+                self.assertTrue(report["review"]["findings"])
+                self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+                self.assertTrue(any(d["code"] == code and d["stage"] == "source"
+                                    for d in diagnostic["diagnostics"]))
+                self.assertEqual(report["review"]["bedrock_unknown_usage"], 1)
+                self.assertNotIn("PRIVATE_ACCOUNTING_ERROR", json.dumps(diagnostic))
+                self.assertFalse(self.service.calls)
 
     def test_analysis_repair_stops_before_transport_after_failed_checkpoint(self):
         def reply(request):

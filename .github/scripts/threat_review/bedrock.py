@@ -52,10 +52,12 @@ class BedrockCalls:
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
         self.client = client
         self.last_request = {}
+        self.accounting_stopped = None
+        self.stop_diagnostic = None
 
     @property
     def stopped(self):
-        return self.fallback.stopped
+        return self.accounting_stopped or self.fallback.stopped
 
     def record(self, **fields):
         entry = {"run": self.env["GITHUB_RUN_ID"], "attempt": self.env.get("GITHUB_RUN_ATTEMPT", "1"),
@@ -82,9 +84,12 @@ class BedrockCalls:
     def __call__(self, endpoint, key, payload):
         self.last_request = {}
         if self.stopped:
-            # Unknown/rejected backup accounting halts the whole attempt, even
-            # if the primary provider has recovered before the next batch.
-            raise BudgetStopped(self.stopped)
+            # Failed native or backup accounting halts the whole attempt, even
+            # if a provider has recovered before the next batch.
+            error = BudgetStopped(self.stopped)
+            if self.stop_diagnostic:
+                error.diagnostic = self.stop_diagnostic
+            raise error
         self.alive()
         if self.calls >= self.limit:
             error = BudgetStopped("Bedrock request allowance reached; no fallback around the limit")
@@ -157,18 +162,32 @@ class BedrockCalls:
         cache_read = usage.get("cacheReadInputTokens", 0)
         cache_write = usage.get("cacheWriteInputTokens", 0)
         known = all(type(v) is int and v >= 0 for v in (incoming, outgoing, cache_read, cache_write))
-        self.record(event="response", model=alias, usage_unknown=not known,
-                    input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
-                    cache_read_input_tokens=cache_read if known else None,
-                    cache_write_input_tokens=cache_write if known else None,
-                    **{key: value for key, value in self.last_request.items() if key != "call"})
-        if not known:
-            raise ReviewFailure("Bedrock usage missing; no complete result", "BEDROCK_USAGE_MISSING")
-        self.unknown -= 1
-        self.input_tokens += incoming
-        self.output_used += outgoing
-        self.cache_read_input_tokens += cache_read
-        self.cache_write_input_tokens += cache_write
+        accounting_failure = None
+        try:
+            self.record(event="response", model=alias, usage_unknown=not known,
+                        input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
+                        cache_read_input_tokens=cache_read if known else None,
+                        cache_write_input_tokens=cache_write if known else None,
+                        **{key: value for key, value in self.last_request.items() if key != "call"})
+        except OSError:
+            accounting_failure = ("BEDROCK_USAGE_RECORD_FAILED",
+                                  "Bedrock usage record could not be saved; further requests stopped")
+        if accounting_failure is None and not known:
+            accounting_failure = ("BEDROCK_USAGE_MISSING",
+                                  "Bedrock usage missing; further requests stopped")
+        if accounting_failure:
+            code, self.accounting_stopped = accounting_failure
+            self.stop_diagnostic = {**self.last_request, "code": code, "service": "bedrock",
+                                    "operation": "usage", "usage_unknown": True}
+            # The paid response may contain useful advice. Return only a complete
+            # text envelope to the ordinary strict validator; stopped accounting
+            # blocks repair, fallback, later calls and final merge clearance.
+        else:
+            self.unknown -= 1
+            self.input_tokens += incoming
+            self.output_used += outgoing
+            self.cache_read_input_tokens += cache_read
+            self.cache_write_input_tokens += cache_write
         if response.get("stopReason") != "end_turn":
             raise ReviewFailure("Bedrock response incomplete or refused; no automatic fallback",
                                 "BEDROCK_RESPONSE_INCOMPLETE")

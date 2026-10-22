@@ -224,9 +224,10 @@ context revisions. After merge, new runs use current default-branch scanner code
 and separately read the PR base threat model. Integration replays bounded exact
 source from each model's own reviewed scope. Native Bedrock response-format
 compatibility requires the bounded live smoke check in addition to offline tests.
-The local lifecycle checks also inject empty analysis at every selected model
-stage, verify bounded recovery within existing limits, and preserve its safe
-diagnostic record; a successful normal response alone does not test recovery.
+The local lifecycle checks inject invalid analysis/acknowledgment, native usage
+failures, concurrent state writes and failed final-result delivery. They verify
+bounded recovery, retained findings and denial of incomplete/stale clearance;
+a successful normal response alone does not test recovery.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

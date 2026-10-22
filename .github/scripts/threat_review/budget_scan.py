@@ -38,9 +38,13 @@ Its complete flag covers only replay of this model's reviewed source scope, not
 the entire PR or unchanged dependencies. Omitted units are explicitly counted.
 Only the primary units array requires covered_units acknowledgment; replayed
 source does not add new coverage. Preserve any material unresolved uncertainty.
-If response_repair is present, the preceding response had invalid analysis text.
+expected_covered_units lists the exact primary IDs required in covered_units.
+In integration, replayed evidence uses source_id and never requires acknowledgment.
+If response_repair is present, the preceding response had invalid analysis text
+or incorrect primary-unit acknowledgment.
 Review the same units again and provide a complete, nonempty analysis within the
-4000-character bound. Earlier validated findings and uncertainty are retained;
+4000-character bound and acknowledge exactly expected_covered_units. Earlier
+validated findings and uncertainty are retained;
 a repair cannot dismiss them. All other validation requirements still apply.
 """
 
@@ -83,18 +87,29 @@ class Scanner:
         self.manual_review_reasons = []
         self.diagnostics = []
         self.response_repairs = []
+        self.accounting_failure = None
         self.active_request = {}
         self.diagnostic_checkpoint = diagnostic_checkpoint
         self.reviewed_evidence, self.reviewed_source_ids = {}, {}
 
     def snapshot(self):
         errors = list(dict.fromkeys(self.errors + ([self.paid.stopped] if self.paid.stopped else [])))
+        stop = getattr(self.paid, "stop_diagnostic", None)
+        if stop and self.accounting_failure is None:
+            # Capture original scanner scope before a later blocked call can
+            # replace active_request. Provider metadata already pins its call.
+            self.accounting_failure = {**self.active_request, **stop}
+        diagnostics = list(self.diagnostics)
+        if self.accounting_failure and not any(
+                all(item.get(key) == self.accounting_failure.get(key)
+                    for key in ("code", "provider", "call", "request_id")) for item in diagnostics):
+            diagnostics.append(self.accounting_failure)
         return {"findings": self.findings, "outcomes": self.outcomes, "errors": errors,
                 "covered_units": len(self.covered), "total_units": sum(map(len, self.source)),
                 "changed_files": len(self.evidence), "limited_files": self.limits,
                 "depth_batches_pending": self.depth_pending,
                 "integration_completed": self.integration, "reused_batches": self.reused,
-                "manual_review_reasons": self.manual_review_reasons, "diagnostics": self.diagnostics,
+                "manual_review_reasons": self.manual_review_reasons, "diagnostics": diagnostics,
                 "response_repairs": self.response_repairs,
                 "active_request": {**self.active_request, **getattr(self.paid, "last_request", {})},
                 **self.paid.metrics()}
@@ -108,6 +123,13 @@ class Scanner:
                 self.findings.append(dict(canonical, models=[model]))
             elif model not in match["models"]:
                 match["models"].append(model)
+
+    def halt_if_stopped(self):
+        if self.paid.stopped:
+            error = BudgetStopped(self.paid.stopped)
+            if getattr(self.paid, "stop_diagnostic", None):
+                error.diagnostic = self.paid.stop_diagnostic
+            raise error
 
     def batch_evidence(self, stage, batch, model=None):
         if stage == "integration":
@@ -139,6 +161,8 @@ class Scanner:
             raise ReviewFailure("Cached or fresh finding failed validation", "FINDING_VALIDATION_FAILED") from None
         if len(findings) == 32:
             raise FindingCapacityReached(findings)
+        if type(response["needs_deeper_review"]) is not bool:
+            raise ReviewFailure("Invalid review decision", "BATCH_DECISION_INVALID")
         ids = response.get("covered_units")
         if (not isinstance(ids, list) or any(not isinstance(id, str) for id in ids)):
             raise ReviewFailure("Incomplete batch acknowledgment", "BATCH_ACKNOWLEDGMENT_INVALID",
@@ -150,25 +174,25 @@ class Scanner:
                                 missing_units=len(expected - acknowledged),
                                 unexpected_units=len(acknowledged - expected),
                                 duplicate_units=len(ids) - len(acknowledged))
-        if type(response["needs_deeper_review"]) is not bool:
-            raise ReviewFailure("Invalid review decision", "BATCH_DECISION_INVALID")
         analysis = response["analysis"]
         if not isinstance(analysis, str) or not analysis.strip() or len(analysis) > 4000:
             raise ReviewFailure("Invalid batch analysis", "BATCH_ANALYSIS_INVALID",
                                 analysis_characters=len(analysis) if isinstance(analysis, str) else None,
                                 analysis_limit=4000)
 
-    def repair_analysis(self, model, batch, evidence, message, response, error):
-        # Only a completed, acknowledged, citation-valid response is repairable.
-        # One extra request for the entire scan; transport/JSON/coverage failures
+    def repair_response(self, model, batch, evidence, message, schema, response, error):
+        # Only a completed, correctly shaped, citation-valid response is repairable.
+        # One extra request for the entire scan; transport/JSON/shape failures
         # and cached invalid responses never authorize a paid retry.
-        if error.diagnostic["code"] != "BATCH_ANALYSIS_INVALID":
+        if error.diagnostic["code"] not in ("BATCH_ANALYSIS_INVALID", "BATCH_ACKNOWLEDGMENT_INVALID"):
             raise error
         self.retain(response["findings"], model)
-        if not isinstance(response["analysis"], str) or self.response_repairs:
+        if (not isinstance(response["analysis"], str)
+                or not isinstance(response["covered_units"], list)
+                or any(not isinstance(value, str) for value in response["covered_units"])
+                or self.response_repairs):
             raise error
-        if self.paid.stopped:
-            raise BudgetStopped(self.paid.stopped)
+        self.halt_if_stopped()
         active = {**self.active_request, **getattr(self.paid, "last_request", {})}
         repair = {**failure_record(error, active), "status": "pending"}
         self.response_repairs.append(repair)
@@ -177,16 +201,16 @@ class Scanner:
         if hasattr(self.paid, "last_request"):
             self.paid.last_request = {}
         self.diagnostic_checkpoint(self.snapshot())
-        request = {**message, "response_repair": {"code": "BATCH_ANALYSIS_INVALID", "analysis_limit": 4000}}
+        request = {**message, "response_repair": {"code": error.diagnostic["code"], "analysis_limit": 4000}}
         try:
             corrected = model_call(json.dumps(request), evidence, self.context.text,
-                                   self.paid.key, model, self.paid, SCHEMA, INSTRUCTIONS)
+                                   self.paid.key, model, self.paid, schema, INSTRUCTIONS)
             self.active_request["phase"] = "validating"
             self.diagnostic_checkpoint(self.snapshot())
             try:
                 self.validate(corrected, batch, evidence)
             except ReviewFailure as validation_error:
-                if validation_error.diagnostic["code"] == "BATCH_ANALYSIS_INVALID":
+                if validation_error.diagnostic["code"] in ("BATCH_ANALYSIS_INVALID", "BATCH_ACKNOWLEDGMENT_INVALID"):
                     self.retain(corrected["findings"], model)
                 raise
         except Exception:
@@ -208,10 +232,17 @@ class Scanner:
         if hasattr(self.paid, "last_request"):
             self.paid.last_request = {}
         self.diagnostic_checkpoint(self.snapshot())
-        message = {"stage": stage, "units": batch, **self.context.relevant(batch)}
+        message = {"stage": stage, "units": batch, "expected_covered_units": [u["id"] for u in batch],
+                   **self.context.relevant(batch)}
+        schema = SCHEMA
         if stage == "source":
             message["file_changes"] = batch_changes(self.changes, batch)
         else:
+            # Integration summary IDs have a small shared vocabulary, unlike
+            # per-file source hashes. Constrain this grammar without compiling
+            # a unique native schema for every source batch.
+            schema = copy.deepcopy(SCHEMA)
+            schema["properties"]["covered_units"]["items"]["enum"] = message["expected_covered_units"]
             message["integration_source"] = replay_source(
                 self.source, self.reviewed_source_ids.get(model, set()))
             replay = message["integration_source"]
@@ -221,7 +252,7 @@ class Scanner:
         # Base captures unchanged dependencies. Current changed-file interactions
         # are re-evaluated by integration; local source cache is not global safety.
         identity = digest([VERSION, model, self.base, self.context.hash,
-                           SYSTEM, SCHEMA, INSTRUCTIONS, message,
+                           SYSTEM, schema, INSTRUCTIONS, message,
                            [self.source_hash, sorted(self.reviewed_source_ids.get(model, set()))]
                            if stage == "integration" else None])
         self.active_request["phase"] = "cache_lookup"
@@ -238,13 +269,13 @@ class Scanner:
             self.active_request["phase"] = "provider_call"
             self.diagnostic_checkpoint(self.snapshot())
             response = model_call(json.dumps(message), evidence, self.context.text,
-                                  self.paid.key, model, self.paid, SCHEMA, INSTRUCTIONS)
+                                  self.paid.key, model, self.paid, schema, INSTRUCTIONS)
             self.active_request["phase"] = "validating"
             self.diagnostic_checkpoint(self.snapshot())
             try:
                 self.validate(response, batch, evidence)
             except ReviewFailure as error:
-                response = self.repair_analysis(model, batch, evidence, message, response, error)
+                response = self.repair_response(model, batch, evidence, message, schema, response, error)
         self.active_request["phase"] = "validated"
         if stage == "source":
             reviewed = self.reviewed_evidence.setdefault(model, {})
@@ -259,6 +290,7 @@ class Scanner:
             self.covered.update(u["id"] for u in batch)
         # Persist validated advice BEFORE caching or starting another request.
         self.checkpoint(self.snapshot())
+        self.halt_if_stopped()
         if cached is None and self.use_cache:
             self.state.save_cache(identity, response)
         return response

@@ -113,6 +113,33 @@ struct StreamedToolCallTests {
         #expect(router.completedToolCalls == [completed])
     }
 
+    /// Unconstrained Gemma output sometimes drops a string's markers; the
+    /// complete parse then reads every value as a raw string. A typed value
+    /// exposed before that point would contradict the parse, so only marker
+    /// strings stream and this call completes instead of diverging.
+    @Test func gemmaCallLeavingTheStrictGrammarStillCompletes() throws {
+        var request = try Self.request()
+        request.tools = try JSONDecoder().decode([OpenAITool].self, from: Data("""
+            [{"type":"function","function":{"name":"get_weather","parameters":{"type":"object",
+              "properties":{"days":{},"location":{"type":"string"},"unit":{"type":"string"}}}}}]
+            """.utf8))
+        var router = try Self.router(request)
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(Self.gemmaCall(#"days:3,location:Paris,unit:<|"|>celsius<|"|>"#)) {
+            events += try router.process(character)
+        }
+        events += try router.finishText()
+        events += try router.finishToolCalls(truncated: false)
+        let deltas = Self.deltas(events)
+        #expect(deltas.first?.name == "get_weather")
+        let completed = try #require(deltas.last?.completed)
+        #expect(completed.function.arguments
+            == ["days": .string("3"), "location": .string("Paris"), "unit": .string("celsius")])
+        let arguments = deltas.map(\.arguments).joined()
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(arguments.utf8))
+            == completed.function.arguments)
+    }
+
     @Test func schemaViolationIsRefusedWhenTheFrameCloses() throws {
         var router = try Self.router(Self.request())
         let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>,unit:<|"|>kelvin<|"|>"#)

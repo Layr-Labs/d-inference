@@ -160,8 +160,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// the indexer is replicated, so each rank scores and selects half the
     /// rows and a sealed all-sum of the chosen pool IDs (float32, about 2 KiB
     /// a row per DSA layer) gives both every row's. Tokens unchanged. Not
-    /// with `prefillSequenceParallel`.
-    static let prefillSelectionSplit = false
+    /// with `prefillSequenceParallel`. Only micro-batches whose history holds
+    /// `prefillSelectionSplitMinimumHistory` keys share (a row's selection
+    /// costs about its history, the exchange about its row). Pair (c43,
+    /// serving env, every micro-batch shared): 10.5K -0.2 %, 16K -0.5 %,
+    /// 31.5K +1.5 %; from 16,384 keys only 31.5K's later micro-batches share.
+    static let prefillSelectionSplit = true
+    static let prefillSelectionSplitMinimumHistory = 16384
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -480,7 +485,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 }
                 if Self.prefillSelectionSplit {
                     try value.installTensorParallelSelectionSplit(
-                        share: collective.rank, shares: collective.size, exchange: { group.allSum($0) })
+                        share: collective.rank, shares: collective.size,
+                        minimumHistory: Self.prefillSelectionSplitMinimumHistory, exchange: { group.allSum($0) })
                 }
                 loaded = value; retired = value
                 Memory.clearCache()
@@ -503,7 +509,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
-                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) micro_batch_tokens=\(Self.prefillMicroBatchTokens ?? 0) merged_tokens=\(Self.mergedPrefillTokens) sequence_parallel=\(Self.prefillSequenceParallel ? 1 : 0) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
+                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) micro_batch_tokens=\(Self.prefillMicroBatchTokens ?? 0) merged_tokens=\(Self.mergedPrefillTokens) sequence_parallel=\(Self.prefillSequenceParallel ? 1 : 0) selection_split=\(Self.prefillSelectionSplit ? String(Self.prefillSelectionSplitMinimumHistory) : "off") sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
                     + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"

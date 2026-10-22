@@ -106,6 +106,9 @@ public enum GLM5NextTensorParallelBench {
         /// `tp` only: each DSA layer's prefill selection shared between the
         /// ranks by rows (`GLM5NextTensorParallelResidentRuntime.prefillSelectionSplit`).
         public var selectionSplit = GLM5NextTensorParallelResidentRuntime.prefillSelectionSplit
+        /// Only micro-batches whose history holds this many keys share
+        /// (`GLM5NextTensorParallelResidentRuntime.prefillSelectionSplitMinimumHistory`).
+        public var selectionSplitMinimumHistory = GLM5NextTensorParallelResidentRuntime.prefillSelectionSplitMinimumHistory
         /// Re-cut segments only where their micro-batches' sums stay hidden
         /// (`GLM5NextTensorParallelPrefillPlan.hidingSums`); off, every re-cut.
         public var hidesSums = true
@@ -288,7 +291,7 @@ public enum GLM5NextTensorParallelBench {
         if options.selectionSplit {
             guard let group else { throw ProbeError("GLM bench selection split needs a peer (--mode tp)") }
             try stage.installTensorParallelSelectionSplit(share: group.rank, shares: group.size,
-                exchange: { group.allSum($0) })
+                minimumHistory: options.selectionSplitMinimumHistory, exchange: { group.allSum($0) })
         }
         Memory.clearCache()
         if let limit = options.cacheLimitBytes { Memory.cacheLimit = limit }

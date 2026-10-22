@@ -29,10 +29,11 @@ enum ReasoningPromptProbe {
         ProcessInfo.processInfo.environment[plainTailContentSeedEnvironmentKey] != "0"
 
     /// Seed think-format parsers for collected and streaming requests. Explicit
-    /// `.none`, other families, and unknown tails retain their existing behavior.
-    /// The engine produces an event stream even for collected HTTP requests;
-    /// HTTP delivery mode does not change the prompt-side parser state.
-    /// ProviderLoop resolves an omitted parser before calling the engine.
+    /// `.none`, other families, and unrecognized prompt tails outside the Qwen
+    /// case below retain their existing behavior. The engine produces an event
+    /// stream even for collected HTTP requests; HTTP delivery mode does not
+    /// change the prompt-side parser state. ProviderLoop resolves an omitted
+    /// parser before calling the engine.
     ///
     /// A Qwen generation prompt with no think marker (Qwen3-VL Instruct,
     /// Qwen3 hybrid templates in thinking mode) starts in content: such a

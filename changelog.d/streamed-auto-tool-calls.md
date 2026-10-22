@@ -11,8 +11,8 @@ when it completes. Required and named tool choices keep validating before
 anything is shown.
 
 Long tool calls in the Gemma, GPT-OSS and framed-JSON formats no longer cost
-provider CPU time that grew with the square of their length; a 64 KB file
-write spent about 20 s of CPU parsing itself.
+provider CPU time that grows with the square of their length: parsing a 64 KB
+Gemma file write took about 20 s of CPU and now takes about 0.1 s.
 
 Qwen-family prompts whose generation prompt carries no think marker (for
 example Qwen3-VL Instruct) now stream their answer instead of buffering it

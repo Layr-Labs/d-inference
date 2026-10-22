@@ -44,7 +44,7 @@ enum ToolStreamPreparation {
     /// keep validate-then-expose, and native channel families keep their own
     /// withheld framing. The request must come from a surface that renders
     /// fragments (chat streaming).
-    static func exposesCallsWhileGenerated(
+    private static func exposesCallsWhileGenerated(
         request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared,
         context: ChatTemplateFixContext
@@ -53,8 +53,9 @@ enum ToolStreamPreparation {
             && !ToolChoiceEnforcementPolicy.usesNativeTextChannels(context)
     }
 
-    /// A call is exposed only once its resolved name is declared; anything
-    /// else completes in one piece and fails validation before it is shown.
+    /// A call is exposed only once its resolved name is declared. Any other
+    /// call completes in one piece and is validated before it is shown,
+    /// unless the parser rejects the frame and returns it as text.
     private static func streamingOptions(_ prepared: ToolChoicePromptPolicy.Prepared) -> ToolCallStreamingOptions {
         let allowed = prepared.allowedToolNames
         return ToolCallStreamingOptions(exposesName: { allowed.contains($0) })

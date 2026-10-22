@@ -50,7 +50,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16. The gpt-oss-20b floor was measured while its activations were float32 after layer 0 and has not been re-measured with bf16 activations | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |

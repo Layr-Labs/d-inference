@@ -681,7 +681,7 @@ measurements for the independent checkpoint profile:
 
 | Model | Fixed state per checkpoint (window, or recurrent state) | Full rows per 1,024 tokens | File at 6,144 tokens |
 |---|---:|---:|---:|
-| gpt-oss-20b (K/V float32 on 23 of 24 layers) | 6.03 MB | 50.33 MB (49,152 B per token) | 308.0 MB |
+| gpt-oss-20b (bf16 K/V on all 24 layers) | 3.15 MB | 25.17 MB (24,576 B per token) | 154.1 MB |
 | gemma-4-26b-qat-4bit | 209.7 MB | 20.97 MB | 335.5 MB |
 | qwen3.5-9b (conv/SSM state plus MTP history) | 51.5 MB | 41.95 MB | 303.2 MB |
 

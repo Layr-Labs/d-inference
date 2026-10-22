@@ -5,7 +5,6 @@ import sys
 for path in sys.argv[1:]:
     arm = None
     rows = []
-    tag = None
     with open(path, errors="replace") as f:
         for line in f:
             m = re.match(r"=== \S+ (\S+) arm (\w) bundle=(\S+) warmup=(\w+) cache_dir_before=(\w+)(.*)$", line)

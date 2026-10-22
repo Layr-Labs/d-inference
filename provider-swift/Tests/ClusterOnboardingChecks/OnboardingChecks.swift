@@ -899,6 +899,13 @@ import Darwin
         expect(U.changed(pinned: pinned, current: [:]).isEmpty, "update: nothing known, nothing re-planned")
         expect(U.statusLine == "Updating the cluster setup after a Darkbloom update.", "update: the status line")
         expect(U.checkEverySeconds <= 60 && U.retryAfterFailureSeconds >= 300, "update: noticed within a minute, a failure not retried in a loop")
+        // The re-plan waits for both Macs' memory: every Mac's summary, and both of them.
+        expect(U.released(["Mac A: nothing left running", "Mac B: nothing left running"]), "update: both released")
+        expect(!U.released(["Mac A: nothing left running", "Mac B: still running: this Mac's part of the model is still running"]),
+               "update: one Mac still holds its part")
+        expect(!U.released(["Mac A: nothing left running", "Mac B: did not answer (timeout)"]), "update: a Mac that did not answer")
+        expect(!U.released(["Mac A: nothing left running"]), "update: one Mac's summary is not both")
+        expect(U.releaseWaitSeconds >= 93, "update: the wait covers a part's forced exit")
     }
 
     /// The exact text and key count of a flow, for the evidence.

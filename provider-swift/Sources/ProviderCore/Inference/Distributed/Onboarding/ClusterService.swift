@@ -862,17 +862,31 @@ public final class ClusterService: @unchecked Sendable {
             }
             let live = self.controlLive
             if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
+            // Both Macs refuse the old parts once their workers changed, and the parts hold the model's memory until
+            // they stop: stop them and wait for the memory before planning. Planned while they run, a tensor-parallel
+            // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
+            // serving intent, so the next check tries again.
+            if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
+            let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
+            while Date() < releasedBy, case .success(let lines) = live.localVerifyTeardown(),
+                  !ClusterOnboardingUpdate.released(lines) {
+                Thread.sleep(forTimeInterval: 2)
+            }
+            func failedStopped(_ lines: [String]) {
+                try? self.store.updateRecord { $0.leadership?.serving = true }
+                failed(lines)
+            }
             let choices: [ClusterOnboardingModelChoice]
             switch live.localPlanModels() {
             case .success(let value): choices = value
-            case .failure(let failure): return failed(failure.lines)
+            case .failure(let failure): return failedStopped(failure.lines)
             }
             // `model` is the model's id (the record keeps ids; the screens show catalog names).
             guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
-                return failed(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
+                return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
             }
-            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
+            if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
+            if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
             say("set the cluster up again after the update: \(model) is starting on both Macs")
         }
     }

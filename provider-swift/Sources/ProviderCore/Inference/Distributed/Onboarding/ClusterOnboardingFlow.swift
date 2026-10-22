@@ -342,6 +342,14 @@ public enum ClusterOnboardingUpdate {
     public static let checkEverySeconds: Double = 60
     /// After a failed attempt, the next one waits this long (the screen and log say why).
     public static let retryAfterFailureSeconds: Double = 600
+    /// The longest the re-plan waits for both Macs to give back the stopped parts' memory (a part's forced exit
+    /// releases it within 93 s): the placement must price the memory the model will have, not what the old parts hold.
+    public static let releaseWaitSeconds: Double = 120
+
+    /// Both Macs' teardown summaries (`ClusterService.teardownLines`, one per Mac) say nothing is left running.
+    public static func released(_ lines: [String]) -> Bool {
+        lines.count >= 2 && lines.allSatisfy { $0.hasSuffix(": nothing left running") }
+    }
 
     /// The members whose running worker differs from the digest the saved setup pins. A member whose current digest
     /// is not known now (it did not answer) is not counted: nothing is re-planned on a guess.

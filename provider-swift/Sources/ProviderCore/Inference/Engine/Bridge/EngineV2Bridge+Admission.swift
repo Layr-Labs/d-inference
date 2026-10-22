@@ -95,6 +95,15 @@ extension EngineV2Bridge {
         if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
             prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
         }
+        if admissionFixes, !supportsPrefillRecoveryRetirement {
+            // Ordinary engines have no recovery probe: a contended sample must
+            // not lock admission until restart.
+            prefillRate = IsolatedPrefillAdmissionRate.resolve(
+                observed: prefillRate, anchor: calibratedIsolatedPrefillTps,
+                evidenceAge: performanceMeasurements.observationAge("isolated_prefill"),
+                engineIdle: active.isEmpty && pendingSubmissionIDs.allSatisfy { $0 == requestID },
+                nominalPosture: calibrationPosturePermitsWork())
+        }
         let decodeRate =
             ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
             ? observedDecodeTpsEwma
@@ -111,7 +120,11 @@ extension EngineV2Bridge {
             calibration: calibration,
             nativeTargetPrefill: nativeMedia
                 ? nativeMediaDeadlinePolicy(requestID: requestID, promptTokens: promptTokens,
-                    evidence: nativeMediaEvidence) : nil)
+                    evidence: nativeMediaEvidence) : nil,
+            // The decode EWMA is a per-request rate: charge one measured step
+            // per projected batch step, not every row's tokens.
+            decodeRateShape: DeadlineAdmissionFixes.decodeRateShape(observedDecodeShapeEwma,
+                enabled: admissionFixes, calibrated: calibration != nil))
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

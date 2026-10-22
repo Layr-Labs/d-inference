@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-21
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -26,6 +26,17 @@ terminal messages. Sources: [coordinator/protocol/profile_deadline.go](https://g
 | `projected_service_us` | Returned finite service-duration projection. Absent when unavailable/unbounded. |
 | `projected_prefill_tokens`, `projected_decode_tokens` | Engine-projected scheduled work through the target's first-token step, including work ahead of the target; not just the target request's tokens. |
 | `prefill_tps`, `decode_tps` | Effective rates passed to the engine. Native media reports the incoming target's observed prefill rate; existing queued work retains its separate legacy rate. Missing/unusable rates remain absent. |
+
+`projected_decode_tokens` remains the per-row decode sum. Without a reviewed
+calibration, the provider charges decode once per projected batch step
+([deadlines](../architecture/inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`), so `projected_service_us` is usually below
+`projected_prefill_tokens / prefill_tps + projected_decode_tokens / decode_tps`,
+which is the previous per-row charge. On an MTP engine such a projection also
+caps each decode row at the depth the live planner can use, so
+`projected_decode_tokens` counts one token per row, not the configured `1+k`,
+in steps beyond the batch gate or the automatic verification envelope.
+Wire fields are unchanged.
 
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can

@@ -616,6 +616,13 @@ inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
 
+Completed observations can reach the bridge out of engine-time order.
+`EnginePerformanceMeasurements.Rate` keeps age and expiry anchored to the newest
+observation in each aggregate, current-posture or workload-bucket series.
+Rate averaging and sample counts still follow receipt consumption order;
+an older receipt cannot move freshness backward or create a false evidence gap
+for the next observation. A heartbeat snapshot alone never renews evidence.
+
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
 first target prefill launch, after image/video/audio preparation, and ends at
@@ -859,6 +866,41 @@ isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
+
+Three estimator corrections shape those inputs; `DARKBLOOM_TTFT_ADMISSION_FIXES=0`
+restores the previous estimators
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
+Decode is charged per batch step: the decode EWMA is a per-request rate, so
+the policy carries the step shape of the requests that measured it
+(`CBv2DecodeRateShape`: token-producing rows per step, and confirmed tokens and
+assigned width per decode step). The engine prices each projected step as one
+measured step, `tokensPerStep / rate`, scaled by `max(1, width / stepWidth)`
+and `max(1, rows / batchRows)`, instead of summing every row's tokens. A plain
+step therefore costs one cadence whatever its batch size, and an MTP round
+costs the tokens it was measured confirming rather than its `1+k` draft width;
+the scaling is a bound when step time never falls and grows at most linearly
+with rows and width. The projection also mirrors the live MTP plan's depth gates
+(`CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows
+than `maxSpeculativeBatch`, or with no depth left inside the automatic
+verification envelope (`maxAutomaticRectangularTokens / rows - 1`; five or
+more rows at the 8-token M3-M5 envelope), charges each row one target token
+instead of `1+k`, and no step charges more depth than that ceiling. A
+projection with any media row keeps `1+k`, because target-only media rows
+can leave the planner's batch count. A request
+carrying a reviewed deadline calibration gets no shape: its calibrated
+conversion and its fallback keep the per-row charge, at the configured `1+k`
+width, that its error envelope was measured against and that serving
+qualification's two-conversion proof (`ServingQualificationDeadlineEvidence`)
+assumes.
+Ordinary engines (without the native recovery probe) bound the isolated
+prefill rate by the startup calibration cell's idle rate: admission never
+prices below one eighth of it, and evidence that expired while the engine sat
+idle at nominal posture is priced at no less than it. Evidence older than 30
+minutes on an idle engine is treated as absent, anchored or not, because a
+calibration cell can itself run under another process's GPU load.
+The published isolated rate is unchanged. A late older cold sample no longer
+restarts the combined prefill EWMA.
+
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
 state, competing profile identities and work limits, phase rates, and a

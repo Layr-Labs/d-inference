@@ -108,6 +108,22 @@ extension EngineV2Bridge {
         return tps.isFinite && tps > 0 && tps <= 20_000 ? tps : nil
     }
 
+    /// The decode steps behind `engineDecodeRate`: mean token-producing rows
+    /// over the steps that confirmed this request's tokens (its first-token
+    /// step plus decode steps), and confirmed tokens and assigned width per
+    /// decode step. Native block engines serve one plain row per step.
+    static func engineDecodeShape(usage: CBv2Usage, nativeBlock: Bool) -> CBv2DecodeRateShape {
+        let timing = usage.timing
+        let decodeSteps = Double(timing.decodeSteps)
+        guard !nativeBlock, decodeSteps > 0 else { return .init(batchRows: 1) }
+        func clamped(_ value: Double) -> Double { value.isFinite ? min(64, max(1, value)) : 1 }
+        let tokensPerStep = clamped(Double(max(0, usage.completionTokens - 1)) / decodeSteps)
+        return .init(
+            batchRows: clamped(Double(timing.batchRowsSum) / (decodeSteps + 1)),
+            tokensPerStep: tokensPerStep,
+            stepWidth: max(tokensPerStep, clamped(1 + Double(timing.mtpProposed) / decodeSteps)))
+    }
+
     static func engineObservationInstant(
         timing: CBv2RequestTiming, now: ContinuousClock.Instant,
         uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds
@@ -139,7 +155,8 @@ extension EngineV2Bridge {
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
                 overlap: overlap, at: observedAt,
                 postureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(),
-                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended)),
+                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended),
+                decodeShape: Self.engineDecodeShape(usage: usage, nativeBlock: usesNativeBlockTiming)),
                 requestID: id)
         }
         if calibration != nil { performanceUpdates?.notify(); return }

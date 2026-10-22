@@ -110,6 +110,32 @@ startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
 and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic
 timings prove state transitions, not real GPU throughput or fleet recovery.
 
+## Deadline Admission Estimators
+
+`EngineMeasurementOrderingTests` drives the measurement owner with synthetic
+timestamps across the 120-second expiry boundary, and the real `EngineV2Bridge`
+event pump with two scripted requests whose terminals arrive in reverse
+observation order. `AdmissionRateEstimatorTests` covers the kill switch, the
+anchored isolated-prefill policy (floor, idle expiry, posture, stale-evidence
+expiry with or without an anchor), poisoned-sample and slow-calibration
+lockouts through the bridge and the real submission path, decode step-shape
+measurement and plumbing, the per-row charge kept for reviewed calibrations,
+and a late older cold sample. In the SDK, the unit suite
+`CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
+shape conversion, the mirrored MTP depth gates (batch gate and automatic
+envelope, with a driver check that the ceiling bounds every live plan depth)
+and the full-slot stretch; the integration suite
+`CBv2PerBatchDecodeConversionTests` pins the engine conversion.
+
+```bash
+swift test --skip-build --no-parallel --filter 'EngineMeasurementOrderingTests|AdmissionRateEstimatorTests'
+```
+
+Run both SDK suites from `libs/mlx-swift-lm/` with `--filter CBv2PerBatchDecode`;
+they need no Metal library. These use scripted engines and synthetic numeric
+usage: no model or GPU runs, and they do not qualify live refusal rates,
+hardware performance or routing.
+
 ## Native Inference Checkpoint Storage Qualification
 
 Live attention and durable checkpoint precision are independent. Build the

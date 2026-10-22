@@ -83,8 +83,9 @@ public actor GlobalKVCacheBudget {
 
     /// Busy engines keep memory that only an explicit release returns: MLX's
     /// buffer pool (the idle-gated sweep) or retained free KV segments. Load
-    /// gates then release both once before evicting, and refused engine-owned
-    /// growth requests a reclaim. False only when both rollbacks are set.
+    /// gates then release both once before evicting, and refused direct
+    /// charges request a reclaim (`directChargeRefusalSignal`). False only
+    /// when both rollbacks are set.
     static func busyEnginesKeepReclaimableMemory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {

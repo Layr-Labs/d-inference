@@ -1060,10 +1060,11 @@ lock
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
 (`cbv2ZeroFilledPages`)). Parked backing is dropped on a refused admission, on
 a process-wide release request (memory pressure, a refused charge, a load gate
-or startup-preload check short of memory) and after 30 s of engine idleness. The proactive allocator-cache
-sweep flushes between busy engines' steps only when the pool crowds out
-admission headroom (`KVPoolReclaimer.proactiveWindow`); otherwise it waits for
-5 s of whole-Mac idleness and clears while request admission waits
+or startup-preload check short of memory) and after 30 s of engine idleness.
+The proactive allocator-cache sweep flushes between busy engines' steps only
+when the pool crowds out admission headroom
+(`KVPoolReclaimer.proactiveWindow`); otherwise it waits for 5 s of whole-Mac
+idleness and clears while request admission waits
 (`WholeMacServiceBudget.performIfIdle`).
 `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
 restore the previous behavior ([configuration](../reference/configuration.md)).

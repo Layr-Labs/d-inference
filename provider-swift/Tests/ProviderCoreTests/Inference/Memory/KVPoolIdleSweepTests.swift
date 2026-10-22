@@ -160,19 +160,21 @@ struct KVPoolIdleSweepTests {
         let budget = WholeMacServiceBudget(clockNow: { clock.now })
         #expect(!budget.performIfIdle(for: .seconds(5)) { Issue.record("ran before 5 s of idleness") })
         clock.advance(.seconds(5))
-        let admitted = SweepSpy(reclaimable: 0)
+        let events = SweepSpy(reclaimable: 0)
         var admission: Task<Void, Never>?
         let ran = budget.performIfIdle(for: .seconds(5)) {
             admission = Task.detached {
                 #expect(budget.acquire(ownerID: "request", concurrency: 1))
-                admitted.reclaimable = 1
+                events.record("admitted")
             }
             usleep(100_000)
-            #expect(admitted.reclaimable == 0, "the request was admitted during the idle-only operation")
+            events.record("idle operation")
         }
         #expect(ran)
         await admission?.value
-        #expect(admitted.reclaimable == 1 && budget.count == 1)
+        #expect(events.flushes == ["idle operation", "admitted"],
+                "the request was admitted during the idle-only operation")
+        #expect(budget.count == 1)
         #expect(!budget.performIfIdle(for: .zero) { Issue.record("ran while a request is charged") })
         budget.release(ownerID: "request")
     }

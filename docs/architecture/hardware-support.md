@@ -342,9 +342,9 @@ standalone server runs the same sequence in
   first cancels the clear without spending the reclaim rate limit, and one
   arriving during it is admitted afterwards. Every shortfall reclaim or
   pressure sweep also asks paged pools to drop retained free KV segments,
-  even when it does not flush. Refused charges that bypass request reservations (paged engine
-  growth, native MiMo media work) signal that reclaim while either the idle
-  sweep or segment retention is on
+  even when it does not flush. Refused charges that bypass request
+  reservations (paged engine growth, native MiMo media work) signal that
+  reclaim while either the idle sweep or segment retention is on
   (`GlobalKVCacheBudget.directChargeRefusalSignal`). Retained segments are
   allocator-active memory, so load admission counts them as reclaimable
   (`CBv2RetainedKVSegments.retainedBytes`). The load gates

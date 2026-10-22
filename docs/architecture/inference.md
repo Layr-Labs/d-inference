@@ -1084,9 +1084,9 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for GPT-OSS, dense Qwen3.5/3.8 and Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for GPT-OSS and Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
@@ -1103,19 +1103,19 @@ Environment variables are named here, never defaulted; defaults live in
 
 With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is
 the prompt work a busy engine runs beside its decode rows: a solo stripe never
-arms beside an unpaused decode row (`SchedulerV2.plan`). GPT-OSS, dense
-Qwen3.5/3.8 and Gemma 4 take the 2,048-token plain chunk and a 4,096-token
-step, so a full chunk and a finishing row's remainder share one step with the
-decode rows. The wider chunk amortizes each step's fixed host and readback cost
-over more prompt tokens and gives MoE expert GEMMs more rows per expert; a
-prompt needs a quarter of the mixed steps, so decode rows also spend more steps
-without prompt work. The chunk replaces the 2,048-token GPT-OSS and Gemma 4
-stripes rather than exceeding them, and dense Qwen's 4,096-token stripe stays
-armed above it, so the paged pool's `maxPrefillChunk`
-(`max(prefillChunkSize, soloPrefillStripeTokens)`, `makeSegmentedPagedBackend`)
-and every windowed-ring KV charge stay unchanged. The trade is inter-token
-latency: a decode token that shares a step with prompt work waits for the whole
-chunk, so the p90 gap shrinks while the p99 gap grows two to three times. The
+arms beside an unpaused decode row (`SchedulerV2.plan`). Gemma 4 takes the
+2,048-token plain chunk and a 4,096-token step, so a full chunk and a finishing
+row's remainder share one step with the decode rows. The wider chunk amortizes
+each step's fixed host and readback cost over more prompt tokens and gives MoE
+expert GEMMs more rows per expert; a prompt needs a quarter of the mixed steps,
+so decode rows also spend more steps without prompt work. The chunk replaces
+Gemma 4's 2,048-token stripe rather than exceeding it, so the paged pool's
+`maxPrefillChunk` (`max(prefillChunkSize, soloPrefillStripeTokens)`,
+`makeSegmentedPagedBackend`) and every windowed-ring KV charge stay unchanged.
+The same holds for the GPT-OSS and dense Qwen opt-in below. The trade is
+inter-token latency: a decode token that shares a step with prompt work waits
+for the whole chunk, so the p90 gap shrinks while the p99 gap grows two to
+three times. The
 [2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
 record the load, engine and memory evidence; the activation effect is in
 [hardware support](hardware-support.md#serving-width-by-chip).
@@ -1132,6 +1132,7 @@ Other families keep 512 / 2048 (`usesWidePrefillChunk`):
 
 | Family | Reason |
 |---|---|
+| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
 | Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
 | MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
 | Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
@@ -1142,9 +1143,9 @@ step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set. Like every
 numerics fingerprint (`PrefixCachePolicy.completeCheckpointIdentity`) and
 disqualifies reviewed serving and deadline profiles
 (`ServingPerformanceProfiles.runtimeOverridesAreAbsent`,
-`DeadlineRuntimeEnvironment.permitsQualification`). A solo chunk on GPT-OSS or
-Gemma 4 no longer counts toward `soloStripeChunks`, which still counts chunks
-wider than `prefillChunkSize`.
+`DeadlineRuntimeEnvironment.permitsQualification`). A solo chunk on Gemma 4
+no longer counts toward `soloStripeChunks`, which still counts chunks wider
+than `prefillChunkSize`.
 
 ### Deadlines
 
@@ -2027,9 +2028,8 @@ or change consumer/OpenRouter routing.
    `DARKBLOOM_CBV2_MTP` off never refuses a load — `EngineV2SlotFactory+MTP.swift`,
    `MTPContractsV2.swift` (`envEnabled`).
 8. Default prompt geometry never widens the largest schedulable chunk or a
-   bidirectional media chunk: the wide plain chunk equals the former GPT-OSS
-   and Gemma 4 stripe and stays below dense Qwen's, and block-bearing requests
-   keep the SDK chunk — `EngineV2Factory+Configuration.swift`
+   bidirectional media chunk: the wide plain chunk equals Gemma 4's former
+   stripe, and block-bearing requests keep the SDK chunk — `EngineV2Factory+Configuration.swift`
    (`usesWidePrefillChunk`, `prefillGeometry`), `SchedulerV2.swift`
    (`prefillChunkCap`).
 9. A Gemma 4 block chunk never exceeds the 2,048-token `maxPrefillChunk` its

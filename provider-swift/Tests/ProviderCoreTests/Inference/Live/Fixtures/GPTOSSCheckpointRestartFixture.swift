@@ -8,16 +8,9 @@ import Testing
 @testable import ProviderCore
 
 /// Exact catalog weights and production paged assembly. Only the cache root and
-/// installation key are test-owned, plus the SDK prompt geometry a test passes
-/// to exercise a solo-stripe-to-company cap change; this proves engine
-/// reconstruction, not keychain recovery or a provider-process restart.
+/// installation key are test-owned; this proves engine reconstruction, not
+/// keychain recovery or a provider-process restart.
 final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
-    /// GPT-OSS serves a 2,048-token plain chunk; these values restore the SDK's
-    /// 512-token company chunk below its 2,048-token solo stripe.
-    static let sdkPrefillGeometry = [
-        EngineV2Factory.prefillChunkKey: String(CBv2SchedulerConfig().prefillChunkSize),
-        EngineV2Factory.stepTokenBudgetKey: String(CBv2SchedulerConfig().maxBatchedTokensPerStep),
-    ]
     static let modelID = "gpt-oss-20b"
     static let upstreamModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
     static let modelHash = "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512"
@@ -203,8 +196,7 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
         return store
     }
 
-    func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1,
-                    environment overrides: [String: String] = [:]) throws -> EngineV2Bridge {
+    func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1) throws -> EngineV2Bridge {
         try #require(PrefixCachePolicy.isEnabled(modelId: Self.modelID, environment: [:]),
                      "the exact catalog model must activate caching without an opt-in")
         #expect(!PrefixCachePolicy.isMemoryEnabled(environment: [:]))
@@ -212,8 +204,7 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
             model: model, modelID: Self.modelID, tokenizer: tokenizer.inner,
             kvBytesCapacity: 16 << 30, maxConcurrentRequests: maxConcurrentRequests,
             completePrefixCache: store, kvBackend: .auto, checkpointQuantization: .native,
-            environment: (store == nil ? ["DARKBLOOM_PREFIX_CACHE": "0"] : [:])
-                .merging(overrides) { _, explicit in explicit })
+            environment: store == nil ? ["DARKBLOOM_PREFIX_CACHE": "0"] : [:])
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,
                      "default GPT-OSS serving must resolve to paged without fallback")
         let bridge = EngineV2Bridge(engine: build.engine, modelId: Self.modelID,

@@ -1,6 +1,6 @@
 # Mixed-step prefill geometry: load, engine and memory measurements
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 A 2,048-token plain prefill chunk with a 4,096-token step budget cut busy-engine
 time to first token on GPT-OSS 20B, Qwen3.5-9B and Gemma 4 26B QAT under a
@@ -9,9 +9,14 @@ M3 Ultra. At eight concurrent 32k-token prompts the KV-subtracted activation
 peak rises by 0.1-1.3 GiB: Gemma stays well inside its floor, GPT-OSS moves from
 its 3.5 GiB floor to 0.1 GiB above it, and Qwen3.5-9B, already above the 5.5 GiB
 default under its existing 4,096-token solo stripe, rises another 0.3 GiB.
-MoE Qwen, which keeps 512 / 2,048, rises 2.1 GiB. These results back the
+MoE Qwen rises 2.1 GiB. Only Gemma 4 takes the wide geometry by default
+([default scope](#default-scope)); GPT-OSS and dense Qwen keep 512 / 2,048 and
+can opt in. These results back the
 [prompt geometry](../architecture/inference.md#prompt-geometry) defaults; they
-are performance and memory evidence, not quality qualification.
+are performance and memory evidence, not quality qualification. Every arm ran
+on mlx-swift-lm `cef662176`, the paired SDK change before its merge, which
+predates SDK #326 (GPT-OSS bf16 activations) and #327 (fused causal prompt
+attention).
 
 ## Mechanism
 
@@ -108,6 +113,33 @@ long-context re-measurement either way. With the GPU shared, the 512 / 2,048 32k
 arms for Gemma and GPT-OSS each lost rows to the 120 s admission lease; every
 2,048 / 4,096 row completed, the last first token at 80 s and 100 s.
 
+## Default scope
+
+The activation floors are measured at eight rows with prompts of at least 4k
+tokens ([floor measurements](2026-08-30-activation-floor-measurements.md)), so
+both probe cells above fall in their measurement range. Margin left below the
+floor, in GiB:
+
+| Model, floor | 8,192 tokens, 512 / 2,048 → 2,048 / 4,096 | 32,768 tokens, 512 / 2,048 → 2,048 / 4,096 |
+|---|---|---|
+| Gemma 4 26B QAT, 5.5 | 3.88 → 3.50 | 3.06 → 1.77 |
+| GPT-OSS 20B, 3.5 | 1.13 → 1.01 | 0.00 → -0.12 |
+| Qwen3.5-9B, 5.5 | 1.46 → 1.43 | -0.23 → -0.53 |
+
+No existing margin absorbs the 32k increase. The live KV gate grants KV until
+MLX usage plus the activation reserve reaches the cap
+(`UnifiedMemoryCap.liveKVHeadroomBytes`), so once a provider's KV budget is
+full, activation above the reserve lands beyond the cap, in the OS reserve.
+The wide geometry moves GPT-OSS from its floor to 0.12 GiB beyond it and
+Qwen3.5-9B from 0.23 to 0.53 GiB beyond its default. Gemma 4 therefore keeps
+2,048 / 4,096 by default, with at least 1.77 GiB left. GPT-OSS and dense Qwen
+keep 512 / 2,048; `DARKBLOOM_CBV2_PREFILL_CHUNK=2048` with
+`DARKBLOOM_CBV2_STEP_TOKENS=4096` opts them in for measurement. Making it
+their default needs a long-context floor re-measurement on the shipped SDK,
+coordinated with platform admission; the previous geometry already reaches
+both floors at 32k. Dense Qwen3.8-27B was never measured under the wide
+geometry and keeps the SDK geometry with Qwen3.5-9B.
+
 ## Gemma 4 media
 
 A Gemma 4 26B QAT paged request with one 280-token image span 768 tokens before
@@ -131,12 +163,15 @@ chunk equals Gemma's former stripe.
 
 ## Limitations
 
-- Only GPT-OSS 20B, Qwen3.5-9B and Gemma 4 26B QAT were load-tested. MoE Qwen,
-  Qwen3-VL, Qwen4, MiMo, Nemotron and Bonsai keep 512 / 2,048.
+- Only GPT-OSS 20B, Qwen3.5-9B and Gemma 4 26B QAT were load-tested, and only
+  Gemma 4 takes the wide geometry by default. Other Gemma 4 sizes inherit it
+  by family; the catalog serves only 26B-A4B artifacts.
+- The SDK revision predates the GPT-OSS bf16 activation fix, so the GPT-OSS
+  peaks may be lower on the shipped SDK; they have not been re-measured.
 - The engine cells and probes ran on a shared GPU; their timings are paired
   comparisons. Memory counters are process-local and unaffected.
-- No load arm used repeated prefixes. Dense Qwen donors prefilled beside decode
-  rows now leave recurrent checkpoints every 2,048 tokens.
+- No load arm used repeated prefixes. Under the opt-in, dense Qwen donors
+  prefilled beside decode rows leave recurrent checkpoints every 2,048 tokens.
 - Inter-token gap tails were measured only in the engine cells, on the
   M5 Ultra. Slower GPUs stretch each mixed step proportionally.
 - The memory probes attached no MTP drafter and used eight rows on one

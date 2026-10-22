@@ -179,8 +179,8 @@ struct LaunchAgentEnvironmentTests {
     }
 
     @Test func forwardsPrefillGeometryRollbackToProviderJob() {
-        // The wide mixed-step chunk is the default for measured families; its
-        // rollback only works if it reaches the launchd-managed provider job.
+        // The wide mixed-step chunk is Gemma 4's default; its rollback (and
+        // another family's opt-in) only works if it reaches the provider job.
         let rollback = [
             EngineV2Factory.prefillChunkKey: "512",
             EngineV2Factory.stepTokenBudgetKey: "2048",

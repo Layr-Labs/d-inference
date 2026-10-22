@@ -1,5 +1,5 @@
 // Copyright © 2026 Eigen Labs.
-// Production prompt geometry: the measured families take the wide plain chunk,
+// Production prompt geometry: Gemma 4 takes the wide plain chunk, its
 // bidirectional media keeps the SDK chunk, every other family keeps the SDK
 // geometry, and explicit overrides roll back or opt in without changing what
 // the paged pool is sized from.
@@ -71,6 +71,10 @@ private let rollback = [
     EngineV2Factory.prefillChunkKey: "512", EngineV2Factory.stepTokenBudgetKey: "2048",
 ]
 
+private let optIn = [
+    EngineV2Factory.prefillChunkKey: "2048", EngineV2Factory.stepTokenBudgetKey: "4096",
+]
+
 private func geometry(
     _ model: (any LanguageModel)?, _ environment: [String: String] = [:]
 ) -> Geometry {
@@ -91,22 +95,23 @@ private func sdkGeometry(stripe: Int?) -> Geometry {
 
 @Suite("Production prefill geometry")
 struct EngineV2PrefillGeometryTests {
-    @Test("measured families take the wide chunk; dense Qwen keeps its stripe above it")
-    func measuredFamiliesUseWideChunk() throws {
-        #expect(geometry(try geometryGPTOSS()) == wide(stripe: nil))
+    @Test("only Gemma 4 takes the wide chunk by default")
+    func gemmaUsesWideChunk() throws {
         #expect(geometry(try geometryGemma4Text()) == wide(stripe: nil))
-        #expect(geometry(try geometryDenseQwen())
-            == wide(stripe: EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens))
     }
 
     @Test("every other family keeps the SDK geometry and its armed stripe")
     func otherFamiliesKeepSDKGeometry() throws {
-        let models: [(any LanguageModel)?] = [nil, try geometryMoEQwen()]
+        // GPT-OSS and dense Qwen measured faster with the wide chunk, but their
+        // activation peaks rose further above their floors at 8 x 32k.
+        let models: [(any LanguageModel)?] = [nil, try geometryMoEQwen(), try geometryGPTOSS()]
         for model in models {
             let name = model.map { String(describing: type(of: $0)) } ?? "nil"
             #expect(geometry(model) == sdkGeometry(stripe: EngineV2Factory.defaultSoloPrefillStripeTokens),
                 "\(name)")
         }
+        #expect(geometry(try geometryDenseQwen())
+            == sdkGeometry(stripe: EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens))
     }
 
     @Test("the scheduler config carries exactly the resolved geometry")
@@ -130,11 +135,14 @@ struct EngineV2PrefillGeometryTests {
     @Test("pool sizing is unchanged: the largest schedulable chunk stays the old stripe")
     func pagedPoolChunkIsUnchanged() throws {
         // `makeSegmentedPagedBackend` sizes windowed rings, and the KV charges
-        // derived from them, from max(chunk, stripe). The wide chunk replaces
-        // the 2,048-token stripe rather than exceeding it, and media stays below it.
-        let models: [any LanguageModel] = [try geometryGPTOSS(), try geometryGemma4Text(), try geometryDenseQwen()]
+        // derived from them, from max(chunk, stripe). The wide chunk, Gemma's
+        // default and the measured opt-in elsewhere, replaces the 2,048-token
+        // stripe rather than exceeding it, and media stays below it.
+        let gemma = try geometryGemma4Text()
+        #expect(geometry(gemma) == geometry(gemma, optIn))
+        let models: [any LanguageModel] = [try geometryGPTOSS(), gemma, try geometryDenseQwen()]
         for model in models {
-            let widened = geometry(model)
+            let widened = geometry(model, optIn)
             let old = geometry(model, rollback)
             let ring = max(widened.prefillChunkTokens, widened.soloPrefillStripeTokens ?? 0)
             #expect(ring == max(old.prefillChunkTokens, old.soloPrefillStripeTokens ?? 0))
@@ -152,8 +160,8 @@ struct EngineV2PrefillGeometryTests {
         #expect(geometry(try geometryDenseQwen(), rollback)
             == sdkGeometry(stripe: EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens))
         // The chunk alone already selects the SDK budget: twice 512 is below it.
-        let gptoss = try geometryGPTOSS()
-        #expect(geometry(gptoss, [EngineV2Factory.prefillChunkKey: "512"]) == geometry(gptoss, rollback))
+        let gemma = try geometryGemma4Text()
+        #expect(geometry(gemma, [EngineV2Factory.prefillChunkKey: "512"]) == geometry(gemma, rollback))
     }
 
     @Test("an explicit chunk applies to every family, scales the budget and keeps media narrow")
@@ -178,18 +186,18 @@ struct EngineV2PrefillGeometryTests {
 
     @Test("malformed or nonpositive chunks restore the SDK chunk for every family")
     func malformedChunkFailsTowardSDK() throws {
-        let gptoss = try geometryGPTOSS()
+        let gemma = try geometryGemma4Text()
         for raw in ["0", "-512", "2k", "", " 2048"] {
-            #expect(geometry(gptoss, [EngineV2Factory.prefillChunkKey: raw])
+            #expect(geometry(gemma, [EngineV2Factory.prefillChunkKey: raw])
                 == sdkGeometry(stripe: EngineV2Factory.defaultSoloPrefillStripeTokens), "\(raw)")
         }
     }
 
     @Test("a step budget must cover the chunk; anything else restores the SDK budget")
     func stepBudgetOverride() throws {
-        let gptoss = try geometryGPTOSS()
+        let gemma = try geometryGemma4Text()
         func budget(_ raw: String) -> Int {
-            geometry(gptoss, [EngineV2Factory.stepTokenBudgetKey: raw]).maxBatchedTokensPerStep
+            geometry(gemma, [EngineV2Factory.stepTokenBudgetKey: raw]).maxBatchedTokensPerStep
         }
         #expect(budget("6144") == 6144)
         #expect(budget("2048") == 2048)
@@ -266,19 +274,19 @@ struct EngineV2PrefillGeometryEngineTests {
             sampling: .init(temperature: 0), maxTokens: 2, prefixCacheEnabled: false)
     }
 
-    @Test("a busy GPT-OSS engine prefills 2,048-token chunks; the rollback restores 512")
+    @Test("a busy GPT-OSS engine keeps 512-token chunks; the opt-in prefills 2,048")
     func busyEngineChunkGeometry() async throws {
         let model = try geometryGPTOSS()
         let request = { (id: CBv2RequestID) in Self.textRequest(id, tokens: 5_000) }
-        let widened = try await prefillBesideDecode(model: model, request: request, maxContextLength: 8_192)
+        let widened = try await prefillBesideDecode(
+            model: model, request: request, overrides: optIn, maxContextLength: 8_192)
         #expect(widened.prefillChunkTokensMax == 2_048)
         #expect(widened.prefillChunks == 3)
         #expect(widened.soloStripeChunks == 0)
-        let old = try await prefillBesideDecode(
-            model: model, request: request, overrides: rollback, maxContextLength: 8_192)
-        #expect(old.prefillChunkTokensMax == 512)
-        #expect(old.prefillChunks == UInt32((5_000 + 511) / 512))
-        #expect(old.soloStripeChunks == 0)
+        let sdk = try await prefillBesideDecode(model: model, request: request, maxContextLength: 8_192)
+        #expect(sdk.prefillChunkTokensMax == 512)
+        #expect(sdk.prefillChunks == UInt32((5_000 + 511) / 512))
+        #expect(sdk.soloStripeChunks == 0)
     }
 
     @Test("Gemma 4 text widens beside decode while its bidirectional media keeps 512")

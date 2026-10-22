@@ -121,8 +121,8 @@ struct SchedulerPrefillDecisionLiveRunnerTests {
             configuration: configuration, cap: 1)
         #expect(environment["UNRELATED"] == "kept")
         #expect(environment[EngineV2Factory.maxPartialPrefillsKey] == "1")
-        // GPT-OSS defaults to a 2,048-token plain chunk with no stripe; the
-        // pinned geometry restores the configured chunk, budget and stripe.
+        // An inherited 4,096-token chunk would swallow the 2,048-token stripe;
+        // the pinned geometry restores the configured chunk, budget and stripe.
         let gptoss = GPTOSSModel(try JSONDecoder().decode(GPTOSSConfiguration.self,
             from: JSONSerialization.data(withJSONObject: [
                 "model_type": "gpt_oss", "num_hidden_layers": 2, "num_local_experts": 4,

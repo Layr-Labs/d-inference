@@ -321,7 +321,7 @@ previous resident implementation, not SSD performance.
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
-tokens, plain chunks under decode company 2,048. Packed prefill and preemption
+tokens, plain chunks under decode company 512. Packed prefill and preemption
 disarm capture; a ragged range end is simply not a boundary. A model whose
 prefill output depends on the chunk partition sets
 `alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled
@@ -531,13 +531,7 @@ block-hash size) and query-block aligned, or, equivalently in production, the
 end of a full chunk of its own cap (the clause that keeps files written under
 the earlier uniform-chunk rule and the small-chunk engine fixtures valid), at
 or above the store's 1,024-token floor, so a donor prefilled in 512-token
-chunks retains 1,024 first and one prefilled in 2,048-token chunks retains
-2,048 first. Under decode company, where no demanded split applies, a dense
-Qwen donor's 2,048-token plain chunks therefore leave no durable boundary in a
-prompt shorter than 2,048 tokens, and its deepest boundary at or below a hint
-can sit up to 2,047 tokens below it
-(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`,
-`usesWidePrefillChunk`). The durable path skips the prompt end itself
+chunks retains 1,024 first. The durable path skips the prompt end itself
 because export needs a token after the checkpoint; the resident
 bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
 [native-checkpoint chunk-partition parity measurement](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-27-qwen-chunk-partition-parity.md):

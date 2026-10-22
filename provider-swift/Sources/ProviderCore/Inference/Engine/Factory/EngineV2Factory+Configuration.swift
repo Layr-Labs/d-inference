@@ -66,7 +66,7 @@ extension EngineV2Factory {
     public static let prefillChunkKey = "DARKBLOOM_CBV2_PREFILL_CHUNK"
     public static let stepTokenBudgetKey = "DARKBLOOM_CBV2_STEP_TOKENS"
     /// Plain chunk, and therefore the prompt work beside decode rows, for the
-    /// families whose busy-engine serving measurements back it
+    /// family whose busy-engine serving and activation measurements back it
     /// (`usesWidePrefillChunk`).
     public static let widePrefillChunkTokens = 2048
 
@@ -94,14 +94,20 @@ extension EngineV2Factory {
             bidirectionalMediaPrefillChunkCeiling: chunk > sdkChunk ? sdkChunk : nil)
     }
 
-    /// GPT-OSS, dense Qwen3.5/3.8 (its 4,096-token stripe stays armed above
-    /// the chunk) and Gemma 4. Nemotron and Bonsai demanded checkpoints split
-    /// only an armed 2,048-token stripe; MoE Qwen's measured activation peak
-    /// rises about 2 GiB under the wide geometry; Qwen3-VL, Qwen4, MiMo and
+    /// Gemma 4 only. GPT-OSS and dense Qwen3.5/3.8 also reached the first token
+    /// sooner under it, but at eight 32k-token prompts it lifted their
+    /// KV-subtracted activation peaks further above their activation floors
+    /// (GPT-OSS 3.50 to 3.62 GiB against 3.5; Qwen3.5-9B 5.73 to 6.03 against
+    /// 5.5), and floors move only with a platform-coordinated re-measurement.
+    /// Nemotron and Bonsai demanded checkpoints split only an armed 2,048-token
+    /// stripe; MoE Qwen's peak rises about 2 GiB; Qwen3-VL, Qwen4, MiMo and
     /// other families have no busy-engine measurement of it.
     static func usesWidePrefillChunk(_ model: (any LanguageModel)?) -> Bool {
-        model is GPTOSSModel || isDenseQwen35(model)
-            || model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
+        isGemma4(model)
+    }
+
+    static func isGemma4(_ model: (any LanguageModel)?) -> Bool {
+        model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4
     }
 
     /// Absent selects the family default. A positive explicit value applies to
@@ -155,7 +161,7 @@ extension EngineV2Factory {
         config.bidirectionalMediaPrefillChunkCeiling = geometry.bidirectionalMediaPrefillChunkCeiling
         config.mixedStepPrefillTokenCap = MixedPrefillPolicy.resolve(
             modelID: modelID, profile: performanceProfile, environment: environment,
-            requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
+            requiresNarrowingFloor: isGemma4(model))
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
         if let limit = calibratedPrefillTokenLimit(model: model) {

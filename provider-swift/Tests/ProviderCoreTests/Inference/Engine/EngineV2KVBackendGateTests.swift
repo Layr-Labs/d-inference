@@ -740,13 +740,14 @@ struct EngineV2KVBackendGateTests {
             let paged = try #require(backend as? PagedKVBackend)
             return (prepared.schedulerConfig, paged.pool.config.maxPrefillChunk)
         }
-        let (wide, widePoolChunk) = try prepare([:])
+        // GPT-OSS keeps the SDK geometry by default; the wide chunk is an opt-in.
+        let (wide, widePoolChunk) = try prepare([
+            EngineV2Factory.prefillChunkKey: "2048", EngineV2Factory.stepTokenBudgetKey: "4096",
+        ])
         #expect(wide.prefillChunkSize == EngineV2Factory.widePrefillChunkTokens)
         #expect(wide.maxBatchedTokensPerStep == 2 * EngineV2Factory.widePrefillChunkTokens)
         #expect(wide.soloPrefillStripeTokens == nil)
-        let (sdk, sdkPoolChunk) = try prepare([
-            EngineV2Factory.prefillChunkKey: "512", EngineV2Factory.stepTokenBudgetKey: "2048",
-        ])
+        let (sdk, sdkPoolChunk) = try prepare([:])
         #expect(sdk.prefillChunkSize == 512 && sdk.maxBatchedTokensPerStep == 2048)
         #expect(sdk.soloPrefillStripeTokens == EngineV2Factory.defaultSoloPrefillStripeTokens)
         // Windowed rings and their KV charges follow max(chunk, stripe).

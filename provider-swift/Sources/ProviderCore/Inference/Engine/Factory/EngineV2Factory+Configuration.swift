@@ -331,7 +331,9 @@ extension EngineV2Factory {
         return min(max(0, kvBytesCapacity), physicalCap)
     }
 
-    /// GPT-OSS contiguous owning-full rows use fp32: add their fp16 byte rate once.
+    /// Fallback for callers without observed native types; production slots
+    /// always supply them. GPT-OSS contiguous owning-full rows are charged as
+    /// fp32 by adding their fp16 byte rate once, which over-reserves bf16 rows.
     /// Other contiguous rows retain the nominal rate; overflow saturates safely.
     static func nativeKVBytesPerToken(
         nominalFP16BytesPerToken: Int,

@@ -278,14 +278,20 @@ struct FlintNativeProtocolFactoryTests {
         }
     }
 
-    @Test func customStopsAndBadBoundariesAreRefusedOnlyForExactFlint() throws {
+    @Test func customStopsUseTheAnswerChannelAndBadBoundariesAreRefusedOnlyForExactFlint() throws {
         let request = try request(stop: #", "stop":["done"]"#)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "flint")
         let handle = TokenizerHandle(FlintProtocolTestTokenizer())
+        let stops: Set<Int> = [150001, 150003, 150005, 150018]
+        let constraint = try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,
+            modelContext: .init(modelId: request.model, modelType: "flint"),
+            defaultMaxTokens: 100, stopTokenIDs: stops, nativePromptTokens: [150004])
+        #expect(constraint is FlintAnswerStopConstraint)
+        #expect(constraint?.mode == .auto)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,
                 modelContext: .init(modelId: request.model, modelType: "flint"),
-                defaultMaxTokens: 100, stopTokenIDs: [150001], nativePromptTokens: [150004])
+                defaultMaxTokens: 100, stopTokenIDs: stops, nativePromptTokens: [150006])
         }
         for type in ["other", "Flint", " flint "] {
             #expect(try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,

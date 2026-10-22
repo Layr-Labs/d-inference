@@ -41,10 +41,14 @@ struct LocalChatRequestTests {
         // are retained.
         let glm = try decoder.decode(GLM5NextPromptPolicy.RawControls.self, from: data)
         #expect(glm.invalid && glm.hasOriginalTools)
+        // Flint likewise refuses the padded effort and `preserve_thinking`.
+        let flint = try decoder.decode(FlintRequestPolicy.RawControls.self, from: data)
+        #expect(flint.invalid && !flint.withholdsReasoning)
         var expected = ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
             promptDate: try #require(local.templateControls.promptDate))
             .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
+            .withRawFlintControls(flint)
         expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
         #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
@@ -78,7 +82,13 @@ struct LocalChatRequestTests {
         } else {
             #expect(throws: (any Error).self) { try glm.validate() }
         }
+        // Flint refuses the same malformed fragments; the valid one declines
+        // reasoning, which Flint withholds.
+        let flint = try JSONDecoder().decode(FlintRequestPolicy.RawControls.self, from: data)
+        #expect(flint.invalid == invalid)
+        #expect(flint.withholdsReasoning == fragment.hasPrefix(#""unknown_extension""#))
         let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
+            .withRawFlintControls(flint)
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -101,11 +111,14 @@ struct LocalChatRequestTests {
         #expect(glm.map(\.invalid) == [false, false, true])
         #expect(glm.map(\.disablesThinking) == [true, false, false])
         #expect(glm.map(\.requestsThinking) == [false, false, true])
+        let flint = try decoder.decode([FlintRequestPolicy.RawControls].self, from: data)
+        #expect(flint.map(\.invalid) == [false, false, true])
         let expected = [
-            ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0]),
-            ChatTemplateControls().withRawGLM5Controls(glm[1]),
+            ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0])
+                .withRawFlintControls(flint[0]),
+            ChatTemplateControls().withRawGLM5Controls(glm[1]).withRawFlintControls(flint[1]),
             ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true))
-                .withRawGLM5Controls(glm[2]),
+                .withRawGLM5Controls(glm[2]).withRawFlintControls(flint[2]),
         ]
         for (item, controls) in zip(local, expected) {
             #expect(item.templateControls == controls.withPromptDate(try #require(item.templateControls.promptDate)))

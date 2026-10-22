@@ -23,6 +23,10 @@ final class FlintNativeVocabulary: Sendable {
     let markerCompleters: [Int]
     let keyDelimiters: [Int]
     let jsonSensitive: [Int]
+    /// Response-format string bodies: quote, escape, marker close and C0.
+    let jsonStringSensitive: [Int]
+    /// Non-stop tokens in bytewise piece order, for prefix-pruned searches.
+    let byteOrderedTokenIDs: [Int32]
     let byFirstByte: [[Int]]
     private let longestFirst: [Int]
 
@@ -74,6 +78,12 @@ final class FlintNativeVocabulary: Sendable {
         jsonSensitive = pieces.indices.filter {
             !stopTokenIDs.contains($0) && pieces[$0].contains(where: significant.contains)
         }
+        let nonStop = pieces.indices.filter { !stopTokenIDs.contains($0) }
+        jsonStringSensitive = nonStop.filter { id in
+            pieces[id].contains { $0 < 0x20 || $0 == 34 || $0 == 92 || $0 == 62 }
+        }
+        byteOrderedTokenIDs = nonStop.sorted { pieces[$0].lexicographicallyPrecedes(pieces[$1]) }
+            .map { Int32($0) }
         var buckets = [[Int]](repeating: [], count: 256)
         for id in pieces.indices where !stopTokenIDs.contains(id) {
             if let first = pieces[id].first { buckets[Int(first)].append(id) }

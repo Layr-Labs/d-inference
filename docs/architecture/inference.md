@@ -977,7 +977,13 @@ cannot keep the warmup due
 or cell trains a rate or counter. They share a 20-second wall budget that
 includes prompt rendering. A timeout or refusal completes the attempt; only
 preemption leaves it due, and the retry resumes after the probes and cells
-already finished. The probe judges the whole cache from its one short shape, so
+already finished. Each finished pass records the served width it covered
+(`ModelCalibrationState.shapeWarmupWidth`). If the shape cells ran and serving
+concurrency later grows past that width (posture returns to nominal, or the KV
+grant grows), the warmup is due again and the next idle session runs only the
+wider width's cell
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ShapeWarmup.swift`,
+`shapeWarmupDue`); a narrower width never lowers the record. The probe judges the whole cache from its one short shape, so
 a cache that holds it but not the long-prompt or served-width kernels (a process
 stopped between the probe and the cells, an earlier attempt the budget cut
 short, or a cache that only saw short prompts) skips the cells, and the first

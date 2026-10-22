@@ -220,6 +220,55 @@ struct ProductionModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("a served width that grows after a pass reruns only its width cell")
+    func widerServedWidthRewarmsOnlyTheWidthCell() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "qwen3.5-35b-a3b", backend: "contiguous", budget: budget)
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        await bridge.setShapeWarmupModeTest(.always)
+        let fullGrant = engine.capacity().kvBytesCapacity
+        #expect(await bridge.effectiveServingConcurrency == 2)
+        // A grant with admissible room for one fixed request workspace serves width 1.
+        let overhead = try #require(await bridge.maximumRequestOverheadBytes())
+        try #require(overhead > 0, "the hybrid Qwen fixture reserves a fixed per-request workspace")
+        let admissibleFraction = Double(engine.admissibleKVBytesCapacity) / Double(fullGrant)
+        let narrowGrant = Int((Double(Int(UnifiedMemoryCap.minimumLoadKVBytes) + overhead + overhead / 2)
+            / admissibleFraction).rounded(.up))
+        await bridge.updateKVBytesCapacity(narrowGrant)
+        try #require(await bridge.effectiveServingConcurrency == 1)
+
+        var admits = await bridge._testCounters().admits
+        await bridge.runShapeWarmupIfNeeded(requireNominalPosture: false, grace: false)
+        #expect(await bridge.shapeWarmupWidthTest() == 1)
+        #expect(await bridge._testCounters().admits - admits == 1, "only the solo cell fits width 1")
+        #expect(!(await bridge.shapeWarmupDue))
+
+        // The grant grows back (a co-resident model unloaded): width 2 is due.
+        await bridge.updateKVBytesCapacity(fullGrant)
+        #expect(await bridge.effectiveServingConcurrency == 2)
+        #expect(await bridge.shapeWarmupDue)
+        admits = await bridge._testCounters().admits
+        let rows = engine.capacity().decodeRowsTotal
+        #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
+        await bridge.awaitProductionCalibration()
+        #expect(await bridge.shapeWarmupWidthTest() == 2)
+        #expect(await bridge._testCounters().admits - admits == 2, "the solo cell does not rerun")
+        // The width-2 cell decodes 2 x 11 rows; a solo rerun would add 15.
+        #expect(engine.capacity().decodeRowsTotal - rows == 22, "\(engine.capacity().decodeRowsTotal - rows)")
+        #expect(!(await bridge.shapeWarmupDue))
+
+        // Narrowing never lowers the warmed width, so widening again is not due.
+        await bridge.updateKVBytesCapacity(narrowGrant)
+        #expect(!(await bridge.shapeWarmupDue))
+        await bridge.updateKVBytesCapacity(fullGrant)
+        #expect(!(await bridge.shapeWarmupDue))
+        #expect(await bridge.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        await bridge.shutdown()
+    }
+
     @Test("a retired standalone warmup session starts no successor once the server drains")
     func standaloneSuccessorWarmupRespectsDrain() async throws {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -324,7 +373,8 @@ private struct CalibrationFixtureProcessor: UserInputProcessor {
 
 private extension EngineV2Bridge {
     func awaitProductionCalibration() async { await modelCalibration.task?.value }
-    func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupCompleted }
+    func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupWidth != nil }
+    func shapeWarmupWidthTest() -> Int? { modelCalibration.shapeWarmupWidth }
     func setShapeWarmupCellsCompletedTest(_ cells: Int) { modelCalibration.shapeWarmupCellsCompleted = cells }
     func shapeWarmupCellsCompletedTest() -> Int { modelCalibration.shapeWarmupCellsCompleted }
     func setShapeWarmupModeTest(_ mode: ModelCalibrationPolicy.ShapeWarmupMode) {

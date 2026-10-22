@@ -58,8 +58,16 @@ extension GLM5NextTensorParallelResidentRuntime {
         let recurrent = try allocationBound(Bytes.product([linear.numHeads, linear.headDim, linear.headDim, 4]))
         let convolution = try allocationBound(Bytes.product([3, linear.numHeads, linear.headDim,
             linear.shortConvKernelSize, 4]))
+        // A speculating lane's round runs beside the others' in one forward
+        // (`decode`): its captured verification windows and the state adopted
+        // last round (`speculationRequestBytes`' windows) are its own too.
+        let depth = Self.mtpDepth + 1
+        let windows = speculative ? try Bytes.product([Bytes.sum([
+            allocationBound(Bytes.product([depth, linear.numHeads, linear.headDim, linear.headDim, 4])),
+            allocationBound(Bytes.product([depth, 3, linear.numHeads, linear.headDim, linear.shortConvKernelSize, 4]))]),
+            2, kdaLayers]) : 0
         return try Bytes.sum([Bytes.product([history, dsaLayers]),
-            Bytes.product([Bytes.sum([recurrent, convolution]), kdaLayers]), speculative ? history : 0])
+            Bytes.product([Bytes.sum([recurrent, convolution]), kdaLayers]), speculative ? history : 0, windows])
     }
 
     func withExclusiveOperation<T>(_ body: () throws -> T) throws -> T {
@@ -227,40 +235,52 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
 
     func speculates(_ lane: Lane) -> Bool { lane.speculates }
 
-    /// The decode seam, time-sliced: each unit is its lane's own MTP round
-    /// (`GLM5NextTensorParallelSpeculation.round`) or one-token step, run in
-    /// order, so each lane's arithmetic is bitwise its request's alone.
+    /// The decode seam, batched: every speculating unit's round in ONE stage
+    /// forward and ONE agreement sum (`GLM5NextTensorParallelSpeculation
+    /// .rounds`: each lane's window, cache, NextN history and tokens are
+    /// bitwise its own round's), then each one-token unit's own step, in unit
+    /// order. Both ranks run the same units, so the same collectives in the
+    /// same order.
     func decode(_ units: [GLM5NextTensorParallelDecodeUnit<Lane>], whileRunning: (Int) throws -> Void,
                 check: () throws -> Void) throws -> [[Int]] {
-        var rounds: [[Int]] = []
-        for (index, unit) in units.enumerated() {
-            let lane = unit.lane
-            if let window = unit.window {
-                guard lane.speculates, let speculation = lane.opened.speculation else {
+        var results = [[Int]?](repeating: nil, count: units.count)
+        let speculating = units.indices.filter { units[$0].window != nil }
+        if !speculating.isEmpty {
+            let lanes = try speculating.map { index -> GLM5NextTensorParallelSpeculation.Lane in
+                let unit = units[index]
+                guard unit.lane.speculates, let speculation = unit.lane.opened.speculation, let window = unit.window else {
                     throw ProbeError("GLM lane round for a lane that does not speculate")
                 }
-                let round = try speculation.round(stage: stage, cache: lane.opened.cache, last: unit.last, window: window,
-                    stop: 0, draw: lane.draw, whileRunning: { try whileRunning(index) })
-                lane.sampler?.commitRound(round.tokens)
-                rounds.append(round.tokens)
-            } else {
-                guard !lane.speculates else { throw ProbeError("GLM lane step for a lane that speculates") }
-                let next = MLXArray([Int32(unit.last)], [1, 1])
-                let candidate = try stage.prepareForward(tokens: next, cache: lane.opened.cache, readout: .lastToken)
-                try candidate.commit { roots in asyncEval(roots) }
-                guard case .final(let output) = candidate.output else {
-                    throw ProbeError("GLM tensor-parallel decode produced no logits")
-                }
-                let chosen = runtime.choose(output.logits[0..., -1, 0...], sampler: lane.sampler, stop: 0)
-                asyncEval(chosen)
-                try whileRunning(index)
-                let token = try Runtime.agreedToken(chosen.asArray(Float.self), sampled: lane.sampler != nil)
-                lane.sampler?.commit(token)
-                rounds.append([token])
+                return .init(speculation: speculation, cache: unit.lane.opened.cache, last: unit.last, window: window,
+                    stop: 0, draw: unit.lane.draw)
+            }
+            let rounds = try GLM5NextTensorParallelSpeculation.rounds(stage: stage, lanes: lanes, whileRunning: {
+                for index in speculating { try whileRunning(index) }
+            })
+            for (index, round) in zip(speculating, rounds) {
+                units[index].lane.sampler?.commitRound(round.tokens)
+                results[index] = round.tokens
             }
             try check()
         }
-        return rounds
+        for (index, unit) in units.enumerated() where unit.window == nil {
+            let lane = unit.lane
+            guard !lane.speculates else { throw ProbeError("GLM lane step for a lane that speculates") }
+            let next = MLXArray([Int32(unit.last)], [1, 1])
+            let candidate = try stage.prepareForward(tokens: next, cache: lane.opened.cache, readout: .lastToken)
+            try candidate.commit { roots in asyncEval(roots) }
+            guard case .final(let output) = candidate.output else {
+                throw ProbeError("GLM tensor-parallel decode produced no logits")
+            }
+            let chosen = runtime.choose(output.logits[0..., -1, 0...], sampler: lane.sampler, stop: 0)
+            asyncEval(chosen)
+            try whileRunning(index)
+            let token = try Runtime.agreedToken(chosen.asArray(Float.self), sampled: lane.sampler != nil)
+            lane.sampler?.commit(token)
+            results[index] = [token]
+            try check()
+        }
+        return results.map { $0! }
     }
 
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int]) {

@@ -236,3 +236,125 @@ final class GLM5NextTensorParallelSpeculation {
         return decided
     }
 }
+
+// MARK: - Several requests per round
+
+extension GLM5NextTensorParallelSpeculation {
+    /// One request of `rounds`: `round`'s arguments for that request.
+    struct Lane {
+        let speculation: GLM5NextTensorParallelSpeculation
+        let cache: GLM5NextTextStageCache
+        let last: Int
+        let window: Int
+        let stop: Float
+        var draw: ((MLXArray) -> MLXArray)?
+    }
+
+    /// Each lane's part of a multi-lane agreement, lane after lane: the
+    /// `ranks` slots of `2 * window + 2` values its own round carries.
+    static func segments(windows: [Int], ranks: Int) -> [Range<Int>] {
+        var start = 0
+        return windows.map { window in
+            let width = ranks * (2 * window + 2)
+            defer { start += width }
+            return start ..< start + width
+        }
+    }
+
+    /// `round` for several requests at once. Every lane primes and proposes
+    /// from its own NextN state; ONE stage forward then verifies every
+    /// lane's window over its own cache (`GLM5NextTextStage
+    /// .prepareVerificationRows`: each lane's logits, hidden rows and cache
+    /// are bitwise those of its own `prepareVerification`); ONE agreement sum
+    /// carries every lane's slots, each laid out as its own round's; and each
+    /// lane commits its own kept prefix. A lane's tokens, cache and NextN
+    /// history are therefore exactly those of its own `round`. Both ranks
+    /// must pass the same lanes in the same order with the same `last` and
+    /// `window`, derived from agreed tokens only. Evaluates the round (one
+    /// host read); `whileRunning` as in `round`.
+    static func rounds(stage: GLM5NextTextStage, lanes: [Lane], whileRunning: () throws -> Void = {})
+        throws -> [Round]
+    {
+        guard let first = lanes.first?.speculation,
+              Set(lanes.map { ObjectIdentifier($0.speculation) }).count == lanes.count,
+              lanes.allSatisfy({ $0.speculation.rank == first.rank && $0.speculation.ranks == first.ranks
+                  && $0.speculation.pending != nil && (0...$0.speculation.depth).contains($0.window) }) else {
+            throw ProbeError("GLM speculative rounds need distinct lanes with verified pairs, within their depth")
+        }
+        let (rank, ranks) = (first.rank, first.ranks)
+        let started = DispatchTime.now().uptimeNanoseconds
+        var inputs: [GLM5NextTextStageLane] = []
+        var drafts: [MLXArray?] = []
+        for lane in lanes {
+            let speculation = lane.speculation
+            let verified = speculation.pending!
+            speculation.pending = nil
+            // Priming the verified pairs is never skipped (as in `round`).
+            let proposals = try speculation.mtp.primeAndPropose(shiftedTokens: verified.tokens,
+                targetHidden: verified.hidden, at: speculation.state.committedInputCount, state: speculation.state,
+                depth: max(1, lane.window))
+            let draft = lane.window > 0 ? proposals[0..., ..<lane.window] : nil
+            drafts.append(draft)
+            inputs.append(.init(tokens: concatenated([MLXArray([Int32(lane.last)], [1, 1])] + (draft.map { [$0] } ?? []),
+                axis: 1), cache: lane.cache))
+        }
+        let candidate = try stage.prepareVerificationRows(inputs)
+        let outputs = try candidate.outputs.map { output -> GLM5NextTextOutput in
+            guard case .final(let value) = output else { throw ProbeError("GLM speculative verification produced no logits") }
+            return value
+        }
+        // Each lane's slots exactly as its own round lays them out.
+        var slots: [MLXArray] = []
+        for (lane, (output, draft)) in zip(lanes, zip(outputs, drafts)) {
+            let width = 2 * lane.window + 2
+            let targets = lane.draw?(output.logits).reshaped(-1) ?? argMax(output.logits[0].asType(.float32), axis: -1)
+            var slot = [targets.asType(.float32)]
+            if let draft { slot.append(draft.reshaped(-1).asType(.float32)) }
+            slot.append(MLXArray([lane.stop]))
+            let local = concatenated(slot, axis: 0)
+            let empty = MLXArray.zeros([width], dtype: .float32)
+            slots += (0..<ranks).map { $0 == rank ? local : empty }
+        }
+        // The agreement sum must follow the forward's layer sums on every
+        // rank (the ranks pair their sums in order): the explicit dependency
+        // holds whatever each lane's `draw` computes from its logits.
+        let agreed = first.agree(depends(input: concatenated(slots, axis: 0),
+            dependencies: outputs.map(\.logits)))
+        let segments = Self.segments(windows: lanes.map(\.window), ranks: ranks)
+        var decided: [Round] = []
+        try candidate.commit(afterEvaluating: { roots in
+            try MLX.withError { error in
+                let all = roots + [agreed] + (try lanes.flatMap { try $0.speculation.evaluationTargets() })
+                let built = DispatchTime.now().uptimeNanoseconds
+                asyncEval(all)
+                let encoded = DispatchTime.now().uptimeNanoseconds
+                try whileRunning()
+                eval(all)
+                let done = DispatchTime.now().uptimeNanoseconds
+                for lane in lanes where lane.speculation.recordsPhases {
+                    lane.speculation.phases.append((Double(built - started) / 1e9, Double(encoded - built) / 1e9,
+                        Double(done - encoded) / 1e9))
+                }
+                try error.check()
+            }
+        }, keeping: { _ in
+            let values = agreed.asArray(Float.self)
+            decided = try zip(lanes, segments).map { lane, segment in
+                var round = try Self.decide(Array(values[segment]), ranks: ranks, window: lane.window,
+                    sampled: lane.draw != nil)
+                if !lane.speculation.acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
+                return round
+            }
+            return decided.map(\.tokens.count)
+        })
+        guard decided.count == lanes.count else { throw ProbeError("GLM speculative rounds decided nothing") }
+        for ((lane, round), output) in zip(zip(lanes, decided), outputs) {
+            let speculation = lane.speculation
+            let kept = round.tokens.count
+            // The next round's verified pairs, as `round` keeps them.
+            speculation.pending = (MLXArray(round.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
+            speculation.rounds += 1; speculation.proposedTokens += lane.window; speculation.acceptedTokens += kept - 1
+        }
+        return decided
+    }
+}

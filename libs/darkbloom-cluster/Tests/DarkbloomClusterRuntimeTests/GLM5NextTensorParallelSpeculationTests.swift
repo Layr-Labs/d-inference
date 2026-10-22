@@ -50,6 +50,26 @@ struct GLM5NextTensorParallelSpeculationTests {
         }
     }
 
+    /// A multi-lane round's agreement is each lane's own round's slots, lane
+    /// after lane: every segment decides exactly as that lane's round alone.
+    @Test func multiLaneAgreementIsEachLanesOwnRoundLaneAfterLane() throws {
+        let segments = Speculation.segments(windows: [2, 0, 3], ranks: 2)
+        #expect(segments == [0 ..< 12, 12 ..< 16, 16 ..< 32])
+        let lanes: [[Float]] = [
+            Self.slot([11, 12, 13], [11, 12]) + Self.slot([11, 12, 13], [11, 12], stop: 4),
+            Self.slot([7], []) + Self.slot([7], []),
+            Self.slot([1, 2, 3, 4], [1, 9, 3]) + Self.slot([1, 2, 3, 4], [1, 9, 3]),
+        ]
+        let values = lanes.flatMap { $0 }
+        #expect(values.count == segments.last?.upperBound)
+        for (index, (segment, window)) in zip(segments, [2, 0, 3]).enumerated() {
+            #expect(try Speculation.decide(Array(values[segment]), ranks: 2, window: window)
+                == Speculation.decide(lanes[index], ranks: 2, window: window))
+        }
+        #expect(try Speculation.decide(Array(values[segments[2]]), ranks: 2, window: 3).tokens == [1, 2])
+        #expect(Speculation.segments(windows: [], ranks: 2).isEmpty)
+    }
+
     @Test func requestChargeIsZeroWithoutSpeculationAndGrowsWithDepth() throws {
         let c = try GLM5NextMetadataTestFixture(layers: 8).configuration.textConfig
         let profile = try QwenLayerStageGenerationProfile(identifier: "glm-tp-mtp-fixture",

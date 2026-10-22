@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-21
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -127,11 +127,11 @@ the upstream `MLXLMServer` router
 |---|---|---|
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
-| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
-| POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
+| POST | `/v1/responses`, `/responses` | Responses API; provider continuation history and SDK response-object storage, with distinct retention below |
 | GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
 | POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
 | POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |
@@ -154,6 +154,39 @@ policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompl
 A failed required tool call is still a failure; no argument repair or fabricated
 call is performed.
 
+## Responses continuation and retention
+
+Send a stored response's string `id` as `previous_response_id` on the next
+Responses POST. Send only the new input; the provider prepends the stored input
+and assistant output. Supply the new request's instructions and tool settings
+again: previous top-level instructions and settings are not inherited. Keep
+your own history if a conversation must survive eviction or an application
+restart (`provider-swift/Sources/ProviderCore/Server/LocalResponseConversation.swift`,
+`prepare`, `conversation`).
+
+| Behavior | Local contract | Source |
+|---|---|---|
+| Input limit | Responses POST bodies use `min(maxUploadBytes, 2 * 1024 * 1024)`; the larger Chat upload cap does not apply. Reconstructed history still passes ordinary token/context admission. | `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` (`respond`) |
+| Continuation ID | Omitted or JSON `null` starts without prior history. Non-null non-string values, empty/unknown IDs and evicted IDs return JSON HTTP `400`, code `previous_response_not_found`, before model acquisition or SSE setup. | `LocalResponseConversation.prepare`; `LocalChatUploadResponder.respond` |
+| Saved history | Input plus one assistant turn containing answer, reasoning and tool calls; tool-result `call_id` is preserved. A streamed completed/incomplete response is recorded before its terminal frame is forwarded; a failed frame is not recorded. | `LocalResponseConversation.conversation`, `finalResponse`; `provider-swift/Sources/ProviderCore/Server/LocalResponseConversationStore.swift` (`record`, `recording`) |
+| Continuation lifetime | One history store per local application. Defaults are `maxResponses = 256` and `maxBytes = 64 * 1024 * 1024`, measured as retained serialized histories including inline media. Reads refresh recency; oldest entries are evicted, and a history larger than the byte cap is not saved. This is not a total process-memory bound. | `LocalResponseConversationStore.init`, `conversation`, `save`; `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` (`makeLocalInferenceApplication`) |
+| Retrieval lifetime | GET reads a separate application-shared SDK object store. It has no matching count/byte eviction or TTL; objects remain in memory for that store's lifetime. A successful GET does not imply the ID is still available for continuation, and GET does not refresh history recency. Neither store is persistent. | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift` (`save`, `get`); `makeLocalInferenceApplication` |
+| Storage opt-out | `store: false` suppresses both new saves. It can still read an available previous history; it does not delete an older response. | `LocalChatUploadResponder.respond`; `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`createResponse`, `streamResponseFrames`) |
+
+If continuation returns `previous_response_not_found`, resend the conversation
+you retained as explicit input without the expired ID. GET may still retrieve
+the old response object. See [reasoning state](../architecture/inference.md#collected-and-streaming-reasoning-state)
+for parser selection and incomplete thinking, and the
+[regression recipe](../developer/test.md#local-responses-and-reasoning-regressions)
+for isolated helper/router checks.
+
+Flint (`model_type: flint`) reads the same reasoning controls on Chat
+Completions and Responses. Effort values and thinking switches are accepted
+with no effect; `reasoning.exclude: true`, `include_reasoning: false` or
+`reasoning.enabled: false` omit reasoning from the response while its tokens
+are still counted. `stop` and JSON `response_format` apply to the answer after
+reasoning. See [Native Flint](../architecture/inference.md#native-flint).
+
 ## Verify
 
 ```bash
@@ -175,6 +208,60 @@ the process prints its listening address and the daemon-state file is not used.
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
+
+## Nemotron Super
+
+In unified mode, chat completions for `nvidia-nemotron-3.5-super` load the
+managed slot through the ordinary local acquisition and run on its owner
+(`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
+the controls in the table below apply, prefix reuse uses one partition per
+local endpoint (an image turn reuses only checkpoints of the same images at the
+same positions), and inline images are served as described below, target-only on
+the default speculating owner. Other routes for that id
+(`/v1/completions`, `/v1/responses`) are refused; the generic engine never
+serves Super. Standalone mode (`darkbloom start --local`) does not list it.
+
+### Experimental Nemotron Super owner fixtures
+
+The optional `NemotronSuperLocalImageHTTP` owner hook in
+`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift`
+uses the existing local authentication, body limits, JSON/SSE framing and
+request-cancellation scope. Its default is absent; only the qualification
+runner installs it as a hook, and it does not advertise a new model. When installed it serves
+every chat request for the Super model ID: text on the owner's text binding with
+its own tokenizer, and bounded inline images on the owner's image binding:
+`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
+label, selects PNG or JPEG (see the
+[image format reference](../reference/nemotron-super-image-formats.md)), or one
+`data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
+media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).
+Image prompts carry the reference `<img>`, one `<image>` per visual feature,
+`</img>` span for each image; a video carries one per tubelet behind its
+frame-timestamp label.
+
+| Request control | Hook behavior |
+|---|---|
+| `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
+| `enable_thinking: false` | All output is `content`, including literal markers |
+| `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
+| `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
+| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event |
+| Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
+| A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
+| Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
+| Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
+| A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
+| A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
+
+Image and video requests still refuse `tools` and `response_format`; formats outside the
+image format reference are refused. The host calls the hook's `drain()` before the
+owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
+serving qualification.
+
+The [portable component harness](../../scripts/nemotron-qualification/README.md)
+exercises this hook on isolated loopback endpoints. Admission/reservation
+calibration and full-checkpoint throughput remain separate gates. Cancellation
+must retain media/KV and response ownership until native terminal retirement.
 
 ## Related
 

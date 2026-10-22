@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-21
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -45,6 +45,58 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`chat_template.jinja`, `chat_template.json`), `preprocessor`
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
+
+### Raw GLM discovery quotation
+
+`GLM5NextDiscoveryLoadFootprint.estimate` in
+`provider-swift/Sources/ProviderCoreFoundation/GLM5NextDiscoveryLoadFootprint.swift`
+prices exact `glm5_next` affine-Q4 metadata without constructing native arrays
+or hashing payloads. `ModelScanner.glm5NextLoadEstimate` in
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+GLM5Next.swift` supplies
+the existing bounded header reader and flat regular-file inventory.
+
+| Term | Bytes counted |
+|---|---|
+| `disk` | All integrity files in the raw snapshot, including every weight shard and non-weight file |
+| Native copies | `2 * largestTensor + largestExpertBank + 2 * visionBytes + (257 << 20)` |
+| Tokenizer allowance | `max(64 << 20, 8 * allNonWeightBytes)` |
+| Residual (`residualAllowanceBytes`) | `max(1 << 30, ceil(disk / 32))` |
+| Full LOAD | `disk + nativeCopies + tokenizerAllowance + residual` |
+| `native_load_transient_bytes` | Native copies, tokenizer allowance and residual, **above** raw `disk` (no disk × 1.2) |
+
+The managed loader copies one bounded tensor or expert bank at a time, so the
+generic disk × 1.2 padding over-counted GLM. On the staged 122-shard Q4
+artifact, MLX active memory after the target load equalled the text and vision
+payload, 177,510,375,672 bytes. The MLX peak through a 512-token prefill was
+180.89 GB, at most 3.38 GB above residency and below the native copies alone.
+For the retained 43-header profile the full LOAD is 192,045,833,503 bytes
+(178.86 GiB), not 222,714,752,471 bytes (207.42 GiB). With the default
+activation and minimum-KV headroom it fits a 256 GiB Mac's 90% cap.
+`GLM5NextLoadQuotation` (`GLM5NextLoadAdmission.swift`) prices the managed load
+with the same formula from the selected manifest.
+
+All MTP weights remain in `disk`; expert banks include every stored expert,
+not the active-expert count. Integer arithmetic is checked through the signed
+wire range. Missing, malformed, non-Q4, unknown-role, nested-integrity or incomplete
+inventories are omitted from GLM discovery, not given a loadable generic quote.
+This footprint is not the native loader's complete architecture validation or
+a model-support grant.
+
+Metadata-only directories such as `.cache/` and `_provenance/` are permitted
+without adding their receipts to model bytes. The descriptor-relative scan
+checks every entry, including hidden entries, and rejects symlinks, special
+files and any nested filename classified as integrity-relevant by
+`ModelScanner.isIntegrityFile`. It allows at most 4,096 total entries and eight
+directory levels; ignored metadata is bounded to 32 MiB per file and 64 MiB in
+aggregate. These directories are inspected read-only and are never deleted.
+
+Only the tokenizer shipped in the weight snapshot is priced. The provider has no
+separate-tokenizer composition path, and the local selection refuses a
+`tokenizer` field, so the raw declaration never covers another tokenizer. Actual source
+identity, complete native inventory, reservation and post-load guards remain
+the managed loader's responsibility. This changes neither manifest publication
+nor catalog activation. The [memory policy](../architecture/hardware-support.md#load-gate-modelloadadmission)
+retains separate OS, activation and KV reserves.
 
 ### Aggregate hash
 
@@ -100,7 +152,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -144,6 +196,32 @@ Response `200`:
 `cache_read_price` is the effective rate (the stored value, or the derived
 default when the request set none); the `*_usd` strings are USD per 1M tokens
 (`registerModelResponse`, `types.ModelPriceQuote`).
+
+## Nemotron Super
+
+The provider serves one Nemotron Super registration natively; its discovery and
+slot are explained in the [registry](../architecture/model-registry.md#nemotron-super-discovery)
+and [inference](../architecture/inference.md#managed-nemotron-super-slot) architecture.
+
+| Field | Value | Code |
+|---|---|---|
+| `model_id` | `nvidia-nemotron-3.5-super` (exact; no alias or other id is served) | `NemotronSuperServingPolicy.modelID` (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`) |
+| `version` | `2026-10-20-nvfp4-r2` | registration input |
+| Artifact | The complete NVIDIA NVFP4 checkpoint (revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`): 88 shards, the embedded MTP head in shard 88, plus the integrity files `ModelScanner.collectWeightFiles` selects. Published to R2 with `scripts/publish-model.sh` and mirrored byte for byte as the `hugging_face_artifact` `EigenLabs/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at revision `0e854f634f26f0cc342a32857c38b81c57207cea`, downloaded first with per-file R2 fallback | `NemotronSuperCheckpointPin` (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperCheckpointPin.swift`) |
+| `config.json` SHA-256 | `35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea`, `model_type` `nemotron_h_omni` | `NemotronSuperServingPolicy.configSHA256` |
+| `model.safetensors.index.json` SHA-256 | `c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741` | `NemotronSuperCheckpointPin.index` |
+| `chat_template.jinja` SHA-256 | `1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816` | `NemotronSuperPromptContract.templateSHA256` |
+| `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
+| `max_context_length` | `262144`, the whole verified context the slot serves (see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
+| `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
+| `min_ram_gb` | `128`; Super's own load gate admits a 128 GB Mac from 85.6 GiB available, the narrowest configuration ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not yet measured on a physical 128 GB Mac; only 256 GB is measured | `NemotronSuperLoadFit.minimumAvailableBytes` |
+| `required_provider_capabilities` | `["apple_m5"]`; with `min_ram_gb` it limits the model to M5 Max (128 GB) and M5 Ultra; the coordinator honors `apple_m5` only for an attested M5 chip family | registration input; `ProviderRuntimeCapability.appleM5` (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
+| Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image), or one MP4 or QuickTime video as the request's only media (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; 2 frames per second, at most 256, coded frames of at most 8,847,360 pixels (`4096 * 2160`, in any shape), frame grids up to 1,088 patches); media requests refuse tools and `response_format` and are served target-only on the speculating owner | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody`, `NemotronSuperServingPolicy.maximumVideoFramePixels`, `NemotronSuperServingPolicy.maximumVideoGridPatches` |
+
+Providers without this policy drop the artifact at scan, advertisement and
+prefetch publication, but the downloader has no architecture gate: a provider
+of an earlier release that receives it as a desired build downloads the
+weights before refusing to advertise them.
 
 ## Hugging Face download artifact
 
@@ -365,6 +443,16 @@ Revision-only mode rejects `promote=false` before HTTP because the existing
 use normal registration with `promote=false` for that operation. The optional
 HF source follows the [existing revision retry contract](#admin-actions): null
 means R2-only for a new version and preserves the stored source on retry.
+
+## Flint local package exception
+
+| Contract | Value | Source |
+|---|---|---|
+| Native architecture identity | Exact `flint` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`, `isSupported(modelType:)` |
+| Shard-only local discovery | `model-*.safetensors` plus nonempty regular config of at most 1,048,576 bytes; no synthetic index | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `isMLXModel`, `boundedModelConfiguration` |
+| Weight format | Official group-64 affine INT4 projections/experts, INT8 embeddings and BF16 sensitive tensors, or documented BF16; strict complete inventory; not NVFP4 | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintCheckpoint.swift`, `FlintModel.installFlintWeights` |
+| KV precision | Native live KV and native checkpoint storage; official export uses BF16 KV | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| Catalog publication | Separate manifest/review operation; local discovery does not publish to HF/R2 or activate a catalog | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
 
 ## Related
 

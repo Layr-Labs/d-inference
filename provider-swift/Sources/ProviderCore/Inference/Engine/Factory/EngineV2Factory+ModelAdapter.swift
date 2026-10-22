@@ -11,6 +11,9 @@ extension EngineV2Factory {
     static func directServingModel(
         model: any LanguageModel, isVLM: Bool
     ) throws -> any LanguageModel {
+        // GLM's root remains the serving owner even for text-only requests. Its
+        // original text tower is selected by the adapter without dropping vision.
+        if model is GLM5NextModel || model is GLM5NextProtectedModel { return model }
         guard isVLM else { return model }
         if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 { return model }
         guard let gemma4 = model as? MLXVLM.Gemma4 else {
@@ -25,9 +28,18 @@ extension EngineV2Factory {
         ProductionModelAdapter(model: model)?.layerKinds
     }
 
+    static func glm5NextTarget(model: any LanguageModel) -> GLM5NextTextModel? {
+        (model as? GLM5NextTextModel) ?? (model as? GLM5NextModel)?.textTower
+            ?? (model as? GLM5NextProtectedModel)?.root.textTower
+    }
+
     /// One family dispatch supplies both backend metadata and cache construction.
     /// Cache creation stays lazy; GPT-OSS primes its sinks probe only there,
     /// after weights have loaded, and Gemma retains its compatibility check.
+    /// `NemotronSuperRecurrentAdapter` and `NemotronSuperMTPTextTarget` are
+    /// dispatch-only: only `NemotronSuperLocalBridgeBuilder` constructs them,
+    /// for its own owner, and they are never advertised. The generic
+    /// `NemotronHModel` is not dispatched.
     struct ProductionModelAdapter {
         let layerKinds: [CBv2LayerKind]
         let modelCapabilities: CBv2ModelCapabilities
@@ -36,7 +48,19 @@ extension EngineV2Factory {
                 throws -> [any CBv2AttendingLayerCache]
 
         init?(model: any LanguageModel) {
+            // Every GLM serving identity (text tower, root, protected model)
+            // describes and allocates through its one original text tower.
+            if let glm = EngineV2Factory.glm5NextTarget(model: model) {
+                layerKinds = glm.cbv2LayerKinds
+                modelCapabilities = glm.cbv2Capabilities
+                newCaches = { make in try glm.newCacheV2(makeLayerCache: make) }
+                return
+            }
             switch model {
+            case let flint as FlintModel:
+                layerKinds = flint.cbv2LayerKinds
+                modelCapabilities = .attentionOnly
+                newCaches = { make in try flint.newCacheV2(makeLayerCache: make) }
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly
@@ -57,6 +81,15 @@ extension EngineV2Factory {
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
                 newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let superAdapter as NemotronSuperRecurrentAdapter:
+                layerKinds = superAdapter.cbv2LayerKinds
+                modelCapabilities = superAdapter.cbv2Capabilities
+                newCaches = { make in try superAdapter.newCacheV2(makeLayerCache: make) }
+            case let superTarget as NemotronSuperMTPTextTarget:
+                // Opt-in text speculation target over that same Super adapter.
+                layerKinds = superTarget.cbv2LayerKinds
+                modelCapabilities = superTarget.cbv2Capabilities
+                newCaches = { make in try superTarget.newCacheV2(makeLayerCache: make) }
             case let nemotron as NemotronH35Model:
                 layerKinds = nemotron.cbv2LayerKinds
                 modelCapabilities = nemotron.cbv2Capabilities

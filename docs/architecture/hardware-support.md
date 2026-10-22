@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -9,6 +9,73 @@ understand why a box refuses a load that "should fit"; for the operator view
 [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md).
 
 ## Context
+
+The unregistered Super builder requires a live pending LOAD lease and preserves
+the ordinary fixed-workspace concurrency floor. Synthetic bridge tests must
+provide a grant above the minimum KV floor plus recurrent workspace; a small
+checkpoint does not waive that policy. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalBridgeBuilder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MemoryConcurrency.swift`.
+
+The managed [Nemotron Super slot](inference.md#managed-nemotron-super-slot)
+claims, before allocation, the pinned checkpoint's resident installation and
+head payloads (73,217,162,760 and 1,769,654,296 bytes), the owner's serving
+room and only the part of its load transient beyond that room
+(`NemotronSuperLoadClaim`). The serving room is the 8.5 GiB owner-wide prefill
+lane, any prefix bank and `NemotronSuperServingPolicy.admissionKVBytes` of KV
+headroom: 15.7 GiB for eight speculative requests at the served 262,144-token
+context (576 MiB of fixed bytes per request, the speculating owner's 9.87 GB of
+round work once, and 2 GiB; 11.2 GiB at 65,536 tokens). The transient is the larger of the installation's
+staging with its 2 GiB backend allowance (8,903,163,904 bytes) and the head's
+construction allowance (7,078,617,184 bytes), never both, because each phase
+returns its freed buffers from MLX's cache before the next phase or serving
+uses that room; for the default configuration the room is larger, so the
+transient adds nothing. Super's LOAD claims keep no OS reserve beyond 3 GiB of
+admission slack and its measured 2 GiB activation floor (below), in place of
+the provider's 10% load reserve, unless the operator raised `memory_reserve_gb`
+above its 4 GiB default (`NemotronSuperLoadFit.systemReserveBytes`). Available
+memory (what macOS reports) a 128 GB Mac needs: about 104 GiB for the default
+owner (eight requests and a prefix bank, about 99 GiB claimed); with less the
+load drops the bank (eight requests, 99.0 GiB), then serves four (95.3), two
+(90.8) or one (89.3) concurrent request, then one with 1,024-token prompt
+chunks (85.6 GiB, `NemotronSuperLoadFit.minimumAvailableBytes`), so a 128 GB
+Mac running other work loads a narrower owner instead of refusing. Super's
+pre-accept, eviction and startup preload decide on the claim's own ledger room
+(`ProviderLoop.nemotronSuperLoadRequirements`, `loadClaimRemainingBytes`), not
+on `freeForLoadGb`: they admit from 85.6 GiB available and evict idle models
+toward the widest configuration that evicting them can reach. The discovery
+footprint (`estimated_memory_gb`) is the narrowest configuration's
+requirement, 83.6 GiB on every Mac; cold capacity quotes and the coordinator's
+cold-load routing, which compare it and the 3 GiB load headroom with
+`free_for_load_gb` (net of the 10% load reserve), admit only from about 99.4
+GiB available on 128 GB until the platform adopts a Super-specific rule. The
+footprint holds no media, and an image request is
+charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
+3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
+copies, a 13,312-patch image's tokens and its tower and projector bound; a
+video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
+owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
+request (24.5 GiB of media) does not fit beside it. A resident slot's media
+probe is quoted against the ledger room its reservation is admitted by.
+At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
+machine at the earlier 65,536-token context (cap, OS-available memory and MLX
+limits of the smaller Mac, before the speculating admission split); prompts
+beyond about 64K tokens on 128 GB are unmeasured. Eight default requests (two 58K-token prompts,
+five short ones and an image) all completed, with a process footprint peak of
+91.4 GB against a 123.7 GB cap, and unload and reload passed. Only a 256 GB M3
+Ultra is measured on hardware: while the LOAD charge was held MLX active peaked
+at 76.7 GB and the process footprint at 79.3 GB, MLX active was 75.0 GB after
+load, and at the 65,536-token context claims of 129.6 to 130.7 GB (36 to 37 GiB
+of KV headroom, under the earlier claim that also counted the installed
+weights until the owner was built) were admitted at some times and refused at
+others. The registration gates the model to attested M5 providers with at least
+128 GB (M5 Max 128 GB, M5 Ultra) through
+`required_provider_capabilities: ["apple_m5"]` and `min_ram_gb` 128; a physical
+128 GB measurement is still pending. It is in the
+[registry reference](../reference/model-registry-format.md#nemotron-super).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`,
+`provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuper.swift`,
+`scripts/nemotron-qualification/validation-2026-10-15.json`.
 
 The provider is Apple-Silicon-only: the SwiftPM platform floor is declared by
 the packages described in
@@ -32,6 +99,14 @@ Weights, KV cache and activations share unified memory, so the provider owns one
 byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`).
 
+Local HTTP Responses also retain host-side JSON. The continuation-history LRU
+limits its saved histories, while the SDK response-object store has an
+independent lifetime and no matching eviction. In-flight request copies are
+outside that history cap. Treat these as application memory when assessing
+process usage; the history limit is not a native KV grant or a total process
+bound. [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention)
+owns the limits and their source mappings.
+
 ## Mechanism
 
 ### Constants
@@ -43,7 +118,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB, `["nvidia-nemotron-3.5-super": 2 * 1024 * 1024 * 1024]` = 2 GiB (its requests, prefill lane and media charges hold its activations; the floor is the measured uncharged residue plus slack); exact catalog-id match only; per-model floors since v0.8.16. The gpt-oss-20b floor is max(2.56 GiB eager, 3.20 GiB compiled) B=8 peak over resident plus slack, from the 2026-07-10 M4 Max sweep (`libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-paged-gate-2026-07-09.md`, added in SDK commit `d72ce578`). That SDK revision still clamped the expert SwiGLU with float32 `MLXArray(limit)` bounds (introduced in `51ea0c4b`, removed in `f2eb29b8`, SDK #326), so the sweep ran with float32 activations after layer 0. No sweep has re-measured the floor with bf16 activations | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
@@ -97,7 +172,73 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 `ramPrefix` is always 0 in production — there is no RAM prefix-cache carve
 ([`prefix-cache.md`](prefix-cache.md)).
 
+Fused causal prompt attention changes the prefill transient, not these
+constants. An eligible full-attention prompt chunk takes one `.causal` SDPA
+call instead of 128-query blocks. The fused kernel materializes no scores, so
+the route drops the per-block score tensors of MLX's composed path (head_dim
+256), the per-block BOOL masks on paged storage and the output concat; it adds
+no allocation
+([eligibility](inference.md#scheduler-and-loop-configuration); `usesFusedCausalPrefill` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift`).
+On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
+13.86 GB to 12.03 GB because its head_dim 256 layers take the fused kernel.
+`defaultActivationReserveBytes`, `measuredActivationFloorsBytes`,
+`minimumLoadKVBytes` and the KV slot grants are intentionally unchanged:
+
+- The default reserve is sized from gemma-4, whose layers keep the blocked
+  path. The gpt-oss-20b floor comes from the 2026-07-10 sweep, which ran the
+  blocked path; the fused route only removes allocations from that path, so
+  the floor stays an upper bound. The Nemotron Super floor is the residue its
+  request and prefill-lane charges do not hold, not a prompt-attention
+  transient. No floor has been re-measured on the fused route, and a lower
+  floor needs a new measurement.
+- `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores the blocked path that the
+  2026-07-10 sweep ran.
+- K/V layout and dtype do not change, so KV bytes per token, slot grants and
+  advertised capacity do not change. A lower live transient shows up only
+  through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
+
 ### Load gate (`ModelLoadAdmission`)
+
+GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
+layer charges `(headDim + valueHeadDim) * kvHeads * 4` bytes per token, not the
+generic symmetric FP16 estimate. KDA remains a separate fixed request charge
+including the engine's three-generation reservation; it is neither a weight nor
+a marginal KV token charge
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFunnel.swift`,
+`GLM5NextLoadFunnel.kvBytesPerToken`).
+
+GLM-5.3-Flash loads only on Apple M5 Max or M5 Ultra with at least 256 GiB
+(`GLM5NextHardwareRequirement`, runtime capability `glm5_next_v1`). Its
+[native integration](../design/glm53-flash-native.md) prices the raw source
+bytes plus native construction/tokenizer transients
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
+`GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
+unchanged. The activated expert count is not a resident-weight estimate.
+Standing GLM wired residency is optional only when disabled or unsupported
+before ticket creation (macOS 15 or later with Metal 3 support). A backend
+start/end fault is unproven application or restoration, not unsupported
+hardware: the provider retains the actual owner and policy entry and refuses
+GLM publication or clean retirement until restart. Pending operations are joined
+before settlement; no timeout or cancellation is restoration proof
+(`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+
+`GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
+`GLM5NextArtifactLoadRoots` retires individual expert sources only after the
+packed bank's checked evaluation, then retains completed modules instead of a
+parallel weight dictionary. A failed cleanup fence retains these roots, the
+pending permit, writer ownership and activity; it is not permission to clear
+the allocator cache or regrow survivor grants. The owner and native reader live
+in `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextConstructionOwner.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextArtifactLoader.swift`.
+
+The raw same-directory [discovery quotation](../reference/model-registry-format.md#raw-glm-discovery-quotation)
+now carries that complete allowance into scanner-based memory consumers.
+`ModelScanner.glm5NextLoadEstimate` refuses malformed profiles instead of
+falling back to the generic disk × 1.2, and prices only the tokenizer shipped in
+the snapshot. It remains a metadata
+bound, not native validation, a hardware qualification or permission to bypass
+the actual managed-load reservation and post-load guards.
 
 ```text
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
@@ -198,6 +339,16 @@ standalone server runs the same sequence in
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
   refuses work.
+
+### MiMo prompt recount
+
+For exact `mimo_v2`, `ProviderLoop.promptTokenFloor` restores captured original
+tool schemas before the shared native tokenization path. The floor therefore
+counts the schema rendered by serving rather than the model-blind normalized
+schema (`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
+This changes prompt-count correctness, not the load allowance, activation
+reserve, KV byte rate or ownership gates below. See the
+[native MiMo prompt contract](inference.md#native-mimo-v26-candidate).
 
 ### KV slot grants
 
@@ -304,6 +455,14 @@ constructing EngineV2. Its bridge skips duplicate per-request reservations;
 contiguous slots retain their existing provider reservation path. Recurrent and
 MTP auxiliary state stays charged without materialization credit. Current load
 and provider headroom readers use the same shared ledger.
+An admitted MTP context is bound to one request generation. Both ordinary
+release and native reservation detachment retire that context immediately;
+reusing the request ID cannot revive it. Target retirement and outstanding
+assistant allocation leases then release their separate portions of the
+original prepaid charge, in either order
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`,
+`detachReservation`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/AdmittedMTPBinding.swift`).
 Native segmented allocation reserves an allocator-owned upper bound for each
 new backing before construction, including rounding and permitted cached-buffer
 reuse. After evaluating and draining the captured allocation stream, the fresh
@@ -405,7 +564,10 @@ Provider full-load quotations, measured activation floors and reported capacity 
 5. A load passes only if `weights × memoryOverheadFactor + activations +
    minimumLoadKVBytes ≤ freeForLoadGb` and, after loading, measured live KV
    headroom is ≥ `minimumLoadKVBytes` — `canLoad`, `loadIsServeable`,
-   `KVHeadroomProbe.hasServeableKVHeadroom`.
+   `KVHeadroomProbe.hasServeableKVHeadroom`. The managed Nemotron Super load
+   replaces the first term with its own claim's ledger room, which keeps no
+   load reserve — `ProviderLoop.evictUntilNemotronSuperFits`,
+   `nemotronSuperLoadIsCertainToFail`.
 6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
    below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
    `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
@@ -422,6 +584,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
+| Nemotron Super refused: "Insufficient memory (… GB of LOAD room, need … GB) …" | The claim's ledger room cannot hold its narrowest configuration, even after evicting every idle model | `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |
 | Raising `DARKBLOOM_ACTIVATION_RESERVE_GB` shrinks KV, lowering it does nothing | Raise-only semantics | `UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) |
 | `darkbloom doctor` warns about macOS | Below `recommendedMacOSMajorVersion` ([Constants](#constants)); warning only | `BootSecurity.swift` |
@@ -431,7 +594,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
@@ -441,6 +604,50 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Coordinator mirror | [coordinator/registry/servability.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/servability.go), [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
+
+### Flint memory admission
+
+The native Flint adapter uses the existing attention-only geometry and memory
+admission path. Its sliding/full map comes from the loaded configuration, so
+full-layer KV growth and bounded sliding windows retain distinct accounting.
+Neither the official INT4 package size nor one short-generation peak establishes
+a supported RAM tier or full-context concurrency. No Flint-specific activation
+floor, OS reserve reduction or hardware cap is introduced.
+The [prefill output optimization](inference.md#native-flint) retains all trunk
+work and KV writes, so it does not reduce the admitted context or KV allowance.
+
+The native protocol constraint also runs for tool-less requests. Its cached
+vocabulary projection and per-request framing/mask caches add host work and
+memory. `FlintNativeVocabulary` retains at most four cached vocabulary entries
+with weak tokenizer ownership. `FlintNativeProtocolConstraint.maximumStates`
+is `8192`; its state-mask and broad-mask caches each retain at most four entries.
+`FlintNativeProtocolBoundary.maxKeyBytes` is `1024`, `maxJSONDepth` is `128`,
+and retained raw-string key metadata is limited to 65,536 UTF-8 bytes per
+constraint. These bounds do not replace weight, activation or KV admission.
+State-pool exhaustion produces a constraint failure rather than unconstrained
+generation; key/depth bounds restrict continuations or reject declarations.
+
+Vocabulary projection is cached, and ordinary opaque text reuses canonical
+framing states. The existing `CBv2TokenConstraintSampler.mask` still scans broad
+allowed-token sets. Constrained requests also disable ordinary decode chaining
+and are ineligible for MTP. An unconstrained diagnostic run therefore does not
+measure the production serving path, even when it uses the same checkpoint.
+No throughput improvement or higher concurrency follows from these changes.
+Sources: `provider-swift/Sources/ProviderCore/Inference/FlintNativeVocabulary.swift`
+(`FlintNativeVocabulary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift`
+(`FlintNativeProtocolConstraint`),
+`provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift`
+(`FlintNativeProtocolBoundary`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/TokenConstraintSamplerV2.swift`
+(`CBv2TokenConstraintSampler.mask`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`
+(`mtpBasicEligible`).
+
+See [Flint validation scope](../provider/hardware-requirements.md#flint-validation-scope)
+and `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`
+(`EngineV2Factory.ProductionModelAdapter`).
 
 ## Related
 

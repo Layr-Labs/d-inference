@@ -72,6 +72,12 @@ enum ToolChoiceEnforcementPolicy {
         if nativeStructuredTarget(context) {
             return true
         }
+        // The managed Super owner prompt-forces required/named calls on text
+        // requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
+            return true
+        }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
@@ -80,6 +86,7 @@ enum ToolChoiceEnforcementPolicy {
     /// Shared tool-frame validation alone must not advertise a new model.
     static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
         let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type == "flint" { return context.modelType == "flint" }
         if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
         // Native block diffusion retains its trained sampler. Required/named
         // calls use prompt selection plus withheld schema/cardinality validation,
@@ -131,6 +138,13 @@ enum ToolChoiceEnforcementPolicy {
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
             }
         case .structuredPostValidation:
+            if modelContext?.modelType == "flint" {
+                guard format == .flint else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "Flint tool_choice requires the native Flint parser")
+                }
+                return
+            }
             if modelContext?.modelType == "mimo_v2" {
                 guard format == .mimoV2 else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(

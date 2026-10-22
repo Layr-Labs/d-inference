@@ -199,6 +199,7 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
+        try GLM5NextLoadFaultState.requireHealthy(modelType: advertisedModels[modelId]?.modelType)
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
@@ -265,6 +266,38 @@ extension ProviderLoop {
                 "Model '\(modelId)' not in advertised model list"
             )
         }
+        // GLM loads only the exact catalog build on qualifying hardware, bound
+        // to GLM5NextCoordinatorServing.maximumContextLength, through its
+        // managed native load. Refuse everything else before any reservation.
+        let glmServing: GLM5NextServingPlan?
+        let glmPreparation: SpecDecPreparation?
+        if GLM5NextPromptPolicy.applies(modelType: modelInfo.modelType) {
+            do {
+                let serving = try await coordinatorGLM5NextPlan(
+                    modelId: modelId, modelInfo: modelInfo, directory: modelPath,
+                    restoringVerifiedSnapshot: revisionUpdate && revisionDirectory == nil
+                        && modelRevisionActivationID == modelId)
+                let preparation = try GLM5NextLoadFunnel.preparation(plan: serving.plan,
+                    mode: loopConfig.config.backend.mtpMode,
+                    externalPath: loopConfig.config.backend.mtpDrafterPath)
+                try GLM5NextLoadFunnel.requireNativeMTP(preparation)
+                (glmServing, glmPreparation) = (serving, preparation)
+            } catch let ineligible as ModelRuntimeIneligibleError {
+                // Keep the permanent-ineligibility marker intact for routing.
+                recordModelLoadError(model: modelId, message: ineligible.localizedDescription)
+                throw ineligible
+            } catch {
+                let message = "Model '\(modelId)' (glm5_next) cannot load: "
+                    + GLM5NextCoordinatorServing.describe(error)
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
+        } else { (glmServing, glmPreparation) = (nil, nil) }
+        let glmPlan = glmServing?.plan
+        // Super builds its own owner and speculates with its embedded head;
+        // neither the generic loaders nor the assistant funnel apply.
+        let managedSuper = NemotronSuperServingPolicy.isServingIdentity(
+            modelID: modelId, modelType: modelInfo.modelType)
         let nativeLoad: MiMoV26ServingLoad?
         if modelInfo.modelType == "mimo_v2" {
             guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
@@ -273,7 +306,11 @@ extension ProviderLoop {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if let nativeLoad {
+        if let glmPreparation {
+            mtpPreparation = glmPreparation
+        } else if managedSuper {
+            mtpPreparation = SpecDecPreparation(artifact: nil, status: .disabled(.configDisabled, configured: false))
+        } else if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: loopConfig.config.backend.mtpMode,
                 externalPath: loopConfig.config.backend.mtpDrafterPath,
                 embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
@@ -316,6 +353,7 @@ extension ProviderLoop {
             // while it was suspended at the gate).
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+            try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
             while modelsUnloading.contains(modelId) {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
@@ -335,9 +373,35 @@ extension ProviderLoop {
                 revisionDirectory: revisionDirectory, autopilotCommandId: autopilotCommandId)
             return
         }
+        try GLM5NextLoadFaultState.requireHealthy(modelType: modelInfo.modelType)
+        // A revision swap (`revisionUpdate`) holds this model's writer lease.
+        // Otherwise a download or verification holding it is transient: refuse
+        // retriably so routing moves on instead of failing the provider.
+        let glmOwnership: GLM5NextArtifactOwnership?
+        do {
+            glmOwnership = try glmPlan.map {
+                revisionUpdate
+                    ? try GLM5NextArtifactOwnership.borrowingCallerLease(
+                        plan: $0, heldForModelID: modelRevisionActivationID)
+                    : try GLM5NextArtifactOwnership.acquire(plan: $0)
+            }
+        } catch ModelCatalogError.downloadFailed {
+            let message = "Model '\(modelId)' is being downloaded or verified; retry after it finishes"
+            recordModelLoadError(model: modelId, message: message)
+            throw InferenceError.modelLoadFailed(message)
+        }
+        defer { glmOwnership?.release() }
+        // Super's own slot state refuses its load before either eviction below.
+        if managedSuper { try refuseNemotronSuperReload(modelId) }
         isLoadingAny = true
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainGLMActivity = false
+        defer { if !retainGLMActivity { deviceActivity.finish() } }
+        // GLM owners an unproven retirement must retain, and the unpublished
+        // weight bytes charged to them (the claimed load quotation).
+        var glmNewcomer: EngineV2NewcomerBox?
+        var glmBundle: ProviderEngineBundle?
+        var glmWeightBytes: UInt64 = 0
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -399,12 +463,19 @@ extension ProviderLoop {
             // eligible native Qwen4 uses its validated incremental-copy envelope;
             // other layouts retain disk×1.2. Activation/minimum KV are additional.
             let targetWeightsGb = Self.loadGateWeightsGb(
-                estimatedWeightsGb: nativeLoad?.estimatedWeightsGb ?? modelInfo.estimatedMemoryGb,
+                estimatedWeightsGb: nativeLoad?.estimatedWeightsGb
+                    ?? GLM5NextLoadFunnel.estimatedWeightsGb(scanned: modelInfo.estimatedMemoryGb, plan: glmPlan),
                 extraWeightBytes: 0)
             do {
-                try await evictUntilAvailable(
-                    weightsGb: targetWeightsGb, allowEviction: allowEviction,
-                    waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                // Super's LOAD claim keeps its own system reserve; its gate
+                // evaluates that claim's ledger room instead.
+                if managedSuper {
+                    try await evictUntilNemotronSuperFits(modelInfo, allowEviction: allowEviction)
+                } else {
+                    try await evictUntilAvailable(
+                        weightsGb: targetWeightsGb, allowEviction: allowEviction,
+                        waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                }
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -425,6 +496,11 @@ extension ProviderLoop {
 
             // The accepted lease is the allocation permit. Advisory eviction and
             // assistant checks above cannot reserve process memory across awaits.
+            if managedSuper {
+                try await loadNemotronSuperSlot(modelID: modelId, directory: modelPath,
+                                                modelInfo: modelInfo, deviceActivity: deviceActivity)
+                return
+            }
             if let nativeLoad {
                 try await loadNativeMiMoSlot(modelID: modelId, directory: modelPath,
                                              load: nativeLoad, preparation: mtpPreparation)
@@ -432,9 +508,8 @@ extension ProviderLoop {
                 return
             }
             do {
-                var pendingLoadBytes = Self.pendingLoadReservationBytes(
-                    estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                    extraWeightBytes: extraWeightBytes)
+                var pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
+                    scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: extraWeightBytes)
                 pendingLoad = await kvBudget.claimPendingLoad(
                     requestID: pendingLoadID, weightBytes: pendingLoadBytes)
                 if pendingLoad == nil, extraWeightBytes > 0 {
@@ -442,8 +517,8 @@ extension ProviderLoop {
                     // Retry the independently serveable target once, without eviction.
                     mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
                     extraWeightBytes = 0
-                    pendingLoadBytes = Self.pendingLoadReservationBytes(
-                        estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                    pendingLoadBytes = GLM5NextLoadFunnel.pendingBytes(
+                        scanned: modelInfo.estimatedMemoryGb, plan: glmPlan, extra: 0)
                     pendingLoad = await kvBudget.claimPendingLoad(
                         requestID: pendingLoadID, weightBytes: pendingLoadBytes)
                 }
@@ -452,6 +527,7 @@ extension ProviderLoop {
                         "Insufficient memory for '\(modelId)' at final load admission")
                 }
                 pendingLoadLeases[modelId] = acceptedLoad
+                if glmPlan != nil { glmWeightBytes = pendingLoadBytes }
             }
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
@@ -465,7 +541,7 @@ extension ProviderLoop {
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
-            let artifactIdentityRequired = reusableSSDRequested
+            let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadHash = try await captureWeightHash(
@@ -474,6 +550,10 @@ extension ProviderLoop {
                 requireFreshCryptographicHash: artifactIdentityRequired)
             if !artifactIdentityRequired {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
+            }
+            if let glmPlan {
+                try Self.requireGLM5NextLoadedArtifact(hash: preLoadHash.hash, plan: glmPlan)
+                try glmPlan.weights.recheck()
             }
 
             if let beforeModelLoad {
@@ -500,8 +580,17 @@ extension ProviderLoop {
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
             try checkAutopilotLoadOwnership(autopilotCommandId)
-            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(
-                from: modelPath, modelID: modelId))
+            let newcomer: EngineV2NewcomerBox
+            if let glmPlan, let pendingLoad {
+                let glmLoad = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
+                    permit: pendingLoad, artifactOwnership: glmOwnership)
+                newcomer = EngineV2NewcomerBox(try await ModelContainerLoading.loadServingContainer(
+                    from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
+                glmNewcomer = newcomer
+            } else {
+                newcomer = EngineV2NewcomerBox(try await loadModelContainer(
+                    from: modelPath, modelID: modelId))
+            }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -519,6 +608,9 @@ extension ProviderLoop {
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
+                if let glmPlan {
+                    try Self.requireGLM5NextLoadedArtifact(hash: postLoadHash.hash, plan: glmPlan)
+                }
                 let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
@@ -568,8 +660,19 @@ extension ProviderLoop {
             // Target-only sizing snapshot. After assistant load/bind, the slot
             // factory replaces its auxiliary component with the bytes actually
             // retained before final re-slicing and installation.
-            let targetSizing = try await newcomer.borrowModel().sizing(
-                modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
+            let targetSizing: SlotSizingSnapshot
+            if let glmServing {
+                targetSizing = try glmServing.boundedSizing(await GLM5NextLoadFunnel.sizing(
+                    container: newcomer.borrow(), defaultMaxTokens: Self.schedulerDefaultMaxTokens))
+                try Self.requireGLM5NextServingGeometry(plan: glmServing, targetSizing: targetSizing)
+                mtpPreparation = try await EngineV2SlotFactory.glm5NextInlinePreparation(
+                    container: newcomer.borrow(),
+                    enabled: mtpPreparation.status.configured && mtpPreparation.status.reason == nil)
+                try GLM5NextLoadFunnel.requireNativeMTP(mtpPreparation)
+            } else {
+                targetSizing = try await newcomer.borrowModel().sizing(
+                    modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
+            }
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -665,6 +768,7 @@ extension ProviderLoop {
                 throw error
             } catch {
                 releaseResliceGate()
+                if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) { throw error }
                 clearCacheAfterConfirmedNativeOwnership()
                 let message =
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded"
@@ -681,6 +785,39 @@ extension ProviderLoop {
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
+            // The re-slice gate is held: an unproven unwind must still release it.
+            func unwindHoldingResliceGate() async throws {
+                do {
+                    try await unwindBuiltSlotAndRegrow(modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                } catch {
+                    releaseResliceGate()
+                    throw error
+                }
+            }
+            if let glmServing {
+                glmBundle = engineBundle
+                // Never publish (or rebuild into) an ownerless target-only GLM
+                // engine, nor one whose advertised bound cannot be admitted alone.
+                var refusal: String?
+                if await GLM5NextLoadFunnel.servesWithNativeOwner(engineBundle) {
+                    refusal = await Self.glm5NextFullContextRefusal(
+                        bridge: engineV2Bridge, context: glmServing.maximumContextLength)
+                } else {
+                    refusal = GLM5NextCoordinatorServing.describe(GLM5NextManagedLoadError.nativeMTPRequired)
+                }
+                #if DEBUG
+                if let hook = glm5NextPublicationRefusalForTesting {
+                    refusal = await hook(engineV2Bridge) ?? refusal
+                }
+                #endif
+                if let refusal {
+                    try await unwindHoldingResliceGate()
+                    releaseResliceGate()
+                    let message = "Model '\(modelId)' (glm5_next) cannot serve: \(refusal) — unloaded"
+                    recordModelLoadError(model: modelId, message: message)
+                    throw InferenceError.modelLoadFailed(message)
+                }
+            }
 
             // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): engine
             // construction can retain additional load-time memory beyond the
@@ -709,7 +846,8 @@ extension ProviderLoop {
                 pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
                 activationReserveBytes: resolvedActivationReserveBytes)
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
-            if engineBundle.mtpStatus.active,
+            // GLM has no target-only fallback: a failed guard unwinds below.
+            if glmPlan == nil, engineBundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
             {
                 let reason: MTPFallbackReason = runtimeMTPActive
@@ -717,7 +855,8 @@ extension ProviderLoop {
                 logger.warning(
                     "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
                 await engineV2Runtime.unregister(modelId: modelId)
-                await engineV2Bridge.shutdown()
+                do { try await GLM5NextRetirement.beforeRelease(engineV2Bridge) }
+                catch { releaseResliceGate(); throw error }
                 engineBundle.releaseAssistant()
                 clearCacheAfterConfirmedNativeOwnership()
                 do {
@@ -761,8 +900,7 @@ extension ProviderLoop {
                 // while the aborted newcomer's weights are still resident
                 // would let Σ(grants) exceed the true fleet budget. Still
                 // holding the re-slice gate; release only after.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
@@ -780,8 +918,7 @@ extension ProviderLoop {
             // timing await above. Never install a new slot after teardown has
             // begun; unwind the bridge and weights under the re-slice gate.
             if isShuttingDown || Task.isCancelled {
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw CancellationError()
             }
@@ -790,8 +927,7 @@ extension ProviderLoop {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
-                await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                try await unwindHoldingResliceGate()
                 releaseResliceGate()
                 throw InferenceError.modelLoadFailed(
                     "internal: newcomer container missing at install for '\(modelId)'")
@@ -830,6 +966,25 @@ extension ProviderLoop {
                 await finishNativeMiMoLoadFailure(modelID: modelId, load: nativeLoad, error: error)
                 throw error
             }
+            if glmPlan != nil, GLM5NextLoadFunnel.isUnproven(error) {
+                // Keep the real pending lease, loading marker, ownership and
+                // activity: no refund, cache clear or survivor regrowth.
+                glmOwnership?.retainAfterUnprovenCompletion()
+                retainGLMActivity = true
+                await GLM5NextLoadFunnel.retainUnprovenLoad(owners: [self], activity: deviceActivity,
+                    newcomer: glmNewcomer, bundle: glmBundle, weightBytes: glmWeightBytes)
+                isLoadingAny = false
+                for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] { waiter.resume(throwing: error) }
+                releaseLoadGateWaiters()
+                throw error
+            }
+            if glmPlan != nil, let glmNewcomer { await glmNewcomer.releaseAfterExternalResources() }
+            let loadError: any Error = (error as? GLM5NextManagedLoadError).map { glmError -> any Error in
+                let message = "Model '\(modelId)' (glm5_next) failed to load: "
+                    + GLM5NextCoordinatorServing.describe(glmError)
+                recordModelLoadError(model: modelId, message: message)
+                return InferenceError.modelLoadFailed(message)
+            } ?? error
             // Only this generation's lease can retire its pending allocation.
             if let pendingLoad {
                 await kvBudget.finishPendingLoad(pendingLoad)
@@ -850,13 +1005,13 @@ extension ProviderLoop {
             await resliceGrowSurvivors()
             isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume(throwing: error)
+                waiter.resume(throwing: loadError)
             }
             releaseLoadGateWaiters()
             // The load is over (failed): builds deferred behind it are
             // re-offered now — the box's arithmetic is back to pre-load.
             await retryReserveDeferredPrefetches()
-            throw error
+            throw loadError
         }
     }
 
@@ -954,6 +1109,7 @@ extension ProviderLoop {
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
             return await retireNativeMiMoOwner(modelID: modelId)
         }
+        if isNemotronSuperSlot(modelId) { return await retireNemotronSuperSlot(modelId) }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -963,7 +1119,8 @@ extension ProviderLoop {
         else { return false }
         let engineV2 = engineBundle.bridge
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
-        defer { deviceActivity.finish() }
+        var retainActivity = false
+        defer { if !retainActivity { deviceActivity.finish() } }
         let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
             || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)
@@ -971,7 +1128,15 @@ extension ProviderLoop {
         // stop fanning out to it, then drain the engine gracefully (running
         // requests finish, new submissions are rejected).
         await engineV2Runtime.unregister(modelId: modelId)
-        await engineV2.shutdown()
+        do { try await GLM5NextRetirement.beforeRelease(engineV2) }
+        catch {
+            // The slot stays in modelSlots/modelsUnloading (weights counted,
+            // excluded from re-slicing and eviction); charge its KV claim so
+            // survivors never regrow into pages the faulted engine may hold.
+            retainActivity = true
+            await GLM5NextRetirement.retainUnpublished(engineBundle, with: [self, deviceActivity])
+            return false
+        }
         engineBundle.releaseAssistant()
         await ModelContainerLoading.releaseExternalResources(in: modelSlots[modelId]?.container)
         // Drops the slot's container and MTP drafter references with the
@@ -1138,9 +1303,16 @@ extension ProviderLoop {
     }
 
     private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
-        slots.reduce(0.0) {
-            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-        } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+        Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+    }
+
+    /// What unloading `slots` and clearing MLX's buffer cache hands back:
+    /// their resident weights and the cache.
+    func reclaimableMemoryBytes(from slots: [String: ModelSlot]) -> UInt64 {
+        slots.values.reduce(UInt64(max(0, MLX.Memory.cacheMemory))) { total, slot in
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+            return overflow ? .max : sum
+        }
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1173,9 +1345,12 @@ extension ProviderLoop {
             if available >= requiredGb { return }
             // Metal can drop all allocation ownership before macOS returns
             // the physical pages (observed at full-model scale). Only a recent
-            // owned Qwen4 retirement enables this bounded retry. Never add
+            // owned Qwen4 retirement (for a Qwen4 load) or Nemotron Super
+            // retirement (for any load) enables this bounded retry. Never add
             // guessed reclaimable bytes to the OS sample or relax the gate.
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
+            if let retirement = nemotronSuperMemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
             let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
@@ -1254,6 +1429,9 @@ extension ProviderLoop {
 
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         if nativeMiMoRefusesRequest(modelId) { return true }
+        // Super's slot state refuses its load: a retained fault, and a wedge
+        // (resident while the slot retires) until its cooldown ends.
+        if nemotronSuperRefusesRequest(modelId) { return true }
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the
@@ -1273,6 +1451,9 @@ extension ProviderLoop {
         // post-accept path surface the proper 404 rather than guessing.
         guard let modelInfo = advertisedModels[modelId] else {
             return false
+        }
+        if NemotronSuperServingPolicy.isServingIdentity(modelID: modelId, modelType: modelInfo.modelType) {
+            return nemotronSuperLoadIsCertainToFail(modelInfo)
         }
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and
@@ -1311,8 +1492,9 @@ extension ProviderLoop {
         // can be eviction credit; check the resulting headroom before rejecting.
         let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
-        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-            && qwen4MemoryRetirement?.nextDelay() != nil
+        let mayStillReclaim = (Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil)
+            || nemotronSuperMemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1344,8 +1526,7 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
-                && qwen4MemoryRetirement?.nextDelay() != nil) {
+            if retried < requiredGb && !mayStillReclaim {
                 return true
             }
         }

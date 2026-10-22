@@ -161,13 +161,17 @@ extension Benchmark {
             iterations: prefillIterations,
             kvBackend: try resolvedKVBackendSelection(),
             gemmaOptimizations: gemmaOptimizations,
-            checkpointQuantizationConfig: checkpointQuantizationConfig
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            fixedPrompt: prefillFixedPrompt
         )
 
         print(try report.jsonString())
     }
 
     func schedulerPrefillOptionError() -> String? {
+        if prefillFixedPrompt && !schedulerPrefill {
+            return "--prefill-fixed-prompt requires --scheduler-prefill"
+        }
         guard schedulerPrefill else { return nil }
         let lengths = Self.parsePositiveInts(prefillLengths)
         guard !lengths.isEmpty, lengths.allSatisfy({ $0 > 1 }) else {

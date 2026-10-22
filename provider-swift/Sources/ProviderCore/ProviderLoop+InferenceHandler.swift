@@ -664,12 +664,18 @@ extension ProviderLoop {
                 terminal: callbacks.terminal)
         }
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
+        // The managed Super owner renders, parses and validates through its
+        // pinned prompt contract and output parsers, never the generic engine.
+        let superOwner = slot.modelContainer.nemotronSuper
         // Logprobs passthrough: a per-request channel the bridge pump fills
         // with OpenAI-shaped entries and the frames loop below drains into
         // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
+        // Withheld Flint reasoning must not return as logprob entry tokens.
+        let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
+            chatRequest, controls: templateControls, modelType: modelType)
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -847,7 +853,17 @@ extension ProviderLoop {
             // already resolved. This keeps the engine constructor's
             // "model not loaded" path unreachable on this code path while
             // still going through the upstream library for SSE encoding.
-            let providerEngine = MultiModelBatchSchedulerEngine(
+            let providerEngine: any MLXServerEngine
+            if let superOwner {
+                // Text prefix reuse is partitioned by the authenticated scope
+                // and off without one; it emits no cache receipts or usage.
+                // Schema metadata passed the protocol check above, so it is
+                // trusted as on the generic engine.
+                providerEngine = superOwner.chatEngine(body: decryptedData,
+                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
+                    trustsSchemaMetadata: true)
+            } else {
+                providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
@@ -879,6 +895,7 @@ extension ProviderLoop {
                 },
                 promptWork: promptWork
             )
+            }
 
             // Force-stream so we get SSE frames even if the original request
             // had `stream: false`. The coordinator always uses streaming
@@ -905,8 +922,17 @@ extension ProviderLoop {
             // reasoning tokens (Harmony channels, Gemma4 channels,
             // Qwen3/DeepSeek <think> tags) are parsed into
             // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
+            // Super's owner already splits its reference reasoning channel.
+            if streamingRequest.reasoningParser == nil, superOwner == nil {
                 streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
+            }
+            let floorRequest = streamingRequest
+            let promptFloor: @Sendable () -> Int = {
+                if let superOwner {
+                    return superOwner.promptTokenCount(body: decryptedData, trustsSchemaMetadata: true)
+                }
+                return Self.promptTokenFloor(request: floorRequest, tokenizer: tokenizer,
+                                             modelType: modelType, templateControls: templateControls)
             }
 
             let service = MLXOpenAIService(engine: providerEngine)
@@ -1061,6 +1087,11 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             var reasoningText = ""
             var reasoningTokens = 0
+            // Reasoning the request asked not to receive is never framed, but
+            // it is still generated: count it with the visible reasoning.
+            func generatedReasoningText() -> String {
+                reasoningText + v2UsageSignal.withheldReasoning
+            }
 
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
@@ -1081,13 +1112,17 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
+            var reasoningLogprobs = filtersReasoningLogprobs ? FlintReasoningLogprobsFilter() : nil
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
-                    // reasoning, or tool delta has been observed.
-                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                    // reasoning, or tool delta has been observed. Withheld
+                    // reasoning is generated output too, though never framed.
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldReasoningAt == nil,
+                        rejectExpiredDeadline()
+                    {
                         return
                     }
                     if token.isCancelled {
@@ -1117,6 +1152,8 @@ extension ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    // - Reasoning withheld at the request's direction is never
+                    //   framed, so the hash commits to exactly what is emitted.
                     var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
@@ -1144,7 +1181,9 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                // Withheld reasoning was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldReasoningAt ?? .now
+                                let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0
                                     + Double(elapsed.components.attoseconds) / 1e15
@@ -1167,14 +1206,15 @@ extension ProviderLoop {
                             // (OpenAI shape). The coordinator forwards this
                             // chunk verbatim, so no coordinator change is
                             // needed for the streaming path.
-                            if !reasoningText.isEmpty {
+                            let generatedReasoning = generatedReasoningText()
+                            if !generatedReasoning.isEmpty {
                                 // Re-tokenizing detokenized text isn't a perfect
                                 // identity (whitespace/special-token merges), so
                                 // clamp to the engine's completion count — a
                                 // reasoning subset can never exceed the total.
                                 reasoningTokens = min(
                                     tokenizer.inner.encode(
-                                        text: reasoningText, addSpecialTokens: false
+                                        text: generatedReasoning, addSpecialTokens: false
                                     ).count,
                                     max(0, completionTokens)
                                 )
@@ -1206,7 +1246,8 @@ extension ProviderLoop {
                     // never alter `delta.content`, so the response hash and
                     // billing extraction are unaffected.
                     if let logprobsChannel {
-                        pendingLogprobs += logprobsChannel.drain()
+                        let drained = logprobsChannel.drain()
+                        pendingLogprobs += reasoningLogprobs?.visible(drained) ?? drained
                         // Re-cap after every drain: without a content-bearing
                         // frame this buffer would grow unbounded past the
                         // channel's own cap (see the declaration comment).
@@ -1287,12 +1328,13 @@ extension ProviderLoop {
             }
 
             if cancelledMidStream {
-                if reasoningTokens == 0 && !reasoningText.isEmpty {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
                         reasoningTokens = min(
                             tokenizer.inner.encode(
-                                text: reasoningText, addSpecialTokens: false
+                                text: generatedReasoning, addSpecialTokens: false
                             ).count,
                             completionFloor
                         )
@@ -1312,12 +1354,7 @@ extension ProviderLoop {
                         fullResponseText: fullResponseText
                     )
                 )
-                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
-                    request: streamingRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: templateControls
-                ))
+                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: promptFloor())
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
@@ -1356,9 +1393,13 @@ extension ProviderLoop {
 
                 // Partial billing stays tied to delivered output. Cache usage
                 // needs the native terminal that proves adoption; cancellation
-                // can end this frame loop before the bridge records it.
-                await slotEngineV2.settleCancelledStream(
-                    profile: profile, usageSignal: v2UsageSignal)
+                // can end this frame loop before the bridge records it. Super
+                // submits under its owner's own signal and reports no cache use;
+                // its stream termination cancels and joins the native request.
+                if superOwner == nil {
+                    await slotEngineV2.settleCancelledStream(
+                        profile: profile, usageSignal: v2UsageSignal)
+                }
             }
 
             // No usage chunk on a clean finish means an upstream regression.
@@ -1376,12 +1417,7 @@ extension ProviderLoop {
                     )
                 }
                 if promptTokens == 0 {
-                    promptTokens = Self.promptTokenFloor(
-                        request: streamingRequest,
-                        tokenizer: tokenizer,
-                        modelType: modelType,
-                        templateControls: templateControls
-                    )
+                    promptTokens = promptFloor()
                     if promptTokens > 0 {
                         log.warning(
                             "[\(requestId)] usage chunk missing/zero prompt tokens"
@@ -1391,10 +1427,11 @@ extension ProviderLoop {
                     }
                 }
                 // Re-tokenize reasoning here too when the usage frame is missing.
-                if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(
-                            text: reasoningText, addSpecialTokens: false
+                            text: generatedReasoning, addSpecialTokens: false
                         ).count,
                         completionTokens
                     )

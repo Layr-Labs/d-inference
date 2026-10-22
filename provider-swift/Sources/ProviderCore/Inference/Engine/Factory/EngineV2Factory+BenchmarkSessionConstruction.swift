@@ -321,7 +321,7 @@ extension EngineV2Factory {
             // A native failure is retired by its strong transaction after the
             // encompassing setup task unwinds. Void shutdown is not proof.
             if nativeMiMoLoad == nil {
-                await bundle.bridge.shutdown()
+                try await GLM5NextRetirement.beforeRelease(bundle.bridge)
                 bundle.releaseAssistant()
             }
             throw error

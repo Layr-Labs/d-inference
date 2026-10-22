@@ -14,13 +14,19 @@ struct NativeToolStreamRouter {
     private let nativeMiMoRequiresConstraint: Bool
     private let rejectMiMoThought: Bool
     private var rejectedNativeGemmaReasoning = false
+    private let withholdReasoning: Bool
+    private var withheldReasoning = ""
 
+    // Pass the same prepared schemas used by the handler: Flint's raw-string
+    // boundaries must agree before and after reasoning-channel separation.
     init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
+         tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
-         absorbStrayThinkClose: Bool = false) {
+         absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false) {
         self.handler = handler
+        self.withholdReasoning = withholdReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
@@ -31,12 +37,22 @@ struct NativeToolStreamRouter {
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
+                flintFrames: handler?.format == .flint,
+                tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 absorbStrayThinkClose: absorbStrayThinkClose)
         }
     }
 
     var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+
+    /// Reasoning classified since the last call but withheld from the events
+    /// at the caller's request. Its owner counts it as generated reasoning; it
+    /// is never emitted, logged or part of the response hash.
+    mutating func takeWithheldReasoning() -> String {
+        defer { withheldReasoning = "" }
+        return withheldReasoning
+    }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
         let pieces: [ParsedReasoning]
@@ -51,7 +67,16 @@ struct NativeToolStreamRouter {
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
-        return try route(pieces)
+        let events = try route(pieces)
+        if handler?.format == .flint {
+            // EOF can expose an incomplete frame only when the handler flushes.
+            // Validate it here, before the caller's generic auto-mode residual
+            // fallback can publish tool syntax as ordinary content. finish() is
+            // idempotent for completed frames and does not drain validated calls.
+            _ = handler?.finish()
+            try checkNativeToolFailure()
+        }
+        return events
     }
 
     private func checkReasoningState() throws {
@@ -76,9 +101,13 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
-    private func checkNativeToolFailure() throws {
-        guard nativeMiMoChannels, (handler?.parseFailureCount ?? 0) > 0 else { return }
-        let message = "native MiMo tool output is invalid"
+    /// Also called after the SDK EOS flush, before residual text or any call
+    /// is published. GLM validates the entire retained suffix only at EOS.
+    func checkNativeToolFailure() throws {
+        guard nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint,
+            (handler?.parseFailureCount ?? 0) > 0 else { return }
+        let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
+        let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
@@ -97,6 +126,10 @@ struct NativeToolStreamRouter {
                         rejectedNativeGemmaReasoning = true
                         throw disabledNativeReasoningFailure
                     }
+                } else if withholdReasoning {
+                    // Classified exactly like visible reasoning, so its
+                    // tool-like text stays inert; only emission differs.
+                    withheldReasoning += reasoning
                 } else {
                     events.append(.parsed(.init(content: "", reasoningContent: reasoning)))
                 }

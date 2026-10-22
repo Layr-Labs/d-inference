@@ -51,6 +51,12 @@ public actor EngineV2Bridge {
     // managed ownership cannot silently select legacy admission.
     weak var nativeTransaction: MiMoV26NativeLoadTransaction?
     var nativeTransactionID: UUID?
+    let glm5NextNativeOwner: GLM5NextNativeOperationOwner?
+    /// One GLM step's setup bytes. The engine charges step scratch from the
+    /// same ledger as requests, so request admission leaves this much free.
+    var glm5NextStepSetupBytes = 0
+    /// GLM requests between the capacity gate and `active`.
+    var glm5NextGateReservations: [String: Int] = [:]
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -129,10 +135,11 @@ public actor EngineV2Bridge {
     let partialPrefillCap: Int?
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
-    /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
-    /// fp32 owning-full-row delta to the nominal fp16 sizing rate; Gemma and
-    /// paged slots remain fp16. Heartbeats and process-wide reservations use
-    /// the same value so neither can overstate capacity.
+    /// This is the resolved native serving rate. Ordinary CBv2 slots price the
+    /// observed native per-layer K/V types
+    /// (`EngineV2SlotFactory.slotKVBytesPerToken`). Heartbeats and
+    /// process-wide reservations use the same value so neither can overstate
+    /// capacity.
     let kvBytesPerToken: Int
     /// Peak request-owned residency outside attention KV (Qwen recurrent
     /// committed + transactional conv/SSM generations). Zero preserves the
@@ -176,6 +183,8 @@ public actor EngineV2Bridge {
         ssdPrefixCache != nil || ssdHybridCheckpointStore != nil ? .ssd : .memory
     }
     nonisolated let prefixCacheBaseStatus: PrefixCacheModelStatus
+    /// Typed reason the slot's SSD store was refused; local `/metrics` only.
+    nonisolated let prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure?
     nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     nonisolated let residentPrefixCacheEvidence: ResidentPrefixCacheEvidence?
     nonisolated let residentPrefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
@@ -372,6 +381,7 @@ public actor EngineV2Bridge {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
         kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
@@ -381,9 +391,11 @@ public actor EngineV2Bridge {
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
+        self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
@@ -455,6 +467,7 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
+        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }
@@ -503,7 +516,14 @@ public actor EngineV2Bridge {
     // Test-installed only; never emitted to logging/telemetry or built in release.
     var _testNativeTextObserver: (@Sendable (String, String) -> Void)?
     var _testBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
+    /// Awaited before every native terminal until cleared. Concurrent requests
+    /// can finish in one batched step, which a re-armed one-shot gate can miss.
+    var _testPersistentBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
+
+    func _testInstallPersistentTerminalGate(_ gate: (@Sendable (CBv2Usage) async -> Void)?) {
+        _testPersistentBeforeNativeTerminal = gate
+    }
 
     func _testInstallCancelledSettlementHooks(
         beforeNativeTerminal: @escaping @Sendable (CBv2Usage) async -> Void,

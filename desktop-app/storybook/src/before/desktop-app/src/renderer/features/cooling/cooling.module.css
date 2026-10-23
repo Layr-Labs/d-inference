@@ -1,0 +1,115 @@
+.hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 40px;
+  padding: 4px 0 22px;
+}
+.temperature {
+  flex: 1 1 200px;
+}
+.temperature > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.temperature strong {
+  display: block;
+  margin: 4px 0 6px;
+  font-size: 56px;
+  font-weight: 400;
+  letter-spacing: -3px;
+  line-height: 1;
+}
+.temperature p {
+  font-size: 11px;
+  color: var(--muted);
+}
+.fans {
+  flex: 1.6 1 320px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fans > li {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.fanName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.fanName small {
+  margin-left: auto;
+}
+.fans strong {
+  display: block;
+  margin: 10px 0 0;
+  font-size: 22px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.fans small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.fans :global(.memory-track) {
+  margin-top: 10px;
+}
+.controls {
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.controls h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px 32px;
+}
+.field {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.field > span {
+  display: flex;
+  justify-content: space-between;
+}
+.field b {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.field input {
+  width: 100%;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+.field select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+}
+.field small,
+.actions small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.field:hover input:not(:disabled) {
+  filter: var(--control-hover-filter);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 18px;
+}

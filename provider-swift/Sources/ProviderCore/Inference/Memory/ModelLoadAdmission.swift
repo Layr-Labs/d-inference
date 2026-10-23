@@ -17,9 +17,9 @@ import Foundation
 /// any request whose KV would push past the 90% unified-memory cap — net of the
 /// activation reserve and clamped to the selected OS memory-availability policy.
 /// This is admission accounting, not a guarantee against OS memory pressure:
-/// foreign allocations can race the sample, and inactive pages credited by the
-/// default policy may require compression. Shared hosts can select free-only
-/// sampling through `SystemMemory`.
+/// foreign allocations can race the sample, and page cache credited by the
+/// default policy may hold files other processes still read. Shared hosts can
+/// select free-only sampling through `SystemMemory`.
 public enum ModelLoadAdmission {
     /// Default headroom (GB) reserved above the weights at load time. Derived
     /// from `UnifiedMemoryCap.loadHeadroomBytes()` (activation reserve + minimum
@@ -42,8 +42,9 @@ public enum ModelLoadAdmission {
     /// GlobalKVCacheBudget. Discounting here too is the double-count that kept
     /// capable machines idle.
     /// - Parameters:
-    ///   - systemAvailableBytes: real OS-reported available memory (free +
-    ///     reclaimable). Pass `.max` when unavailable to fall back to the
+    ///   - systemAvailableBytes: real OS-reported available memory (free pages
+    ///     plus reclaimable page cache, `SystemMemory.availableBytes`). Pass
+    ///     `.max` when unavailable to fall back to the
     ///     MLX-only view. The result is clamped to this so the gate can never
     ///     count memory the OS or other processes have already taken — the fix
     ///     for the OOM hole where `total − MLX.active − MLX.cache` over-reports.

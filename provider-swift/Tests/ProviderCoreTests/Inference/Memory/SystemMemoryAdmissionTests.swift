@@ -21,8 +21,10 @@ private final class SharedHostUsage: @unchecked Sendable {
         lock.withLock {
             .init(activeBytes: 16 * hostGiB, cacheBytes: 0,
                 systemAvailableBytes: SystemMemory.availableBytes(
-                    freePages: freeGiB * hostGiB / 16_384,
-                    inactivePages: 211 * hostGiB / 16_384,
+                    stats: machVMStatistics(
+                        freePages: freeGiB * hostGiB / 16_384,
+                        inactivePages: 211 * hostGiB / 16_384,
+                        fileBackedPages: 211 * hostGiB / 16_384),
                     pageSize: 16_384, policy: policy) ?? .max)
         }
     }
@@ -34,7 +36,7 @@ private final class SharedHostUsage: @unchecked Sendable {
     }
 }
 
-@Test func freeOnlyAtomicLoadClaimRejectsForeignInactiveCredit() throws {
+@Test func freeOnlyAtomicLoadClaimRejectsForeignReclaimCredit() throws {
     let reserve = UnifiedMemoryCap.loadReserveBytes(
         physicalBytes: 512 * hostGiB, configReserveBytes: 40 * hostGiB)
     for policy in [SystemMemory.AvailabilityPolicy.reclaimable, .freeOnly] {
@@ -76,7 +78,7 @@ private final class SharedHostUsage: @unchecked Sendable {
             expectedPolicyEpoch: 1, additionalSystemReserveBytes: reserve)
     }
     #expect(ledger.snapshot().chargedBytes == 25 * hostGiB)
-    usage.setFree(100) // Real freed pages, not a speculative inactive-page estimate.
+    usage.setFree(100) // Real freed pages, not a reclaimable page-cache estimate.
     try ledger.recheckCharge(owner: claim.owner, expectedRevision: claim.revision,
         expectedPolicyEpoch: 1, additionalSystemReserveBytes: reserve)
     let competitor = ledger.createOwner()
@@ -93,7 +95,7 @@ private final class SharedHostUsage: @unchecked Sendable {
         additionalSystemReserveBytes: reserve)
 }
 
-@Test func freeOnlyRuntimeClaimCannotSpendInactiveHeadroom() throws {
+@Test func freeOnlyRuntimeClaimCannotSpendReclaimableHeadroom() throws {
     let usage = SharedHostUsage(freeGiB: 11, policy: .freeOnly)
     let ledger = usage.ledger()
     let owner = ledger.createOwner()

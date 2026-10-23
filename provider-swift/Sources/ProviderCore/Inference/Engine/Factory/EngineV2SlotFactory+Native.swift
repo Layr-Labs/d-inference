@@ -21,12 +21,15 @@ enum EngineV2ServingPreparation: Sendable {
         return autoregressive?.mtpStatus ?? .disabled(.targetUnsupported, configured: false)
     }
     var mtpArtifact: SpecDecArtifact? { autoregressive?.mtpArtifact }
-    func fallingBack(_ reason: MTPFallbackReason) -> Self {
+    /// GLM's embedded MTP engine carries the only checked native completion
+    /// receipt, so its preparation never falls back to target-only.
+    var requiresGLM5NextNativeMTP: Bool { autoregressive?.servingModel is GLM5NextProtectedModel }
+    func fallingBack(_ reason: MTPFallbackReason) throws -> Self {
         if case .nativeMiMo(let value) = self {
             return .nativeMiMo(.init(container: value.container, load: value.load,
                 transaction: value.transaction, status: value.status.fallingBack(reason)))
         }
-        if let autoregressive { return .autoregressive(autoregressive.fallingBack(reason)) }
+        if let autoregressive { return .autoregressive(try autoregressive.fallingBack(reason)) }
         return .diffusion
     }
 }
@@ -50,6 +53,31 @@ private struct MiMoV26NativeSlotAssembly: Sendable {
 }
 
 extension EngineV2SlotFactory {
+    /// Explicit inline intent from the already loaded, integrity-checked GLM
+    /// root. No sidecar resolver/download and no public capability registration.
+    static func glm5NextInlinePreparation(container: ModelContainer, enabled: Bool) async throws -> SpecDecPreparation {
+        try await container.perform { context in
+            guard let root = context.model as? GLM5NextModel else {
+                throw GLM5NextManagedLoadError.identityMismatch
+            }
+            guard enabled else {
+                return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
+            }
+            guard let mtp = root.mtp, mtp.targetIdentity == ObjectIdentifier(root.textTower) else {
+                return .init(artifact: nil, status: .disabled(.metadataMissing, configured: true))
+            }
+            return .init(artifact: nil, status: glm5NextInlineStatus(root: root, active: false))
+        }
+    }
+
+    /// The embedded predictor's inline status. Its weights were charged with
+    /// the full root, so it never adds assistant residency.
+    static func glm5NextInlineStatus(root: GLM5NextModel, active: Bool) -> MTPActivationStatus {
+        MTPActivationStatus(configured: true, active: active, reason: nil, source: .inline,
+            revision: root.artifact.identity.revision, sourceRevision: root.artifact.identity.revision,
+            artifactBytes: UInt64(root.artifact.inventory.bytes(in: .mtp)), assistantBytes: 0)
+    }
+
     /// Exact rectangular verification (scalar-dense rows, row-exact affine
     /// projections, serialized attention) is the default MiMo MTP strategy for
     /// eligible text rounds. Exact `0` / `false` / `no` / `off` on this key or
@@ -80,12 +108,16 @@ extension EngineV2SlotFactory {
     static func prepareProductionModel(
         modelId: String, isVLM: Bool, modelDirectory: URL? = nil,
         container: ProviderModelContainer, specDecPreparation: SpecDecPreparation,
+        maximumContextLength: Int? = nil,
         assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2ServingPreparation {
         switch container {
+        case .nemotronSuper:
+            // Built only by its own owner (`ProviderLoop+NemotronSuper`).
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo(let target, let load):
             guard !isVLM, specDecPreparation.artifact == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }
             return .nativeMiMo(try await prepareNativeMiMo(container: target, load: load,
@@ -93,7 +125,8 @@ extension EngineV2SlotFactory {
         case .autoregressive(let target):
             return .autoregressive(try await prepareProductionModel(
                 modelId: modelId, isVLM: isVLM, modelDirectory: modelDirectory, container: target,
-                specDecPreparation: specDecPreparation, assistantLoader: assistantLoader,
+                specDecPreparation: specDecPreparation, maximumContextLength: maximumContextLength,
+                assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry, logInfo: logInfo, logWarning: logWarning))
         case .diffusion:
             guard specDecPreparation.artifact == nil else {
@@ -112,6 +145,8 @@ extension EngineV2SlotFactory {
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2ServingPreparation {
         switch container {
+        case .nemotronSuper:
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo:
             // Refuse BEFORE any assistant/engine release. A retired cold permit
             // cannot authorize another setup generation or a hidden OFF rebuild.
@@ -158,6 +193,8 @@ extension EngineV2SlotFactory {
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity?.finish() }
         switch container {
+        case .nemotronSuper:
+            throw NemotronSuperSlotError.managedLoadRequired
         case .nativeMiMo(let target, let load):
             guard modelType == "mimo_v2", !isVLM, specDecPreparation.artifact == nil,
                 makeEngineOverride == nil else { throw MiMoV26ServingLoadError.nativeOwnerMismatch }

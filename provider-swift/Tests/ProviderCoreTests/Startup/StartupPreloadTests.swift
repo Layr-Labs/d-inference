@@ -30,12 +30,14 @@ private final class PreloadRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var _loads: [String] = []
     private var _selfTests: [String] = []
+    private var _events: [String] = []
     private var _retired: [String] = []
     private var _telemetry: [(model: String, message: String)] = []
     private var _logs: [String] = []
 
-    func recordLoad(_ id: String) { lock.withLock { _loads.append(id) } }
-    func recordSelfTest(_ id: String) { lock.withLock { _selfTests.append(id) } }
+    func recordLoad(_ id: String) { lock.withLock { _loads.append(id); _events.append("load:" + id) } }
+    func recordSelfTest(_ id: String) { lock.withLock { _selfTests.append(id); _events.append("selftest:" + id) } }
+    func recordWarmup(_ id: String) { lock.withLock { _events.append("warmup:" + id) } }
     func recordRetire(_ id: String) { lock.withLock { _retired.append(id) } }
     func recordTelemetry(_ model: String, _ message: String) {
         lock.withLock { _telemetry.append((model, message)) }
@@ -44,6 +46,7 @@ private final class PreloadRecorder: @unchecked Sendable {
 
     var loads: [String] { lock.withLock { _loads } }
     var selfTests: [String] { lock.withLock { _selfTests } }
+    var events: [String] { lock.withLock { _events } }
     var retired: [String] { lock.withLock { _retired } }
     var telemetry: [(model: String, message: String)] { lock.withLock { _telemetry } }
     var logs: [String] { lock.withLock { _logs } }
@@ -93,6 +96,29 @@ private enum PreloadStubError: Error, LocalizedError {
     }
 }
 
+/// Free memory that a reclaim (retained KV segments, buffer pool) raises.
+private final class ReclaimableMemory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var free: Double
+    private let afterReclaim: Double
+    private var count = 0
+
+    init(freeGb: Double, afterReclaimGb: Double) {
+        free = freeGb
+        afterReclaim = afterReclaimGb
+    }
+
+    var freeGb: Double { lock.withLock { free } }
+    var reclaims: Int { lock.withLock { count } }
+
+    func reclaim() {
+        lock.withLock {
+            count += 1
+            free = afterReclaim
+        }
+    }
+}
+
 private func candidate(_ id: String, requiredGb: Double = 1.0) -> StartupPreloader.Candidate {
     StartupPreloader.Candidate(modelId: id, requiredGb: requiredGb)
 }
@@ -108,7 +134,8 @@ struct StartupPreloaderTests {
         loadError: @escaping @Sendable (String) -> (any Error)? = { _ in nil },
         selfTest: Bool = false,
         selfTestError: @escaping @Sendable (String) -> (any Error)? = { _ in nil },
-        selfTestFailClosed: Bool = false
+        selfTestFailClosed: Bool = false,
+        shapeWarmup: Bool = false
     ) -> StartupPreloader.Dependencies {
         var selfTestClosure: (@Sendable (String) async throws -> Duration)?
         if selfTest {
@@ -118,6 +145,8 @@ struct StartupPreloaderTests {
                 return .milliseconds(5)
             }
         }
+        var shapeWarmupClosure: (@Sendable (String) async -> Void)?
+        if shapeWarmup { shapeWarmupClosure = { id in recorder.recordWarmup(id) } }
         return StartupPreloader.Dependencies(
             freeMemoryGb: { freeMemoryGb },
             load: { id in
@@ -125,6 +154,7 @@ struct StartupPreloaderTests {
                 if let error = loadError(id) { throw error }
             },
             selfTest: selfTestClosure,
+            shapeWarmup: shapeWarmupClosure,
             selfTestFailClosed: selfTestFailClosed,
             retire: { id in recorder.recordRetire(id) },
             onSelfTestFailed: { id, message in recorder.recordTelemetry(id, message) },
@@ -170,6 +200,29 @@ struct StartupPreloaderTests {
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
         #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+    }
+
+    @Test("a short sample reclaims what a load would, then samples again, before skipping")
+    func shortSampleReclaimsBeforeSkipping() async {
+        let recorder = PreloadRecorder()
+        let memory = ReclaimableMemory(freeGb: 8, afterReclaimGb: 25)
+        var deps = makeDeps(recorder: recorder)
+        deps.freeMemoryGb = { memory.freeGb }
+        deps.reclaimBeforeSkip = { memory.reclaim() }
+        // The requirement is resolved again after the reclaim (Super's
+        // tracks its claim room): 30 GB short, then 20 GB once reclaimed.
+        deps.currentRequiredGb = { id in id == "retained" ? (memory.reclaims == 0 ? 30 : 20) : nil }
+
+        let summary = await StartupPreloader(deps: deps).run(candidates: [
+            candidate("retained", requiredGb: 30),
+            candidate("too-big", requiredGb: 100),
+            candidate("fits", requiredGb: 2),
+        ])
+
+        #expect(summary.loaded == ["retained", "fits"])
+        #expect(summary.skippedInsufficientMemory == ["too-big"])
+        // Once per short candidate; a fitting one never reclaims.
+        #expect(memory.reclaims == 2)
     }
 
     @Test("a skipped candidate does not consume the live slot limit")
@@ -301,6 +354,37 @@ struct StartupPreloaderTests {
         #expect(summary.loaded == ["healthy"])
         #expect(recorder.retired == ["flaky"])
         #expect(recorder.telemetry.count == 1)
+    }
+
+    @Test("the shape warmup follows each passing self-test, before the next load")
+    func shapeWarmupFollowsPassingSelfTests() async {
+        for failClosed in [false, true] {
+            let recorder = PreloadRecorder()
+            let summary = await StartupPreloader(deps: makeDeps(
+                recorder: recorder,
+                loadError: { $0 == "broken" ? PreloadStubError.loadExploded : nil },
+                selfTest: true,
+                selfTestError: { $0 == "flaky" ? PreloadStubError.selfTestExploded : nil },
+                selfTestFailClosed: failClosed,
+                shapeWarmup: true)).run(candidates: [candidate("first"), candidate("broken"),
+                    candidate("flaky"), candidate("last")])
+
+            #expect(recorder.events == ["load:first", "selftest:first", "warmup:first", "load:broken",
+                "load:flaky", "selftest:flaky", "load:last", "selftest:last", "warmup:last"])
+            #expect(summary.loaded == (failClosed ? ["first", "last"] : ["first", "flaky", "last"]))
+        }
+    }
+
+    @Test("without a self-test each loaded model warms right after its load")
+    func shapeWarmupFollowsLoadWithoutSelfTest() async {
+        let recorder = PreloadRecorder()
+        _ = await StartupPreloader(deps: makeDeps(
+            recorder: recorder, freeMemoryGb: 8,
+            loadError: { $0 == "broken" ? PreloadStubError.loadExploded : nil },
+            shapeWarmup: true)).run(candidates: [candidate("too-big", requiredGb: 30),
+                candidate("broken"), candidate("healthy")])
+
+        #expect(recorder.events == ["load:broken", "load:healthy", "warmup:healthy"])
     }
 
     @Test("cancellation stops the run between candidates")
@@ -562,6 +646,24 @@ struct StartupPreloadGateTests {
 
         let outcome = await loop.runStartupPreloadGateForTesting()
         #expect(outcome == .disabled)
+    }
+
+    @Test("a short sample releases retained KV segments before the preload skips")
+    func shortSampleReleasesRetainedSegmentsBeforeSkipping() async throws {
+        let recorder = PreloadRecorder()
+        let loop = try await makePreloadLoop(
+            models: [preloadModelInfo("a", memoryGb: 2)],
+            backend: BackendSettings(preloadModels: ["a"], startupSelftest: false))
+        await loop.setStartupPreloadFreeMemoryOverrideForTesting({ 0 })
+        await loop.setStartupPreloadLoadOverrideForTesting({ id in recorder.recordLoad(id) })
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        _ = await loop.runStartupPreloadGateForTesting()
+        #expect(recorder.loads.isEmpty, "the pinned sample stays short, so the candidate is skipped")
+        #expect(engine.parkedBytes == 0)
     }
 
     @Test("registration is deferred until warm when the preload beats the timeout")

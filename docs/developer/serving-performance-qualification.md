@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-21
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -12,8 +12,14 @@ ceiling of 8 without a profile; any width above 8, including the M5 Ultra B16
 target, still requires a reviewed profile. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
 The ordinary admission path uses its resolved rates without the former fixed
-50% reduction; this change needs no timing-catalog entry. Profile qualification
-is separate work required to introduce a measured prediction-error envelope.
+50% reduction; this change needs no timing-catalog entry. Neither do its
+estimator corrections ([deadlines](../architecture/inference.md#deadlines),
+`DARKBLOOM_TTFT_ADMISSION_FIXES`): a request carrying a reviewed calibration
+keeps the per-row decode charge, at the configured MTP width, in both its
+calibrated conversion and its fallback, so `calibratedPathProven` still
+separates exactly two conversions.
+Profile qualification is separate work required to introduce a measured
+prediction-error envelope.
 
 ## Verify local evidence
 

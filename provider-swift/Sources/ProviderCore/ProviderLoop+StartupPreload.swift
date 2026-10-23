@@ -111,7 +111,8 @@ extension ProviderLoop {
     /// Build the ordered startup preload plan:
     ///   * `preload_models` non-empty → that list, in operator order;
     ///   * otherwise → the persisted previously-served set, biggest first
-    ///     (the largest model loads while memory is emptiest);
+    ///     (the largest model loads while memory is emptiest; the managed
+    ///     Super slot by its planned configuration's requirement);
     ///   * append newly selected models so a fresh start warms them without
     ///     waiting for their first request, regardless of idle-unload policy.
     /// Enrollment expands advertised inventory, not implicit warmup preferences:
@@ -126,8 +127,7 @@ extension ProviderLoop {
             ids = backend.preloadModels
         } else {
             ids = LoadedModelsStore.read(from: loadedModelsFileURL()).sorted {
-                (advertisedModels[$0]?.estimatedMemoryGb ?? 0)
-                    > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
+                plannedLoadGb($0) > plannedLoadGb($1)
             }
             ids.append(contentsOf: loopConfig.models.map(\.id))
             if autopilotConsented {
@@ -160,14 +160,29 @@ extension ProviderLoop {
     /// The LIVE preload requirement for a candidate: measured-or-padded
     /// weights plus the CURRENT serving-set headroom. Consulted at each
     /// preloader admission step because a fail-closed retirement earlier in
-    /// the run can relax the floor the plan-time figure captured. nil when
-    /// the id left the advertised set (the preloader then keeps its planned
-    /// figure; the load itself re-guards).
-    internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
+    /// the run can relax the floor the plan-time figure captured. The managed
+    /// Super slot's comes from its own LOAD gate
+    /// (`nemotronSuperPreloadRequiredGb`). nil when the id left the
+    /// advertised set (the preloader then keeps its planned figure; the load
+    /// itself re-guards).
+    internal func livePreloadRequiredGb(_ modelId: String) async -> Double? {
         guard let info = advertisedModels[modelId] else { return nil }
+        if isNemotronSuperIdentity(modelId) {
+            return nemotronSuperPreloadRequiredGb(info, freeGb: await startupPreloadFreeMemoryGb())
+        }
         return ModelLoadAdmission.requiredToLoadGb(
             weightsGb: info.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
+    }
+
+    /// A persisted model's size for the biggest-first order: the scanner's
+    /// estimate, or for the managed Super slot its widest configuration's
+    /// requirement, which the emptiest memory serves.
+    private func plannedLoadGb(_ modelId: String) -> Double {
+        guard let info = advertisedModels[modelId] else { return 0 }
+        guard isNemotronSuperIdentity(modelId), let widest = nemotronSuperLoadRequirements(info).first
+        else { return info.estimatedMemoryGb }
+        return Double(widest) / 1_073_741_824
     }
 
     // MARK: - Readiness gate
@@ -219,6 +234,7 @@ extension ProviderLoop {
             freeMemoryGb: { await me.startupPreloadFreeMemoryGb() },
             load: { modelId in try await me.startupPreloadLoad(modelId: modelId) },
             selfTest: selfTestClosure,
+            shapeWarmup: { modelId in await me.startupPreloadShapeWarmup(modelId: modelId) },
             selfTestFailClosed: failClosed,
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
@@ -226,7 +242,8 @@ extension ProviderLoop {
             currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
             canLoadMore: { await me.startupPreloadHasFreeSlot() },
             onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) },
-            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) }
+            onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) },
+            reclaimBeforeSkip: { await me.releaseReclaimableMemoryForLoad() }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -322,6 +339,15 @@ extension ProviderLoop {
         // here and is WARN-logged by the preloader; the lazy-load path (which
         // MAY evict, as always) remains the fallback for live traffic.
         try await ensureModelLoaded(modelId: modelId, allowEviction: false)
+    }
+
+    /// Before registration only a local-endpoint request can preempt the
+    /// excluded shape warmup, so the first routed prompt finds its kernels
+    /// compiled. The registration gate's timeout still bounds the whole preload.
+    private func startupPreloadShapeWarmup(modelId: String) async {
+        guard !Task.isCancelled, !isShuttingDown, !servingDrain.refusing,
+            let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
+        await slot.engineV2.runShapeWarmupBeforeServing()
     }
 
     private func startupPreloadSelfTest(modelId: String) async throws -> Duration {

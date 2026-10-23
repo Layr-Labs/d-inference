@@ -5,7 +5,7 @@ import ProviderCoreFoundation
 /// JSON document. Batch items carry their own controls without reserializing
 /// messages, tool schemas, or inline media.
 struct LocalChatRequest: Decodable {
-    let request: OpenAIChatCompletionRequest
+    var request: OpenAIChatCompletionRequest
     let templateControls: ChatTemplateControls
 
     init(from decoder: any Decoder) throws {

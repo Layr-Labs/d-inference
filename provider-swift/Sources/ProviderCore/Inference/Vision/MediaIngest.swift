@@ -280,10 +280,8 @@ public enum MediaIngest {
             tools, context: .init(modelId: request.model, modelType: modelType))
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
-        if preserveTemplateFields {
-            try Qwen4SupportPolicy.validateReasoningContext(
-                modelID: request.model, modelType: modelType, additionalContext: additionalContext)
-        }
+        try Qwen4SupportPolicy.validateReasoningContext(
+            modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         var chatMessages: [Chat.Message] = []
         let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
         var totalPixels = 0

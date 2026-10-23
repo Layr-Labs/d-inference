@@ -8,6 +8,7 @@ Exact public wire shapes, manifests and provider/retained-console configuration.
 - [Configuration reference](configuration.md)
 - [Desktop control API](desktop-control.md): Swift CLI/backend control API, operations, lifecycle, and desktop account projection
 - [Model registry format](model-registry-format.md)
+- [Nemotron Super image formats](nemotron-super-image-formats.md)
 - [Prediction decision telemetry](prediction-decision-telemetry.md)
 - [Provider ↔ coordinator protocol messages](protocol-messages.md)
 - [Provider Serving Authorization](provider-authorization.md)

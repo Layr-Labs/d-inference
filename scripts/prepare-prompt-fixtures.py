@@ -24,7 +24,7 @@ MAX_ARTIFACT_BYTES = 128 << 20
 MAX_CONTRACT_BYTES = 512 << 20
 MAX_MODELS = 128
 VERSIONS = {
-    "normalization": "darkbloom-request-normalization-v8",
+    "normalization": "darkbloom-request-normalization-v9",
     "renderer": "swift-jinja-request-date-compatible-v4",
     "tokenizer": "huggingface-tokenizer-json-v1",
     "block_hash": "darkbloom-block-chain-v1",

@@ -29,6 +29,9 @@ extension ProviderLoop {
     /// child task; its registry closures reach back into this actor.
     func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
         guard localServerTask == nil else { return }
+        // One partition for this local application's Super prefix reuse,
+        // separate from every authenticated coordinator scope.
+        let superCacheScope = "local-super-" + UUID().uuidString
         let app = makeLocalInferenceApplication(
             config: cfg,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens,
@@ -59,6 +62,14 @@ extension ProviderLoop {
             },
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
+            },
+            managedSuperEngine: { [weak self] body, request in
+                guard request.model == NemotronSuperServingPolicy.modelID else { return nil }
+                return NemotronSuperLocalEndpointEngine(body: body, hasMedia: MediaIngest.hasMedia(request),
+                    cacheScope: superCacheScope, acquire: { [weak self] in
+                        guard let self else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(request.model) }
+                        return try await self.acquireNemotronSuperForLocal(request.model)
+                    })
             }
         )
         let log = logger
@@ -110,7 +121,13 @@ extension ProviderLoop {
     /// the idle monitor and load-gate eviction can't pull it mid-stream. Loading
     /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
     /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
-    func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+    func acquireModelForLocal(_ modelId: String, managedSuper: Bool = false) async throws
+        -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        // The generic engine never serves Super: its owner renders and parses.
+        guard managedSuper || !isNemotronSuperIdentity(modelId) else {
+            throw MultiModelBatchSchedulerEngineError.requestRejected(
+                "\(modelId) is served only through chat completions")
+        }
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
         try throwIfRefusingNewLocalWork(modelId: modelId)
@@ -161,6 +178,19 @@ extension ProviderLoop {
             engineV2Bridge: slot.engineV2,
             visionGate: slot.visionGate(kvBudget: kvBudget)
         )
+    }
+
+    /// A local Super request: the ordinary local acquisition (load gates and
+    /// reservation), resolved to the slot's own owner.
+    func acquireNemotronSuperForLocal(_ modelId: String) async throws -> NemotronSuperLocalEndpointEngine.Lease {
+        let acquired = try await acquireModelForLocal(modelId, managedSuper: true)
+        guard let owner = modelSlots[modelId]?.modelContainer.nemotronSuper,
+            owner.bridge === acquired.engineV2Bridge else {
+            await acquired.releaseToken.fire()
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
+        let release = acquired.releaseToken
+        return .init(owner: owner, release: { await release.fire() })
     }
 
     /// Drop one local in-flight reservation for a model.

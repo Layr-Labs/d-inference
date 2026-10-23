@@ -6,11 +6,13 @@ import Foundation
 /// assigned model doesn't fit its RAM ("Insufficient memory (X GB free, need Y
 /// GB)"). This turns the raw numbers into an operator-facing verdict.
 ///
-/// Delegates to `ModelLoadAdmission` — the SAME arithmetic the running provider
-/// uses in `ProviderLoop.availableMemoryGb()` / `ensureModelLoaded` — so the
-/// verdict `doctor` prints can never drift from what the daemon enforces at load
-/// time. (Before, this modelled an older `weights × 2.0` / `free × 0.7` gate
-/// that no longer matches the runtime.)
+/// Uses `ModelLoadAdmission`'s arithmetic with the supplied memory inputs.
+/// `DoctorRunner` prefers a fresh paired daemon load budget and includes
+/// resident, busy, and eviction-aware context when available. Without that
+/// budget pair, it falls back to an independent current-memory sample.
+/// The verdict describes that snapshot, not a guaranteed future load outcome:
+/// the daemon can evict idle models, reclaim cache, resample memory, and apply
+/// reservation and post-load gates before serving.
 public enum ModelFitDiagnostic {
     private static let gib = 1024.0 * 1024.0 * 1024.0
 
@@ -40,7 +42,8 @@ public enum ModelFitDiagnostic {
     /// The memory (GB) the provider would actually have free to load a model,
     /// via `ModelLoadAdmission.freeForLoadGb`: real free RAM (clamped to what the
     /// OS reports available when known) minus the OS reserve and resident MLX
-    /// memory. Shared with `ProviderLoop.availableMemoryGb()` so they agree.
+    /// memory. Uses the same arithmetic as `ProviderLoop.availableMemoryGb()`,
+    /// without the daemon's unmaterialized KV commitments.
     ///
     /// - Parameters:
     ///   - systemAvailableGb: real OS-reported available memory (doctor reads it
@@ -55,8 +58,8 @@ public enum ModelFitDiagnostic {
     ) -> Double {
         let totalBytes = bytes(totalGb)
         // Same cap-implied reserve the running gate uses (max(configReserve,
-        // physical − 90% cap)), so the doctor verdict matches what the daemon
-        // actually enforces and never reports "fits" for a model the cap refuses.
+        // physical − 90% cap)), so the doctor applies the daemon's cap reserve;
+        // the daemon's KV commitments can still lower the budget at load time.
         let reserve = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: totalBytes, configReserveBytes: bytes(reserveGb))
         return ModelLoadAdmission.freeForLoadGb(
@@ -83,7 +86,7 @@ public enum ModelFitDiagnostic {
     /// are locally-available models, used to suggest a fit. `servingSetIDs` is
     /// the box's ACTUAL serving set (the daemon's load gate carves the max
     /// floor over that whole set, not the target's own) — pass it so the
-    /// verdict matches what the daemon enforces; nil falls back to the target
+    /// verdict uses the daemon's serving-set reserve; nil falls back to the target
     /// alone (a single-model box, where the two coincide).
     public static func diagnose(
         modelID: String,

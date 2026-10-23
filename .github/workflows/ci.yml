@@ -58,6 +58,8 @@ jobs:
           python3 .github/scripts/test-threat-ensemble.py
           python3 .github/scripts/test-threat-budget.py
           python3 .github/scripts/test-threat-bedrock.py
+          python3 .github/scripts/test-threat-diagnostics.py
+          python3 .github/scripts/test-threat-integration-scope.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test model registry workflow with loopback HTTP

@@ -54,7 +54,19 @@ class GitHub:
         self.number, self.token, self.transport = number, token, transport
 
     def call(self, path, payload=None, method=None):
-        return self.transport(self.root + path, self.token, payload, method)
+        try:
+            return self.transport(self.root + path, self.token, payload, method)
+        except APIError as error:
+            # Classify the operation without publishing PR-controlled paths,
+            # API bodies, headers, or credentials.
+            operation = ("state" if path.startswith("/contents/") else
+                         "comparison" if path.startswith("/compare/") else
+                         "files" if re.match(r"/pulls/[0-9]+/files", path) else
+                         "pull" if path.startswith("/pulls/") else
+                         "comments" if path.startswith("/issues/") else "other")
+            error.diagnostic = {"code": "GITHUB_API_ERROR", "service": "github",
+                                "operation": operation, "http_status": error.status}
+            raise
 
     def pull(self):
         return self.call(f"/pulls/{self.number}")

@@ -40,6 +40,21 @@ final class WeightHasherStreamParityTests: XCTestCase {
         }
     }
 
+    func testUncachedReaderMatchesIndependentDigestAcrossChunkBoundaries() throws {
+        try withDirectory { root in
+            let chunk = 1024 * 1024
+            for size in [0, 1, 16383, 16384, chunk - 1, chunk, chunk + 1, 3 * chunk + 4097] {
+                let data = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 5) })
+                let file = root.appendingPathComponent("payload")
+                try data.write(to: file)
+                let uncached = try XCTUnwrap(WeightHasher.hashSingleFileUncached(at: file), "size \(size)")
+                XCTAssertEqual(hex(uncached), hex(SHA256.hash(data: data)), "size \(size)")
+            }
+            XCTAssertNil(WeightHasher.hashSingleFileUncached(at: root))
+            XCTAssertNil(WeightHasher.hashSingleFileUncached(at: root.appendingPathComponent("missing")))
+        }
+    }
+
     func testSortedAggregationRetainsRawDigestContract() throws {
         try withDirectory { root in
             let a = root.appendingPathComponent("a"), b = root.appendingPathComponent("b")

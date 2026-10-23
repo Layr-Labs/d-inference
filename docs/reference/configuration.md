@@ -581,7 +581,10 @@ reading and scheduling, not the verified
 bytes or model arithmetic. Each file is first read through a page-aligned
 `F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
 does not pull a second copy of loaded weights through the file cache; the
-readers selected below remain its fallbacks. Discovery remains hash-free. Fresh pre/post-load
+readers selected below remain its fallbacks. `F_NOCACHE` does not evict pages
+that were cached before the read (a download's own writes, an earlier read), so
+that reader then drops the file's cached pages (`PageCache.drop`); a managed GLM
+load does the same for its shards once loaded. Discovery remains hash-free. Fresh pre/post-load
 verification and delayed identity publication retain their existing rules, except
 that a managed GLM load publishes its own per-file SHA-256 verification instead of
 bracketing passes ([inference](../architecture/inference.md)).

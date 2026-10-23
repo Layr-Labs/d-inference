@@ -170,6 +170,11 @@ actor GLM5NextManagedLoad {
             finished = true
             constructionOwner = nil
             releaseConstructionOwnership()
+            // The native reader reads around the file cache; pages cached
+            // before the load would keep a second copy of the weights resident.
+            for file in plan.weights.manifest.files where file.path.hasSuffix(".safetensors") {
+                PageCache.drop(fileAt: plan.weights.directory.appendingPathComponent(file.path))
+            }
             phases.total = clock.now - startedAt
             self.phases = phases
             verifiedArtifactSHA256 = plan.weights.manifest.aggregateSHA256

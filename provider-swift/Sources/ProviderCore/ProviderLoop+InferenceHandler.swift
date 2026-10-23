@@ -1142,8 +1142,9 @@ extension ProviderLoop {
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
                     // reasoning, or tool delta has been observed. Withheld
-                    // reasoning is generated output too, though never framed.
-                    if contentFrameCount == 0, v2UsageSignal.firstWithheldReasoningAt == nil,
+                    // reasoning or answer text is generated output too, though
+                    // not framed (yet).
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldOutputAt == nil,
                         rejectExpiredDeadline()
                     {
                         return
@@ -1212,8 +1213,8 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                // Withheld reasoning was the first generated output.
-                                let firstOutputAt = v2UsageSignal.firstWithheldReasoningAt ?? .now
+                                // Withheld output was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
                                 let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0

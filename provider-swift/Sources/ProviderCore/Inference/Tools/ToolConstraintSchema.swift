@@ -154,7 +154,8 @@ enum ToolConstraintSchemaCompiler {
 
     /// A response_format schema uses the same fail-closed subset at any root
     /// type. Without the normalizer's render metadata an allow-all `{}` stays
-    /// unsupported instead of compiling to a forced argument's free string.
+    /// unsupported instead of compiling to a forced argument's free string,
+    /// and every node must declare what it accepts.
     static func compileResponseSchema(_ raw: MLXLMCommon.JSONValue) throws -> ToolValueSchema {
         let schema = try compileSchema(
             raw, depth: 0, path: "json_schema.schema", allowRenderMetadata: false)
@@ -162,7 +163,27 @@ enum ToolConstraintSchemaCompiler {
             throw ToolConstraintSchemaError.unsupported(
                 "json_schema grammar exceeds the \(maxGrammarComplexity)-unit safety limit")
         }
+        try requireExplicitResponseTypes(raw, path: "json_schema.schema")
         return schema
+    }
+
+    /// The compiler infers `string` for an untyped leaf, which is the right
+    /// render type for a tool argument but would silently narrow an untyped
+    /// (accept-anything) output schema. Runs after compilation, which already
+    /// bounded the depth and validated these subschema positions.
+    private static func requireExplicitResponseTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
+        guard case .object(let object) = raw else { return }
+        let typed = (object["type"].map { $0 != .null } ?? false)
+            || ["properties", "additionalProperties", "items", "enum", "const"].contains { object[$0] != nil }
+        guard typed else {
+            throw ToolConstraintSchemaError.unsupported("\(path) has no type and would accept any JSON value")
+        }
+        if case .object(let properties)? = object["properties"] {
+            for (name, child) in properties.sorted(by: { $0.key < $1.key }) {
+                try requireExplicitResponseTypes(child, path: "\(path).properties.\(name)")
+            }
+        }
+        if let items = object["items"] { try requireExplicitResponseTypes(items, path: "\(path).items") }
     }
 
     private static func grammarCost(_ schema: ToolValueSchema) -> Int {

@@ -234,6 +234,28 @@ struct GLM5NextMediaRoutingTests {
         #expect(capture.requests.isEmpty)
     }
 
+    /// Only the GLM text path withholds and validates a JSON answer, so media
+    /// with a JSON response_format is refused before any media work.
+    @Test func jsonResponseFormatWithMediaIsRefusedBeforePreparation() async throws {
+        let engine = GLMScriptedEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
+            eosTokenIds: [2], kvBytesPerToken: 0)
+        let capture = RequestCapture()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, request, _ in
+                capture.record(request)
+                return preparedSubmission()
+            }, emitTelemetry: { _ in })
+        var request = imageRequest()
+        request.responseFormat = .jsonObject()
+        await #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "GLM5: JSON response_format is not supported with image or video input")) {
+            _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
+        }
+        #expect(capture.requests.isEmpty && engine.submitted.isEmpty)
+    }
+
     @Test func videoIsDecodedAndHandedToTheProcessorRatherThanRefused() async throws {
         // A decodable clip passes bounded ingest; only the stub's processor
         // identity stops it, after decode and before any tower work.

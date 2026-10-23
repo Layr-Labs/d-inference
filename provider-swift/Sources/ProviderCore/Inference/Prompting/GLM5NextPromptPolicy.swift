@@ -326,8 +326,11 @@ enum GLM5NextPromptPolicy {
         guard !prepared.requiresToolCall else {
             throw invalid("required/named tool_choice is not qualified by the native prompt format")
         }
-        guard request.responseFormat?.requiresJSONOutput != true else {
-            throw invalid("JSON output mode and constrained JSON schemas are not qualified")
+        // A JSON response_format renders the service's instruction message;
+        // the answer is withheld and validated after generation
+        // (`GLM5NextResponseFormat`), never constrained here.
+        guard request.responseFormat?.requiresJSONOutput != true || prepared.glmResponseFormat != nil else {
+            throw invalid("JSON response_format requires its output validator")
         }
         guard !MediaIngest.hasMedia(request) else { throw invalid("native media is not qualified") }
         for message in request.messages {

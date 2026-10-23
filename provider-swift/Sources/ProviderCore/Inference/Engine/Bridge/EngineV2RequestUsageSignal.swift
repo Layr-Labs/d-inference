@@ -22,7 +22,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     /// the cold fallback as memory rather than inventing an SSD miss.
     private var _residentCandidateSeen = false
     private var _withheldReasoning = ""
-    private var _firstWithheldReasoningAt: ContinuousClock.Instant?
+    private var _firstWithheldOutputAt: ContinuousClock.Instant?
     private var didEmitLookup = false
     /// Armed before the pump task can run; only the pump may resolve it.
     /// Waiters exist only on canceled settlement, never on ordinary decode.
@@ -239,8 +239,18 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     func recordWithheldReasoning(_ text: String) {
         guard !text.isEmpty else { return }
         lock.withLock {
-            if _firstWithheldReasoningAt == nil { _firstWithheldReasoningAt = .now }
+            if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }
             _withheldReasoning += text
+        }
+    }
+
+    /// Answer output was generated but is withheld until it validates (GLM's
+    /// JSON `response_format`). Like withheld reasoning, its generation ends
+    /// the pre-content interval; it is never counted as reasoning. Recorded
+    /// before any later event is yielded.
+    func recordWithheldOutput() {
+        lock.withLock {
+            if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }
         }
     }
 
@@ -248,9 +258,10 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         lock.withLock { _withheldReasoning }
     }
 
-    /// When the first withheld reasoning was generated; nil while none was.
-    var firstWithheldReasoningAt: ContinuousClock.Instant? {
-        lock.withLock { _firstWithheldReasoningAt }
+    /// When the first withheld output, reasoning or answer, was generated;
+    /// nil while none was.
+    var firstWithheldOutputAt: ContinuousClock.Instant? {
+        lock.withLock { _firstWithheldOutputAt }
     }
 
     /// Engine-reported prompt tokens whose KV was adopted from the prefix

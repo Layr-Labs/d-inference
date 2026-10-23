@@ -878,6 +878,14 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 (`GLM5NextPromptPolicy.RawControls`, `returnedReasoning`), and serves `strict`
 tools by validating each `auto` call against its schema before exposure
 (`ToolConstraintValidation.validate`), not by constraining decoding.
+GLM's native engine refuses sampler token constraints, so a JSON
+`response_format` is likewise prompt-steered and validated, not constrained:
+the service's instruction message renders through the template, reasoning
+streams on a separate typed channel, and the answer is withheld until
+generation ends, then decoded and checked (`json_schema` against the shared
+fail-closed subset) before it is exposed; invalid output is a 422 with no
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). The rows
+carry no constraint, so they stay MTP-eligible.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it

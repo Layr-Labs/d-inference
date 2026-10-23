@@ -179,6 +179,16 @@ rendered prompt, with each of its reasoning spellings and controls.
 `strict` weather-tool requests byte for byte (tool choice omitted, `auto` and
 `none`) and a five-step tool conversation built from them.
 
+`GLM5NextOpenRouterCapabilityTests` serves OpenRouter's capability request
+shapes through `MultiModelBatchSchedulerEngine` and `MLXOpenAIService`, with
+the shipped template rendered by Swift-Jinja, the serving
+`GLM5NextThinkingTokenizer` and a scripted CBv2 engine standing in for the
+model. JSON `response_format` requests must render the service instruction,
+stream reasoning, expose one validated answer, and fail with a content-free 422
+for prose, schema violations or truncation. The scripted completions prove the
+provider's withholding and validation, not the model's compliance; that needs
+the real-model run in `GLM5NextRealArtifactQualificationTests`.
+
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
 `GLM5NextPromptPolicyTests` checks those fixed bytes through the shipped

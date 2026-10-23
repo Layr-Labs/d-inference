@@ -545,11 +545,13 @@ struct GLM5NextPromptPolicyTests {
                     prepared: ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next"), controls: .init())
             }
         }
+        // JSON output renders unchanged; its answer is withheld and validated
+        // after generation, never constrained by the prompt policy.
         let json = OpenAIChatCompletionRequest(model: "m", messages: [], responseFormat: .jsonObject())
-        #expect(throws: (any Error).self) {
-            try GLM5NextPromptPolicy.normalizedTextInput(request: json,
-                prepared: ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next"), controls: .init())
-        }
+        let jsonPrepared = try ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next")
+        #expect(jsonPrepared.glmResponseFormat != nil && jsonPrepared.responseFormat == nil)
+        _ = try GLM5NextPromptPolicy.normalizedTextInput(request: json, prepared: jsonPrepared, controls: .init())
+        #expect(try ToolChoicePromptPolicy.prepare(json, modelType: "qwen3_5").glmResponseFormat == nil)
         let none = OpenAIChatCompletionRequest(model: "m", messages: [], tools: [tool], toolChoice: .mode(.none), parallelToolCalls: false)
         let prepared = try ToolChoicePromptPolicy.prepare(none, modelType: "glm5_next")
         #expect(!prepared.allowsParallelCalls)

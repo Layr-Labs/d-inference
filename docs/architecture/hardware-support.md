@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -222,6 +222,15 @@ hardware: the provider retains the actual owner and policy entry and refuses
 GLM publication or clean retirement until restart. Pending operations are joined
 before settlement; no timeout or cancellation is restoration proof
 (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
+
+GLM's KV grant fills the cap, so at full KV its GPU use is the whole cap, about
+247 GB on a 256 GB M5 Ultra. The macOS default GPU wired-memory limit there is
+smaller, and Metal command buffers past it fail with "Insufficient Memory".
+The provider neither lowers the cap nor changes admission for this; `doctor`,
+`start` and failure logs give the operator the
+[sysctl values](../provider/hardware-requirements.md) instead
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit`).
 
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the

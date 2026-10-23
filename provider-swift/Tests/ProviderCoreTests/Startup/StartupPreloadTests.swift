@@ -297,6 +297,24 @@ struct StartupPreloaderTests {
         #expect(!recorder.logs.contains("public memory warning"))
     }
 
+    @Test("failed loads and self-tests reach the failure hook with their error")
+    func failuresReachFailureHook() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(
+            recorder: recorder,
+            loadError: { $0 == "broken" ? PreloadStubError.loadExploded : nil },
+            selfTest: true,
+            selfTestError: { $0 == "flaky" ? PreloadStubError.selfTestExploded : nil })
+        deps.onFailure = { id, error in recorder.recordLog("failure \(id): \(error.localizedDescription)") }
+        _ = await StartupPreloader(deps: deps).run(candidates: [
+            candidate("broken"), candidate("flaky"), candidate("healthy"),
+        ])
+        #expect(recorder.logs.filter { $0.hasPrefix("failure ") } == [
+            "failure broken: weights corrupted (stub)",
+            "failure flaky: decode produced no frames (stub)",
+        ])
+    }
+
     @Test("self-test runs once per LOADED model, not for skipped/failed ones")
     func selfTestRunsPerLoadedModel() async {
         let recorder = PreloadRecorder()

@@ -574,6 +574,7 @@ extension ProviderLoop {
             profile.mark(.loadWaitEnd)
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
+            GLM5NextWiredLimitNotice.report(error, modelID: modelId)
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
@@ -1019,6 +1020,7 @@ extension ProviderLoop {
                 InferenceFailureLogger(logger: log).record(
                     requestId: requestId,
                     failure: failure)
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
                 // TemplateException `error.localizedDescription` collapses to the
@@ -1320,6 +1322,7 @@ extension ProviderLoop {
                     InferenceFailureLogger(logger: log).record(
                         requestId: requestId,
                         failure: failure)
+                    GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText

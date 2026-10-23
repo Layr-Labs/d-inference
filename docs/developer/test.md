@@ -1122,7 +1122,11 @@ end on the tiny installed fixture, checking its prompt length and one span per
 tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
 selects over the whole video, that cancelling or draining a decoding video
 returns its charge and that a malformed pruning rate fails the load
-before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
+before installing. `NemotronSuperOpenRouterVideoTests` runs OpenRouter's two
+readiness clips (the SDK's `MiMoOpenRouter` resources, read through the source
+tree) through the body bound, request parsing, inspection, the pinned
+template's prompt, the media plan and every sampled frame's decode, then
+serves both on the tiny installed fixture. `NemotronSuperVideoDecodeTests` covers the decoder's
 refusals on synthesized clips (decoded-pixel budget, codec, second track,
 zero-duration frame), per-frame validation, the decode allowance, reader
 cancellation and the container type hint.
@@ -1141,6 +1145,14 @@ shard (hashes about 75 GB, loads no weights); adding
 the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request. Run them only with
 exclusive GPU access.
+
+`NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
+shapes, built from the captured tool request the platform's conformance fixture
+pins, with reasoning enabled and disabled: tool-call steps 1 and 5, every
+`tool_choice`, `json_object`, strict `json_schema` and JSON formats with tools.
+Each passes the relay's inbound decode, the request plan, the pinned template
+and the output parser, and a compliant response validates streamed and
+complete. CPU only; it does not load a model or measure answer quality.
 
 ## Related
 

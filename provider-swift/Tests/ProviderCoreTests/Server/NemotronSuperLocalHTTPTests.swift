@@ -218,10 +218,11 @@ extension NemotronSuperLocalHTTPTests {
 
 
 extension NemotronSuperLocalHTTPTests {
-    /// Size and context bounds are the request's own, so a retry elsewhere
-    /// cannot help: each refusal is 400, not the retryable 503, and holds no
+    /// Context bounds are the request's own, so a retry elsewhere cannot
+    /// help: each refusal is 400, not the retryable 503, and holds no
     /// reservation. One image is at least 256 visual tokens, so a 256-token
-    /// context admits its tokens but never its prompt.
+    /// context admits its tokens but never its prompt. The encoded-body bound
+    /// is unreachable here: the upload limit answers 413 first.
     @Test(.timeLimit(.minutes(2))) func imageRequestsOutsideTheirBoundsAreRefusedWith400() async throws {
         let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
             channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
@@ -247,15 +248,14 @@ extension NemotronSuperLocalHTTPTests {
             availableModels: { [] }, mtpSlots: { [] },
             modelTypeProvider: { _ in "nemotron_h_omni" }, nemotronSuperImageHTTP: hook)
         let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
-        func body(images: Int, text: String = "fixture") throws -> ByteBuffer {
-            let parts: [[String: Any]] = [["type": "text", "text": text]]
+        func body(images: Int) throws -> ByteBuffer {
+            let parts: [[String: Any]] = [["type": "text", "text": "fixture"]]
                 + Array(repeating: ["type": "image_url", "image_url": ["url": png]], count: images)
             return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: [
                 "model": NemotronSuperLocalBinding.modelID, "stream": true, "temperature": 0,
                 "max_tokens": 2, "enable_thinking": false, "messages": [["role": "user", "content": parts]]]))
         }
         let refusals = [
-            ("body over the 8 MiB encoded ceiling", try body(images: 1, text: String(repeating: "x", count: 8 << 20))),
             ("512 visual tokens beyond the context", try body(images: 2)),
             ("prompt beyond the context", try body(images: 1)),
         ]

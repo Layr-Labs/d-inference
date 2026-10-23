@@ -165,7 +165,7 @@ struct NemotronSuperVideoBindingTests {
         // activation, a five-tubelet scoring window at 73,728 bytes a row,
         // the 4K decoder working set and two encoded copies.
         #expect(Policy.videoScoringBytesPerRow == 73_728)
-        #expect(video == 3_751_221_756)
+        #expect(video == 4_875_295_228)
         let colors = try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
                                                   patchRows: 24, patchColumns: 42, tubelets: 6)
         #expect(colors < maxima)
@@ -228,6 +228,17 @@ struct NemotronSuperVideoBindingTests {
                 continue
             }
         }
+    }
+
+    /// A body above the ingress bound leaves as `media_too_large` (413 at the
+    /// coordinator); invalid input still leaves as `invalid_media`.
+    @Test func oversizeBodyIsMediaTooLarge() {
+        let tooLarge = ProviderLoop.sanitizedInferenceFailure(
+            from: SuperHTTPErrors.map(Binding.Failure.bodyTooLarge, media: true), phase: .request)
+        #expect(tooLarge.code == .mediaTooLarge && tooLarge.statusCode == 400, "\(tooLarge)")
+        let invalid = ProviderLoop.sanitizedInferenceFailure(
+            from: SuperHTTPErrors.map(Binding.Failure.invalidInput, media: true), phase: .request)
+        #expect(invalid.code == .invalidMedia && invalid.statusCode == 400, "\(invalid)")
     }
 
     /// Native feature failures name what went wrong, for video as for images.
@@ -347,7 +358,7 @@ struct NemotronSuperVideoBindingTests {
     private static let squareTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
         channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
 
-    private struct VideoOwner {
+    struct VideoOwner {
         let owner: NemotronSuperLocalBridgeBuilder.Owner
         let budget: GlobalKVCacheBudget
         let lease: PendingModelLoadLease
@@ -362,7 +373,7 @@ struct NemotronSuperVideoBindingTests {
         }
     }
 
-    private static func videoOwner(contextLength: Int) async throws -> VideoOwner {
+    static func videoOwner(contextLength: Int) async throws -> VideoOwner {
         let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: squareTower).make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
@@ -500,7 +511,7 @@ private final class SuperDecodeHold: @unchecked Sendable {
     }
 }
 
-private actor SuperVideoEvents {
+actor SuperVideoEvents {
     var errors: [String] = []
     var prompts: [Int] = []
     var completions: [Int] = []

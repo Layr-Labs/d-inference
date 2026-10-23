@@ -51,11 +51,12 @@ cold-load routing, which compare it and the 3 GiB load headroom with
 GiB available on 128 GB until the platform adopts a Super-specific rule. The
 footprint holds no media, and an image request is
 charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
-3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
-copies, a 13,312-patch image's tokens and its tower and projector bound; a
-video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
-owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
-request (24.5 GiB of media) does not fit beside it. A resident slot's media
+4.67 GiB for one image: the ingress quote of a 40 MiB body, a 64 Mi-pixel
+decode workspace, the encoded body copies, a 13,312-patch image's tokens and
+its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
+4.54 GiB). On 128 GB the default owner's claim and activation reserve leave
+13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
+beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX

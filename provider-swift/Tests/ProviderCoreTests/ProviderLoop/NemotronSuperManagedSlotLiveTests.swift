@@ -239,6 +239,94 @@ extension NemotronSuperManagedSlotTests {
         let promptTokens: UInt64?
     }
 
+    /// The pinned checkpoint's logprobs against teacher forcing. Through the
+    /// encrypted relay a logprobs request drafts nothing and the same request
+    /// without logprobs speculates to the same text. On the engine, a greedy
+    /// logprob row over the relay's rendered prompt carries the relay's
+    /// values, and at every step the relay served they match the
+    /// last-position log-softmax of a cold prefill of the prompt and the
+    /// tokens before it: the same argmax, within decode-versus-prefill
+    /// numerics (`NemotronSuperPagedLiveTests` bounds the paged decode's
+    /// logits). Loads about 80 GB; run only with
+    /// `DARKBLOOM_SUPER_MANAGED_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
+        && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
+        .timeLimit(.minutes(20)))
+    func pinnedCheckpointLogprobsMatchTeacherForcing() async throws {
+        let directory = URL(fileURLWithPath: try #require(
+            ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"]), isDirectory: true)
+        let (loop, _) = try await Self.liveLoop(name: "super-logprobs-live")
+        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+        let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        let count = 48, top = 5
+        func body(logprobs: Bool) throws -> Data {
+            var value: [String: Any] = ["model": Self.modelID, "stream": true, "temperature": 0,
+                "max_tokens": count, "chat_template_kwargs": ["enable_thinking": false],
+                "messages": [["role": "user", "content": "Explain in two sentences why the sky is blue."]]]
+            if logprobs { value["logprobs"] = true; value["top_logprobs"] = top }
+            return try JSONSerialization.data(withJSONObject: value)
+        }
+        let start = try #require(engine.mtpMetricsSnapshot())
+        let relayed = SuperSSE(try await Self.send(body(logprobs: true), to: loop, recorder: recorder,
+                                                   consumer: consumer).sse)
+        let between = try #require(engine.mtpMetricsSnapshot())
+        let plain = SuperSSE(try await Self.send(body(logprobs: false), to: loop, recorder: recorder,
+                                                 consumer: consumer).sse)
+        let end = try #require(engine.mtpMetricsSnapshot())
+        #expect(between.draftedTokens == start.draftedTokens, "the logprob row drafted")
+        #expect(end.rounds > between.rounds, "the plain request did not speculate")
+        #expect(!relayed.content.isEmpty && plain.content == relayed.content)
+        #expect(!relayed.logprobs.isEmpty
+            && relayed.logprobs.allSatisfy { $0.top.count == top && $0.top.first == $0.logprob })
+
+        let rendered = try body(logprobs: true)
+        let prompt = try NemotronSuperRequestPlan(body: rendered, modelID: Self.modelID).textPromptTokens(
+            body: rendered, templateBytes: try NemotronSuperCheckpoint.Inputs(directory: directory).templateBytes,
+            tokenizer: owner.tokenizer.inner)
+        func greedy(_ tokens: [Int], id: UInt64, maxTokens: Int) async throws
+            -> (tokens: [Int], entries: [CBv2TokenLogprob]) {
+            var result: (tokens: [Int], entries: [CBv2TokenLogprob]) = ([], [])
+            let stream = try engine.submit(.init(id: .init(id), promptTokens: tokens,
+                sampling: .init(temperature: 0, topLogprobs: top), maxTokens: maxTokens, prefixCacheEnabled: false))
+            for await event in stream {
+                if case .delta(_, let values, let logprobs) = event {
+                    result.tokens += values
+                    result.entries += logprobs ?? []
+                }
+            }
+            return result
+        }
+        let served = try await greedy(prompt, id: 0x5EED_0000, maxTokens: count)
+        #expect(served.entries.count == count && served.entries.map(\.token) == served.tokens)
+        let relayDeviation = zip(relayed.logprobs, served.entries).map { abs($0.logprob - Double($1.logprob)) }.max() ?? 0
+        #expect(relayDeviation < 1e-4, "relay and engine logprobs differ by \(relayDeviation)")
+        // The positions the relay served: the engine row has no stop token
+        // and continues past the end of turn, which the relay never returns.
+        var deviations: [Float] = [], argmaxMismatches = 0, topSetMismatches = 0
+        for index in served.tokens.indices.prefix(relayed.logprobs.count) {
+            let forced = try await greedy(prompt + served.tokens[..<index], id: 0x5EED_1000 + UInt64(index), maxTokens: 1)
+            let reference = try #require(forced.entries.first)
+            let entry = served.entries[index]
+            let referenceLogprob = reference.topLogprobs.first { $0.token == entry.token }?.logprob ?? -.infinity
+            deviations.append(abs(entry.logprob - referenceLogprob))
+            if reference.token != entry.token { argmaxMismatches += 1 }
+            if Set(entry.topLogprobs.map(\.token)) != Set(reference.topLogprobs.map(\.token)) { topSetMismatches += 1 }
+            print("SUPER_LOGPROBS_TEACHER step=\(index) token=\(entry.token) served=\(entry.logprob) "
+                + "forced=\(referenceLogprob) forced_argmax=\(reference.token)")
+        }
+        let worst = deviations.max() ?? .infinity
+        let median = deviations.sorted().dropFirst(deviations.count / 2).first ?? .infinity
+        print("SUPER_LOGPROBS_LIVE relay_entries=\(relayed.logprobs.count) relay_vs_engine=\(relayDeviation) "
+            + "teacher_median=\(median) teacher_worst=\(worst) argmax_mismatches=\(argmaxMismatches) "
+            + "top\(top)_set_mismatches=\(topSetMismatches) "
+            + "logprob_drafted=\(between.draftedTokens - start.draftedTokens) plain_rounds=\(end.rounds - between.rounds)")
+        #expect(argmaxMismatches == 0)
+        #expect(worst < 0.25, "served logprobs differ from teacher forcing by \(worst)")
+        #expect(await loop.unloadModel(Self.modelID))
+        try await Self.awaitMemoryReturn(loop)
+    }
+
     /// One encrypted coordinator request; the time to its first content or
     /// reasoning token is measured from submission.
     static func sendTimed(_ body: Data, to loop: ProviderLoop, recorder: Recorder, consumer: NodeKeyPair,

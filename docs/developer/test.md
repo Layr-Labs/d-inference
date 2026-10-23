@@ -1096,8 +1096,10 @@ and that the recorded LOAD constants equal the SDK quotes over every verified
 shard (hashes about 75 GB, loads no weights); adding
 `DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
 the production loader, once to serve an encrypted text request and once for PNG
-and JPEG questions and an image beside a text request. Run them only with
-exclusive GPU access.
+and JPEG questions and an image beside a text request.
+`pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
+against the engine's and, at every served step, against a cold prefill of the
+prompt and the tokens before it. Run them only with exclusive GPU access.
 
 `NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
 shapes, built from the captured tool request the platform's conformance fixture

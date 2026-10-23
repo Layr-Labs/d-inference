@@ -8,6 +8,7 @@ struct LocalServingPosture: Sendable {
     let pageSize: Int?
     let prefix: PrefixCacheModelStatus
     let completeKeyPersistent: Bool?
+    var prefixConstructionFailure: SSDPrefixCacheConstructionFailure? = nil
 }
 
 extension EngineV2Bridge {
@@ -16,7 +17,8 @@ extension EngineV2Bridge {
         return .init(model: model, snapshot: mtpStatusSnapshot(), posture: .init(
             backend: kvBackendKind, capacity: capacitySnapshot(), pageSize: pagedPageSize,
             prefix: prefixCacheModelStatus(),
-            completeKeyPersistent: ssdHybridCheckpointStore.map { !$0.usesEphemeralKey }))
+            completeKeyPersistent: ssdHybridCheckpointStore.map { !$0.usesEphemeralKey },
+            prefixConstructionFailure: prefixCacheConstructionFailure))
     }
 }
 
@@ -42,7 +44,13 @@ enum LocalServingPostureRenderer {
                 }
             }
             let prefix = posture.prefix
-            add("prefix_cache_status", model + ",state=\"\(prefix.state.rawValue)\",reason=\"\(prefix.reason.rawValue)\"", 1)
+            var prefixLabels = model + ",state=\"\(prefix.state.rawValue)\",reason=\"\(prefix.reason.rawValue)\""
+            // `reason` keeps the coordinator's closed heartbeat vocabulary;
+            // `detail` names the local typed refusal behind an error status.
+            if prefix.state == .error, let failure = posture.prefixConstructionFailure {
+                prefixLabels += ",detail=\"\(failure.rawValue)\""
+            }
+            add("prefix_cache_status", prefixLabels, 1)
             if let persistent = posture.completeKeyPersistent {
                 add("complete_prefix_key_persistent", model, persistent ? 1 : 0)
             }

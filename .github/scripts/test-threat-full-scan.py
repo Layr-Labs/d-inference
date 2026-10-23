@@ -328,6 +328,29 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(calls, ["source", "integration"])
         self.assertEqual(findings, [fixtures.FINDING])
 
+    def test_analysis_raw_length_bound_in_source_and_integration(self):
+        for stage in ("source", "integration"):
+            for size in (4000, 4001):
+                with self.subTest(stage=stage, raw_characters=size):
+                    calls = []
+                    def transport(url, key, body):
+                        request = json.loads(body["messages"][1]["content"])
+                        calls.append(request["stage"])
+                        response = fixtures.completion([], body=body)
+                        if request["stage"] == stage:
+                            result = json.loads(response["choices"][0]["message"]["content"])
+                            result["analysis"] = " " * (size - 1) + "x"
+                            response["choices"][0]["message"]["content"] = json.dumps(result)
+                        return response
+                    if size == 4001:
+                        with self.assertRaisesRegex(ReviewUnavailable, "integration context"):
+                            review(fixtures.THREAT, fixtures.FILES, "key", transport=transport)
+                        self.assertEqual(calls, ["source"] if stage == "source" else ["source", "integration"])
+                    else:
+                        findings, _, _ = review(fixtures.THREAT, fixtures.FILES, "key", transport=transport)
+                        self.assertEqual(calls, ["source", "integration"])
+                        self.assertFalse(findings)
+
     def test_integration_pass_can_dismiss_a_source_false_positive(self):
         def transport(url, key, body):
             request = json.loads(body["messages"][1]["content"])

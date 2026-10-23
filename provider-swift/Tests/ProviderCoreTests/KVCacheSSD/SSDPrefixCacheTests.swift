@@ -34,10 +34,10 @@ private let fixtureLayerKinds: [CBv2LayerKind] = [
         queryHeads: 4),
 ]
 
-private func tempDir(_ label: String) -> URL {
-    let url = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+private func tempDir(_ label: String) throws -> URL {
+    let url = try SSDTestDirectory.parent()
         .appendingPathComponent("ssd-prefix-\(label)-\(UUID().uuidString)", isDirectory: true)
-    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
@@ -211,7 +211,7 @@ struct SSDBlockStoreTests {
 
     @Test("round-trip: metadata + chunks survive encrypt/decrypt byte-exactly")
     func roundTrip() throws {
-        let dir = tempDir("store")
+        let dir = try tempDir("store")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let chunks = [Data((0 ..< 256).map { UInt8($0 % 251) }), Data(repeating: 7, count: 256)]
@@ -232,7 +232,7 @@ struct SSDBlockStoreTests {
 
     @Test("legacy DBK2 bytes and pre-frozen epochs are rejected by the DBK3 tier")
     func legacyArtifactsFailClosed() throws {
-        let dir = tempDir("legacy-store")
+        let dir = try tempDir("legacy-store")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let tagHex = "aabbccdd00112233445566778899eeff"
@@ -297,7 +297,7 @@ struct SSDBlockStoreTests {
         // every byte of the little-endian u16/u32 fields (including the high
         // bytes, i.e. lengths > 0xFFFF). A per-byte decoder that dropped a
         // byte, or an unaligned `load(as:)` that trapped, would fail here.
-        let dir = tempDir("store-lenfields")
+        let dir = try tempDir("store-lenfields")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         // Chunk sizes chosen to make chunkPlaintextSize / ciphertext-length
@@ -323,7 +323,7 @@ struct SSDBlockStoreTests {
 
     @Test("AAD binding: tampering body or metadata bytes breaks authentication")
     func tamperFailsClosed() throws {
-        let dir = tempDir("tamper")
+        let dir = try tempDir("tamper")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let chunks = [Data(repeating: 3, count: 512)]
@@ -395,7 +395,7 @@ struct SSDBlockStoreTests {
 
     @Test("startup temp sweep preserves young writes and removes stale crash orphans")
     func startupTempSweepUsesAge() throws {
-        let root = tempDir("store-temp-age").appendingPathComponent(
+        let root = try tempDir("store-temp-age").appendingPathComponent(
             "abcdefabcdef", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let destination = SSDBlockStore.fileURL(
@@ -427,7 +427,7 @@ struct SSDBlockStoreTests {
 
     @Test("active cache I/O rejects symlinked root, model, and fanout paths")
     func activeSymlinkIOFailsClosed() throws {
-        let parent = tempDir("active-symlinks")
+        let parent = try tempDir("active-symlinks")
         defer { try? FileManager.default.removeItem(at: parent) }
         let fm = FileManager.default
 
@@ -502,7 +502,7 @@ struct SSDBlockStoreTests {
 
     @Test("descriptor-relative root creation rejects a concurrent symlink replacement")
     func modelRootCreationRejectsRootSwap() throws {
-        let parent = tempDir("root-create-swap")
+        let parent = try tempDir("root-create-swap")
         defer { try? FileManager.default.removeItem(at: parent) }
         let fm = FileManager.default
         let dedicated = parent.appendingPathComponent("cache", isDirectory: true)
@@ -545,7 +545,7 @@ struct SSDBlockStoreTests {
         let outsideSentinel = Data("outside-must-remain-untouched".utf8)
 
         func makeFixture(_ label: String) throws -> Fixture {
-            let parent = tempDir("nofollow-\(label)")
+            let parent = try tempDir("nofollow-\(label)")
             parents.append(parent)
             let dedicated = parent.appendingPathComponent("cache", isDirectory: true)
             let modelRoot = dedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
@@ -644,8 +644,8 @@ struct SSDPrefixCacheModeTests {
     }
 
     @Test("test root is isolated and requires the ephemeral-key gate")
-    func isolatedTestRoot() {
-        let root = tempDir("factory-test-root").standardizedFileURL
+    func isolatedTestRoot() throws {
+        let root = try tempDir("factory-test-root").standardizedFileURL
         defer { try? FileManager.default.removeItem(at: root) }
         let raw = [
             "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
@@ -765,7 +765,7 @@ struct SSDPrefixCacheMetadataPlanningTests {
     @Test("RAM probe respects replay and byte caps without reading or pinning files",
           arguments: [(0, 16), (8, 8), (16, 0)])
     func metadataProbe(adoptionBound: Int, expectedSaved: Int) throws {
-        let dir = tempDir("metadata")
+        let dir = try tempDir("metadata")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let cache = makeCache(
@@ -818,7 +818,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("donate writes encrypted per-block files, dedupes re-donation, frees RAM")
     func donateWritesAndDedupes() async throws {
-        let dir = tempDir("donate")
+        let dir = try tempDir("donate")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -860,7 +860,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("restart warmth: a FRESH cache over the same dir scans, stages, and adopts byte-exactly")
     func restartWarmthRoundTrip() async throws {
-        let dir = tempDir("warmth")
+        let dir = try tempDir("warmth")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -919,7 +919,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("real SSD hit and miss p95 stay inside the configured stage deadline")
     func stageLatencyGate() async throws {
-        let dir = tempDir("latency")
+        let dir = try tempDir("latency")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -968,7 +968,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("salt isolation on disk: scoped donation is unfindable by other scopes")
     func saltIsolation() async throws {
-        let dir = tempDir("salt")
+        let dir = try tempDir("salt")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -996,7 +996,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("corrupt block: auth failure ⇒ file deleted, index dropped, recompute fallback")
     func corruptBlockFallsBack() async throws {
-        let dir = tempDir("corrupt")
+        let dir = try tempDir("corrupt")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1031,7 +1031,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("TTL: expired entries are swept (files unlinked) and never adopted")
     func ttlExpirySweep() async throws {
-        let dir = tempDir("ttl")
+        let dir = try tempDir("ttl")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1063,7 +1063,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("TTL slides on hit: a staged (hit) entry survives what an untouched one doesn't")
     func ttlSlidesOnHit() async throws {
-        let dir = tempDir("ttl-slide")
+        let dir = try tempDir("ttl-slide")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1168,7 +1168,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("LRU eviction at the box-wide budget: oldest-by-last-hit unlinked first")
     func lruEvictionAtBudget() async throws {
-        let dir = tempDir("lru")
+        let dir = try tempDir("lru")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1222,7 +1222,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("active capacity eviction keeps the epoch and the surviving prefix reusable")
     func activeEvictionKeepsEpoch() async throws {
-        let dir = tempDir("active-epoch-eviction")
+        let dir = try tempDir("active-epoch-eviction")
         defer { try? FileManager.default.removeItem(at: dir) }
         let binding = fixtureBinding()
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
@@ -1268,7 +1268,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("TTL sweep and corrupt-block removal keep the epoch and the capability published")
     func sweepAndCorruptDropKeepEpoch() async throws {
-        let dir = tempDir("epoch-sweep-corrupt")
+        let dir = try tempDir("epoch-sweep-corrupt")
         defer { try? FileManager.default.removeItem(at: dir) }
         let binding = fixtureBinding()
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
@@ -1322,7 +1322,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("a binding change still wipes the root, rotates, and disowns the superseded cache")
     func bindingChangeStillRotates() async throws {
-        let dir = tempDir("epoch-binding-change")
+        let dir = try tempDir("epoch-binding-change")
         defer { try? FileManager.default.removeItem(at: dir) }
         let binding = fixtureBinding()
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
@@ -1377,7 +1377,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("a block unlinked behind the index shortens the run as absence, not corruption")
     func unlinkedBlockShortensWithoutCorruption() async throws {
-        let dir = tempDir("absent-mid-run")
+        let dir = try tempDir("absent-mid-run")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
@@ -1406,7 +1406,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("a leading block unlinked behind the index is an absent miss, not corruption")
     func unlinkedLeadingBlockIsAbsentMiss() async throws {
-        let dir = tempDir("absent-leading")
+        let dir = try tempDir("absent-leading")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
@@ -1431,7 +1431,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("concurrent readers and eviction never report corruption or rotate the epoch")
     func concurrentReadersAndEviction() async throws {
-        let dir = tempDir("reader-vs-eviction")
+        let dir = try tempDir("reader-vs-eviction")
         defer { try? FileManager.default.removeItem(at: dir) }
         let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
         let epoch = try #require(epochStore.current)
@@ -1492,7 +1492,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("a crash between unlink and index update reconciles from disk on restart without a new epoch")
     func crashMidRemovalReconcilesOnRestart() async throws {
-        let dir = tempDir("crash-mid-removal")
+        let dir = try tempDir("crash-mid-removal")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let binding = fixtureBinding()
@@ -1543,7 +1543,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("reconciliation drops a symlink-replaced indexed file without following it")
     func reconciliationDropsSymlinkReplacement() throws {
-        let dir = tempDir("reconcile-symlink")
+        let dir = try tempDir("reconcile-symlink")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeCache(
             dir: dir,
@@ -1573,7 +1573,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("budget eviction skips an undeletable oldest file and removes another victim")
     func budgetEvictionContinuesPastUndeletableOldest() throws {
-        let dir = tempDir("lru-undeletable")
+        let dir = try tempDir("lru-undeletable")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = SSDDiskBudget()
         let cache = makeCache(
@@ -1616,7 +1616,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("TTL telemetry counts only successful owned-file removals")
     func ttlTelemetryExcludesInvalidIndexDrops() throws {
-        let dir = tempDir("ttl-success-count")
+        let dir = try tempDir("ttl-success-count")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeCache(
             dir: dir,
@@ -1655,7 +1655,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("endurance write cap: an exhausted token bucket drops donations, engine unaffected")
     func writeCapDropsDonations() async throws {
-        let dir = tempDir("cap")
+        let dir = try tempDir("cap")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1677,7 +1677,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("exhausted write cap: donation dropped BEFORE extraction (synchronous), tags settled for retry")
     func writeCapSkipsExtractionSynchronously() async throws {
-        let dir = tempDir("cap-sync")
+        let dir = try tempDir("cap-sync")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1705,7 +1705,7 @@ struct SSDPrefixCacheLifecycleTests {
 
     @Test("stage pre-floor is overflow-safe: absurd MIN_EFFECTIVE_TOKENS disables staging, never traps")
     func stagePreFloorOverflowSafe() async throws {
-        let dir = tempDir("floor-overflow")
+        let dir = try tempDir("floor-overflow")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -1753,7 +1753,7 @@ struct SSDPrefixCacheReadyReceiptTests {
 
     @Test("ready is durable/readable and increases across successive donations")
     func monotonicReady() async throws {
-        let dir = tempDir("ready-monotonic")
+        let dir = try tempDir("ready-monotonic")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeCache(
             dir: dir,
@@ -1791,8 +1791,8 @@ struct SSDPrefixCacheReadyReceiptTests {
             make: (URL, SymmetricKey, ClockBox) -> SSDPrefixCache,
             mutate: ((URL) -> Void)? = nil,
             closeBeforeDonate: Bool = false
-        ) async -> [PrefixCacheReadyResult] {
-            let dir = tempDir(label)
+        ) async throws -> [PrefixCacheReadyResult] {
+            let dir = try tempDir(label)
             defer { try? FileManager.default.removeItem(at: dir) }
             let kek = SymmetricKey(size: .bits256)
             let cache = make(dir, kek, ClockBox(10_000))
@@ -1808,7 +1808,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         }
 
         // Exactly at donation floor: no write job exists.
-        let tooShortDir = tempDir("ready-short")
+        let tooShortDir = try tempDir("ready-short")
         defer { try? FileManager.default.removeItem(at: tooShortDir) }
         let tooShort = makeCache(
             dir: tooShortDir,
@@ -1822,19 +1822,19 @@ struct SSDPrefixCacheReadyReceiptTests {
         #expect(tooShortBox.snapshot.isEmpty)
         tooShort.close()
 
-        #expect(await run("ready-rate", make: { dir, kek, clock in
+        #expect(try await run("ready-rate", make: { dir, kek, clock in
             makeCache(
                 dir: dir, kek: kek, clock: clock,
                 minEffectiveTokens: fixtureBlockSize,
                 maxWriteBytesPerDay: 1)
         }).isEmpty)
-        #expect(await run("ready-evict", make: { dir, kek, clock in
+        #expect(try await run("ready-evict", make: { dir, kek, clock in
             makeCache(
                 dir: dir, kek: kek, clock: clock,
                 minEffectiveTokens: fixtureBlockSize,
                 diskBudgetBytes: 0)
         }).isEmpty)
-        #expect(await run("ready-shutdown", make: { dir, kek, clock in
+        #expect(try await run("ready-shutdown", make: { dir, kek, clock in
             makeCache(
                 dir: dir, kek: kek, clock: clock,
                 minEffectiveTokens: fixtureBlockSize)
@@ -1842,7 +1842,7 @@ struct SSDPrefixCacheReadyReceiptTests {
 
         // Corrupt every landed file inside the post-write whole-root barrier;
         // settlement's authenticated reread must suppress the receipt.
-        let corruptDir = tempDir("ready-corrupt")
+        let corruptDir = try tempDir("ready-corrupt")
         defer { try? FileManager.default.removeItem(at: corruptDir) }
         let corrupt = makeCache(
             dir: corruptDir,
@@ -1871,7 +1871,7 @@ struct SSDPrefixCacheReadyReceiptTests {
 
     @Test("write-behind maintenance/ready never blocks donation return")
     func responsePathNotDelayed() async throws {
-        let dir = tempDir("ready-nonblocking")
+        let dir = try tempDir("ready-nonblocking")
         defer { try? FileManager.default.removeItem(at: dir) }
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -1987,7 +1987,7 @@ struct SSDReadyWriteBarrierTests {
 
     @Test("a large disk with 95 GB free can donate below five percent free")
     func largeVolumeDonation() async throws {
-        let dir = tempDir("large-volume-donation")
+        let dir = try tempDir("large-volume-donation")
         defer { try? FileManager.default.removeItem(at: dir) }
         let writes = Counter()
         let durable = Counter()
@@ -2009,7 +2009,7 @@ struct SSDReadyWriteBarrierTests {
 
     @Test("pending donation must fit above the free-space reserve", arguments: [0, 1, 2])
     func pendingDonationReserve(headroom: Int) async throws {
-        let dir = tempDir("pending-donation-reserve-\(headroom)")
+        let dir = try tempDir("pending-donation-reserve-\(headroom)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let writes = Counter()
         let settled = Counter()
@@ -2040,7 +2040,7 @@ struct SSDReadyWriteBarrierTests {
 
     @Test("low disk, generic write error, ENOSPC, and shutdown never cross durable barrier")
     func failureMatrix() async throws {
-        let dir = tempDir("ready-write-failures")
+        let dir = try tempDir("ready-write-failures")
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let lowCounter = Counter()
@@ -2106,7 +2106,7 @@ struct SSDReadyWriteBarrierTests {
     @Test("in-flight close classifies correlated and uncorrelated durable writes as cache_closed")
     func inFlightCloseOutcome() async throws {
         for correlated in [false, true] {
-            let dir = tempDir("inflight-close-\(correlated)")
+            let dir = try tempDir("inflight-close-\(correlated)")
             let entered = DispatchSemaphore(value: 0)
             let release = DispatchSemaphore(value: 0)
             let settled = Counter()
@@ -2147,7 +2147,7 @@ struct SSDReadyWriteBarrierTests {
             try? FileManager.default.removeItem(at: dir)
         }
 
-        let failedDir = tempDir("inflight-close-write-failure")
+        let failedDir = try tempDir("inflight-close-write-failure")
         let failedEntered = DispatchSemaphore(value: 0)
         let failedRelease = DispatchSemaphore(value: 0)
         let failedOutcome = OutcomeBox()
@@ -2173,7 +2173,7 @@ struct SSDReadyWriteBarrierTests {
 
     @Test("queue overflow drops the new receipt job without blocking")
     func queueDrop() async throws {
-        let dir = tempDir("ready-queue-drop")
+        let dir = try tempDir("ready-queue-drop")
         defer { try? FileManager.default.removeItem(at: dir) }
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -2322,7 +2322,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("success path: reserve before read, release at endAdoption")
     func successPathReleases() async throws {
-        let dir = tempDir("res-ok")
+        let dir = try tempDir("res-ok")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2342,7 +2342,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("corrupt tail block: reservation + accounting shrink to the SHORTENED run")
     func shortenedRunShrinksReservation() async throws {
-        let dir = tempDir("res-shortened")
+        let dir = try tempDir("res-shortened")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2398,7 +2398,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("backstop path (lookup never ran): completeStaging releases")
     func backstopReleases() async throws {
-        let dir = tempDir("res-backstop")
+        let dir = try tempDir("res-backstop")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2419,7 +2419,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("bridge deadline refusal abandons a real staged SSD hit")
     func bridgeDeadlineRefusalReleasesRealStaging() async throws {
-        let dir = tempDir("res-bridge-deadline")
+        let dir = try tempDir("res-bridge-deadline")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let cache = await makeStagedCache(
@@ -2485,7 +2485,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("cancel path: a cancelled staging task releases and stages nothing")
     func cancelReleases() async throws {
-        let dir = tempDir("res-cancel")
+        let dir = try tempDir("res-cancel")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2509,7 +2509,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("refusal path: no shared-budget headroom ⇒ no staging, no leak")
     func refusalUnderPressure() async throws {
-        let dir = tempDir("res-refuse")
+        let dir = try tempDir("res-refuse")
         defer { try? FileManager.default.removeItem(at: dir) }
         // A budget whose headroom is ~zero: total tiny, everything reserved.
         let budget = GlobalKVCacheBudget(
@@ -2535,7 +2535,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("streaming peak reserves native destinations and bounded crypto buffers")
     func streamingPeakReservationCoversDestinationsAndScratch() async throws {
-        let dir = tempDir("res-conversion-peak")
+        let dir = try tempDir("res-conversion-peak")
         defer { try? FileManager.default.removeItem(at: dir) }
         let available = BudgetAvailableBox(64 * 1_073_741_824)
         let budget = GlobalKVCacheBudget(
@@ -2585,7 +2585,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("close(): open tickets drained, reservations released, files kept")
     func closeDrainsTickets() async throws {
-        let dir = tempDir("res-close")
+        let dir = try tempDir("res-close")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2615,7 +2615,7 @@ struct SSDPrefixCacheReservationTests {
         // reservation, leaving the resident staged MLX arrays with NO
         // GlobalKVCacheBudget reservation (an over-admission hole under the
         // memory cap).
-        let dir = tempDir("res-shared")
+        let dir = try tempDir("res-shared")
         defer { try? FileManager.default.removeItem(at: dir) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2686,7 +2686,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("same-prefix attachment needs no spare provisional headroom")
     func attachAtCapacity() async throws {
-        let dir = tempDir("res-attach-full")
+        let dir = try tempDir("res-attach-full")
         defer { try? FileManager.default.removeItem(at: dir) }
         let available = BudgetAvailableBox(64 * 1_073_741_824)
         let budget = GlobalKVCacheBudget(
@@ -2731,7 +2731,7 @@ struct SSDPrefixCacheReservationTests {
 
     @Test("two cache instances may reserve the same raw receipt id independently")
     func instanceNamespacesPreventGlobalReservationCollisions() async throws {
-        let parent = tempDir("res-instance-namespace")
+        let parent = try tempDir("res-instance-namespace")
         defer { try? FileManager.default.removeItem(at: parent) }
         let budget = makeBudget()
         let clock = ClockBox(10_000)
@@ -2854,7 +2854,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("startup sweep expires files in unloaded model directories")
     func unloadedTTL() throws {
-        let root = tempDir("whole-root-ttl")
+        let root = try tempDir("whole-root-ttl")
         defer { try? FileManager.default.removeItem(at: root) }
         let expired = try writeOwnedFile(
             root: root,
@@ -2879,7 +2879,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("disk budget is global across unloaded model directories")
     func globalBudget() throws {
-        let root = tempDir("whole-root-budget")
+        let root = try tempDir("whole-root-budget")
         defer { try? FileManager.default.removeItem(at: root) }
         let old = try writeOwnedFile(
             root: root,
@@ -2908,7 +2908,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("whole-root eviction of an unloaded model keeps its epoch and sequence")
     func unloadedEvictionKeepsEpoch() throws {
-        let root = tempDir("whole-root-epoch")
+        let root = try tempDir("whole-root-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
         let modelKey = "333333333333"
         let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
@@ -2950,7 +2950,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("whole-root eviction of an unloaded root without an epoch record still removes orphans")
     func unloadedEvictionWithoutRecord() throws {
-        let root = tempDir("whole-root-no-record")
+        let root = try tempDir("whole-root-no-record")
         defer { try? FileManager.default.removeItem(at: root) }
         let block = try writeOwnedFile(
             root: root,
@@ -2966,7 +2966,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("whole-root eviction keeps an active cache advertising the same epoch")
     func activeWholeRootEvictionKeepsCapabilityReady() async throws {
-        let root = tempDir("whole-root-active-epoch")
+        let root = try tempDir("whole-root-active-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
         let modelRoot = root.appendingPathComponent("444444444444", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -3024,7 +3024,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("a disowned, unclosed cache cannot stop whole-root TTL expiry under its root")
     func disownedCacheDoesNotBlockExpiry() async throws {
-        let root = tempDir("whole-root-disowned")
+        let root = try tempDir("whole-root-disowned")
         defer { try? FileManager.default.removeItem(at: root) }
         let modelKey = "666666666666"
         let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
@@ -3075,7 +3075,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("young temp bytes consume global budget without making the active temp evictable")
     func youngTempBudgetAccounting() throws {
-        let root = tempDir("whole-root-temp-budget")
+        let root = try tempDir("whole-root-temp-budget")
         defer { try? FileManager.default.removeItem(at: root) }
         let completed = try writeOwnedFile(
             root: root,
@@ -3116,7 +3116,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("malformed exact-looking files remain untouched without DBK3 ownership proof")
     func malformedLookalikePreserved() throws {
-        let root = tempDir("whole-root-lookalike")
+        let root = try tempDir("whole-root-lookalike")
         defer { try? FileManager.default.removeItem(at: root) }
         let model = root.appendingPathComponent("abcdefabcdef", isDirectory: true)
         let fanout = model.appendingPathComponent("ab", isDirectory: true)
@@ -3139,7 +3139,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("maintenance rejects roots reached through a symlinked ancestor")
     func symlinkedRootIsNeverTraversed() throws {
-        let container = tempDir("whole-root-symlink-container")
+        let container = try tempDir("whole-root-symlink-container")
         let root = container.appendingPathComponent("kv3", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let stale = try writeOwnedTemp(
@@ -3173,7 +3173,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("whole-root sweep preserves young and near-match temps but removes stale owned temps")
     func tempCleanupUsesAgeAndExactOwnership() throws {
-        let root = tempDir("whole-root-temp-ownership")
+        let root = try tempDir("whole-root-temp-ownership")
         defer { try? FileManager.default.removeItem(at: root) }
         let now: Int64 = 10_000
         let uuid = "01234567-89AB-CDEF-0123-456789ABCDEF"
@@ -3232,7 +3232,7 @@ struct SSDWholeRootMaintenanceTests {
 
     @Test("periodic maintenance sweeps stale unloaded-model temps and can restart")
     func periodicRestartSeam() async throws {
-        let root = tempDir("whole-root-periodic")
+        let root = try tempDir("whole-root-periodic")
         defer {
             SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: root)
             try? FileManager.default.removeItem(at: root)
@@ -3313,7 +3313,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("gpt-oss constants: sub-2.5k donations skipped, above-floor donations persist")
     func gptOssConstantsGate() async throws {
-        let dir = tempDir("gate-gptoss")
+        let dir = try tempDir("gate-gptoss")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
         // Real gpt-oss-20b numbers: bound 12 × 128 = 1,536; benefit floor
@@ -3341,7 +3341,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("gemma constants: the >27.1k evidence-backed tail caches; shorter writes nothing")
     func gemmaConstantsGate() async throws {
-        let dir = tempDir("gate-gemma")
+        let dir = try tempDir("gate-gemma")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
         // Real Gemma numbers: bound 25,600 + measured saved-token floor 1,536.
@@ -3368,7 +3368,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("unknown/saturated adoption bound: never persists (the only 'never cached' case)")
     func saturatedBoundNeverPersists() async throws {
-        let dir = tempDir("gate-unknown")
+        let dir = try tempDir("gate-unknown")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
         let cache = makeCache(
@@ -3381,7 +3381,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("persisted-run byte cap: blocks beyond maxStageBytes are never written (leading run kept)")
     func byteCapTrimsPersistedRun() async throws {
-        let dir = tempDir("gate-bytecap")
+        let dir = try tempDir("gate-bytecap")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
         // Fixture block bytes: 2 tensors × [1,2,8,8] f16 = 2 × 256 B = 512 B
@@ -3426,7 +3426,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("stage cap below hybrid benefit floor writes no unusable blocks")
     func byteCapBelowBenefitFloorSkipsDonation() async throws {
-        let dir = tempDir("gate-bytecap-floor")
+        let dir = try tempDir("gate-bytecap-floor")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeCache(
             dir: dir,
@@ -3443,7 +3443,7 @@ struct SSDPrefixCacheDonationGateTests {
 
     @Test("write-behind admits one full max-size (~600 MB) donation; oversize is dropped, never stalled")
     func writeBehindBigDonationAdmission() async throws {
-        let dir = tempDir("gate-bigjob")
+        let dir = try tempDir("gate-bigjob")
         defer { try? FileManager.default.removeItem(at: dir) }
         // Effective queue-byte cap must clear a ~600 MB gemma tail donation.
         let effectiveCap = max(
@@ -3517,7 +3517,7 @@ private final class DonationOutcomeRecorder: PrefixCacheDonationRecording, @unch
 struct SSDPrefixCacheDonationOutcomeTests {
     @Test("every donation opportunity settles one bounded outcome")
     func branchOutcomes() async throws {
-        let root = tempDir("donation-outcomes")
+        let root = try tempDir("donation-outcomes")
         defer { try? FileManager.default.removeItem(at: root) }
         let recorder = DonationOutcomeRecorder()
 
@@ -3606,7 +3606,7 @@ struct SSDPrefixCacheDonationOutcomeTests {
 
     @Test("durable and deduplicated donations settle distinctly")
     func durableOutcomes() async throws {
-        let dir = tempDir("donation-durable")
+        let dir = try tempDir("donation-durable")
         defer { try? FileManager.default.removeItem(at: dir) }
         let recorder = DonationOutcomeRecorder()
         let cache = makeCache(
@@ -3896,7 +3896,7 @@ struct SSDWindowSidecarTests {
 
     @Test("stage → restart → rehydrate: a windowed sidecar survives and restores byte-exactly")
     func sidecarRestartRoundTrip() async throws {
-        let dir = tempDir("sidecar-warmth")
+        let dir = try tempDir("sidecar-warmth")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -3962,7 +3962,7 @@ struct SSDWindowSidecarTests {
 
     @Test("an incomplete tiling replays instead of restoring a PARTIAL window")
     func partialTilingIsRefused() async throws {
-        let dir = tempDir("sidecar-partial")
+        let dir = try tempDir("sidecar-partial")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -3992,7 +3992,7 @@ struct SSDWindowSidecarTests {
 
     @Test("two donors straddling a boundary tile its window; the second completes it")
     func donorsTileTheWindow() async throws {
-        let dir = tempDir("sidecar-tile")
+        let dir = try tempDir("sidecar-tile")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -4040,7 +4040,7 @@ struct SSDWindowSidecarTests {
 
     @Test("a corrupted sidecar drops the window only; the block adoption stands")
     func corruptSidecarDegradesToReplay() async throws {
-        let dir = tempDir("sidecar-corrupt")
+        let dir = try tempDir("sidecar-corrupt")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
@@ -4087,7 +4087,7 @@ struct SSDWindowSidecarTests {
     @Test("the feature is OFF by default: no geometry ⇒ no sidecars, no window")
     func disabledByDefault() async throws {
         #expect(!SSDPrefixCachePolicy.windowSidecarEnabled(environment: [:]))
-        let dir = tempDir("sidecar-off")
+        let dir = try tempDir("sidecar-off")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeSidecarCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
@@ -4113,7 +4113,7 @@ struct SSDWindowSidecarTests {
 
     @Test("the request-aware production donation captures windows (the feature is not inert)")
     func requestAwareDonationCapturesWindows() async throws {
-        let dir = tempDir("sidecar-request-aware")
+        let dir = try tempDir("sidecar-request-aware")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeSidecarCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
@@ -4153,7 +4153,7 @@ struct SSDWindowSidecarTests {
 
     @Test("the frozen request-aware overload carries no windows — the defect this replaced")
     func frozenRequestAwareOverloadIsWindowless() async throws {
-        let dir = tempDir("sidecar-frozen-overload")
+        let dir = try tempDir("sidecar-frozen-overload")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeSidecarCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
@@ -4176,8 +4176,8 @@ struct SSDWindowSidecarTests {
     }
 
     @Test("a cache without sidecars tells the engine not to snapshot sliding rows")
-    func donorSeamIsSilentWhenDisabled() {
-        let dir = tempDir("sidecar-no-donor")
+    func donorSeamIsSilentWhenDisabled() throws {
+        let dir = try tempDir("sidecar-no-donor")
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = makeSidecarCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
@@ -4199,7 +4199,7 @@ struct SSDWindowSidecarTests {
         /// `donorBase` 48 tiles the terminal window ([48,64) ⇒ blocks 6+7);
         /// 45 covers block 6 only, so boundary 64 can never be restored.
         func savedTokens(donorBase: Int) async throws -> Int {
-            let dir = tempDir("sidecar-bound-\(donorBase)")
+            let dir = try tempDir("sidecar-bound-\(donorBase)")
             defer { try? FileManager.default.removeItem(at: dir) }
             let cache = makeSidecarCache(
                 dir: dir, kek: kek, clock: clock, adoptionBound: 24)
@@ -4238,12 +4238,12 @@ struct SSDWindowSidecarTests {
 
     @Test("a nearly-drained write bucket funds the required blocks, never the sidecars")
     func sidecarsNeverStarveTheBlocks() async throws {
-        let dir = tempDir("sidecar-endurance")
+        let dir = try tempDir("sidecar-endurance")
         defer { try? FileManager.default.removeItem(at: dir) }
         let tokens = Array(0 ..< tokenCount)
         // Measure the required block files, including their encryption framing.
         // The remaining 512 B cannot fund even one 1024 B sidecar payload.
-        let baselineDir = tempDir("sidecar-endurance-baseline")
+        let baselineDir = try tempDir("sidecar-endurance-baseline")
         defer { try? FileManager.default.removeItem(at: baselineDir) }
         let baseline = makeSidecarCache(
             dir: baselineDir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
@@ -4294,7 +4294,7 @@ struct SSDWindowSidecarTests {
 
     @Test("re-donating a covered boundary refreshes its sidecars, not just its blocks")
     func donationRefreshesReusedSidecars() async throws {
-        let dir = tempDir("sidecar-refresh")
+        let dir = try tempDir("sidecar-refresh")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
         let cache = makeSidecarCache(
@@ -4340,7 +4340,7 @@ struct SSDWindowSidecarTests {
 
     @Test("a written sidecar's plaintext header carries no absolute token position")
     func sidecarHeaderHidesPosition() async throws {
-        let dir = tempDir("sidecar-privacy")
+        let dir = try tempDir("sidecar-privacy")
         defer { try? FileManager.default.removeItem(at: dir) }
         let kek = SymmetricKey(size: .bits256)
         let tokens = Array(0 ..< tokenCount)
@@ -4469,7 +4469,7 @@ struct SSDWindowSidecarTests {
         let tokens = Array(0 ..< tokenCount)
 
         func stageMs(withSidecar: Bool) async throws -> Double {
-            let dir = tempDir("sidecar-delta-\(withSidecar)")
+            let dir = try tempDir("sidecar-delta-\(withSidecar)")
             defer { try? FileManager.default.removeItem(at: dir) }
             let geometry = withSidecar ? sidecarGeometry() : nil
             let cache = makeSidecarCache(

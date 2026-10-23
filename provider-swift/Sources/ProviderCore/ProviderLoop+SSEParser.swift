@@ -32,7 +32,7 @@ extension ProviderLoop {
     internal struct StreamChunkExtract: Equatable {
         let contentDelta: String?
         let reasoningDelta: String?
-        let toolCallsDelta: [OpenAIToolCall]?
+        let toolCallsDelta: [OpenAIToolCallDelta]?
         let usage: OpenAIUsage?
         let finishReason: String?
         let role: String?
@@ -124,7 +124,7 @@ extension ProviderLoop {
         // encoder so the hash is stable.
         var contentParts: [String] = []
         var reasoningParts: [String] = []
-        var toolCalls: [OpenAIToolCall] = []
+        var toolCalls: [OpenAIToolCallDelta] = []
         for choice in chunk.choices {
             if let c = choice.delta.content { contentParts.append(c) }
             if let r = choice.delta.reasoningContent { reasoningParts.append(r) }
@@ -298,11 +298,13 @@ extension ProviderLoop {
     /// JSON encoding uses `[.sortedKeys, .withoutEscapingSlashes]`
     /// so two equivalent tool-call payloads always produce the same
     /// byte sequence regardless of Foundation's internal field order.
+    /// A call streamed as several fragments contributes one marker per
+    /// fragment, in wire order; a complete call encodes exactly as before.
     ///
     /// Encoding failure (which shouldn't happen for the closed
-    /// `OpenAIToolCall` shape) falls back to a fixed sentinel so the
+    /// `OpenAIToolCallDelta` shape) falls back to a fixed sentinel so the
     /// hash domain stays disjoint from "no tool calls at all".
-    internal static func encodeToolCallsForHash(_ calls: [OpenAIToolCall]) -> String {
+    internal static func encodeToolCallsForHash(_ calls: [OpenAIToolCallDelta]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var out = ""

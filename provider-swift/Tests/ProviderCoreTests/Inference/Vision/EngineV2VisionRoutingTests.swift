@@ -1129,6 +1129,20 @@ struct EngineV2VisionRoutingTests {
         #expect(outstanding == 0)
     }
 
+    @Test("typed client errors from preparation keep their 400, not a retryable 503")
+    func typedClientErrorKeepsItsMapping() async throws {
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in throw MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort },
+            emitTelemetry: VisionTelemetrySink().callback())
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine), plumbing: plumbing)
+        await #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort) {
+            _ = try await collectContent(try await router.streamChatCompletion(request: imageRequest()))
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
     @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback",
           arguments: [false, true])
     func constructionFailureRefusesLoudly(typedVisionFailure: Bool) async throws {
@@ -1190,6 +1204,34 @@ struct EngineV2VisionRoutingTests {
         #expect(
             telemetry.events.allSatisfy {
                 $0.fields?["operation"]?.description != "engine_v2_vision_fallback"
+            })
+    }
+
+    @Test("bridge capacity refusal stays a pre-stream 503, not a construction refusal")
+    func bridgeCapacityRefusalIsNotAConstructionRefusal() async throws {
+        let (gate, budget) = makeBudgetedVisionGate()
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine, kvBudget: budget)
+        let telemetry = VisionTelemetrySink()
+        let refusal = EngineV2Bridge.glm5NextSlotRefusal(neverFits: false, reservedTokens: 61_440)
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in throw refusal },
+            emitTelemetry: telemetry.callback())
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing, visionGate: gate)
+
+        do {
+            _ = try await router.streamChatCompletion(request: imageRequest())
+            Issue.record("expected tokenBudgetExhausted throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == refusal)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 503)
+        }
+        #expect(engine.submitted.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
             })
     }
 

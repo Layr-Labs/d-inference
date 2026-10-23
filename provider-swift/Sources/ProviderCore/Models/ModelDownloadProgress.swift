@@ -3,10 +3,11 @@
 ///
 /// Split out of `ModelCatalog.swift` so that file stays focused on catalog +
 /// download orchestration. The tracker here is callback-driven (fed by the
-/// streaming, byte-resumable downloader in `ModelCatalog.swift`) rather than a
-/// `URLSessionDownloadDelegate`: downloads now stream straight to a `.part`
-/// file for true byte-level resume, so there is no `URLSessionDownloadTask` to
-/// observe — progress arrives as cumulative-bytes-on-disk callbacks instead.
+/// streaming, byte-resumable downloader in `ModelDownloader+HTTP.swift`) rather
+/// than a `URLSessionDownloadDelegate`: downloads now stream straight to a
+/// `.part` file for true byte-level resume, so there is no
+/// `URLSessionDownloadTask` to observe — progress arrives as
+/// cumulative-bytes-on-disk callbacks instead.
 
 import Foundation
 #if canImport(Darwin)
@@ -20,15 +21,20 @@ struct FileProgress: Sendable {
     let label: String
     let expectedBytes: Int64
     var downloadedBytes: Int64 = 0
-    /// Bytes already on disk when tracking started (a resumed `.part` prefix).
-    /// Excluded from the speed/ETA math so a resume doesn't report an inflated
-    /// instantaneous rate for bytes it never actually transferred this run.
+    /// Bytes already on disk when this transfer started (a resumed `.part`
+    /// prefix). Excluded from the speed/ETA math so a resume doesn't report an
+    /// inflated instantaneous rate for bytes it never actually transferred.
     var baselineBytes: Int64 = 0
+    /// When this transfer started. Every pending file is registered up front
+    /// but only a few transfer at once, so `ManifestDownloadProgress.start`
+    /// restarts the clock: time spent queued must not dilute the rate.
     var startTime: Date = Date()
+    /// Whether the transfer has begun. Queued files get no live row.
+    var started: Bool = false
     var completed: Bool = false
     var completionTime: Date?
 
-    /// Bytes/second over this run's transfer (excludes the resumed prefix).
+    /// Bytes/second over this transfer (excludes the resumed prefix).
     var speed: Double {
         let elapsed = (completionTime ?? Date()).timeIntervalSince(startTime)
         guard elapsed > 0.1 else { return 0 }
@@ -75,11 +81,30 @@ final class ManifestDownloadProgress: @unchecked Sendable {
         progress[label] = p
     }
 
+    /// Mark a file's transfer as starting now, restarting its rate clock.
+    func start(label: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var p = progress[label] else { return }
+        p.started = true
+        p.startTime = Date()
+        p.baselineBytes = p.downloadedBytes
+        progress[label] = p
+    }
+
     /// Update cumulative bytes-on-disk for a file.
     func update(label: String, downloadedBytes: Int64) {
         lock.lock()
         defer { lock.unlock() }
         guard var p = progress[label] else { return }
+        if downloadedBytes == 0 || downloadedBytes < p.downloadedBytes {
+            // A report of zero or of fewer bytes means the `.part` was discarded
+            // and the transfer restarted (e.g. the Hugging Face to R2 fallback,
+            // even before any byte arrived, or a checksum retry). Time the
+            // restarted transfer on its own so the rate stays honest.
+            p.baselineBytes = downloadedBytes
+            p.startTime = Date()
+        }
         p.downloadedBytes = downloadedBytes
         progress[label] = p
     }
@@ -105,129 +130,238 @@ final class ManifestDownloadProgress: @unchecked Sendable {
 
 // MARK: - Renderer
 
-/// Renders a multi-line progress display to the terminal using ANSI escape
-/// codes. Falls back to simple per-file messages when stdout is not a TTY.
+/// Renders download progress to the terminal.
+///
+/// On a TTY it redraws a block of live rows in place: one bar per in-flight
+/// file plus, for multi-file downloads, a total row. Each frame moves the
+/// cursor back up over the previous block, and terminals clamp that movement
+/// at the top of the visible screen. The block is therefore limited to the
+/// terminal height and every row to its width: a taller block (one row per
+/// shard of a many-file model) or a wrapped row would leave a partial copy in
+/// the scrollback on every frame and scroll forever. Each file is instead
+/// logged once, above the block, when it completes. Without a TTY only those
+/// completion lines are printed.
 final class ProgressRenderer: @unchecked Sendable {
 
-    private let isTTY: Bool
-    private var linesPrinted: Int = 0
-    private let lock = NSLock()
-    /// Set of labels already printed in non-TTY mode.
-    private var printedLabels: Set<String> = []
+    struct TerminalSize: Equatable, Sendable {
+        let columns: Int
+        let rows: Int
+    }
 
-    init() {
-        self.isTTY = isatty(STDOUT_FILENO) != 0
+    /// Longer labels are shortened by `shortenedLabel`.
+    private static let maxLabelWidth = 45
+    /// Labels are shortened no further than this before columns are dropped.
+    private static let compactLabelWidth = 20
+    /// Labels give up width until the bar is this wide.
+    private static let preferredBarWidth = 20
+    /// Bars stop growing here on wide terminals.
+    private static let maximumBarWidth = 40
+    /// A narrower bar is dropped rather than letting the row wrap.
+    private static let minimumBarWidth = 10
+
+    private let isTTY: Bool
+    private let terminalSize: @Sendable () -> TerminalSize
+    private let output: @Sendable (String) -> Void
+    private let lock = NSLock()
+    /// Rows drawn by the previous frame's live block. The cursor is parked on
+    /// the row just below it.
+    private var liveRowCount = 0
+    /// Files whose completion line has been printed.
+    private var loggedCompletions: Set<String> = []
+
+    init(
+        isTTY: Bool = isatty(STDOUT_FILENO) != 0,
+        terminalSize: @escaping @Sendable () -> TerminalSize = ProgressRenderer.currentTerminalSize,
+        output: @escaping @Sendable (String) -> Void = ProgressRenderer.writeToStandardOutput
+    ) {
+        self.isTTY = isTTY
+        self.terminalSize = terminalSize
+        self.output = output
     }
 
     /// Render a frame given the current file progress snapshot.
     func render(_ files: [FileProgress]) {
         lock.lock()
         defer { lock.unlock() }
-
-        if !isTTY {
-            renderPlain(files)
-            return
+        let size = isTTY ? terminalSize() : nil
+        var frame = eraseLiveRows() + completionLines(files, width: size.map { $0.columns - 1 })
+        if let size {
+            let rows = liveRows(files, size: size)
+            frame += rows.map { $0 + "\n" }.joined()
+            liveRowCount = rows.count
         }
-        renderANSI(files)
+        emit(frame)
     }
 
-    /// Final render: clear the progress area and print completion summary.
+    /// Final render: clear the live rows and log the completions not yet
+    /// printed.
     func finish(_ files: [FileProgress]) {
         lock.lock()
         defer { lock.unlock() }
+        let width = isTTY ? terminalSize().columns - 1 : nil
+        emit(eraseLiveRows() + completionLines(files, width: width))
+    }
 
-        if isTTY {
-            // Move up and clear all lines.
-            if linesPrinted > 0 {
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                for _ in 0..<linesPrinted {
-                    print("\u{1B}[2K")
+    // MARK: - Frame composition
+
+    /// Return to the first row of the previous live block and clear it and
+    /// everything below. The block fits on screen, so the cursor-up lands on
+    /// that row instead of being clamped short of it; the carriage return
+    /// discards any column offset from keys echoed on the cursor row.
+    private func eraseLiveRows() -> String {
+        guard liveRowCount > 0 else { return "" }
+        let erase = "\u{1B}[\(liveRowCount)A\r\u{1B}[J"
+        liveRowCount = 0
+        return erase
+    }
+
+    /// A permanent line for each newly completed file, in registration order.
+    private func completionLines(_ files: [FileProgress], width: Int?) -> String {
+        let labelWidth = min(Self.maxLabelWidth, files.map(\.label.count).max() ?? 0)
+        var lines = ""
+        for f in files where f.completed && !loggedCompletions.contains(f.label) {
+            loggedCompletions.insert(f.label)
+            lines += Self.completionLine(f, labelWidth: labelWidth, width: width) + "\n"
+        }
+        return lines
+    }
+
+    /// One bar per in-flight file, then the total row, limited to `rows - 1`
+    /// so the parked cursor stays on screen. Queued files appear only in the
+    /// total. Rows leave the last column free so a narrowing resize does not
+    /// rewrap them.
+    private func liveRows(_ files: [FileProgress], size: TerminalSize) -> [String] {
+        guard size.rows > 1 else { return [] }
+        let capacity = size.rows - 1
+        let inFlight = files.filter { $0.started && !$0.completed }
+        let rows: [FileProgress] = files.count > 1
+            ? Array(inFlight.prefix(capacity - 1)) + [Self.aggregate(files)]
+            : Array(inFlight.prefix(capacity))
+        return Self.layOut(rows, allLabels: files.map(\.label) + rows.map(\.label), width: size.columns - 1)
+    }
+
+    private func emit(_ text: String) {
+        guard !text.isEmpty else { return }
+        output(text)
+    }
+
+    // MARK: - Live row layout
+
+    /// The text of one live row's columns.
+    private struct RowCells {
+        var label = ""
+        var fraction = 0.0
+        var percent = ""
+        var done = ""
+        var total = ""
+        var rate = ""
+        var eta = ""
+
+        init() {}
+
+        init(_ f: FileProgress) {
+            label = f.label
+            fraction = f.fraction
+            percent = String(format: "%3d%%", Int(f.fraction * 100))
+            done = ProgressRenderer.formatBytes(f.downloadedBytes)
+            total = ProgressRenderer.formatBytes(f.expectedBytes)
+            rate = ProgressRenderer.formatSpeed(f.speed)
+            eta = f.eta.map { "ETA \(ProgressRenderer.formatDuration($0))" } ?? "---"
+        }
+    }
+
+    /// Lay out one frame's rows on shared fixed-width columns no wider than
+    /// `width`, so bars and figures line up and stay put between frames. Labels
+    /// give up width (down to `compactLabelWidth`) before the bar drops below
+    /// `preferredBarWidth`; when even that leaves too little, the rate column
+    /// goes, then the bar, and rows are clipped as a last resort.
+    static func layOut(_ rows: [FileProgress], allLabels: [String], width: Int) -> [String] {
+        let cells = rows.map(RowCells.init)
+        let naturalLabelWidth = min(maxLabelWidth, allLabels.map(\.count).max() ?? 0)
+        // Sized from every label, not just this frame's, so the bars stay put
+        // as different files come and go.
+        func labelColumn(limit: Int) -> Int {
+            allLabels.map { shortenedLabel($0, width: limit).count }.max() ?? 0
+        }
+        for (showsRate, minimumBar) in [(true, 12), (false, minimumBarWidth)] {
+            let room = width - row(RowCells(), labelWidth: 0, barWidth: 0, showsRate: showsRate).count
+            let labelWidth = labelColumn(
+                limit: min(naturalLabelWidth, max(compactLabelWidth, room - preferredBarWidth)))
+            let barWidth = min(maximumBarWidth, room - labelWidth)
+            if barWidth >= minimumBar {
+                return cells.map {
+                    clipped(row($0, labelWidth: labelWidth, barWidth: barWidth, showsRate: showsRate), to: width)
                 }
-                print("\u{1B}[\(linesPrinted)A", terminator: "")
-                linesPrinted = 0
             }
         }
-
-        // Print final summary lines.
-        for f in files {
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(max(0, f.downloadedBytes - f.baselineBytes)) / elapsed : 0
-            let speedStr = Self.formatSpeed(avgSpeed)
-            let timeStr = Self.formatDuration(elapsed)
-            print("  \u{2713} \(f.label)  \(totalStr)  \(speedStr)  \(timeStr)")
-        }
+        let labelWidth = labelColumn(limit: min(naturalLabelWidth, compactLabelWidth))
+        return cells.map { clipped(row($0, labelWidth: labelWidth, barWidth: nil, showsRate: false), to: width) }
     }
 
-    // MARK: - ANSI rendering
-
-    private func renderANSI(_ files: [FileProgress]) {
-        // Move cursor up to overwrite previous render.
-        if linesPrinted > 0 {
-            print("\u{1B}[\(linesPrinted)A", terminator: "")
+    /// `    label  [████░░░░]   62%     2.1 GB/4.8 GB      113 MB/s  ETA 24s`
+    private static func row(_ c: RowCells, labelWidth: Int, barWidth: Int?, showsRate: Bool) -> String {
+        var row = "    " + padded(shortenedLabel(c.label, width: labelWidth), to: labelWidth)
+        if let barWidth {
+            let filled = Int(c.fraction * Double(barWidth))
+            row += "  [" + String(repeating: "\u{2588}", count: filled)
+                + String(repeating: "\u{2591}", count: barWidth - filled) + "]"
         }
-
-        let termWidth = Self.terminalWidth()
-        var lines = 0
-        for f in files {
-            print("\u{1B}[2K", terminator: "")  // Clear the line
-            let line = Self.formatLine(f, termWidth: termWidth)
-            print(line)
-            lines += 1
-        }
-        linesPrinted = lines
-        fflush(stdout)
+        row += "  " + padded(c.percent, to: 4, leading: true)
+        row += "  " + padded(c.done, to: 9, leading: true) + "/" + padded(c.total, to: 9)
+        if showsRate { row += "  " + padded(c.rate, to: 9, leading: true) }
+        return row + "  " + padded(c.eta, to: 11)
     }
 
-    private func renderPlain(_ files: [FileProgress]) {
-        for f in files where f.completed && !printedLabels.contains(f.label) {
-            printedLabels.insert(f.label)
-            let totalStr = Self.formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            print("  \u{2713} \(f.label)  \(totalStr)")
-        }
+    /// Every file as one progress value labelled with the completed count. Its
+    /// rate is the combined transfer since the first file started.
+    static func aggregate(_ files: [FileProgress]) -> FileProgress {
+        let completed = files.filter(\.completed).count
+        var total = FileProgress(
+            label: "total \(completed)/\(files.count) files",
+            expectedBytes: files.reduce(0) { $0 + $1.expectedBytes })
+        total.downloadedBytes = files.reduce(0) { $0 + $1.downloadedBytes }
+        total.baselineBytes = files.reduce(0) { $0 + $1.baselineBytes }
+        total.startTime = files.filter(\.started).map(\.startTime).min() ?? Date()
+        return total
     }
 
-    // MARK: - Line formatting
+    /// The label, or a shorter form no wider than `width`: first without its
+    /// file extension, then its tail behind an ellipsis. Shard numbers sit at
+    /// the end of the name, just before the extension.
+    static func shortenedLabel(_ label: String, width: Int) -> String {
+        guard label.count > width else { return label }
+        let stem = (label as NSString).deletingPathExtension
+        guard stem.count > width else { return stem }
+        guard width > 1 else { return String(stem.suffix(max(0, width))) }
+        return "\u{2026}" + stem.suffix(width - 1)
+    }
 
-    private static func formatLine(_ f: FileProgress, termWidth: Int) -> String {
-        if f.completed {
-            let totalStr = formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
-            let elapsed = (f.completionTime ?? Date()).timeIntervalSince(f.startTime)
-            let avgSpeed = elapsed > 0.1 ? Double(max(0, f.downloadedBytes - f.baselineBytes)) / elapsed : 0
-            return "  \u{2713} \(f.label)  \(totalStr)  \(formatSpeed(avgSpeed))  done"
-        }
+    // MARK: - Completion lines
 
-        let pct = Int(f.fraction * 100)
-        let dlStr = formatBytes(f.downloadedBytes)
-        let totStr = formatBytes(f.expectedBytes)
-        let speedStr = formatSpeed(f.speed)
-        let etaStr: String
-        if let eta = f.eta {
-            etaStr = "ETA \(formatDuration(eta))"
-        } else {
-            etaStr = "---"
-        }
-
-        // Assemble the suffix: "  62%  2.1/4.8 GB  113 MB/s  ETA 24s"
-        let suffix = "  \(String(format: "%3d", pct))%  \(dlStr)/\(totStr)  \(speedStr)  \(etaStr)"
-
-        // Calculate bar width: total - label - prefix - suffix - brackets - spaces
-        let labelMaxWidth = min(f.label.count, 45)
-        let label = f.label.count > labelMaxWidth
-            ? String(f.label.suffix(labelMaxWidth - 1)).padding(toLength: labelMaxWidth, withPad: " ", startingAt: 0)
-            : f.label
-        let prefix = "  \(label)  ["
-        let postfix = "]\(suffix)"
-        let barWidth = max(10, termWidth - prefix.count - postfix.count)
-
-        let filled = Int(f.fraction * Double(barWidth))
-        let empty = barWidth - filled
-        let bar = String(repeating: "\u{2588}", count: filled) + String(repeating: "\u{2591}", count: empty)
-
-        return "\(prefix)\(bar)\(postfix)"
+    /// `  ✓ label  size  rate  elapsed` in aligned columns, or unaligned when the
+    /// aligned line would not fit the terminal.
+    private static func completionLine(_ f: FileProgress, labelWidth: Int, width: Int?) -> String {
+        let size = formatBytes(f.expectedBytes > 0 ? f.expectedBytes : f.downloadedBytes)
+        let rate = formatSpeed(f.speed)
+        let elapsed = formatDuration((f.completionTime ?? Date()).timeIntervalSince(f.startTime))
+        let aligned = "  \u{2713} " + padded(f.label, to: labelWidth)
+            + "  " + padded(size, to: 9, leading: true)
+            + "  " + padded(rate, to: 9, leading: true)
+            + "  " + padded(elapsed, to: 7, leading: true)
+        guard let width, aligned.count > width else { return aligned }
+        return "  \u{2713} \(f.label)  \(size)  \(rate)  \(elapsed)"
     }
 
     // MARK: - Formatting helpers
+
+    private static func padded(_ text: String, to width: Int, leading: Bool = false) -> String {
+        let padding = String(repeating: " ", count: max(0, width - text.count))
+        return leading ? padding + text : text + padding
+    }
+
+    private static func clipped(_ text: String, to width: Int) -> String {
+        text.count <= width ? text : String(text.prefix(max(0, width)))
+    }
 
     static func formatBytes(_ bytes: Int64) -> String {
         let b = Double(bytes)
@@ -252,13 +386,31 @@ final class ProgressRenderer: @unchecked Sendable {
         )
     }
 
-    static func terminalWidth() -> Int {
+    // MARK: - Terminal
+
+    static func currentTerminalSize() -> TerminalSize {
         #if canImport(Darwin)
         var w = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0, w.ws_col > 0 {
-            return Int(w.ws_col)
+        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0, w.ws_col > 0, w.ws_row > 0 {
+            return TerminalSize(columns: Int(w.ws_col), rows: Int(w.ws_row))
         }
         #endif
-        return 80
+        return TerminalSize(columns: 80, rows: 24)
+    }
+
+    /// Write a frame with as few `write(2)` calls as possible (normally one):
+    /// line-buffered `print` would flush every row separately, and a screen
+    /// refresh between those writes shows the block half drawn.
+    static func writeToStandardOutput(_ text: String) {
+        fflush(stdout)
+        var bytes = Array(text.utf8)[...]
+        while !bytes.isEmpty {
+            let written = bytes.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+            if written < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            bytes = bytes.dropFirst(written)
+        }
     }
 }

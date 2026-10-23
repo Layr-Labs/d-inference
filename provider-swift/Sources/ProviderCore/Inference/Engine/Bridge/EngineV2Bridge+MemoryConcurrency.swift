@@ -35,6 +35,7 @@ extension EngineV2Bridge {
 
     /// The admission ledger's ceiling is smaller than the raw KV grant by its
     /// watermark. Also honor a fixed backend pool that cannot grow with it.
+    /// GLM also keeps one step's setup free of request reservations.
     func admissionCapacityBytes() -> Int {
         guard let engine = ownedEngine as? EngineV2 else { return 0 }
         let snapshot = engine.capacity()
@@ -42,7 +43,7 @@ extension EngineV2Bridge {
         if snapshot.kvBytesBackendCapacity > 0 {
             capacity = min(capacity, snapshot.kvBytesBackendCapacity)
         }
-        return max(0, capacity)
+        return max(0, capacity - glm5NextStepSetupBytes)
     }
 
     /// Total slot grant needed for one request's workspace and minimum KV.
@@ -59,7 +60,8 @@ extension EngineV2Bridge {
         let engineFloor: Int
         if tracksNativeShutdown {
             // The native execution profile retains its validated 5% policy.
-            engineFloor = Self.minimumNativeGrantBytes(fixedRequestBytes: overhead)
+            let (fixed, overflow) = overhead.addingReportingOverflow(glm5NextStepSetupBytes)
+            engineFloor = overflow ? Int.max : Self.minimumNativeGrantBytes(fixedRequestBytes: fixed)
         } else {
             guard let admissionWatermarkFraction else { return Int.max }
             engineFloor = Self.minimumOrdinaryGrantBytes(

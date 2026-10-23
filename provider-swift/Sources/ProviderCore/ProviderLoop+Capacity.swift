@@ -67,7 +67,8 @@ extension ProviderLoop {
         // watchdog drove this sweep every 2s until the v0.7.5 engine deletion
         // removed it with its host; this tick is that watchdog's documented
         // successor. Non-blocking: only signals the off-actor reclaimer
-        // (rate-limited, threshold-gated); the GPU sync never runs here.
+        // (rate-limited, threshold-gated, and windowed so busy engines keep
+        // their pool while headroom is healthy); the GPU sync never runs here.
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
@@ -119,6 +120,11 @@ extension ProviderLoop {
                 let (sum, overflow) = totalResidentWeightBytes.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
+            // Super owners' lanes, decode rows and rounds sit beside their
+            // grants in the same ledger: resident, never KV room.
+            let (withSuperReservations, reservationOverflow) = totalResidentWeightBytes
+                .addingReportingOverflow(nemotronSuperReservedBesideGrantBytes())
+            totalResidentWeightBytes = reservationOverflow ? .max : withSuperReservations
             // Physical memory MUST come from the same source the re-slice
             // grant arithmetic uses (`fleetKVBudgetBytes`): the test hooks'
             // override when installed, the machine's real memory otherwise.
@@ -128,7 +134,8 @@ extension ProviderLoop {
             // behavior unchanged.
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
-                    totalResidentWeightBytes: totalResidentWeightBytes,
+                    totalResidentWeightBytes: GLM5NextLoadFaultState.addingRetainedResidentBytes(
+                        to: totalResidentWeightBytes),
                     activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),

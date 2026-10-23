@@ -152,6 +152,19 @@ enum ToolConstraintSchemaCompiler {
         return compiled
     }
 
+    /// A response_format schema uses the same fail-closed subset at any root
+    /// type. Without the normalizer's render metadata an allow-all `{}` stays
+    /// unsupported instead of compiling to a forced argument's free string.
+    static func compileResponseSchema(_ raw: MLXLMCommon.JSONValue) throws -> ToolValueSchema {
+        let schema = try compileSchema(
+            raw, depth: 0, path: "json_schema.schema", allowRenderMetadata: false)
+        guard grammarCost(schema) <= maxGrammarComplexity else {
+            throw ToolConstraintSchemaError.unsupported(
+                "json_schema grammar exceeds the \(maxGrammarComplexity)-unit safety limit")
+        }
+        return schema
+    }
+
     private static func grammarCost(_ schema: ToolValueSchema) -> Int {
         let nullableBranchCost: Int
         if case .null = schema {

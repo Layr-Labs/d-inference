@@ -1,4 +1,5 @@
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 /// Storage facts read from the resolved backend, never from operator intent.
@@ -8,6 +9,7 @@ struct CompleteCheckpointStorageIdentity: Sendable {
     enum Target: Sendable {
         case recurrentFull
         case historicalAttention([CBv2LayerKind])
+        case glm5Next([CBv2LayerKind])
     }
 
     let backendLayout: String
@@ -32,6 +34,8 @@ struct CompleteCheckpointStorageIdentity: Sendable {
         case .contiguous:
             guard pagedConfig == nil else { return nil }
             switch target {
+            case .glm5Next:
+                return nil
             case .recurrentFull:
                 backendLayout = checkpointQuantization == nil
                     ? CBv2CompleteCheckpointManifest.layout
@@ -54,6 +58,25 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                 pagedConfig.layerDTypes == layerDTypes
             else { return nil }
             switch target {
+            case .glm5Next(let kinds):
+                guard checkpointQuantization == nil, pagedConfig.quantization == nil,
+                    pagedConfig.prefixSharingBlockSize == nil,
+                    layerDTypes == Array(repeating: .float32, count: kinds.count),
+                    let limits = pagedConfig.gatheredAttention,
+                    limits.admissionMode == .stepOwned(.pinnedMetal),
+                    let layers = try? CBv2CheckpointAttentionLayer.resolvePagedAsymmetric(
+                        layerKinds: kinds, dtypes: layerDTypes) else { return nil }
+                backendLayout = CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+                Self.appendAttentionFields(layers, includeValueHeadDimension: true, to: &fields)
+                fields["storage.nativeProfile"] = "glm5_next_native_paged_full_state_serial_mtp_v1"
+                // Arithmetic choices are not bitwise across policies; never
+                // restore state written under a different one.
+                fields["storage.executionPolicy"] = String(describing: GLM5NextManagedLoad.executionPolicy)
+                fields["storage.maximumBatch"] = String(limits.maximumBatchSize)
+                fields["storage.maximumQuery"] = String(limits.maximumQueryTokens)
+                fields["storage.maximumContext"] = String(limits.maximumContextTokens)
+                fields["storage.maximumPrefill"] = String(pagedConfig.maxPrefillChunk)
+                fields["storage.inFlightGraphs"] = String(limits.maximumInFlightGraphs)
             case .recurrentFull:
                 backendLayout = checkpointQuantization != nil
                     ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout

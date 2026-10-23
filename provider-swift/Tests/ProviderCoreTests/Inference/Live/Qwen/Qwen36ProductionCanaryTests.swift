@@ -386,6 +386,9 @@ private enum Qwen36ProductionCanary {
                 result.reasoningContent += parsed.reasoningContent ?? ""
             case .toolCall(let call):
                 result.toolCalls.append(call)
+            case .toolCallDelta(let delta):
+                // Only chat streams request fragments; keep whole calls.
+                if let call = delta.completed { result.toolCalls.append(call) }
             case .info(let info):
                 result.info = info
             }

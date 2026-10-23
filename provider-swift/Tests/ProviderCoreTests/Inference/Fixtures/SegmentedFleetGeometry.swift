@@ -42,9 +42,10 @@ struct SegmentedFleetGeometry {
             Self(id: "gpt-oss-20b", kinds: CBv2LayerKindDerivation.gptossLayerKinds(
                 layerTypes: nil, numHiddenLayers: 24, slidingWindow: 128,
                 headDim: 64, numAttentionHeads: 64, numKeyValueHeads: 8),
-                 // Actual probe: the first sliding layer is BF16; all later
-                 // layers, including sliding layers, are FP32.
-                 dtypes: [.bfloat16] + Array(repeating: .float32, count: 23),
+                 // The SDK's expert SwiGLU keeps the bf16 activation dtype, so
+                 // every layer stores bf16 K/V. The 2026-09-05 probe predates
+                 // that: layers 1-23 were FP32 there.
+                 dtypes: Array(repeating: .bfloat16, count: 24),
                  context: 131_072, qwen: nil),
             Self(id: "gemma-4-26b", kinds: CBv2LayerKindDerivation.gemma4LayerKinds(
                 layerTypes: CBv2LayerKindDerivation.layerTypes(slidingWindowPattern: 6, numLayers: 30),
@@ -93,8 +94,9 @@ struct SegmentedFleetGeometry {
         return config
     }
 
-    /// Production's default solo stripes also bound native window rings.
-    /// Dense Qwen uses 4096; the other exact artifacts use 2048.
+    /// Production's largest schedulable chunk, max(plain chunk, solo stripe),
+    /// bounds native window rings: dense Qwen's 4096 stripe; 2048 for the
+    /// other exact artifacts (the MoE Qwen and GPT-OSS stripes, Gemma's chunk).
     var maximumPrefillChunk: Int {
         id == "EigenLabs/Qwen3.8-27B-4bit-mtp"
             ? EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens

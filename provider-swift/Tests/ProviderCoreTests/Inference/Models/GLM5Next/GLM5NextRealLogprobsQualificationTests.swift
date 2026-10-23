@@ -43,6 +43,19 @@ struct GLM5NextRealLogprobsQualificationTests {
             .flatMap(Double.init) ?? 5e-2
     }
 
+    /// Bound, in nats, on a co-batched logprob row's alternatives. Batch width
+    /// alone moves GLM's non-top logits: on an M3 Ultra the dense reference
+    /// run as two identical rows differs from the one-row reference by up to
+    /// 0.56 nats over its top-8 (`pairedReferenceMaxDrift`), and the served
+    /// batched row's alternatives differ from its solo values by up to 0.69,
+    /// while chosen values stay within `bound(largestLogit:)`. The chosen value
+    /// keeps the tight bound; a wrong row or position instead moves the
+    /// alternatives out of the reference top-8 or the chosen value by nats.
+    static var batchedAlternativeBound: Double {
+        ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_BATCHED_TOLERANCE"]
+            .flatMap(Double.init) ?? 1.0
+    }
+
     static func bound(largestLogit magnitude: Float) -> Double {
         guard magnitude.isNormal else { return tolerance }
         return max(tolerance, 2 * Double(sign: .plus, exponent: Int(magnitude.exponent) - 7, significand: 1))
@@ -94,7 +107,7 @@ struct GLM5NextRealLogprobsQualificationTests {
     /// the prompt in bounded chunks, then each generated token one at a time.
     /// Step i scores the distribution that sampled `generated[i]`.
     static func reference(_ harness: GLM5NextRealModelHarness, prompt: [Int], generated: [Int],
-        alternatives: [Int] = []) async throws -> [ReferenceStep] {
+        alternatives: [Int] = [], rows batch: Int = 1) async throws -> [ReferenceStep] {
         let container = try #require(harness.container)
         let activity = harness.budget.serviceBudget.beginUnboundedActivity()
         defer { activity.finish() }
@@ -104,7 +117,8 @@ struct GLM5NextRealLogprobsQualificationTests {
                 let cache = root.newTextCache()
                 func logProbabilities(_ tokens: [Int]) throws -> (values: [Float], largest: Float) {
                     let output = try root.textTower.forward(
-                        tokens: MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count]), cache: cache)
+                        tokens: MLXArray(Array(repeating: tokens.map(Int32.init), count: batch).flatMap { $0 })
+                            .reshaped([batch, tokens.count]), cache: cache)
                     let logits = output.logits[0, -1, 0...].asType(.float32)
                     let values = logits - logSumExp(logits, axis: -1, keepDims: true)
                     let largest = MLX.abs(logits).max()
@@ -146,11 +160,14 @@ struct GLM5NextRealLogprobsQualificationTests {
     /// Served entries against the reference along the same tokens. Near-ties
     /// may reorder within the bound; every served alternative must be a
     /// reference candidate at the same value, and each reference top-5 entry
-    /// clearly above the served fifth must be served.
-    static func compare(_ entries: [SSETokenLogprob], _ reference: [ReferenceStep], label: String) -> Agreement {
+    /// clearly above the served fifth must be served. `alternativeBound`
+    /// widens the bound on alternatives, never on the chosen value.
+    static func compare(_ entries: [SSETokenLogprob], _ reference: [ReferenceStep], label: String,
+        alternativeBound: Double = 0) -> Agreement {
         var result = Agreement()
         for (index, (entry, step)) in zip(entries, reference).enumerated() {
             result.maxBound = max(result.maxBound, step.bound)
+            let alternatives = max(step.bound, alternativeBound)
             if entry.topLogprobs.count != topLogprobs || entry.topLogprobs.first?.logprob != entry.logprob {
                 result.failures.append("\(label) step \(index) is not a greedy top-\(topLogprobs) entry")
             }
@@ -165,9 +182,9 @@ struct GLM5NextRealLogprobsQualificationTests {
                     continue
                 }
                 result.maxTop = max(result.maxTop, match)
-                if match > step.bound { result.failures.append("\(label) step \(index) rank \(rank) Δ=\(match)") }
+                if match > alternatives { result.failures.append("\(label) step \(index) rank \(rank) Δ=\(match)") }
             }
-            let floor = Double(entry.topLogprobs.last?.logprob ?? 0) + step.bound
+            let floor = Double(entry.topLogprobs.last?.logprob ?? 0) + alternatives
             for candidate in step.top.prefix(topLogprobs) where candidate.logprob > floor
                 && !entry.topLogprobs.contains(where: { $0.token == candidate.token }) {
                 result.failures.append("\(label) step \(index) reference \(candidate.token.debugDescription) missing")
@@ -249,7 +266,8 @@ struct GLM5NextRealLogprobsQualificationTests {
             let batchedParting = (0..<min(batchedTokens.count, decoded.count))
                 .first { batchedTokens[$0] != decoded[$0] }
             let shared = Array(batchedLogprobs.entries.prefix(batchedParting ?? batchedLogprobs.entries.count))
-            let batched = Self.compare(shared, reference, label: "batched")
+            let batched = Self.compare(shared, reference, label: "batched",
+                alternativeBound: Self.batchedAlternativeBound)
             #expect(batched.failures.isEmpty, "\(batched.failures)")
             if let batchedParting {
                 let step = reference[batchedParting]
@@ -258,6 +276,23 @@ struct GLM5NextRealLogprobsQualificationTests {
                     "the batched logprob row left the solo stream at step \(batchedParting) without a near-tie")
             }
             let batchedDrift = zip(shared, solo.entries).map { abs(Double($0.logprob - $1.logprob)) }.max() ?? 0
+            // Diagnostic: the same reference run as a batch of two identical
+            // rows, so only the kernels' batch width differs from the solo
+            // reference.
+            let paired = try await Self.reference(harness, prompt: prompt, generated: target.tokens, rows: 2)
+            let pairedDrift = zip(reference, paired).flatMap { single, double in
+                single.top.compactMap { entry in
+                    double.top.first { $0.token == entry.token }.map { abs($0.logprob - entry.logprob) }
+                }
+            }.max() ?? 0
+            let batchedVsPaired = Self.compare(shared, paired, label: "batched-vs-paired",
+                alternativeBound: Self.batchedAlternativeBound)
+            let batchedTopDrift = zip(shared, solo.entries).flatMap { batchedEntry, soloEntry in
+                batchedEntry.topLogprobs.compactMap { alternative in
+                    soloEntry.topLogprobs.first { $0.token == alternative.token }
+                        .map { abs(Double($0.logprob - alternative.logprob)) }
+                }
+            }.max() ?? 0
 
             // Every plain token is the reference argmax up to a near-tie, which
             // a wrong row's logits or a corrupted cache would not be.
@@ -274,7 +309,8 @@ struct GLM5NextRealLogprobsQualificationTests {
             // Drafts counted before the snapshot include rounds of the plain
             // row outside the logprob row's decode steps: before its prefill
             // finished, and after its last step but before its consumer ended.
-            try harness.write("logprobs-qualification", ["schema": 2, "tolerance": Self.tolerance,
+            try harness.write("logprobs-qualification", ["schema": 3, "tolerance": Self.tolerance,
+                "batchedAlternativeBound": Self.batchedAlternativeBound,
                 "promptTokens": prompt.count, "promptSHA256": GLM5NextRealModelHarness.tokenHash(prompt),
                 "generatedSHA256": GLM5NextRealModelHarness.tokenHash(target.tokens),
                 "mtpSHA256": GLM5NextRealModelHarness.tokenHash(mtp.tokens),
@@ -282,7 +318,11 @@ struct GLM5NextRealLogprobsQualificationTests {
                 "maxChosenDelta": agreement.maxChosen, "maxTopDelta": agreement.maxTop,
                 "maxBound": agreement.maxBound, "batchedParting": batchedParting ?? NSNull(),
                 "batchedLogprobDrift": batchedDrift, "batchedMaxChosenDelta": batched.maxChosen,
-                "batchedMaxTopDelta": batched.maxTop, "plainMaxArgmaxGap": plainGaps.max() ?? 0,
+                "batchedMaxTopDelta": batched.maxTop, "batchedTopDriftFromSolo": batchedTopDrift,
+                "pairedReferenceMaxDrift": pairedDrift, "batchedVsPairedMaxTop": batchedVsPaired.maxTop,
+                "batchedVsPairedMaxChosen": batchedVsPaired.maxChosen,
+                "batchedVsPairedFailures": batchedVsPaired.failures,
+                "plainMaxArgmaxGap": plainGaps.max() ?? 0,
                 "baselineMTP": try #require(mtp.mtp).record, "soloLogprobsDrafted": soloDrafted,
                 "batchedDraftedBeforeLogprobsFinish": atFinish - before.draftedTokens,
                 "batchedDraftedAfterLogprobsFinish": after - atFinish,

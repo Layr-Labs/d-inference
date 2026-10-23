@@ -1,9 +1,10 @@
 import Foundation
 import ProviderCoreFoundation
 
-/// Aggregate weight hashes from earlier complete SHA-256 verifications, each
-/// bound to the identity of every file it covered, so a restart can register
-/// a verified hash without reading the weights again.
+/// Aggregate weight hashes from earlier complete SHA-256 reads (a full startup
+/// registration hash, or a managed load's verification against the catalog
+/// manifest), each bound to the identity of every file it covered, so a
+/// restart can register a verified hash without reading the weights again.
 ///
 /// A record is reused only while every file `WeightHasher.computeHash` covers
 /// keeps its device, inode, size, and modification and status-change times;

@@ -65,7 +65,7 @@ extension ProviderLoop {
     /// load SHA-256-verified every manifest file against the catalog manifest
     /// and rechecked that no file identity changed since the plan was taken,
     /// so this is the value a pre-load or post-load `WeightHasher` pass would
-    /// report, without reading 182 GB twice more.
+    /// report, without reading the weights twice more.
     func verifiedGLM5NextWeightHash(
         load: GLM5NextManagedLoad, plan: GLM5NextArtifactPlan, modelPath: URL
     ) async throws -> WeightHashSnapshot {

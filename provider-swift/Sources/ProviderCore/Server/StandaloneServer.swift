@@ -1999,9 +1999,7 @@ public actor StandaloneServer {
             let postLoadArtifactHash: String?
             if let glmPlan, let glmLoad {
                 postLoadArtifactHash = await glmLoad.verifiedArtifactSHA256
-                guard postLoadArtifactHash == glmPlan.weights.manifest.aggregateSHA256 else {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
+                try ProviderLoop.requireGLM5NextLoadedArtifact(hash: postLoadArtifactHash, plan: glmPlan)
                 preLoadArtifactHash = postLoadArtifactHash
             } else {
                 postLoadArtifactHash = await computeStandaloneWeightHash(

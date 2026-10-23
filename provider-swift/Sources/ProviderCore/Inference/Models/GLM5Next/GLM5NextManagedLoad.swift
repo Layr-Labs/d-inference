@@ -40,8 +40,8 @@ actor GLM5NextManagedLoad {
     private var constructionOwner: GLM5NextConstructionOwner?
     /// The manifest aggregate, set only once this load has SHA-256-verified
     /// every manifest file against the catalog-pinned manifest (core files in
-    /// the native reader before any payload is parsed, the rest before the
-    /// tokenizer loads) and the snapshot's file identities stayed unchanged
+    /// the native reader before any header or payload is read, the rest before
+    /// the tokenizer loads) and the snapshot's file identities stayed unchanged
     /// through construction. `WeightHasher` reports this same value for these
     /// files, so callers publish it rather than reading the weights again.
     private(set) var verifiedArtifactSHA256: String?
@@ -238,7 +238,7 @@ actor GLM5NextManagedLoad {
         activity = nil
     }
 
-    static func seconds(_ duration: Duration) -> String {
+    private static func seconds(_ duration: Duration) -> String {
         let components = duration.components
         let value = Double(components.seconds) + Double(components.attoseconds) / 1e18
         return String(format: "%.1f s", value)

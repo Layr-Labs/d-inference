@@ -506,6 +506,7 @@ private actor SuperVideoEvents {
     var completions: [Int] = []
     func record(_ event: GenerationEvent) {
         switch event {
+        case .logprobs: break
         case .chunk: break
         case .info(let prompt, let count, _, _):
             prompts.append(prompt)

@@ -44,6 +44,14 @@ or failure-code vocabulary changes. The internal `response_limit` cause has
 `json:"-"` and cannot be claimed by provider JSON. See the
 [API limits](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#limits-and-validation).
 
+Chat-completion SSE `choices[].logprobs.content` is encoded from ordered generation
+metadata inside the canonical SDK service before provider relay/encryption.
+Optional fields remain omitted when capture is absent. No WebSocket envelope,
+billing, telemetry, token-capture grant or platform enum changes. Parser-held
+metadata follows the [inference contract](../architecture/inference.md).
+Source: `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIChatLogprobs.swift`.
+
 ## App Attest endpoint resumption candidate
 
 This provider-side Stage C addition is separate from Apple App Attest protocol

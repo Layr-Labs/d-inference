@@ -11,10 +11,12 @@ handlers over fabricated engines for seven model-family fixtures. It compares
 all stable JSON/SSE fields and translated engine requests, including scalar
 stops, `min_p`, captured logprobs and reasoning usage. Only generated IDs and
 timestamps are normalized; no capability fields are removed. The capture-capable
-fixture supplies fixed logprob events explicitly. The strict streaming capture
-case commits one content token; a separate multi-token exercise checks every
-captured value in order. Per-content-frame association is not qualified: the
-existing channel decorator can drain later-token entries into an earlier frame.
+fixture supplies fixed logprob events explicitly. Strict streaming comparison
+covers multiple content tokens and every frame field. SDK `EventBoundLogprobsTests`
+queues the producer's entire output before consumption, checks event-to-frame
+association, empty-text holdback, parser flushes, terminal failures, cancellation,
+collected completeness and the 4096-entry pending bound. Reasoning/tool source
+spans remain unclassified; those entries retain the existing next-content policy.
 A separate unsupported-profile case requires HTTP 400 before reservation and
 successful text afterward. Run
 `swift test --package-path provider-swift --filter ClusterAPIParityTests` with

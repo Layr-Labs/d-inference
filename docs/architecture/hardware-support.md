@@ -8,6 +8,11 @@ understand why a box refuses a load that "should fit"; for the operator view
 (RAM tiers → catalog models) see
 [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md).
 
+Ordered logprob events and canonical SSE encoding are transport behavior, not a
+native capture capability. The [inference contract](inference.md) retains
+mode-specific capture refusal and parser classification limits; no hardware
+grant is widened by frame association.
+
 ## Context
 
 Automatic local cluster batching prices each lane's full registered request

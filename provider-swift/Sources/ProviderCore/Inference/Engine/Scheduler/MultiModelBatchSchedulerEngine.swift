@@ -784,7 +784,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
-                        logprobsChannel: engineV2Logprobs?.channel,
                         // Media requests are prefix-cache-excluded engine-
                         // side (hit tokens always 0), but the signal still
                         // reaches its terminal so the frames loop never
@@ -1018,7 +1017,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // funds the cache).
                     cacheScope: requestCacheScope,
                     cacheEnabled: cacheEnabled,
-                    logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
                     donationDemand: donationDemand,
@@ -1202,7 +1200,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             request: Self.translate(openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
                 logprobs: engineV2Logprobs != nil ? true : nil, topLogprobs: engineV2Logprobs?.topLogprobs,
                 logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
-            requestId: id, cacheScope: cacheScope, cacheEnabled: false, logprobsChannel: engineV2Logprobs?.channel,
+            requestId: id, cacheScope: cacheScope, cacheEnabled: false,
             usageSignal: requestUsage, clusterGLMMedia: host.wire, mediaKind: host.mediaKind,
             firstContentDeadline: firstContentDeadline, profile: profile, measurementPurpose: measurementPurpose)
         do {
@@ -1478,9 +1476,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     #endif
                     if nativeMediaTerminalDrain,
-                       (releaseBox.nativeConsumerLease?.snapshot().phase != .active || mediaParserFailure != nil),
-                       case .chunk = event {
-                        continue
+                       (releaseBox.nativeConsumerLease?.snapshot().phase != .active || mediaParserFailure != nil) {
+                        switch event {
+                        case .chunk, .logprobs: continue
+                        default: break
+                        }
                     }
                     if Task.isCancelled {
                         // Preserve already-observed engine terminal/error
@@ -1500,6 +1500,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         }
                     }
                     switch event {
+                    case .logprobs(let entries):
+                        guard let engineV2Logprobs else { continue }
+                        continuation.yield(.logprobs(engineV2Logprobs.requested(entries)))
                     case .chunk(let text):
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()

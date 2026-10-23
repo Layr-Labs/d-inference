@@ -13,7 +13,6 @@ extension EngineV2Bridge {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         cacheEnabled: Bool = true
     ) async -> AsyncStream<GenerationEvent> {
         let messages: [[String: any Sendable]] = request.messages.map { msg in
@@ -37,7 +36,7 @@ extension EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: "", cacheEnabled: cacheEnabled, logprobsChannel: logprobsChannel
+            cacheScope: "", cacheEnabled: cacheEnabled
         )
     }
 
@@ -45,7 +44,7 @@ extension EngineV2Bridge {
     /// using the same sampling, stop, and token-limit translation as submit.
     /// Remote cacheScope values come from authenticated coordinator metadata;
     /// local callers remain unscoped and cacheEnabled=false forces cold serving.
-    /// usageSignal and logprobsChannel carry per-request output metadata.
+    /// usageSignal carries per-request usage metadata; logprobs travel in stream order.
     /// Multimodal embeddings must already be evaluated; mediaKind is telemetry.
     public func submitTokenized(
         promptTokens: [Int],
@@ -53,7 +52,6 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -73,7 +71,6 @@ extension EngineV2Bridge {
                 requestId: requestId,
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
-                logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 multimodal: multimodal,
                 mimoClusterImages: mimoClusterImages,
@@ -121,7 +118,6 @@ extension EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
@@ -1025,7 +1021,6 @@ extension EngineV2Bridge {
             id: id, events: events, continuation: continuation,
             holdsSharedReservation: sharedKVReserved,
             stopSequences: cbv2Request.stopStrings,
-            logprobsChannel: logprobsChannel,
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,

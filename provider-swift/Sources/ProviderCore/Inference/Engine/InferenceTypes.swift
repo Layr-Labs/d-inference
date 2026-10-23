@@ -17,6 +17,7 @@ import MLXLMCommon
 /// Events emitted for a single inference request.
 public enum GenerationEvent: Sendable {
     case chunk(String)
+    case logprobs([SSETokenLogprob])
     /// Terminal usage. `finishReason` is the OpenAI wire value ("stop",
     /// "length") when the engine reported one; nil maps to "stop"
     /// downstream. Threaded end-to-end (`CBv2FinishReason.length`) so a

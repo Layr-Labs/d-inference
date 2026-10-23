@@ -417,6 +417,7 @@ struct DistributedCBv2EngineTests {
         var terminals = 0
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk): text += chunk
             case .info(let prompt, let completion, _, let reason):
                 #expect(prompt == 3 && completion == 1 && reason == "length")

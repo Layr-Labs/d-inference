@@ -26,6 +26,7 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys]
         return try events.map { event in
             switch event {
+            case .logprobs: break
             case .parsed(let parsed):
                 return [parsed.reasoningContent.map { "R:" + $0 }, parsed.content.isEmpty ? nil : "C:" + parsed.content]
                     .compactMap { $0 }.joined(separator: "|")

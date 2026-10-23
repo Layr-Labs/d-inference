@@ -73,6 +73,7 @@ struct ProviderCancelledPrefixCacheTests {
                 var donorFailed = false
                 for await event in donor {
                     switch event {
+                    case .logprobs: break
                     case .chunk(let text): donorContentTokens += text.count
                     case .info(_, let completion, _, _): donorCompletionTokens = completion
                     case .error, .terminal: donorFailed = true

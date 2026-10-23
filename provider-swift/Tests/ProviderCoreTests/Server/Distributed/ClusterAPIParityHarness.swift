@@ -419,7 +419,7 @@ enum ParityScriptKind: Sendable {
         case .stopString: family.stopString
         case .long: family.long
         case .json: family.json
-        case .capturedContent: family.harmony ? [44] : (family.modelType == "gemma4" ? [22] : [28])
+        case .capturedContent: family.harmony ? [44, 23, 24] : (family.modelType == "gemma4" ? [22, 23, 24] : [28, 23, 24])
         case .none: []
         }
     }
@@ -476,10 +476,9 @@ struct ParityCase: Sendable {
             .init("thinking-off", body: chat(m, #","chat_template_kwargs":{"enable_thinking":false}"#)),
             .init("reasoning-parser", body: chat(m, #","reasoning_parser":"think""#, stream: true)),
             .init("logprobs", body: chat(m, #","logprobs":true,"top_logprobs":2"#)),
-            // One committed content token gives deterministic frame boundaries.
-            // Multi-token capture completeness is checked independently below;
-            // channel draining does not promise a stable frame partition.
-            .init("logprobs-stream", body: chat(m, #","logprobs":true,"top_logprobs":2,"max_tokens":1"#,
+            // Compare all fields across a multi-token stream. Captured metadata
+            // follows each generation event through the canonical encoder.
+            .init("logprobs-stream", body: chat(m, #","logprobs":true,"top_logprobs":2,"max_tokens":3"#,
                   stream: true), script: .capturedContent),
             .init("n-two", body: chat(m, #","n":2"#)),
             .init("engine-failure-stream", body: chat(m, stream: true), failure: true),
@@ -685,22 +684,25 @@ func parityRecord(_ lines: [String], family: String) {
     try? Data(text.utf8).write(to: url)
 }
 
-/// A separate multi-token capture exercise: retain every frame, then inspect
-/// ordered captured entries without claiming stable per-frame association.
-/// The strict comparator above is unchanged and covers a one-token capture.
-func parityCapturedStream(_ family: ParityFamily) async throws -> [ParityAnswer] {
+/// Exercise captured responses independently of the strict all-fields comparison.
+/// The content-only script ends at the exact output limit; the ordinary script
+/// includes reasoning delimiters and an EOS that emits no content. Both cases
+/// must preserve their distinct, explicit metadata attachment boundaries.
+func parityCapturedResponses(_ family: ParityFamily, contentOnly: Bool, stream: Bool) async throws -> [ParityAnswer] {
     let directory = try family.makeDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
-    let script = ParityScript(); script.set(family.plain)
+    let tokens = contentOnly ? ParityScriptKind.capturedContent.tokens(family) : family.plain
+    let script = ParityScript(); script.set(tokens)
     let solo = try await ParitySoloServer.start(family: family, directory: directory, script: script)
     let cluster = try await ParityClusterServer.start(family: family, directory: directory)
     let client = URLSession(configuration: .ephemeral)
+    let limit = contentOnly ? #","max_tokens":3"# : ""
     let request = ParityCase("multi-token-capture", body: ParityCase.chat(
-        family.modelID, #","logprobs":true,"top_logprobs":2"#, stream: true))
+        family.modelID, #","logprobs":true,"top_logprobs":2"# + limit, stream: stream))
     do {
         let single = try await paritySend(port: solo.port, request, session: client)
         let stop = ParityStopFlag()
-        let driver = Task { await cluster.drive(after: 0, script: family.plain, failure: false, stop: stop) }
+        let driver = Task { await cluster.drive(after: 0, script: tokens, failure: false, stop: stop) }
         let pair: ParityAnswer
         do { pair = try await paritySend(port: cluster.port, request, session: client) }
         catch { stop.set(); await driver.value; throw error }

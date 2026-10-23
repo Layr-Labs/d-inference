@@ -22,6 +22,20 @@ native family or generation mode implements capture. Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`, and
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+Captured metadata travels with `GenerationEvent.logprobs` and
+`MLXServerGenerationEvent.logprobs` through the same ordered stream as text.
+`MLXOpenAIService` attaches only already-consumed entries when encoding a content
+frame; local and coordinator relay code preserve that canonical frame. A producer
+running ahead cannot put a future token's logprob on an earlier text delta.
+`OpenAIChatLogprobs` also carries captured entries on collected JSON responses.
+The request-local pending buffer retains at most 4096 entries, dropping the oldest
+on overflow. This does not classify parser source spans: reasoning/tool entries
+still attach to the next visible content, and trailing entries without visible
+content are discarded on stream termination. No token metadata enters telemetry.
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/EngineV2Logprobs.swift`, and
+`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`.
+
 Cluster logprob admission follows the selected resident runtime. Both installed
 and member-pair serving construct `DistributedResidentExecutionProfile` from the
 verified adapter and selected generation mode; only GLM tensor parallel currently

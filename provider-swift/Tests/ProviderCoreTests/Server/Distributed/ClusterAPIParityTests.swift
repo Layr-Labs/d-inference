@@ -18,11 +18,29 @@ struct ClusterAPIParityTests {
         #expect(mismatches.isEmpty, "\(mismatches.count) differences:\n\(mismatches.joined(separator: "\n\n"))")
     }
 
-    /// Multi-token transport must not lose or reorder captured values even
-    /// though the asynchronous channel may partition them across SSE frames.
-    /// This is a completeness check, not a per-content-frame association claim.
+    /// Every captured value in this three-token visible script must survive,
+    /// in order, on both JSON and SSE paths. It ends by length, without an EOS
+    /// or parser-only token whose metadata has no visible attachment boundary.
     @Test(arguments: ParityFamily.all.map(\.name))
-    func streamedLogprobsRetainEveryCapturedValue(_ name: String) async throws {
+    func capturedResponsesRetainEveryVisibleTokenValue(_ name: String) async throws {
+        let family = try #require(ParityFamily.all.first { $0.name == name })
+        let tokens = ParityScriptKind.capturedContent.tokens(family)
+        for stream in [false, true] {
+            for answer in try await parityCapturedResponses(family, contentOnly: true, stream: stream) {
+                #expect(answer.status == 200)
+                if stream { #expect(answer.body.last == "data: [DONE]") }
+                #expect(try capturedEntries(answer) == expectedEntries(tokens, family: family),
+                        "\(name), stream=\(stream): capture lost or reordered visible values")
+            }
+        }
+    }
+
+    /// Preserve the original mixed reasoning/EOS exercise. Collected JSON owns
+    /// the complete capture; streaming must never move a trailing non-content
+    /// EOS backward onto an earlier answer. Reasoning source-span classification
+    /// remains a separate limitation; entries before visible content stay ordered.
+    @Test(arguments: ParityFamily.all.map(\.name))
+    func trailingStopMetadataCannotMoveBackwardIntoStreamedContent(_ name: String) async throws {
         let family = try #require(ParityFamily.all.first { $0.name == name })
         let directory = try family.makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -33,32 +51,46 @@ struct ClusterAPIParityTests {
                 tokenToId: { tokenizer.convertTokenToId($0) }),
             tokenizerEOSTokenId: tokenizer.eosTokenId, extraEOSTokens: [],
             convertTokenToId: { tokenizer.convertTokenToId($0) })
-        var committed: [Int] = []
-        for token in family.plain { committed.append(token); if stops.contains(token) { break } }
-        let expected: [[String: Any]] = committed.map { token in
-            let text = tokenizer.decode(tokenIds: [token], skipSpecialTokens: false)
+        var contentBound: [Int] = []
+        var trailingStop: Int?
+        for token in family.plain {
+            if stops.contains(token) { trailingStop = token; break }
+            contentBound.append(token)
+        }
+        let stop = try #require(trailingStop)
+        for stream in [false, true] {
+            let expected = stream ? contentBound : contentBound + [stop]
+            for answer in try await parityCapturedResponses(family, contentOnly: false, stream: stream) {
+                #expect(answer.status == 200)
+                if stream { #expect(answer.body.last == "data: [DONE]") }
+                #expect(try capturedEntries(answer) == expectedEntries(expected, family: family),
+                        "\(name), stream=\(stream): captured ordering or trailing-stop boundary changed")
+            }
+        }
+    }
+
+    private func expectedEntries(_ tokens: [Int], family: ParityFamily) throws -> Data {
+        let entries: [[String: Any]] = tokens.map { token in
+            let text = family.tokenizer.decode(tokenIds: [token], skipSpecialTokens: false)
             return ["token": text, "logprob": -0.25, "bytes": Array(text.utf8), "top_logprobs": [
                 ["token": text, "logprob": -0.25, "bytes": Array(text.utf8)],
                 ["token": "", "logprob": -2.0, "bytes": [UInt8]()]]]
         }
-        let encode: ([[String: Any]]) throws -> Data = {
-            try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys])
-        }
-        for answer in try await parityCapturedStream(family) {
-            #expect(answer.status == 200)
-            #expect(answer.body.last == "data: [DONE]")
-            var entries: [[String: Any]] = []
-            for frame in answer.body where frame.hasPrefix("data: ") && frame != "data: [DONE]" {
-                let object = try #require(JSONSerialization.jsonObject(
-                    with: Data(frame.dropFirst(6).utf8)) as? [String: Any])
-                for choice in object["choices"] as? [[String: Any]] ?? [] {
-                    if let logprobs = choice["logprobs"] as? [String: Any] {
-                        entries += try #require(logprobs["content"] as? [[String: Any]])
-                    }
+        return try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
+    }
+
+    private func capturedEntries(_ answer: ParityAnswer) throws -> Data {
+        var entries: [[String: Any]] = []
+        for frame in answer.body where frame != "data: [DONE]" {
+            let text = frame.hasPrefix("data: ") ? String(frame.dropFirst(6)) : frame
+            let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            for choice in object["choices"] as? [[String: Any]] ?? [] {
+                if let logprobs = choice["logprobs"] as? [String: Any] {
+                    entries += try #require(logprobs["content"] as? [[String: Any]])
                 }
             }
-            #expect(try encode(entries) == encode(expected), "\(name): capture lost or reordered values")
         }
+        return try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
     }
 
     /// The comparable fixture above explicitly supplies captured values. A

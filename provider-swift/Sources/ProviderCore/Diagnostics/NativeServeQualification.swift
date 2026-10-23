@@ -29,7 +29,8 @@ public enum NativeServeQualification {
         guard mkdir(stateDirectory.path, 0o700) == 0 else { throw NativeServeQualificationInputs.Failure.privateDirectoryRequired }
         let paths = ["DARKBLOOM_PID_FILE": "provider.pid", "DARKBLOOM_STATE_FILE": "provider-state.json",
                      "DARKBLOOM_LOADED_MODELS_FILE": "loaded-models.json", "DARKBLOOM_WATCHDOG_STATE": "watchdog.json",
-                     "DARKBLOOM_KV_BACKEND_GUARD": "kv-guard.json"]
+                     "DARKBLOOM_KV_BACKEND_GUARD": "kv-guard.json",
+                     "DARKBLOOM_VERIFIED_WEIGHTS_FILE": "verified-weights.json"]
         for (key, name) in paths { setenv(key, stateDirectory.appendingPathComponent(name).path, 1) }
         // No SSD keychain/maintenance or update installation belongs to this
         // diagnostic. These are normal operator settings, not privacy claims.

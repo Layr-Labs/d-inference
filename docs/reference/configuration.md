@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -368,6 +368,7 @@ provider or model command is running. Code:
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
+| `DARKBLOOM_VERIFIED_WEIGHTS_FILE` | file path | `~/.darkbloom/verified-weights.json` | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` | Owner-only records of fully verified managed-load weight hashes, each bound to every file's device, inode, size and modification and status-change times; startup registration reuses a matching record instead of re-hashing. |
 | `DARKBLOOM_PID_FILE` | file path | `~/.darkbloom/provider.pid` | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` | Daemon PID file. |
 | `DARKBLOOM_WATCHDOG_STATE` | file path | `~/.darkbloom/watchdog-state.json` | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` | Watchdog arm/disarm state. |
 | `DARKBLOOM_KV_BACKEND_GUARD` | absolute file path | `~/.darkbloom/kv-backend-guard.json` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` | Crash-loop guard record; on the LaunchAgent allow-list so the watchdog and daemon share one file. |
@@ -580,8 +581,13 @@ reading and scheduling, not the verified
 bytes or model arithmetic. Each file is first read through a page-aligned
 `F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
 does not pull a second copy of loaded weights through the file cache; the
-readers selected below remain its fallbacks. Discovery remains hash-free. Fresh pre/post-load
-verification and delayed identity publication retain their existing rules.
+readers selected below remain its fallbacks. `F_NOCACHE` does not evict pages
+that were cached before the read (a download's own writes, an earlier read), so
+that reader then drops the file's cached pages (`PageCache.drop`); a managed GLM
+load does the same for its shards once loaded. Discovery remains hash-free. Fresh pre/post-load
+verification and delayed identity publication retain their existing rules, except
+that a managed GLM load publishes its own per-file SHA-256 verification instead of
+bracketing passes ([inference](../architecture/inference.md)).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

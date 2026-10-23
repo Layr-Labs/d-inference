@@ -1612,6 +1612,7 @@ manual use.
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
+| Verified weight hashes | `~/.darkbloom/verified-weights.json` (`DARKBLOOM_VERIFIED_WEIGHTS_FILE`), `0600`; managed GLM load hashes bound to file identities, reused for startup registration | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |

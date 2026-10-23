@@ -124,6 +124,7 @@ extension ProviderLoop {
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
         isLoadingAny = true
+        transitionGenerations.begin(.modelLoading)
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity.finish() }
         defer { isLoadingAny = false; releaseLoadGateWaiters() }

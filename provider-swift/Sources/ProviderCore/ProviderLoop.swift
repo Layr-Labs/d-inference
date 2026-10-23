@@ -340,7 +340,8 @@ public actor ProviderLoop {
     internal var autopilotTask: Task<Void, Never>?
     internal var autopilotMutationStarted = false
     internal var autopilotGeneration: UInt64 = 0
-    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistory: [String: (command: ModelAutopilotCommand, status: ModelAutopilotStatus.State,
+        error: String?, detail: String?)] = [:]
     internal var autopilotHistoryOrder: [String] = []
     internal var autopilotLastCommandId: String?
     internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
@@ -352,6 +353,55 @@ public actor ProviderLoop {
     /// Explicit desired-build retirements, never inferred from missing catalog
     /// entries. Release cleanup is distinct from network placement authority.
     internal var autopilotSupersededModels: Set<String> = []
+    /// Inventory targets of succeeded operations that keep serving after the
+    /// lease (`ProviderLoop+AutopilotPlacement`). In memory only.
+    internal var autopilotAdoptedModelIDs: Set<String> = []
+    /// Placement holds by model. An expired hold stays as the idle anchor
+    /// until the placement ends; only an unexpired hold protects a slot.
+    internal var autopilotHolds: [String: AutopilotHold] = [:]
+    /// Download settings read from the config file by the policy refresh;
+    /// nil until they first differ from the start configuration.
+    internal var autopilotDownloadSettingsOverride: AutopilotDownloadSettings?
+    /// The last `download_storage` report and when it was measured.
+    internal var autopilotDownloadStorage: ModelAutopilotDownloadStorage?
+    internal var autopilotDownloadStorageAt: ContinuousClock.Instant?
+    /// Downloads on the operator's behalf (`ProviderLoop+AutopilotDownload`):
+    /// a prefetch coordinator whose verified builds join the Autopilot set
+    /// rather than the advertised set. Created on the first request.
+    internal var autopilotDownloadCoordinator: ModelPrefetchCoordinator?
+    /// Builds added to the Autopilot inventory since the last registration;
+    /// the coordinator learns inventory metadata only from `register`.
+    internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// Last check that cached Autopilot builds are still on disk.
+    internal var autopilotCacheSweepAt: ContinuousClock.Instant?
+    /// Background verification of the cached builds the start path left
+    /// unhashed (`startAutopilotCandidateVerification`); cancelled at shutdown.
+    internal var autopilotCandidateVerification: Task<Void, Never>?
+    internal var autopilotCandidateVerificationDone = false
+    /// Replaces the registered-connection check and the planned reconnect of
+    /// `refreshAutopilotInventoryRegistration` in tests; nil in production.
+    internal var autopilotRegistrationSeamForTesting:
+        (registered: @Sendable () async -> Bool, reconnect: @Sendable () -> Bool)?
+    /// Unix milliseconds at which each reported busy reason was first
+    /// continuously observed.
+    internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()
+    internal var transitionWatchdog = TransitionWatchdog()
+    /// The operation the watchdog cancelled. It fails as `transition_stalled`
+    /// even when an unload or load it was awaiting completes afterwards: it
+    /// then records no lease or placement, and completed steps stay done.
+    internal var autopilotStalledCommandId: String?
+    /// The watchdog asked the startup preload to stop before its next model.
+    internal var startupPreloadStopRequested = false
+    /// The startup preload candidate in progress and when it began. The
+    /// watchdog ages it from that instant even though supervision starts
+    /// only after the registration gate.
+    internal var startupPreloadCandidate: (model: String, startedAt: ContinuousClock.Instant)?
+    /// Advances on every reslice-gate acquisition, so the transition watchdog
+    /// ages each acquisition separately.
+    internal var resliceGateGeneration: UInt64 = 0
+    /// Stamped when a load, startup candidate, advertisement or model switch
+    /// begins, so a retry within one capacity tick is a new occurrence.
+    internal var transitionGenerations = TransitionGenerations()
 
 
     /// The running local OpenAI HTTP server task (unified mode), if any.

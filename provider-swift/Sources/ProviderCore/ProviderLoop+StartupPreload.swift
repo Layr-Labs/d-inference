@@ -240,7 +240,7 @@ extension ProviderLoop {
             onSelfTestFailed: onSelfTestFailed,
             log: { line in log.info("\(line)") },
             currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
-            canLoadMore: { await me.startupPreloadHasFreeSlot() },
+            canLoadMore: { await me.startupPreloadCanLoadMore() },
             onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) },
             onInsufficientMemory: { log.warning(.startupPreloadInsufficientMemory) },
             reclaimBeforeSkip: { await me.releaseReclaimableMemoryForLoad() }
@@ -303,17 +303,23 @@ extension ProviderLoop {
             await updateAggregateCapacity()
         }
         startupPreloadTask = nil
+        startupPreloadStopRequested = false
+        startupPreloadCandidate = nil
         writeDaemonState()
     }
 
-    private func startupPreloadHasFreeSlot() -> Bool {
-        modelSlots.count < maxModelSlots
+    /// A stalled driver stops before its next candidate; its current step is
+    /// never interrupted (`superviseTransitions`).
+    private func startupPreloadCanLoadMore() -> Bool {
+        !startupPreloadStopRequested && modelSlots.count < maxModelSlots
     }
 
     private func markStartupPreloadReached(_ modelID: String) {
         if let index = startupPreloadPendingModels.firstIndex(of: modelID), index > 0 {
             startupPreloadPendingModels.removeFirst(index)
         }
+        startupPreloadCandidate = (modelID, .now)
+        transitionGenerations.begin(.startupPreload, subject: modelID)
         writeDaemonState()
     }
 

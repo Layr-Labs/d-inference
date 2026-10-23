@@ -292,6 +292,11 @@ selects the same names from the version that `/v1/releases/latest` returns
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON.
 
+Right after selecting the identity, the installer refuses a **new** install on
+macOS 26 or earlier (`require_supported_macos`) before downloading the bundle, so a
+release never reaches a Mac that can't become a new provider. An existing install
+of the same identity can still be updated or repaired.
+
 These values are the same for both builds:
 
 - The bundle identifier and code-signing identifier `io.darkbloom.provider`,

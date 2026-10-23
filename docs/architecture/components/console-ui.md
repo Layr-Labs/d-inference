@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-14
 
 The retained console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. Its source, tests and hosting configuration remain here; new development belongs to the platform repository. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. The coordinator routes are specified in the [platform API contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md). The internal operator dashboard is a [separate platform app](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/components/admin-ui.md).
 
@@ -25,7 +25,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 |---|---|---|---|
 | `/` | `page.tsx` | Server redirect to `/providers` | Public |
 | `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
-| `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
+| `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval: provider linking for `darkbloom login`, or with `?purpose=desktop_account` Darkbloom Desktop sign-in. `POST /api/device/approve` with `Authorization: Bearer <Privy token>` and the code's `purpose` (`provider` or `desktop_account`), which the coordinator checks against the code | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
 | `/billing` | `billing/page.tsx` → `billing/BillingContent.tsx` (`next/dynamic`, `ssr: false`) | Balance and usage (`fetchBalance`, `fetchUsage`), Buy Credits (`createStripeCheckout`), invite redeem (`console-ui/src/lib/api/invite.ts`), Stripe Connect payouts (`components/payouts/useStripePayouts.ts`) | API key for balance/usage; Privy session for Stripe routes |
@@ -96,7 +96,7 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/attestation` | GET | `GET /v1/providers/attestation` | none | `?summary=1` → `{count, last_verified}` of `trust_level === "hardware"` providers, `cacheControl(15, 60)`; full mode projects to the whitelisted `AttestationProvider` fields (`projectProvider`), uncached |
 | `/api/auth/keys` | POST, DELETE | `POST`/`DELETE /v1/auth/keys` | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key; DELETE drops a spare mint that lost a race with a user-created key |
 | `/api/chat` | POST | `POST /v1/chat/completions` | API key → Bearer | `runtime = "nodejs"`, `dynamic = "force-dynamic"`; forwards `X-Darkbloom-Route`; a body with `Content-Type: application/eigeninference-sealed+json` is forwarded byte-verbatim; streams the upstream body; copies `x-provider-attested`, `x-provider-trust-level`, `x-provider-secure-enclave`, `x-provider-mda-verified`, `x-provider-chip`, `x-provider-model`, `x-request-id`, `x-attestation-se-public-key`, `x-eigen-sealed`, `x-eigen-sealed-kid`; SSE gets `Cache-Control: no-cache, no-transform` |
-| `/api/device/approve` | POST | `POST /v1/device/approve` | Privy (required) | `passthrough` |
+| `/api/device/approve` | POST | `POST /v1/device/approve` | Privy (required) | `passthrough` (the body, including `purpose`, is forwarded unchanged) |
 | `/api/encryption-key` | GET | `GET /v1/encryption-key` | none | Upstream 503 → `503 {"error":"encryption_unavailable"}`; success gets `Cache-Control: public, max-age=300` |
 | `/api/health` | GET | `GET /health` | none | — |
 | `/api/invite/redeem` | POST | `POST /v1/invite/redeem` | API key → Bearer | Body `{code}` |

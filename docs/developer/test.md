@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -170,6 +170,10 @@ unpatched pinned Swift-Jinja. It must match every official-template golden byte
 for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
 only the shipped template is recognized and passes the load-time render check.
+`returnedAssistantReasoningRendersLikeReasoningContent` and
+`openRouterReasoningContentReturnRequestsAreServed` push OpenRouter's
+returned-reasoning tool turn through the coordinator and local HTTP paths to the
+rendered prompt, with each of its reasoning spellings and controls.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.

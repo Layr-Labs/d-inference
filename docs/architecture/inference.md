@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -871,6 +871,11 @@ string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
+It renders reasoning that OpenRouter returns on earlier assistant turns
+(`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
+(`GLM5NextPromptPolicy.RawControls`, `returnedReasoning`), and serves `strict`
+tools by validating each `auto` call against its schema before exposure
+(`ToolConstraintValidation.validate`), not by constraining decoding.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it

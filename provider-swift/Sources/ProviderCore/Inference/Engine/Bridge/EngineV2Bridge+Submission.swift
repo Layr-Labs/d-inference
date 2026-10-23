@@ -962,27 +962,33 @@ extension EngineV2Bridge {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
     }
 
-    /// A native-tracked engine refuses logprob capture and token constraints
-    /// at submit (`EngineV2.validateRequest`) with an SDK-internal error this
-    /// bridge could report only as a generation failure: an untyped 500 that
-    /// strikes the coordinator's inference-error breaker for every request of
-    /// the model's shape. Refuse those requests first, as a typed client error.
+    /// A native-tracked engine refuses token constraints, and logprob rows
+    /// unless its contract qualifies capture (`EngineV2.acceptsLogprobRows`:
+    /// GLM5-Next, not MiMo), at submit (`EngineV2.validateRequest`) with an
+    /// SDK-internal error this bridge could report only as a generation
+    /// failure: an untyped 500 that strikes the coordinator's inference-error
+    /// breaker for every request of the model's shape. Refuse those requests
+    /// first, as a typed client error.
     func nativeOutputControlRefusal(
         request: ChatCompletionRequest, tokenConstraint: (any CBv2TokenConstraint)?
     ) -> String? {
-        Self.nativeOutputControlRefusal(
-            nativeTracked: (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil,
+        let engine = ownedEngine as? EngineV2
+        return Self.nativeOutputControlRefusal(
+            nativeTracked: engine?.nativeShutdownExecutionContractID != nil,
+            capturesLogprobs: engine?.acceptsLogprobRows ?? true,
             topLogprobs: EngineV2Translation.topLogprobs(
                 logprobs: request.logprobs, topLogprobs: request.top_logprobs),
             constrained: tokenConstraint != nil)
     }
 
     static func nativeOutputControlRefusal(
-        nativeTracked: Bool, topLogprobs: Int, constrained: Bool
+        nativeTracked: Bool, capturesLogprobs: Bool, topLogprobs: Int, constrained: Bool
     ) -> String? {
         guard nativeTracked else { return nil }
         let prefix = EngineV2Translation.unsupportedOutputControlPrefix
-        if topLogprobs != 0 { return "\(prefix): this model's engine does not return logprobs" }
+        if topLogprobs != 0 && !capturesLogprobs {
+            return "\(prefix): this model's engine does not return logprobs"
+        }
         if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
         return nil
     }

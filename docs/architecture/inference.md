@@ -1708,14 +1708,24 @@ sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
 A native-tracked engine (`EngineV2.nativeShutdownExecutionContractID` set: the
-protected GLM5-Next and MiMo V2.6 engines) refuses a `topLogprobs` row or a
-token constraint at submit with an SDK-internal error, which the bridge could
-report only as a 500 `generation_failure`; that status strikes the
-coordinator's inference-error breaker. `EngineV2Bridge.nativeOutputControlRefusal`
+protected GLM5-Next and MiMo V2.6 engines) refuses a token constraint at
+submit, and a `topLogprobs` row unless its contract qualifies capture
+(`EngineV2.acceptsLogprobRows`; the GLM5-Next page-bank profiles do, MiMo
+does not). The engine's SDK-internal error could reach the coordinator only
+as a 500 `generation_failure`, which strikes its inference-error breaker, so
+`EngineV2Bridge.nativeOutputControlRefusal`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`)
 refuses such a request first, before any reservation, as
 `MultiModelBatchSchedulerEngineError.unsupportedOutputControl`: 400
 `invalid_request` with reason `client_error` on both submit paths.
+
+A GLM5-Next logprob row samples through the engine's ordinary sampler, like a
+logprob row on any CBv2 engine: it never drafts or verifies
+(`EngineLoopV2.mtpBasicEligible`), and its gather rides the step's retained
+native work. GLM has no request-scoped target-only fallback, so while such a
+row decodes beside other rows the whole step decodes target-only, as it does
+beside a GLM media row; output stays exact and the other rows speculate again
+once it finishes.
 
 ### Collected and streaming reasoning state
 

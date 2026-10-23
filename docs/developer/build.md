@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -327,6 +327,9 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 
+- [Prepare a publisher-precision GPT-OSS checkpoint](gptoss-checkpoint.md): the
+  converter uses Python's standard library and needs no native build; large
+  checkpoint reads and writes still require a separate resource window.
 - [Provider and SDK tests](test.md)
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)

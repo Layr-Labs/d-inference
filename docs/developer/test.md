@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1090,8 +1090,25 @@ the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request. Run them only with
 exclusive GPU access.
 
+## GPT-OSS checkpoint and replay tools
+
+Run the bounded CPU fixtures without MLX, real checkpoint payloads or HTTP:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
+```
+
+The tests cover byte-exact expert row mapping, packed nibble order, BF16
+preservation, inventory/offset validation, independent output readback, source
+hash refusals, sampled affine reconstruction and immutable input files. Replay
+tests reject ineffective cache hits, incomplete streams, early fixed-work stops
+and missing paged/cache-ready telemetry. They do not execute GPU kernels or
+qualify a full model. Follow [artifact preparation](gptoss-checkpoint.md) for the
+separate source verification, full conversion and matched serving experiments.
+
 ## Related
 
+- [GPT-OSS artifact preparation and replay](gptoss-checkpoint.md)
 - [Build](build.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)

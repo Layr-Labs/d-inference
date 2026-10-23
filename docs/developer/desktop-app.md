@@ -326,6 +326,19 @@ for changes to `scripts/install.sh`, which the app bundles. Manual workflow
 dispatch also produces unsigned macOS review artifacts. It does not publish a
 release or establish attestation qualification.
 
+## Review Storybook
+
+`desktop-app/storybook` renders the real renderer components with fixtures for review: Before/After
+stories for each desktop audit fix, step-by-step walkthroughs (onboarding, status checks, model
+loading, Autopilot), the full app window with its sidebar at every page, and the install flow.
+After is the live `desktop-app/src`; Before is a frozen snapshot of the audit's base
+(`storybook/src/before`). The native bridge is mocked per version, so nothing contacts a runtime,
+account or production endpoint.
+
+```bash
+cd desktop-app && node scripts/assets.mjs && cd storybook && npm ci && npm run storybook
+```
+
 ## Hardware load
 
 `useHardwareLoad()` (`desktop-app/src/renderer/hardware/useHardwareLoad.ts`)

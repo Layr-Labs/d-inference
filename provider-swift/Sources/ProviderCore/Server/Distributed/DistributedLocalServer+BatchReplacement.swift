@@ -12,6 +12,30 @@ extension DistributedLocalServer {
         let demandCount = min(DistributedRequestQueue.maximumLanes, waiting.count + target.pins.count)
         guard demandCount > target.capacity else { return }
         let now = ContinuousClock.now
+        if let ready = readyBatchReplacement {
+            readyBatchReplacement = nil
+            if ready.isUsable(generationID: target.id, capacity: target.capacity, now: now) {
+                replacementTask = Task {
+                    defer { replacementTask = nil }
+                    guard generation === target, phase == .serving, teardownTask == nil,
+                          ready.isUsable(generationID: target.id, capacity: target.capacity, now: .now) else { return }
+                    // A disconnect may win before this task runs. Retain only
+                    // until the original expiry; idle traffic never reloads.
+                    guard !waiting.isEmpty, waiting.count + target.pins.count > target.capacity else {
+                        if ready.isUsable(generationID: target.id, capacity: target.capacity, now: .now) {
+                            readyBatchReplacement = ready
+                        }
+                        return
+                    }
+                    clusterObservabilityLog(.info, "cluster.batch_replan reuse_ready", [
+                        "generation": target.id.uuidString.lowercased(),
+                        "requested_lanes": String(ready.intent.requestedCapacity),
+                    ])
+                    await replaceForBatchDemand(target, intent: ready.intent)
+                }
+                return
+            }
+        }
         guard demandCount > replacementAttemptedDemand || replacementRetryAt.map({ now >= $0 }) == true else { return }
         // A cooldown or temporarily unavailable plan must not suppress stable
         // sustained demand forever. Retry at a bounded cadence, not every poll.
@@ -30,8 +54,18 @@ extension DistributedLocalServer {
                 guard let proposed = try await replacementPlanner(demand) else { return }
                 try Task.checkCancellation()
                 guard generation === target, phase == .serving, teardownTask == nil,
-                      !waiting.isEmpty, proposed.requestedCapacity > target.capacity,
+                      proposed.requestedCapacity > target.capacity,
                       proposed.requestedCapacity <= DistributedRequestQueue.maximumLanes else { return }
+                guard !waiting.isEmpty, waiting.count + target.pins.count > target.capacity else {
+                    readyBatchReplacement = .init(generationID: target.id,
+                        expiresAt: ContinuousClock.now.advanced(by: min(.seconds(30), replacementRetryDelay)),
+                        intent: proposed)
+                    clusterObservabilityLog(.info, "cluster.batch_replan retain_ready", [
+                        "generation": target.id.uuidString.lowercased(),
+                        "requested_lanes": String(proposed.requestedCapacity),
+                    ])
+                    return
+                }
                 intent = proposed
             } catch { return } // Planning failure leaves the current owner serving.
             await replaceForBatchDemand(target, intent: intent)
@@ -40,6 +74,7 @@ extension DistributedLocalServer {
 
     private func replaceForBatchDemand(_ previous: DistributedLocalServerGeneration,
                                        intent: DistributedLocalBatchReplacement) async {
+        readyBatchReplacement = nil
         let previousBinding = DistributedLocalSessionBinding(previous.session)
         let previousCapacity = previous.capacity
         var restored = false

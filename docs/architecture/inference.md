@@ -48,7 +48,10 @@ Qwen dense/routed experts, Bonsai, Nemotron Lightning, Gemma, GPT-OSS or the
 MiMo text plain-pipeline owner. It uses the full
 listener request envelope because acquisition precedes tokenization; raw body
 size never reduces the memory charge. `ClusterPlacementBatchScope` prices
-independent state on both ranks for widths 2, 4 and 8. Existing per-request
+independent state on both ranks, trying widths 8, 4 and 2 in that order once
+real concurrent pressure exists. Each width retains the full listener envelope;
+the largest separately priced fit avoids repeated reloads as a burst grows.
+Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
 automatic policy. Explicit diagnostic mode or lane settings retain their choice.
@@ -65,7 +68,15 @@ changes singleton layout/request-scope results or discounts LOAD/transient
 reserves. A changed or derived chunk cannot reuse it. Native arithmetic,
 paged-path qualification and useful throughput remain independent gates.
 
-Planning changes no setup. The HTTP host first drains acquired work and proves
+Planning changes no setup. If the queue empties before a valid proposal returns,
+`DistributedLocalServer` keeps that metadata-only intent eligible for at most
+30 seconds on the same serving generation. The next real queued pressure may
+consume it once, before the planner cooldown; idle requests never trigger its
+factory. Expired, stale-generation or unhelpful proposals are discarded before
+use, and teardown clears them. Cancellation and every queue ticket retain their
+original behavior. No native owner or HTTP response is retained by the proposal.
+
+The HTTP host first drains acquired work and proves
 both native owners and its bridge released. The deferred factory resamples
 memory, adopts compatible immutable setups over the authenticated pair control
 link, waits for the follower's exact launched setup digest, and prepares a fresh

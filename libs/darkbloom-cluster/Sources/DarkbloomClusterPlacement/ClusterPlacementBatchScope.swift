@@ -41,13 +41,13 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
         .qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard, .nemotronH, .gemma4LayerStage,
     ]
 
-    /// A singleton keeps its existing mode choice. Larger demand is rounded
-    /// up to a bounded native width; every offered width is still separately
-    /// priced against both ranks after the old owner releases its memory.
+    /// A singleton keeps its existing mode choice. Real concurrent pressure
+    /// considers the largest bounded native width first to avoid repeated
+    /// reloads as a burst grows. Every offered width carries the full listener
+    /// profile and is separately priced again after both old owners release.
     public static func candidateWidths(waitingRequests: Int) -> [Int] {
         guard waitingRequests > 1 else { return [] }
-        let ceiling = waitingRequests <= 2 ? 2 : waitingRequests <= 4 ? 4 : 8
-        return [8, 4, 2].filter { $0 <= ceiling }
+        return [8, 4, 2]
     }
 
     /// A native workspace quote may not be replayed after chunk derivation or

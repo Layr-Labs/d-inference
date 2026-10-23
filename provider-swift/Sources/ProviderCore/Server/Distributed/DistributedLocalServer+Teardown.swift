@@ -18,6 +18,7 @@ extension DistributedLocalServer {
         if phase != .quarantined { phase = drainUntil == nil ? .stopping : .draining }
         startupTask?.cancel()
         replacementTask?.cancel()
+        readyBatchReplacement = nil
         if drainUntil == nil {
             target.responses.beginDeliveryGrace()
             Task { _ = await target.session.stop(until: DispatchTime.now().uptimeNanoseconds) }

@@ -44,3 +44,18 @@ public struct DistributedLocalBatchReplacement: Sendable {
         makeSession = makeTestSession; restorePreviousSession = restoreTestSession
     }
 }
+
+/// A completed read-only proposal owns no worker or HTTP request. It may be
+/// consumed once by renewed pressure on the same serving generation, before
+/// expiry; its factory still revalidates the exact width after owner release.
+struct DistributedLocalReadyBatchReplacement: Sendable {
+    let generationID: UUID
+    let expiresAt: ContinuousClock.Instant
+    let intent: DistributedLocalBatchReplacement
+
+    func isUsable(generationID: UUID, capacity: Int, now: ContinuousClock.Instant) -> Bool {
+        self.generationID == generationID && now < expiresAt
+            && intent.requestedCapacity > capacity
+            && intent.requestedCapacity <= DistributedRequestQueue.maximumLanes
+    }
+}

@@ -13,10 +13,13 @@ understand why a box refuses a load that "should fit"; for the operator view
 Automatic local cluster batching prices each lane's full registered request
 state on each rank, verifies that quote covers the layout's complete layer
 state, and retains ordinary shared work, prefill transients, LOAD and headroom
-charges. It tries bounded widths 2, 4 and 8, resamples both Macs after old-owner
-release, and requires the new placement to fit current admissible memory and
+charges. After real concurrent pressure it tries bounded widths 8, 4 and 2 in
+that order, resamples both Macs after old-owner release, and requires the new placement to fit current admissible memory and
 GPU working set. It never credits old weights back into a stale free-memory
-snapshot. A family without a positive conservative batch quote is excluded.
+snapshot. A retained read-only proposal cannot discount memory or switch to a
+smaller width after promising a larger one: failure of that exact fresh quote
+uses the existing rollback path. A family without a positive conservative batch
+quote is excluded.
 See `ClusterPlacementBatchScope` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchScope.swift`
 and [automatic local cluster batching](inference.md#automatic-local-cluster-batching).

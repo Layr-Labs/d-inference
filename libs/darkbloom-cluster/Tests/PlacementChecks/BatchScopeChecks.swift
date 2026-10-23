@@ -44,7 +44,7 @@ func checkBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks) t
         try encoder.encode(ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: serial))
             == encoder.encode(before))
     for demand in [-1, 0, 1, 2, 3, 4, 5, 8, Int.max] {
-        let expected = demand <= 1 ? [] : demand == 2 ? [2] : demand <= 4 ? [4, 2] : [8, 4, 2]
+        let expected = demand <= 1 ? [] : [8, 4, 2]
         checks.require("batch demand \(demand): bounded native candidates", ClusterPlacementBatchScope.candidateWidths(waitingRequests: demand) == expected)
     }
     for width in [Int.min, 0, 1, 3, 7, 9, Int.max] {

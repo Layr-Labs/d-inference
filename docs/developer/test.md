@@ -1432,7 +1432,12 @@ exercise refusal logic and do not rerun or replace the model qualification.
 
 ### Pending HTTP requests across native mode replacement
 
-`DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. Run it with `DistributedLocalServerTests` and `DistributedRequestQueueTests`; none loads model payloads. Native two-Mac mode switching and throughput require separate hardware evidence.
+`DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
+also reproduces a short burst draining before its proposal returns: the next
+real burst consumes the retained intent without a second planning call. Tests
+cover expiry and fresh planning, no reload with an empty queue, disconnected
+pending work, stop during planning, teardown of a ready intent, generation
+binding and unchanged cleanup-before-load. Run it with `DistributedLocalServerTests` and `DistributedRequestQueueTests`; none loads model payloads. Native two-Mac mode switching and throughput require separate hardware evidence.
 
 ### GPT-OSS registered projection arithmetic
 

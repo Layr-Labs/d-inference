@@ -25,6 +25,7 @@ public actor DistributedLocalServer {
     var monitorTask: Task<Void, Never>?
     var teardownTask: Task<Void, Never>?
     var replacementTask: Task<Void, Never>?
+    var readyBatchReplacement: DistributedLocalReadyBatchReplacement?
     var replacementAttemptedDemand = 0
     var replacementRetryAt: ContinuousClock.Instant?
     let replacementRetryDelay: Duration

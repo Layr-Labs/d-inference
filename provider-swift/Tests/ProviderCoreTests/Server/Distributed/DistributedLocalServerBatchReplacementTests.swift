@@ -265,3 +265,145 @@ private func pending(_ host: DistributedLocalServer, response: DistributedHTTPRe
     await admitted.releaseToken.fire(); response.finish()
     #expect(await host.stop(until: localHostDeadline()).cleanupComplete)
 }
+
+@Test func distributedBatchReplacementRetainsLateProposalForNextRealPressure() async throws {
+    let previous = LocalHostTestSession(), next = LocalHostTestSession(), planned = LocalHostLatch()
+    let trace = BatchReplacementTrace(); next.concurrentRequests = 8
+    let host = batchHost(previous) { demand in
+        await trace.plan(demand); await planned.wait()
+        return .init(requestedCapacity: 8, makeTestSession: {
+            #expect(previous.status == .released)
+            await trace.prepare(); return next
+        })
+    }
+    try await host.start()
+    let port = try #require(await host.status.boundPort)
+    let first = try await host.acquire(previous.model.publicModelID)
+    let response = try await host.responses.begin()
+    let queued = pending(host, response: response, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await trace.demands.count == 1 })
+    await first.releaseToken.fire()
+    let last = try await queued.value // The first burst no longer has waiters.
+    planned.complete()
+    #expect(try await localHostEventually { await host.replacementTask == nil })
+    #expect(await host.readyBatchReplacement != nil)
+    #expect(await host.status.phase == .serving && previous.status == .ready)
+    #expect(await trace.prepares == 0 && next.startCount == 0)
+
+    // Cancellation without a live queue must not consume the metadata proposal.
+    let cancelledResponse = try await host.responses.begin()
+    cancelledResponse.disconnect()
+    let cancelled = pending(host, response: cancelledResponse, model: previous.model.publicModelID)
+    do { _ = try await cancelled.value; Issue.record("Disconnected request acquired a lane") } catch {}
+    cancelledResponse.finish()
+    #expect(await trace.prepares == 0 && next.startCount == 0)
+
+    let nextResponse = try await host.responses.begin()
+    let renewed = pending(host, response: nextResponse, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await host.status.phase == .reconfiguring })
+    #expect(await trace.demands.count == 1) // Reuse without a second slow planner call.
+    #expect(await host.readyBatchReplacement == nil && next.startCount == 0)
+    await last.releaseToken.fire(); response.finish()
+    let admitted = try await renewed.value
+    #expect(await host.generation.capacity == 8 && next.startCount == 1)
+    #expect(await host.status.boundPort == port)
+    #expect(await trace.prepares == 1)
+    await admitted.releaseToken.fire(); nextResponse.finish()
+    #expect(await host.stop(until: localHostDeadline()).cleanupComplete)
+}
+
+@Test func distributedBatchReplacementExpiredReadyProposalRequiresFreshPlan() async throws {
+    let previous = LocalHostTestSession(), stale = LocalHostTestSession(), fresh = LocalHostTestSession()
+    let planned = LocalHostLatch(), trace = BatchReplacementTrace()
+    stale.concurrentRequests = 8; fresh.concurrentRequests = 4
+    let host = batchHost(previous, retryDelay: .milliseconds(20)) { demand in
+        await trace.plan(demand)
+        if await trace.demands.count == 1 {
+            await planned.wait()
+            return .init(requestedCapacity: 8, makeTestSession: { stale })
+        }
+        return .init(requestedCapacity: 4, makeTestSession: { fresh })
+    }
+    try await host.start()
+    let first = try await host.acquire(previous.model.publicModelID)
+    let response = try await host.responses.begin()
+    let queued = pending(host, response: response, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await trace.demands.count == 1 })
+    await first.releaseToken.fire()
+    let last = try await queued.value; planned.complete()
+    #expect(try await localHostEventually { await host.readyBatchReplacement != nil })
+    try await Task.sleep(for: .milliseconds(35))
+    #expect(stale.startCount == 0 && fresh.startCount == 0 && previous.status == .ready)
+    let nextResponse = try await host.responses.begin()
+    let renewed = pending(host, response: nextResponse, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await host.status.phase == .reconfiguring })
+    #expect(await trace.demands.count == 2)
+    await last.releaseToken.fire(); response.finish()
+    let admitted = try await renewed.value
+    #expect(stale.startCount == 0 && fresh.startCount == 1)
+    #expect(await host.generation.capacity == 4)
+    await admitted.releaseToken.fire(); nextResponse.finish()
+    #expect(await host.stop(until: localHostDeadline()).cleanupComplete)
+}
+
+@Test func distributedBatchReplacementStopDiscardsReadyMetadataWithoutPreparingOwner() async throws {
+    let previous = LocalHostTestSession(), next = LocalHostTestSession(), planned = LocalHostLatch()
+    let trace = BatchReplacementTrace(); next.concurrentRequests = 8
+    let host = batchHost(previous) { demand in
+        await trace.plan(demand); await planned.wait()
+        return .init(requestedCapacity: 8, makeTestSession: { await trace.prepare(); return next })
+    }
+    try await host.start()
+    let first = try await host.acquire(previous.model.publicModelID)
+    let response = try await host.responses.begin()
+    let queued = pending(host, response: response, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await trace.demands.count == 1 })
+    await first.releaseToken.fire()
+    let last = try await queued.value; planned.complete()
+    #expect(try await localHostEventually { await host.readyBatchReplacement != nil })
+    await last.releaseToken.fire(); response.finish()
+    #expect(await host.stop(until: localHostDeadline()).cleanupComplete)
+    #expect(await host.readyBatchReplacement == nil)
+    #expect(await trace.prepares == 0 && next.startCount == 0)
+}
+
+@Test func distributedBatchReplacementStopDuringReadOnlyPlanningCannotRetainProposal() async throws {
+    let previous = LocalHostTestSession(), next = LocalHostTestSession(), planned = LocalHostLatch()
+    let trace = BatchReplacementTrace(); next.concurrentRequests = 8
+    let host = batchHost(previous) { demand in
+        await trace.plan(demand); await planned.wait()
+        return .init(requestedCapacity: 8, makeTestSession: { await trace.prepare(); return next })
+    }
+    try await host.start()
+    let first = try await host.acquire(previous.model.publicModelID)
+    let response = try await host.responses.begin()
+    let queued = pending(host, response: response, model: previous.model.publicModelID)
+    #expect(try await localHostEventually { await trace.demands.count == 1 })
+    let stopping = await host.stop(until: localHostDeadline(25))
+    #expect(!stopping.cleanupComplete)
+    planned.complete(); await first.releaseToken.fire()
+    do { _ = try await queued.value; Issue.record("Stopped listener admitted pending work") } catch {}
+    response.finish()
+    #expect(try await localHostEventually { await host.status.cleanupComplete })
+    #expect(await host.readyBatchReplacement == nil)
+    #expect(await trace.prepares == 0 && next.startCount == 0)
+}
+
+@Test func distributedReadyBatchReplacementRejectsOtherGenerationExpiryAndUnhelpfulWidths() {
+    let generation = UUID(), now = ContinuousClock.now, next = LocalHostTestSession()
+    for width in [0, 1, 2, 4, 8, 9] {
+        let ready = DistributedLocalReadyBatchReplacement(generationID: generation,
+            expiresAt: now.advanced(by: .seconds(30)),
+            intent: .init(requestedCapacity: width, makeTestSession: { next }))
+        #expect(ready.isUsable(generationID: generation, capacity: 1, now: now) == [2, 4, 8].contains(width))
+        #expect(!ready.isUsable(generationID: UUID(), capacity: 1, now: now))
+        #expect(!ready.isUsable(generationID: generation, capacity: 8, now: now))
+        #expect(!ready.isUsable(generationID: generation, capacity: 1, now: now.advanced(by: .seconds(30))))
+        // The reuse task calls this same predicate again immediately before
+        // consumption, so scheduling past expiry cannot spend a stale intent.
+        #expect(ready.isUsable(generationID: generation, capacity: 1,
+            now: now.advanced(by: .seconds(30) - .nanoseconds(1))) == [2, 4, 8].contains(width))
+        #expect(!ready.isUsable(generationID: generation, capacity: 1,
+            now: now.advanced(by: .seconds(30) + .nanoseconds(1))))
+    }
+}

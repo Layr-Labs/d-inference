@@ -243,11 +243,23 @@ struct NemotronSuperManagedSlotTests {
         // An undecodable image and unhonored controls are refused.
         let image = ["role": "user", "content": [["type": "image_url", "image_url": ["url":
             "data:image/png;base64,iVBORw0KGgo="]], ["type": "text", "text": "Describe."]]] as [String: Any]
-        for extra in [["messages": [image]], ["logit_bias": ["5": 2]], ["logprobs": true]] as [[String: Any]] {
+        for extra in [["messages": [image]], ["logit_bias": ["5": 2]], ["logprobs": true, "top_logprobs": 21]]
+            as [[String: Any]] {
             let refused = try await Self.send(Self.body(["x"], script: script, extra), to: loop,
                                               recorder: recorder, consumer: consumer)
             #expect(Self.failure(refused.terminal)?.statusCode == 400, "\(extra.keys.sorted())")
         }
+        // Logprobs leave on the relay's channel: one entry per generated token
+        // on the content frames with the requested alternatives, and the
+        // logprob row never drafts.
+        let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
+        let draftedBefore = try #require(engine.mtpMetricsSnapshot()).draftedTokens
+        let relayed = SuperSSE(try await Self.send(Self.body(pieces, script: script,
+            ["logprobs": true, "top_logprobs": 2]), to: loop, recorder: recorder, consumer: consumer).sse)
+        #expect(relayed.content == streamed.content)
+        #expect(relayed.logprobs.count == pieces.count)
+        #expect(relayed.logprobs.allSatisfy { $0.top.count == 2 && $0.top.first == $0.logprob })
+        #expect(try #require(engine.mtpMetricsSnapshot()).draftedTokens == draftedBefore)
 
         // The unified local endpoint serves the same owner identically.
         let app = makeLocalInferenceApplication(
@@ -255,10 +267,10 @@ struct NemotronSuperManagedSlotTests {
             acquire: { id in try await loop.acquireModelForLocal(id) },
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
             availableModels: { [Self.modelID] }, mtpSlots: { [] },
-            managedSuperEngine: { body, request in
+            managedSuperEngine: { body, request, logprobs in
                 guard request.model == Self.modelID else { return nil }
                 return NemotronSuperLocalEndpointEngine(body: body, hasMedia: false, cacheScope: "local",
-                    acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) })
+                    acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) }, logprobs: logprobs)
             })
         try await app.test(.live) { client in
             let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer super-managed"]
@@ -268,6 +280,16 @@ struct NemotronSuperManagedSlotTests {
                 let local = SuperSSE(String(buffer: response.body))
                 #expect(local.content == streamed.content && local.reasoning == streamed.reasoning)
                 #expect(local.finishReason == streamed.finishReason)
+            }
+            for stream in [true, false] {
+                let extra: [String: Any] = ["logprobs": true, "top_logprobs": 2, "stream": stream]
+                let text = try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: try Self.body(pieces, script: script, extra))) { response in
+                    #expect(response.status == .ok)
+                    return String(buffer: response.body)
+                }
+                let entries = stream ? SuperSSE(text).logprobs : try SuperJSON(text).logprobs
+                #expect(entries.count == pieces.count, "local stream \(stream)")
             }
             // The generic local engine never serves Super.
             try await client.execute(uri: "/v1/completions", method: .post, headers: headers,

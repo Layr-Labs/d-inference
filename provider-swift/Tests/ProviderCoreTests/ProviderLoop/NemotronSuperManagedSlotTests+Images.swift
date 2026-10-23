@@ -64,7 +64,7 @@ extension NemotronSuperManagedSlotTests {
             acquire: { id in try await loop.acquireModelForLocal(id) },
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
             availableModels: { [Self.modelID] }, mtpSlots: { [] },
-            managedSuperEngine: { body, request in
+            managedSuperEngine: { body, request, _ in
                 guard request.model == Self.modelID else { return nil }
                 return NemotronSuperLocalEndpointEngine(body: body, hasMedia: MediaIngest.hasMedia(request),
                     cacheScope: "local", acquire: { try await loop.acquireNemotronSuperForLocal(Self.modelID) })

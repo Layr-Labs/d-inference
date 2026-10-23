@@ -52,21 +52,27 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     func drain() async { await text.drain() }
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
-                 responseStore: InMemoryResponseStore, metrics: ServerMetrics) -> MLXOpenAIService? {
+                 responseStore: InMemoryResponseStore, metrics: ServerMetrics,
+                 logprobs: EngineV2LogprobsChannel? = nil) -> MLXOpenAIService? {
         guard request.model == owner.modelID else { return nil }
-        return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request)),
+        return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request),
+                                               logprobs: logprobs),
             responseStore: responseStore, metrics: metrics)
     }
 
     /// The engine for one immutable raw request body. `cacheScope` partitions
     /// prefix reuse (nil: none); the hook's single local operator shares one
     /// partition. Image requests reuse only within their image identity.
-    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`.
+    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`. A `logprobs`
+    /// request's entries leave on the caller's `logprobs` channel, which
+    /// splices them into the response; without one it is refused.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
-                trustsSchemaMetadata: Bool = false) -> any MLXServerEngine {
+                trustsSchemaMetadata: Bool = false,
+                logprobs: EngineV2LogprobsChannel? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
-                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata)
+                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
+                               logprobs: logprobs)
     }
 }
 
@@ -84,6 +90,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let owner: NemotronSuperLocalBridgeBuilder.Owner
     let cacheScope: String?
     let trustsSchemaMetadata: Bool
+    let logprobs: EngineV2LogprobsChannel?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -114,12 +121,13 @@ private struct SuperHTTPEngine: MLXServerEngine {
             let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID,
                                                     trustsSchemaMetadata: trustsSchemaMetadata)
             output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
+            let logprobs = plan.topLogprobs > 0 ? self.logprobs : nil
             switch route {
             case .image(let images):
                 let body = self.body, template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await images.runEncoded(body: body, templateBytes: template,
-                                                cacheScope: cacheScope, onEvent: onEvent)
+                                                cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
@@ -127,11 +135,13 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                                        tokenizer: tokenizer.inner)
                 // translate keeps the request's max_tokens (nil: the bridge default).
                 let translated = MultiModelBatchSchedulerEngine.translate(
-                    openAIRequest: plan.request, defaultMaxTokens: 1)
+                    openAIRequest: plan.request, defaultMaxTokens: 1,
+                    logprobs: plan.topLogprobs > 0 ? true : nil,
+                    topLogprobs: plan.topLogprobs > 0 ? plan.topLogprobs : nil)
                 let cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
-                                          cacheScope: cacheScope, onEvent: onEvent)
+                                          cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

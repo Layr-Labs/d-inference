@@ -310,6 +310,31 @@ decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py
 `3,2,2,2,1`. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
+### Nemotron Super logprobs
+
+Super serves OpenAI `logprobs` and `top_logprobs` on text, image and video
+requests. `NemotronSuperRequestPlan.topLogprobs` reads both from the raw body
+(`EngineV2Translation.topLogprobs`: `logprobs: true` captures at least one
+alternative) and the plan refuses `top_logprobs` outside 0 to 20. Entries leave
+on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
+(`NemotronSuperLocalImageHTTP.engine`, `NemotronSuperSlotOwner.chatEngine`);
+both bindings refuse a logprobs request without one. The coordinator relay
+passes the channel its frames loop splices. For a local `logprobs` body,
+`LocalChatUploadResponder` creates one, splices entries into content frames
+with `ProviderLoop.injectLogprobs`, and attaches them to a complete response's
+message without the token a `stop` finish ends on. As on the relay, the entries
+of reasoning tokens arrive with the first content.
+
+A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
+target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`
+removes it from the draft cohort as it removes an image request, so the other
+rows keep speculating while it decodes one ordinary target token per step; the
+row-exact decode keeps every output exact. Synthetic fixtures check its tokens
+and logprobs against the plain owner's and that a text row beside it still
+speculates (`NemotronSuperMTPMediaFallbackTests`). Sources:
+`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
 ### Managed Nemotron Super slot
 
 The distribution is one manifest and one model installation: all 88 shards

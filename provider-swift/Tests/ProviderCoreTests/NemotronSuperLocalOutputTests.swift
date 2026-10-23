@@ -237,10 +237,16 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
     }
 
     func testPlanRefusesUnsupportedControlsAndFormatsOnce() throws {
-        for extra in [#""logprobs":true"#, #""top_logprobs":2"#, #""prompt_cache_key":"k""#, #""n":2"#,
+        for extra in [#""top_logprobs":21"#, #""top_logprobs":-1"#, #""prompt_cache_key":"k""#, #""n":2"#,
                       #""min_p":0.1"#, #""tool_call_parser":"json""#, #""reasoning_parser":"qwen3""#] {
             XCTAssertThrowsError(try plan(extra), extra)
         }
+        // Logprobs are served: OpenAI's `logprobs: true` with 0...20 alternatives.
+        XCTAssertEqual(try plan(#""logprobs":true,"top_logprobs":20"#).topLogprobs, 20)
+        XCTAssertEqual(try plan(#""logprobs":true,"top_logprobs":0"#).topLogprobs, 1)
+        XCTAssertEqual(try plan(#""logprobs":true"#).topLogprobs, 1)
+        XCTAssertEqual(try plan(#""top_logprobs":3"#).topLogprobs, 0)
+        XCTAssertEqual(try plan(#""logprobs":false"#).topLogprobs, 0)
         // A JSON response format with tools is served: calls, or a validated JSON answer.
         XCTAssertNoThrow(try plan(#""response_format":{"type":"json_object"},"# + Self.weather))
         let body = Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID

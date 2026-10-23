@@ -122,10 +122,24 @@ extension NemotronSuperLocalHTTPTests {
             }
             _ = try await send(body(["</think>", "Sunny."], stream: false, jsonTools), status: .unprocessableContent)
             for invalid in [["enable_thinking": false, "chat_template_kwargs": ["enable_thinking": true]],
-                            ["logprobs": true],
+                            ["logprobs": true, "top_logprobs": 21],
                             ["messages": [["role": "user", "content": "a <image> tag"]]]] as [[String: Any]] {
                 let text = try await send(body(["x"], stream: true, invalid), status: .badRequest)
                 #expect(text.contains("error"))
+            }
+            // Logprobs: one entry per generated token (reasoning entries ride
+            // the first content chunk), the requested alternatives, greedy
+            // first; the visible output is unchanged.
+            for stream in [true, false] {
+                let text = try await send(body(reasoning, stream: stream, ["logprobs": true, "top_logprobs": 2]))
+                let served = stream ? (SuperSSE(text).content, SuperSSE(text).logprobs)
+                    : try (SuperJSON(text).content ?? "", SuperJSON(text).logprobs)
+                #expect(served.0 == "Hello there.", "stream \(stream)")
+                #expect(served.1.count == reasoning.count, "stream \(stream)")
+                for entry in served.1 {
+                    #expect(entry.top.count == 2 && entry.logprob <= 0)
+                    #expect(entry.top.first == entry.logprob && entry.top[0] >= entry.top[1])
+                }
             }
         }
         #expect(await budget.outstandingReservedBytes() == baseline)
@@ -183,15 +197,32 @@ struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
     }
 }
 
+/// One `logprobs.content` entry: its logprob and its alternatives' logprobs.
+struct SuperLogprob: Sendable {
+    let logprob: Double
+    let top: [Double]
+
+    static func entries(_ choice: [String: Any]?) -> [SuperLogprob] {
+        let content = (choice?["logprobs"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+        return content.map { entry in
+            SuperLogprob(logprob: entry["logprob"] as? Double ?? .nan,
+                         top: (entry["top_logprobs"] as? [[String: Any]] ?? []).map { $0["logprob"] as? Double ?? .nan })
+        }
+    }
+}
+
 struct SuperSSE {
     var reasoning = "", content = "", finishReason: String?
     var toolCalls: [(name: String, arguments: String)] = []
+    /// `logprobs.content` entries across all frames.
+    var logprobs: [SuperLogprob] = []
     init(_ body: String) {
         for line in body.split(separator: "\n") where line.hasPrefix("data: {") {
             guard let data = line.dropFirst(6).data(using: .utf8),
                 let frame = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let choice = (frame["choices"] as? [[String: Any]])?.first else { continue }
             if let reason = choice["finish_reason"] as? String { finishReason = reason }
+            logprobs += SuperLogprob.entries(choice)
             guard let delta = choice["delta"] as? [String: Any] else { continue }
             reasoning += delta["reasoning_content"] as? String ?? ""
             content += delta["content"] as? String ?? ""
@@ -206,9 +237,12 @@ struct SuperSSE {
 struct SuperJSON {
     let reasoning: String?, content: String?
     let toolCalls: [(name: String, arguments: String)]
+    let logprobs: [SuperLogprob]
     init(_ body: String) throws {
         let root = try #require(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
-        let message = try #require(((root["choices"] as? [[String: Any]])?.first)?["message"] as? [String: Any])
+        let choice = (root["choices"] as? [[String: Any]])?.first
+        logprobs = SuperLogprob.entries(choice)
+        let message = try #require(choice?["message"] as? [String: Any])
         reasoning = message["reasoning_content"] as? String
         content = message["content"] as? String
         toolCalls = (message["tool_calls"] as? [[String: Any]] ?? []).map { call in

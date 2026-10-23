@@ -53,11 +53,12 @@ final class NemotronSuperSlotOwner: Sendable {
     /// One coordinator or local-endpoint request: text on the text binding,
     /// inline JPEG/PNG images or one inline video on the image binding
     /// (target-only when the owner speculates). Only the coordinator path
-    /// trusts schema metadata (see `NemotronSuperRequestPlan`).
+    /// trusts schema metadata (see `NemotronSuperRequestPlan`). A `logprobs`
+    /// request's entries leave on `logprobs`.
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
-                    trustsSchemaMetadata: Bool) -> any MLXServerEngine {
+                    trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
-                    trustsSchemaMetadata: trustsSchemaMetadata)
+                    trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.

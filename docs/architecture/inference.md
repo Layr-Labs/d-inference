@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -525,7 +525,9 @@ Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
 local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the
 owner's chat route, not the generic engine: the pinned prompt contract, reasoning
 channel, tool and structured-output validation, cancellation and usage are the
-hook's. Coordinator text prefix reuse is partitioned by the authenticated cache
+hook's. A JSON response format may come with tools: a turn that calls tools
+returns its calls, and only an answer without calls is validated as JSON.
+Coordinator text prefix reuse is partitioned by the authenticated cache
 scope and off without one; the slot emits no cache receipts, cached-token usage
 or prefix-cache capability. A cancelled stream bills delivered output and the
 reference prompt length. Inline JPEG and PNG images (`data:` URIs, within the

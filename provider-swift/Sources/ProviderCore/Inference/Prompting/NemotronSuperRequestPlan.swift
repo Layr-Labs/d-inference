@@ -67,7 +67,8 @@ struct NemotronSuperRequestPlan: Sendable {
 
     /// Output controls this owner cannot honor are refused rather than ignored:
     /// no logprob channel, prefix cache, logit bias, min-p sampler or
-    /// alternate parsers.
+    /// alternate parsers. A JSON response format with tools is served: the
+    /// response is then tool calls or a validated JSON answer.
     private static func validateWireControls(body: Data, request: OpenAIChatCompletionRequest,
                                              modelID: String) throws {
         struct Wire: Decodable {
@@ -83,8 +84,7 @@ struct NemotronSuperRequestPlan: Sendable {
             wire.logit_bias?.isEmpty != false,
             wire.n == nil || wire.n == 1,
             request.minP == nil || request.minP == 0,
-            request.toolCallParser == nil, request.reasoningParser == nil,
-            !(request.responseFormat?.requiresJSONOutput == true && request.tools?.isEmpty == false)
+            request.toolCallParser == nil, request.reasoningParser == nil
         else { throw Failure.unsupportedControl }
     }
 }

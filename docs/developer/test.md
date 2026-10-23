@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1089,6 +1089,14 @@ shard (hashes about 75 GB, loads no weights); adding
 the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request. Run them only with
 exclusive GPU access.
+
+`NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
+shapes, built from the captured tool request the platform's conformance fixture
+pins, with reasoning enabled and disabled: tool-call steps 1 and 5, every
+`tool_choice`, `json_object`, strict `json_schema` and JSON formats with tools.
+Each passes the relay's inbound decode, the request plan, the pinned template
+and the output parser, and a compliant response validates streamed and
+complete. CPU only; it does not load a model or measure answer quality.
 
 ## Related
 

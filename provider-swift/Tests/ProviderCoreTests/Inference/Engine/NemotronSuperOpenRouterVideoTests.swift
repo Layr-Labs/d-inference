@@ -1,7 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 import CryptoKit
 import Foundation
-import MLXLMCommon
 import Testing
 @testable import MLXVLM
 @testable import ProviderCore
@@ -69,8 +68,8 @@ struct NemotronSuperOpenRouterVideoTests {
         try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
     }
 
-    /// The inlined 6.9 MB link is a 9.3 MB body, above the former 8 MiB
-    /// ingress bound that refused it as invalid media.
+    /// The inlined 6.9 MB link makes a body of more than 9 MB, above the
+    /// former 8 MiB ingress bound that refused it as invalid media.
     @Test func inlinedLinkVideoPassesIngress() throws {
         let clip = try #require(Self.clips.first)
         let body = try Self.body(try Self.uri(clip))
@@ -127,44 +126,18 @@ struct NemotronSuperOpenRouterVideoTests {
     /// tiny installed fixture: ingress, inspection, every frame, the tower,
     /// EVS and generation, with every charge returned.
     @Test(.timeLimit(.minutes(3))) func bothClipsServeOnTheInstalledFixture() async throws {
-        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: NemotronRadioDimensions(
-            width: 2, layers: 1, heads: 1, channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)).make()
-        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
-        let lease = try #require(await budget.claimPendingLoad(requestID: "super-openrouter-video",
-            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
-        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
-            tokenizer: TokenizerHandle(SuperSyntheticVideoTokenizer()), eosTokenIDs: [31],
-            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
-                maxContextLength: 4_096, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
-            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
-        let media = try owner.localImageBinding()
+        let fixture = try await NemotronSuperVideoBindingTests.videoOwner(contextLength: 4_096)
+        let media = try fixture.owner.localImageBinding()
         let template = try Self.template()
-        let baseline = await budget.outstandingReservedBytes()
+        let baseline = await fixture.budget.outstandingReservedBytes()
         for clip in Self.clips {
-            let body = try Self.body(try Self.uri(clip), model: owner.modelID, maxTokens: 2)
-            let events = OpenRouterVideoEvents()
+            let body = try Self.body(try Self.uri(clip), model: fixture.owner.modelID, maxTokens: 2)
+            let events = SuperVideoEvents()
             try await media.runEncoded(body: body, templateBytes: template) { await events.record($0) }
             #expect(await events.errors.isEmpty, "\(clip.file)")
             #expect(await events.completions == [2], "\(clip.file)")
-            #expect(await budget.outstandingReservedBytes() == baseline, "\(clip.file)")
+            #expect(await fixture.budget.outstandingReservedBytes() == baseline, "\(clip.file)")
         }
-        try await owner.closeAfterDrain()
-        #expect(residency.snapshot.usedBytes == 0)
-        #expect(await budget.finishPendingLoad(lease))
-        #expect(await budget.outstandingReservedBytes() == 0)
-    }
-}
-
-private actor OpenRouterVideoEvents {
-    var errors: [String] = []
-    var completions: [Int] = []
-    func record(_ event: GenerationEvent) {
-        switch event {
-        case .chunk: break
-        case .info(_, let count, _, _): completions.append(count)
-        case .error(let message): errors.append(message)
-        case .terminal(_, let message, _, _): errors.append(message)
-        }
+        try await fixture.close()
     }
 }

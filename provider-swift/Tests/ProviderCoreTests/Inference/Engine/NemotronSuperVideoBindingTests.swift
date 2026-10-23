@@ -231,7 +231,7 @@ struct NemotronSuperVideoBindingTests {
     }
 
     /// A body above the ingress bound leaves as `media_too_large` (413 at the
-    /// coordinator); the binding's other refusals stay `invalid_media`.
+    /// coordinator); invalid input still leaves as `invalid_media`.
     @Test func oversizeBodyIsMediaTooLarge() {
         let tooLarge = ProviderLoop.sanitizedInferenceFailure(
             from: SuperHTTPErrors.map(Binding.Failure.bodyTooLarge, media: true), phase: .request)
@@ -358,7 +358,7 @@ struct NemotronSuperVideoBindingTests {
     private static let squareTower = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
         channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
 
-    private struct VideoOwner {
+    struct VideoOwner {
         let owner: NemotronSuperLocalBridgeBuilder.Owner
         let budget: GlobalKVCacheBudget
         let lease: PendingModelLoadLease
@@ -373,7 +373,7 @@ struct NemotronSuperVideoBindingTests {
         }
     }
 
-    private static func videoOwner(contextLength: Int) async throws -> VideoOwner {
+    static func videoOwner(contextLength: Int) async throws -> VideoOwner {
         let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: squareTower).make()
         let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
@@ -511,7 +511,7 @@ private final class SuperDecodeHold: @unchecked Sendable {
     }
 }
 
-private actor SuperVideoEvents {
+actor SuperVideoEvents {
     var errors: [String] = []
     var prompts: [Int] = []
     var completions: [Int] = []

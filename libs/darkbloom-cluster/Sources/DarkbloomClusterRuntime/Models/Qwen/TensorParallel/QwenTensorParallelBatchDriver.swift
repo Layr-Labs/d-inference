@@ -11,6 +11,13 @@ protocol QwenTensorParallelBatchLane: AnyObject {
     var nextFrame: QwenLayerStageFrame? { get }
     var committedTokens: Int { get }
     var isClosed: Bool { get }
+    var reusedPrefixTokens: Int { get }
+    var storedPrefixFrontiers: [Int] { get }
+}
+
+extension QwenTensorParallelBatchLane {
+    var reusedPrefixTokens: Int { 0 }
+    var storedPrefixFrontiers: [Int] { [] }
 }
 
 /// Both ranks run every forward. Selection returns the same token to both;
@@ -26,6 +33,11 @@ protocol QwenTensorParallelBatchExecutor: AnyObject {
     func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int]
     func retire(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, selected: Int, last: Int?) throws
     func takeLogprobs(_ lane: Lane) throws -> ClusterWorkerTokenLogprobs?
+    func confirmedRetirement(_ lane: Lane, clean: Bool) throws
+}
+
+extension QwenTensorParallelBatchExecutor {
+    func confirmedRetirement(_ lane: Lane, clean: Bool) throws {}
 }
 
 /// One prefill frame on its original grid and one real decode rectangle per
@@ -270,6 +282,12 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         guard both == expected else { throw ProbeError("Qwen TP peer did not prove native retirement") }
         for slot in leaving {
             let value = plan.slots[slot], record = records[slot]!
+            let native = record.native!
+            try executor.confirmedRetirement(native, clean: !value.leaveCancelled)
+            if !value.leaveCancelled, native.reusedPrefixTokens > 0 || !native.storedPrefixFrontiers.isEmpty {
+                try host.publishPromptCache(requestID: record.id, reusedTokens: native.reusedPrefixTokens,
+                    storedFrontiers: native.storedPrefixFrontiers)
+            }
             record.native = nil; book.finish(record.id); decisions.retired(record.id); records[slot] = nil
             if value.leaveCancelled { try host.publishLeft(requestID: record.id) }
             else if let reason = value.leaveReason { try host.publishFinished(requestID: record.id, reason: .init(rawValue: reason.rawValue)!) }

@@ -148,6 +148,13 @@ extension QwenTensorParallelResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     try reserved.media?.releaseAfterCheckedDrain()
                 }
+            }, prefix: batchPrefix, prefixBudget: batchBudget?.prefix,
+            prefixScope: { [self] reserved in
+                loadAgreement + "|chunk=\(reserved.request.chunkSize)|kv=\(batchHost.kind.rawValue)"
+                    + (reserved.media.map { "|media=" + $0.state.prefixIdentity } ?? "|text")
+            }, allocationBound: QwenResidentResourceEnvironment.allocationBound,
+            prefixObserved: { [self] event, tokens, bytes in
+                log("darkbloom-tp-batch-prefix-v1 rank=\(collective.rank) scope=\(records.requestID) event=\(event) tokens=\(tokens) resident_bytes=\(bytes)")
             })
         let driver = try QwenTensorParallelBatchDriver(executor: executor, book: batchBook,
             capacity: batchLanes, vocabulary: admission.profile.vocabularySize)
@@ -170,6 +177,7 @@ extension QwenTensorParallelResidentRuntime {
             observed.finished(success: true, memory: batchHost.batchMemory).forEach { log($0) }
             collective.logDataPlaneStatus()
         } catch {
+            batchPrefix?.sweep()
             failedBatchDriver = driver; control.fail()
             observed.finished(success: false, memory: batchHost.batchMemory).forEach { log($0) }
             throw error

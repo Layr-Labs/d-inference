@@ -5,6 +5,9 @@ import MLX
 final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
     let session: QwenTensorParallelBatchSession
     var pendingLogprobs: ClusterWorkerTokenLogprobs?
+    var prefixKey: String?
+    var storedPrefixFrontiers: [Int] = []
+    var reusedPrefixTokens: Int { session.request.reusedPrefixTokens }
     private let releaseResources: () throws -> Void
     private(set) var resourcesReleased = false
     init(_ session: QwenTensorParallelBatchSession, releaseResources: @escaping () throws -> Void) {
@@ -37,18 +40,31 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     private let completedDecode: (Int) -> Void
     private let completedPrefill: () -> Void
     private let releaseResources: (Reservation) throws -> Void
+    private let prefix: QwenTensorParallelBatchPrefixCache?
+    private let prefixBudget: QwenTensorParallelBatchPrefixBudget?
+    private let prefixScope: ((Reservation) -> String)?
+    private let allocationBound: ((Int) throws -> Int)?
+    private let prefixObserved: (String, Int, Int) -> Void
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
          group: any QwenTensorParallelReduction,
          prepare: @escaping (Reservation, () throws -> Void) throws -> QwenTensorParallelBatchInputs?,
          completedDecode: @escaping (Int) -> Void, completedPrefill: @escaping () -> Void,
-         releaseResources: @escaping (Reservation) throws -> Void) throws {
+         releaseResources: @escaping (Reservation) throws -> Void,
+         prefix: QwenTensorParallelBatchPrefixCache? = nil,
+         prefixBudget: QwenTensorParallelBatchPrefixBudget? = nil,
+         prefixScope: ((Reservation) -> String)? = nil,
+         allocationBound: ((Int) throws -> Int)? = nil,
+         prefixObserved: @escaping (String, Int, Int) -> Void = { _, _, _ in }) throws {
         guard case .shard(let rank, let size) = model.role, size == 2, rank == group.rank, size == group.size,
               !model.plan.routedExperts, sha256(configuration) == model.configurationSHA256,
-              model.plan.vocabularySize < (1 << 24) else {
+              model.plan.vocabularySize < (1 << 24),
+              prefix == nil || (prefixBudget != nil && prefixScope != nil && allocationBound != nil) else {
             throw ProbeError("Qwen TP native batch executor has a mismatched dense shard or group")
         }
         self.rank = rank; self.model = model; self.configuration = configuration; self.host = host
+        self.prefix = prefix; self.prefixBudget = prefixBudget; self.prefixScope = prefixScope
+        self.allocationBound = allocationBound; self.prefixObserved = prefixObserved
         self.group = group; self.prepare = prepare; self.completedDecode = completedDecode; self.completedPrefill = completedPrefill; self.releaseResources = releaseResources
     }
 
@@ -68,9 +84,33 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     func open(_ reservation: Reservation, check: () throws -> Void) throws -> Lane {
         let inputs = try prepare(reservation, check)
         try check()
-        return try Lane(.init(model: model, configuration: configuration, host: host,
-                              request: reservation.request, inputs: inputs),
-                        releaseResources: { [releaseResources] in try releaseResources(reservation) })
+        var request = reservation.request
+        var restored: QwenTensorParallelBatchPrefixState?
+        var captureFrontier = 0, captureKey: String?
+        if let prefix, prefix.enabled, let budget = prefixBudget, let scope = prefixScope?(reservation) {
+            let candidates = QwenTensorParallelBatchPrefixCache.candidates(promptCount: request.promptCount,
+                chunkSize: request.chunkSize, maximumTokens: budget.maximumTokens)
+            let keys = QwenTensorParallelBatchPrefixCache.keys(scope: scope,
+                tokens: request.promptTokenIDs, frontiers: candidates)
+            if !candidates.isEmpty {
+                let votes = try exchange(prefix.held(keys: keys, candidates: candidates), check: check)
+                let frontier = try QwenTensorParallelBatchPrefixCache.agreed(candidates: candidates, votes: votes)
+                if frontier > 0, let key = keys[frontier] {
+                    restored = try prefix.restore(key: key, frontier: frontier)
+                    request = try request.planned(reusedPrefix: frontier, splitFinalToken: false)
+                }
+                if let last = candidates.last, last > frontier {
+                    captureFrontier = last; captureKey = keys[last]
+                }
+            }
+        }
+        let lane = try Lane(.init(model: model, configuration: configuration, host: host,
+            request: request, inputs: inputs, restored: restored, captureFrontier: captureFrontier,
+            captureLimitBytes: prefixBudget?.captureBytes ?? 0, allocationBound: allocationBound),
+            releaseResources: { [releaseResources] in try releaseResources(reservation) })
+        lane.prefixKey = captureKey
+        prefixObserved("opened", request.reusedPrefixTokens, prefix?.bytesInUse ?? 0)
+        return lane
     }
 
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
@@ -152,12 +192,24 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         return lane.pendingLogprobs
     }
 
+    func confirmedRetirement(_ lane: Lane, clean: Bool) throws {
+        guard lane.isClosed else { throw ProbeError("Qwen TP prefix publication precedes resource retirement") }
+        if clean, let prefix, let key = lane.prefixKey, let captured = try lane.session.takeCapturedPrefix() {
+            if prefix.insert(key: key, state: captured) {
+                lane.storedPrefixFrontiers = [captured.committedTokens]
+                prefixObserved("stored", captured.committedTokens, prefix.bytesInUse)
+            }
+        } else { lane.session.discardCapturedPrefix() }
+        lane.prefixKey = nil
+    }
+
     func retire(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, selected: Int, last: Int?) throws {
         if let reason {
             guard let last else { throw ProbeError("Qwen TP clean retirement has no selected token") }
             var schedule = lane.session.schedule
             try schedule.finish(reason, selectedTokenCount: selected, lastTokenID: last)
         }
+        if reason == nil { lane.session.discardCapturedPrefix(); lane.prefixKey = nil; lane.storedPrefixFrontiers = [] }
         try lane.session.retire()
         try lane.releaseAfterNativeDrain()
         lane.pendingLogprobs = nil

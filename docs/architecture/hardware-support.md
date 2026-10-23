@@ -962,3 +962,22 @@ chunk does not shrink that floor. Both ranks must fit after previous ownership
 releases. Source-bound metadata and child-launch checks establish budget and
 width propagation, not full-artifact TP throughput, media parity or native
 concurrent execution. See [automatic batching](inference.md#automatic-local-cluster-batching).
+
+### Qwen27 TP batch prefix ownership
+
+`QwenTensorParallelBatchPrefixBudget` separately bounds every compact attention,
+conv and SSM array using the native allocator metadata. Full unsliced geometry
+conservatively covers either rank and unequal shares. The complete native
+batch allowance adds one snapshot bank per live lane plus two banks for the
+resident cache; the existing live-state, gather, replacement and collective
+charges remain. The metadata planner and verified LOAD call the same helper.
+A reused prefix does not lower admission or refund the destination's future
+state. The configured budget is a ceiling; cache arrays materialize only on
+capture. See [prefix ownership](prefix-cache.md#cluster-sliding-prefix-adoption).
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchPrefixBudget.swift`
+(`derive`).
+
+A drained automatic batch replacement uses the device index and this pair's
+recorded keyed-link measurement. Missing or invalid measurements continue to
+exclude TP from automatic choice; a valid measurement permits cost comparison
+but does not prove that TP is faster or that any model is hardware-qualified.

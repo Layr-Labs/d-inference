@@ -15,6 +15,6 @@ struct QwenTensorParallelBatchSettings {
     }
     var agreementFields: [String] {
         lanes == 1 ? [] : [QwenTensorParallelBatchWire.agreement, "lanes=\(lanes)", "kv=\(backend.rawValue)",
-            "fp32-row-m1-v1", "request-local-original-rope-v1", "batch-inventory-budget-v1"]
+            "fp32-row-m1-v1", "request-local-original-rope-v1", "batch-inventory-budget-v2", QwenTensorParallelBatchPrefixBudget.policy]
     }
 }

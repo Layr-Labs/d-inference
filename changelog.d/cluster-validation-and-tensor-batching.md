@@ -6,8 +6,14 @@
 - Preserve measured shard rates and independently price native batch capacity;
   exact Qwen3.8 27B automatic selection now compares eligible TP and pipeline
   plans with the complete native TP LOAD allowance.
+- Pass the indexed devices, recorded keyed pair-link costs and filtered served
+  history into automatic replacement, allowing its tensor candidates to be
+  considered instead of silently using an unmeasured link.
 - Add Qwen27 independent TP histories, grouped collectives, per-request sampling
   and captured logprobs, with checked bilateral cancellation and retirement.
+- Reuse mutually held original-grid Qwen27 TP prefixes with bounded resident
+  snapshots, fresh per-request histories, separately priced capture/cache banks
+  and publication only after bilateral clean retirement.
 - Route exact Qwen27 images and video through bounded provider preparation and
   the native vision owner, retaining encoded data and host/native allowances
   until their respective completion fences. Unsupported controls refuse explicitly.
@@ -21,4 +27,5 @@
   state accounting. Historical phase support is not TP release qualification.
 - Retain explicit full-model hardware gates. Component tests and source support
   do not establish universal TP, media parity or release readiness; Qwen27 TP
-  text speculation and warm-prefix reuse remain unfinished in this candidate.
+  text speculation remains unfinished; full-artifact prefix/media qualification
+  and final automatic-planner validation remain separate gates.

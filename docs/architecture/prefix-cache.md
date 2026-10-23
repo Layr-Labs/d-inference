@@ -974,10 +974,25 @@ checked drain. This preserves identity separation; it is not a full-artifact
 media-prefix performance qualification. Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
 
-The initial exact27 multi-lane TP owner has request-private CBv2 histories and
-sets its shared prefix budget to zero. It does not advertise reused/stored
-frontiers. Singleton TP retains its existing bilateral prefix behavior, including
-media identity. Warm multi-lane capture/restore requires a separate owned-state
-integration and hardware gate; batching arithmetic tests do not prove it.
-Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`
-(`load`).
+The exact27 multi-lane TP owner retains one compact snapshot per completed
+request at an original chunk boundary, at most 4,096 prompt tokens. The resident
+LRU holds at most 32 entries and two maximum-sized snapshot banks. A sealed
+vote selects the longest boundary both ranks hold; a one-sided miss computes
+cold on both ranks. Restoration writes fresh request-owned attention storage
+and adopts immutable confirmed conv/SSM state. It never splits the final chunk.
+
+Keys bind the loaded agreement, backend, chunk size, prompt prefix and media
+identity. The native owner completes media preparation before reuse, so cached
+history cannot substitute another request's positions or features. Both ranks
+must prove native and media retirement before a clean capture enters the cache;
+cancelled or failed requests donate nothing. Reused/stored counts are published
+through the existing prompt-cache report. Cache entries are separate from live
+paged rows, swept on failure and shutdown, and explicitly charged beside them.
+The existing prefix disable switch offers and captures nothing. Singleton TP,
+other models and SSD persistence retain their existing behavior.
+
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
+(`QwenTensorParallelBatchPrefixCache`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
+(`open`, `confirmedRetirement`). Tiny fixtures do not qualify full-artifact
+warm-prefix correctness, media parity, RDMA or useful speed.

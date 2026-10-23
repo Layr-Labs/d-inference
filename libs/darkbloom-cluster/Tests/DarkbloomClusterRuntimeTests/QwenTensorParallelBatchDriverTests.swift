@@ -125,6 +125,14 @@ struct QwenTensorParallelBatchDriverTests {
             else { try lane.cancel() }
             pair.set("closed-\(rank)-\(lane.request.requestID)")
         }
+        func confirmedRetirement(_ lane: HistoryBatchTestSession, clean: Bool) throws {
+            let id = lane.request.requestID
+            guard pair.flag("closed-0-\(id)"), pair.flag("closed-1-\(id)"),
+                  pair.books[rank].reservation(id) != nil else {
+                throw ProbeError("Prefix transfer preceded bilateral drain or followed charge release")
+            }
+            pair.set("prefix-\(clean)-\(rank)-\(id)")
+        }
         func takeLogprobs(_ lane: HistoryBatchTestSession) throws -> ClusterWorkerTokenLogprobs? { nil }
     }
     final class Host: QwenBatchServingHost {
@@ -170,6 +178,7 @@ struct QwenTensorParallelBatchDriverTests {
                 for rank in 0...1 {
                     #expect(pair.hosts[rank].finished[request.requestID] == .length)
                     #expect(pair.native[rank].maximumWidth == width)
+                    #expect(pair.flag("prefix-true-\(rank)-\(request.requestID)"))
                 }
             }
             #expect(pair.books.allSatisfy { $0.isEmpty })
@@ -205,6 +214,8 @@ struct QwenTensorParallelBatchDriverTests {
         try pair.run()
         for rank in 0...1 {
             #expect(pair.hosts[rank].left.contains(cancelled.requestID))
+            #expect(pair.flag("prefix-false-\(rank)-\(cancelled.requestID)"))
+            #expect(!pair.flag("prefix-true-\(rank)-\(cancelled.requestID)"))
             #expect(pair.hosts[rank].left.contains(expired.requestID))
             #expect(pair.hosts[rank].finished[live.requestID] == .length)
         }
@@ -230,6 +241,8 @@ struct QwenTensorParallelBatchDriverTests {
             #expect(pair.native[rank].sessions[cancelled.requestID] == nil)
             #expect(pair.native[rank].sessions[expired.requestID] == nil)
             #expect(pair.hosts[rank].left.contains(cancelled.requestID))
+            #expect(!pair.flag("prefix-false-\(rank)-\(cancelled.requestID)"))
+            #expect(!pair.flag("prefix-true-\(rank)-\(cancelled.requestID)"))
             #expect(pair.hosts[rank].left.contains(expired.requestID))
             #expect(pair.books[rank].isEmpty)
         }
@@ -260,6 +273,8 @@ struct QwenTensorParallelBatchDriverTests {
             #expect(pair.flag("prepared-\(rank)-\(cancelled.requestID)"))
             #expect(pair.native[rank].sessions[cancelled.requestID]?.isClosed == true)
             #expect(pair.hosts[rank].left.contains(cancelled.requestID))
+            #expect(pair.flag("prefix-false-\(rank)-\(cancelled.requestID)"))
+            #expect(!pair.flag("prefix-true-\(rank)-\(cancelled.requestID)"))
             #expect(pair.hosts[rank].left.contains(expired.requestID))
             #expect(pair.hosts[rank].finished[live.requestID] == .length)
             #expect(pair.books[rank].isEmpty)

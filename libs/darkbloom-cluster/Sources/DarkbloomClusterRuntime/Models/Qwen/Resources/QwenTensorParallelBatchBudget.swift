@@ -13,6 +13,7 @@ struct QwenTensorParallelBatchBudget {
     let sharedBytesExcludingCollectives: Int
     let batchProjectionConstantBytes: Int
     let pagedPoolSlackBytes: Int
+    let prefix: QwenTensorParallelBatchPrefixBudget
     let allowance: ClusterTensorParallelRequestAllowance
 
     static func derive(geometry g: QwenLongPrefillBudgetGeometry, plan: QwenTensorParallelPlan,
@@ -31,7 +32,7 @@ struct QwenTensorParallelBatchBudget {
         }
         var perLaneState = scalar.stateBytes, poolSlack = 0
         if paged {
-            // This native owner has no shared prefix pages yet. Reserve one
+            // Restored prefixes copy into fresh request-owned pages. Reserve one
             // full page bank, a full-history gather bank and a partial-page
             // replacement per layer. Replace, never add again, the existing
             // F32 KV term (two BF16 banks) in the conservative scalar floor.
@@ -56,13 +57,16 @@ struct QwenTensorParallelBatchBudget {
         // Row-M1 partials cause a second live FP32 scales/offsets bank while
         // singleton/prefill's ConstantArrayCastCache retains its first bank.
         // Full canonical bytes cover either rank, including unequal shares.
+        let prefix = try QwenTensorParallelBatchPrefixBudget.derive(geometry: g,
+            maximumTokens: maximumTokens, allocationBound: allocationBound)
+        perLaneState = try sum([perLaneState, prefix.captureBytes])
         let batchConstants = scalar.projectionConstantBytes
         let logits = try bound(product([lanes, plan.vocabularySize, 4]), count: 3)
         let decodeTransient = try QwenResidentPrefillTransient.bytes(geometry: g,
             stageHasAttention: g.attentionLayers > 0, chunkTokens: 1, contextTokens: maximumTokens)
         let transient = max(scalar.transientBytes, decodeTransient == 0 ? 0 : try bound(decodeTransient, count: lanes))
         let shared = try sum([scalar.fusionBytes, transient, logits,
-            scalar.projectionConstantBytes, batchConstants, poolSlack])
+            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes])
         // A one-token batch can gather more bytes than a short prompt frame.
         // Control limbs and retirement votes also travel in the sealed codec.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,
@@ -77,6 +81,6 @@ struct QwenTensorParallelBatchBudget {
             allocationBound: allocationBound)
         return .init(lanes: lanes, perLaneStateBytes: perLaneState,
             sharedBytesExcludingCollectives: shared, batchProjectionConstantBytes: batchConstants,
-            pagedPoolSlackBytes: poolSlack, allowance: allowance)
+            pagedPoolSlackBytes: poolSlack, prefix: prefix, allowance: allowance)
     }
 }

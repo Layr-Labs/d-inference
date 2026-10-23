@@ -1449,6 +1449,18 @@ exercise refusal logic and do not rerun or replace the model qualification.
 
 ### Pending HTTP requests across native mode replacement
 
+`DistributedAutomaticBatchPlannerTests` exercises the replacement planner's
+actual decision with owner-only recorded link and served-speed files. It checks
+that a measured keyed reduction reaches TP selection, foreign/stale/non-private
+measurements retain fallback, served costs reach calibration, and the real
+helper child receives `device --json --index`. These are CPU metadata checks;
+they do not execute models or claim measured batch throughput.
+
+```bash
+cd provider-swift
+swift test --filter DistributedAutomaticBatchPlannerTests
+```
+
 `DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
 also reproduces a short burst draining before its proposal returns: the next
 real burst consumes the retained intent without a second planning call. Tests
@@ -1734,3 +1746,17 @@ metadata helper against native owner budgets at every admitted share and width.
 It proves metadata accounting without reading or qualifying weight payloads.
 Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
 separate hardware gates.
+
+### Qwen27 TP warm-prefix checks
+
+`QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
+misses, media/key isolation, allocator rounding and bounded LRU eviction. The
+real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
+outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
+reordered decode and one-sided cache loss. Run it with both contiguous and
+paged backends; production recurrent kernels require the Metal invocation
+listed above. `QwenTensorParallelBatchDriverTests` checks that donation follows
+both ranks' cleanup while the lane charge is still held, and that cancelled or
+failed lanes cannot donate. The registered-header quote test must continue
+matching the exact native LOAD budget. Full-artifact warm reuse and speed are
+separate paired-hardware gates.

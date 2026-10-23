@@ -34,7 +34,7 @@ struct QwenTensorParallelBatchBudgetTests {
             #expect(candidate.allowance.requestBytesExcludingCollectives == lanes * candidate.perLaneStateBytes + candidate.sharedBytesExcludingCollectives)
             let logits = 3 * bound(lanes * plan.vocabularySize * 4)
             #expect(candidate.sharedBytesExcludingCollectives == scalar.fusionBytes + scalar.transientBytes + logits
-                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes)
+                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes + candidate.prefix.residentBytes)
             #expect(candidate.pagedPoolSlackBytes >= 2 * CBv2StageKVHost.segmentBytes)
             // The underlying host's entire admitted page capacity, its gather
             // and replacement pages fit inside the full state charges.

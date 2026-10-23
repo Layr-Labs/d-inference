@@ -21,26 +21,44 @@ final class QwenTensorParallelBatchSession {
     let request: QwenLayerStageGenerationRequest
     let state: CBv2OwnedRequestState
     private var inputs: QwenTensorParallelBatchInputs?
+    private let captureFrontier: Int
+    private let captureLimitBytes: Int
+    private let allocationBound: (Int) throws -> Int
+    private var captured: QwenTensorParallelBatchPrefixState?
     private(set) var schedule: QwenLayerStageGenerationSchedule
     private(set) var retired = false
     var committedTokens: Int { state.committedTokens }
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
-         request: QwenLayerStageGenerationRequest, inputs: QwenTensorParallelBatchInputs? = nil) throws {
+         request: QwenLayerStageGenerationRequest, inputs: QwenTensorParallelBatchInputs? = nil,
+         restored: QwenTensorParallelBatchPrefixState? = nil, captureFrontier: Int = 0,
+         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
         guard case .shard(_, let ranks) = model.role, ranks == 2, !model.plan.routedExperts,
               sha256(configuration) == model.configurationSHA256,
               request.profile.hiddenSize == model.plan.hiddenSize,
               request.profile.vocabularySize == model.plan.vocabularySize,
-              request.reusedPrefixTokens == 0 else {
-            throw ProbeError("Qwen TP batch session requires a matching dense shard and fresh request")
+              request.reusedPrefixTokens == (restored?.committedTokens ?? 0),
+              request.reusedPrefixTokens % request.chunkSize == 0,
+              captureFrontier == 0 || (captureFrontier > request.reusedPrefixTokens
+                && captureFrontier < request.promptCount && captureFrontier % request.chunkSize == 0),
+              captureLimitBytes >= 0, captureFrontier == 0 || allocationBound != nil else {
+            throw ProbeError("Qwen TP batch session requires a matching dense shard and original-grid state")
         }
         let geometry = try CBv2RequestGeometry(model: model.model, family: .qwen35,
             feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(model.model),
             layerCount: model.plan.layerCount, vocabularySize: model.plan.vocabularySize,
             configurationData: configuration, maximumTokens: request.maximumTokens, host: host)
         self.model = model; self.request = request; self.inputs = inputs
-        state = try CBv2OwnedRequestState(geometry: geometry,
-            promptCount: request.promptCount, outputCount: request.outputCount)
+        self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
+        self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP prefix capture") }
+        if let restored {
+            state = try CBv2OwnedRequestState(geometry: geometry, promptCount: request.promptCount,
+                outputCount: request.outputCount, adoptingCommittedTokens: restored.committedTokens,
+                attention: restored.attention, recurrent: restored.recurrent)
+        } else {
+            state = try CBv2OwnedRequestState(geometry: geometry,
+                promptCount: request.promptCount, outputCount: request.outputCount)
+        }
         schedule = QwenLayerStageGenerationSchedule(request: request)
     }
 
@@ -90,6 +108,7 @@ final class QwenTensorParallelBatchSession {
                 }
             })
             try schedule.commit(frame)
+            if committedTokens == captureFrontier { try capturePrefix(check: checked) }
             return final ? output : nil
         }
     }
@@ -156,6 +175,50 @@ final class QwenTensorParallelBatchSession {
             throw ProbeError("Qwen TP batched logits have an invalid shape, dtype or finite value")
         }
     }
+
+    private func capturePrefix(check: () throws -> Void) throws {
+        guard captured == nil, captureFrontier > 0, committedTokens == captureFrontier else {
+            throw ProbeError("Qwen TP prefix capture frontier differs")
+        }
+        try state.requireOpen()
+        var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        for (row, kind) in zip(state.rows, state.geometry.kinds) {
+            guard let row, let index = kind.modelLayerIndex else { throw ProbeError("Qwen TP capture lacks an attention row") }
+            let value = row.snapshot()
+            guard value.offset == captureFrontier, value.keys.dim(2) == captureFrontier,
+                  value.values.dim(2) == captureFrontier else { throw ProbeError("Qwen TP capture attention frontier differs") }
+            attention[index] = (value.keys, value.values)
+        }
+        let confirmed = state.recurrent.confirmedStateSnapshot() ?? [:]
+        var recurrent: [Int: (conv: MLXArray, ssm: MLXArray)] = [:]
+        for layer in state.geometry.recurrent.layers {
+            guard let value = confirmed[layer.modelLayerIndex], let conv = value.conv, let ssm = value.ssm else {
+                throw ProbeError("Qwen TP capture lacks confirmed recurrence")
+            }
+            recurrent[layer.modelLayerIndex] = (conv, ssm)
+        }
+        let roots = attention.values.flatMap { [$0.keys, $0.values] } + recurrent.values.flatMap { [$0.conv, $0.ssm] }
+        let allocated = try QwenLongPrefillCheckedBytes.sum(roots.map {
+            let bytes = try allocationBound($0.nbytes)
+            guard bytes >= $0.nbytes, $0.nbytes > 0 else { throw ProbeError("Qwen TP prefix allocation bound differs") }
+            return bytes
+        })
+        guard allocated <= captureLimitBytes else { return }
+        func copy(_ value: MLXArray) -> MLXArray { value * MLXArray(1).asType(value.dtype) }
+        attention = attention.mapValues { (copy($0.keys), copy($0.values)) }
+        recurrent = recurrent.mapValues { (copy($0.conv), copy($0.ssm)) }
+        eval(attention.values.flatMap { [$0.keys, $0.values] } + recurrent.values.flatMap { [$0.conv, $0.ssm] })
+        try check()
+        captured = .init(committedTokens: captureFrontier, attention: attention, recurrent: recurrent,
+                         allocatedBytes: allocated)
+    }
+
+    func takeCapturedPrefix() throws -> QwenTensorParallelBatchPrefixState? {
+        guard retired && state.isClosed else { throw ProbeError("Qwen TP prefix donation precedes native retirement") }
+        defer { captured = nil }
+        return captured
+    }
+    func discardCapturedPrefix() { captured = nil }
 
     func retire() throws {
         guard !retired else { return }

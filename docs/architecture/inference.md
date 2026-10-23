@@ -84,6 +84,18 @@ admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
 automatic policy. Explicit diagnostic mode or lane settings retain their choice.
 
+Automatic replacement reads the installed plan helper's device index and the
+current pair's recorded keyed-link costs and served-request history. It uses
+the same measurement readers as initial placement, so a supported TP batch
+candidate can compete on measured costs instead of being dropped as unmeasured.
+Absent, stale, malformed or non-private link history keeps the existing
+unmeasured fallback. Link records bind the unordered member pair, keyed probe
+and existing 30-day freshness limit. Served records bind the model, mode, cut
+and member order and exclude cached or concurrent requests; they do not carry
+artifact, backend or worker-revision pins. This restores the ordinary planning
+contract, not stronger performance provenance. It does not force TP, assume
+a batching speedup, or replace full-profile and live LOAD memory checks.
+
 GPT-OSS and MiMo use a separate `ClusterPlacementBatchQuote` from the native
 `batch-scope` metadata helper. It binds the exact width, original chunk and full
 listener prompt/output limits. `ClusterPlacementBatchBudget` retains each
@@ -3306,8 +3318,8 @@ acknowledgement. Failed release retains the reservation for cleanup or the
 worker's process fence. The exact27 singleton and batch owners publish raw
 selection logprobs through the committed-token channel.
 
-This initial batch path uses cold histories; shared prefix capture/restore and
-TP speculative rounds remain follow-ups. Installed owners propagate a priced
+The batch path can restore mutually held original-grid prefix snapshots into
+fresh request-owned state. TP speculative rounds remain a separate integration. Installed owners propagate a priced
 saved width or explicit diagnostic width for exact Qwen27; automatic placement
 uses the separate full native TP quote described above. Synthetic CPU and both-chip native
 fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.

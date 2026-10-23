@@ -389,4 +389,138 @@ struct QwenTensorParallelBatchSessionTests {
         }
     }
 
+    @Test func warmAttentionPrefixesPreserveMixedHistoriesAndRetirement() throws {
+        try verifyWarmPrefixes(hybrid: false)
+    }
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func warmHybridPrefixesPreserveConvSSMAndMixedPositions() throws {
+        try verifyWarmPrefixes(hybrid: true)
+    }
+    private func verifyWarmPrefixes(hybrid: Bool) throws {
+        try Device.withDefaultDevice(device) {
+            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
+                heads: 4, kvHeads: 2, vocabulary: 256)
+            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096
+            var tensors = fixture.tensors
+            if !hybrid {
+                text["full_attention_interval"] = 1
+                tensors.removeAll { $0.0.contains(".linear_attn.") }
+                let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+                for layer in 0..<3 {
+                    tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
+                }
+            }
+            root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-warm-tiny", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+            for width in [2, 4, 8] {
+                let coldWire = Rendezvous(), warmWire = Rendezvous()
+                let caches = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+                func pair(_ wire: Rendezvous, warm: Bool) throws -> [Owned] {
+                    try (0..<2).map { rank in
+                        let reduction = Rank(rank, wire)
+                        let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                            role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                            for (name, value) in tensors { try keep(name, value) }
+                        }
+                        let owner = try Owned(model, lanes: width)
+                        owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
+                            group: reduction, prepare: { reservation, _ in
+                                self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
+                            }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
+                            prefix: warm ? caches[rank] : nil,
+                            prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                            prefixScope: warm ? { _ in "same-authenticated-load-and-media-policy" } : nil,
+                            allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
+                        return owner
+                    }
+                }
+                let cold = try pair(coldWire, warm: false), warm = try pair(warmWire, warm: true)
+                func request(_ row: Int) throws -> QwenLayerStageGenerationRequest {
+                    try .init(profile: profile, requestID: UUID(),
+                        promptTokenIDs: [row + 10] + (1..<((row == 0 ? 72 : 11) + row * 2)).map { ($0 * 17 + row * 7) % 256 },
+                        chunkSize: 5, outputCount: 12, stopTokenIDs: [])
+                }
+                // Donate only after clean local retirement and the caller's
+                // bilateral vote; native page bindings must already be gone.
+                for row in 0..<width {
+                    let r = try request(row)
+                    try parallel(warm) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+                    while warm[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                        try parallel(warm) { owner in
+                            let lane = owner.nativeLanes[0]
+                            if let token = try owner.executor!.prefill(lane, frame: lane.nextFrame!, check: {}) { owner.selected = [token] }
+                        }
+                    }
+                    for owner in warm {
+                        let lane = owner.nativeLanes[0]
+                        #expect(throws: (any Error).self) { try lane.session.takeCapturedPrefix() }
+                        try owner.executor!.retire(lane, reason: .clientStop, selected: 1, last: owner.selected[0])
+                        #expect(owner.host.isDrained)
+                    }
+                    for owner in warm { try owner.executor!.confirmedRetirement(owner.nativeLanes[0], clean: true) }
+                }
+                #expect(caches.allSatisfy { $0.bytesInUse > 0 })
+                for owner in warm { owner.nativeLanes.removeAll() }
+                for row in 0..<width {
+                    let r = try request(row)
+                    try parallel(cold) { $0.nativeLanes.append(try $0.executor!.open(.init(request: r), check: {})) }
+                    try parallel(warm) { $0.nativeLanes.append(try $0.executor!.open(.init(request: r), check: {})) }
+                    #expect(warm.allSatisfy { $0.nativeLanes[row].committedTokens == (r.promptCount - 1) / 5 * 5 })
+                    for pair in [cold, warm] {
+                        while pair[0].nativeLanes[row].nextFrame?.phase == .prefill {
+                            try parallel(pair) { owner in
+                                let lane = owner.nativeLanes[row]
+                                owner.output = try lane.session.prefill(check: {})
+                            }
+                        }
+                    }
+                    for rank in 0..<2 { #expect(bytes(cold[rank].output!) == bytes(warm[rank].output!)) }
+                }
+                for step in 0..<4 {
+                    let order = (0..<width).map { (step + width - 1 - $0) % width }
+                    let tokens = order.map { ($0 * 11 + step * 7 + 3) % 256 }
+                    for pair in [cold, warm] {
+                        try parallel(pair) { owner in
+                            owner.output = try QwenTensorParallelBatchSession.decode(order.map { owner.nativeLanes[$0].session },
+                                tokens: tokens, check: {})
+                        }
+                    }
+                    for rank in 0..<2 {
+                        #expect(bytes(cold[rank].output!) == bytes(warm[rank].output!), "warm width=\(width) step=\(step) rank=\(rank)")
+                        for row in 0..<width {
+                            let a = cold[rank].nativeLanes[row].session.state, b = warm[rank].nativeLanes[row].session.state
+                            #expect(a.committedTokens == b.committedTokens)
+                            for (x, y) in zip(a.rows, b.rows) {
+                                #expect(bytes(x!.snapshot().keys) == bytes(y!.snapshot().keys))
+                                #expect(bytes(x!.snapshot().values) == bytes(y!.snapshot().values))
+                            }
+                            let x = a.recurrent.confirmedStateSnapshot() ?? [:], y = b.recurrent.confirmedStateSnapshot() ?? [:]
+                            #expect(x.keys.sorted() == y.keys.sorted())
+                            for index in x.keys {
+                                #expect(bytes(x[index]!.conv!) == bytes(y[index]!.conv!))
+                                #expect(bytes(x[index]!.ssm!) == bytes(y[index]!.ssm!))
+                            }
+                        }
+                    }
+                }
+                for owner in cold + warm {
+                    for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 0, last: nil) }
+                    owner.nativeLanes.removeAll(); #expect(owner.host.isDrained)
+                }
+                // A one-sided cache loss must produce a bilateral cold miss.
+                caches[0].sweep()
+                let r = try request(0)
+                try parallel(warm) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+                #expect(warm.allSatisfy { $0.nativeLanes[0].committedTokens == 0 })
+                for owner in warm { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 0, last: nil) }
+                for cache in caches { cache.sweep(); #expect(cache.bytesInUse == 0) }
+            }
+        }
+    }
+
 }

@@ -500,3 +500,7 @@ paths disable cluster prefix reuse; the standalone contiguous row above keeps
 its existing contract. See [the cluster boundary](../architecture/prefix-cache.md#mimo-cluster-paged-mode-boundary)
 and `MiMoV26MTPHistoryStorage` in
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26MTP.swift`.
+
+The Qwen27 TP batch prefix cache is resident memory only. It does not read,
+write or reinterpret an encrypted SSD checkpoint. Its keys, bounded storage
+and bilateral lifetime are described in the [prefix architecture](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).

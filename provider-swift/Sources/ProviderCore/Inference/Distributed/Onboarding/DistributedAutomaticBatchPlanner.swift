@@ -29,6 +29,29 @@ struct DistributedAutomaticBatchPlanner {
             settings: settings, clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
     }
 
+    /// Read the same device index as initial placement; no model load is involved.
+    static func deviceProfile(tool: URL, deadline: UInt64) throws -> ClusterDeviceProfile {
+        try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
+            arguments: ["device", "--json", "--index"], deadline: deadline,
+            maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+    }
+
+    /// Replacement must price the actual pair's latest recorded keyed link and
+    /// served requests, just as initial placement does. Missing/stale/untrusted
+    /// records retain the existing unmeasured fallback; no rate is invented.
+    static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                       localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
+                       layout: ClusterModelLayout, scope: ClusterPlacementBatchScope, homeDirectory: URL) throws
+        -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+        try ClusterPlacementFlow.decide(description: description, capability: capability,
+            localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
+            promptTokens: scope.request.promptTokens, outputTokens: scope.request.outputTokens, batchScope: scope,
+            leader: localMemberID,
+            served: ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory),
+            link: ClusterLinkProbeHistory.costs(homeDirectory: homeDirectory, members: description.members.map(\.id)) ?? .unmeasured,
+            environment: [:], benchDebugBuild: false)
+    }
+
     func snapshot(reference: ClusterConfigurationReference, demand: DistributedLocalBatchDemand,
                   widths: [Int], requireNow: Bool) throws -> Snapshot? {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
@@ -67,7 +90,7 @@ struct DistributedAutomaticBatchPlanner {
             try DistributedCapabilityProbe.run(executable: tool, arguments: arguments,
                 deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000, maximumOutputBytes: maximum)
         }
-        let profile = try ClusterDeviceProfile.decode(run(["device", "--json"], maximum: ClusterDeviceProfile.maximumEncodedBytes))
+        let profile = try Self.deviceProfile(tool: tool, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
         let layout = try ClusterModelLayout.decode(run(["layout", "--model-dir", local.modelDirectory, "--json"],
             maximum: ClusterModelLayout.maximumEncodedBytes))
         let usesNativeBatchQuote = [.gptossLayerStage, .mimoV26LayerStage].contains(
@@ -127,11 +150,9 @@ struct DistributedAutomaticBatchPlanner {
                 } else { tensorQuote = nil }
                 scope = try ClusterPlacementBatchScope(request: request!, lanes: lanes, tensorParallelQuote: tensorQuote)
             }
-            let request = scope.request
-            let decision = try ClusterPlacementFlow.decide(description: description, capability: capability,
-                localMemberID: configuration.memberID, localProfile: profile, peerProfile: peerProfile, layout: layout,
-                promptTokens: request.promptTokens, outputTokens: request.outputTokens, batchScope: scope,
-                leader: local.id, environment: [:], benchDebugBuild: false)
+            let decision = try Self.decide(description: description, capability: capability,
+                localMemberID: configuration.memberID, localProfile: profile, peerProfile: peerProfile,
+                layout: layout, scope: scope, homeDirectory: paths.homeDirectory)
             guard let chosen = decision.result.chosen, let setup = decision.setup,
                   chosen.possible, chosen.withinGPUWorkingSet,
                   !requireNow || chosen.ranks.allSatisfy({ $0.fit == .now }) else { continue }

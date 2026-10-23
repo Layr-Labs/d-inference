@@ -476,3 +476,8 @@ The automatic Qwen27 TP-width change builds the Placement and Runtime targets
 and the actual ProviderCore source closure. The installed-session contract
 checks use a real sanitized child process without native weights or network;
 see [the focused tests](test.md#automatic-qwen27-tp-width-checks).
+
+Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
+reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
+because the same complete LOAD budget prices the additional snapshot banks.
+See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).

@@ -61,6 +61,7 @@ public final class QwenTensorParallelResidentRuntime {
     public let batchLanes: Int
     var batchHost: CBv2StageKVHost?
     let batchBudget: QwenTensorParallelBatchBudget?
+    let batchPrefix: QwenTensorParallelBatchPrefixCache?
     let batchBook = ClusterBatchLaneBook<QwenTensorParallelOwnedBatchReservation>()
     var batchServing = false
     var batchOrdinal: UInt64 = 0
@@ -247,7 +248,7 @@ public final class QwenTensorParallelResidentRuntime {
                 profile: profile, shares: shares,
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
                 prefix: QwenTensorParallelPrefixCache(budgetBytes: batch.lanes > 1 ? 0 : budget),
-                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget)
+                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchPrefixEnabled: prefixEnabled)
         } catch {
             let primary = error; control.fail(); batchHost = nil; loadedModel = nil
             do {
@@ -269,13 +270,16 @@ public final class QwenTensorParallelResidentRuntime {
                  vision: QwenStageVision?, visionInventory: QwenStageVisionInventory?, profile: QwenRegisteredDenseModelProfile, shares: [Int], loadAgreement: String, capacity: Int,
                  receipt: QwenTensorParallelShardReceipt, linkProbe: ClusterWorkerLinkProbe?,
                  prefix: QwenTensorParallelPrefixCache, batchLanes: Int, batchHost: CBv2StageKVHost?,
-                 batchBudget: QwenTensorParallelBatchBudget?) {
+                 batchBudget: QwenTensorParallelBatchBudget?, batchPrefixEnabled: Bool) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.profile = profile; self.shares = shares
         self.vision = vision; self.visionInventory = visionInventory
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe; self.prefix = prefix
         self.batchAllocationBaseline = Memory.activeMemory
         self.batchLanes = batchLanes; self.batchHost = batchHost; self.batchBudget = batchBudget
+        self.batchPrefix = batchBudget.map {
+            .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
+        }
         self.receipt = receipt.storageCommitmentSHA256
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
@@ -473,7 +477,7 @@ public final class QwenTensorParallelResidentRuntime {
                     for reserved in batchBook.reservations() { try reserved.media?.releaseAfterCheckedDrain() }
                     batchBook.clear(); failedBatchDriver = nil; batchHost = nil
                     try reservation?.media?.releaseAfterCheckedDrain()
-                    prefix.sweep()
+                    prefix.sweep(); batchPrefix?.sweep()
                     weak var releasedVision = vision
                     vision = nil
                     guard releasedVision == nil else { throw ProbeError("Tensor-parallel vision model remains retained") }

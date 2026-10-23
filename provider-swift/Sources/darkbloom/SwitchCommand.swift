@@ -33,6 +33,8 @@ struct Switch: AsyncParsableCommand {
         }
         let capabilities = Set(reportedCapabilities.map { ProviderRuntimeCapability(rawValue: $0) })
         let snapshot = try loadRuntimeSnapshot(configPath: configPath)
+        // Scan the running provider's model cache, not the default one.
+        ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
         guard let hardware = snapshot.hardware else {
             throw ValidationError("Cannot scan local models: hardware detection failed.")
         }

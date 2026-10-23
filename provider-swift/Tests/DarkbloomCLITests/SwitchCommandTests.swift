@@ -104,4 +104,24 @@ struct SwitchCommandTests {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         #expect(try decoder.decode(DaemonState.self, from: encoder.encode(state)).modelSwitch == state.modelSwitch)
     }
+
+    /// Issue #1469: with a non-default `model_cache_directory`, `switch --model`
+    /// rejected every local model. Past the selection, the update lock in the
+    /// test runner's directory stops the command before it writes a request.
+    @Test func explicitSelectionScansTheConfiguredModelCache() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            let model = try sandbox.makeModel("acme/Switch-mxfp4")
+            try Data(#"{"model_type":"gpt_oss"}"#.utf8)
+                .write(to: model.appendingPathComponent("snapshots/local/config.json"))
+            var state = try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970)
+            state.modelSwitch = .init()
+            state.configPath = sandbox.config.path
+            state.runtimeCapabilities = []
+            sandbox.writeState(state)
+            let error = try await runFailingCLICommand(Switch.self, ["switch", "--model", "acme/Switch-mxfp4"])
+            #expect(!String(describing: error).contains("Selection rejected"))
+        }
+    }
 }

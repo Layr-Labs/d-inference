@@ -400,15 +400,23 @@ enum GLM5NextPromptPolicy {
         return .init(messages: messages, tools: tools, additionalContext: context)
     }
 
-    /// Captured returned reasoning aligned with `prepared.messages`; tool
-    /// choice `none` may prepend its instruction turn. A capture that does not
-    /// align with the decoded messages is not applied.
+    /// Captured returned reasoning aligned with `prepared.messages`. A JSON
+    /// response_format adds the service's instruction turn after the leading
+    /// system turns (`OpenAIResponseFormatSupport.preparedRequest`), and tool
+    /// choice may prepend its own. A capture that does not align with the
+    /// decoded messages is not applied.
     private static func returnedReasoning(
         _ captured: [String?]?, request: OpenAIChatCompletionRequest,
         prepared: ToolChoicePromptPolicy.Prepared
     ) -> [String?] {
+        guard var captured else { return Array(repeating: nil, count: prepared.messages.count) }
+        let instruction = (request.messages.firstIndex { $0.role != .system } ?? request.messages.endIndex) - 1
+        if request.responseFormat?.requiresJSONOutput == true, captured.count + 1 == request.messages.count,
+            instruction >= 0 {
+            captured.insert(nil, at: instruction)
+        }
         let offset = prepared.messages.count - request.messages.count
-        guard let captured, captured.count == request.messages.count, (0...1).contains(offset) else {
+        guard captured.count == request.messages.count, (0...1).contains(offset) else {
             return Array(repeating: nil, count: prepared.messages.count)
         }
         return Array(repeating: nil, count: offset) + captured

@@ -273,6 +273,40 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(served.firstWithheldOutputAt != nil)
     }
 
+    /// In a JSON request an earlier assistant turn keeps the reasoning
+    /// OpenRouter returns as `reasoning` or `reasoning_details`, rendered
+    /// exactly as `reasoning_content`, although the service inserted its
+    /// instruction turn after the leading system turns.
+    @Test(arguments: [false, true])
+    func jsonModeMultiTurnRendersReturnedReasoning(leadingSystem: Bool) async throws {
+        let thought = "Austin is sunny at 75F; answer with one object."
+        func prompt(_ reasoning: [String: Any]) async throws -> String {
+            var assistant: [String: Any] = ["role": "assistant", "content": Self.austin]
+            assistant.merge(reasoning) { _, added in added }
+            var messages: [[String: Any]] = [
+                ["role": "user", "content": "Weather in Austin as JSON."], assistant,
+                ["role": "user", "content": "Again, as one JSON object."],
+            ]
+            if leadingSystem { messages.insert(["role": "system", "content": "Be terse."], at: 0) }
+            var body = Self.jsonObjectBody()
+            body["messages"] = messages
+            let prompts = PromptCapture()
+            let served = try await serve(body, output: ["Done.</think>", Self.austin], prompts: prompts)
+            #expect(served.error == nil && served.content == Self.austin)
+            return try #require(prompts.prompts.first)
+        }
+        let expected = try await prompt(["reasoning_content": thought])
+        #expect(expected.contains("<think>\(thought)</think>"))
+        #expect(expected.contains("<|system|>You must respond with a single valid JSON object."))
+        for returned: [String: Any] in [
+            ["reasoning": thought],
+            ["reasoning_details": [["type": "reasoning.summary", "summary": "Weather."],
+                                   ["type": "reasoning.text", "text": thought]]],
+        ] {
+            #expect(try await prompt(returned) == expected)
+        }
+    }
+
     /// Nothing unvalidated reaches the client: prose, a schema violation, a
     /// truncated value or an answer cut off in reasoning is a typed 422 after
     /// the streamed reasoning, with no content frame. Errors never quote output.

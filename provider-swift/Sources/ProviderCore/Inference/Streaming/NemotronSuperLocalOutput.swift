@@ -92,9 +92,10 @@ struct NemotronSuperLocalOutput {
         try ToolConstraintValidation.validate(calls, prepared: plan.toolPolicy)
         // A response format shapes the final answer; a turn that calls tools
         // is not one, so its text (none for a forced choice) passes unchanged.
-        let answer = forced ? "" : content + residual
+        let text = forced ? "" : content + residual
         let validatedContent = calls.isEmpty
-            ? try OpenAIResponseFormatSupport.normalizedContent(answer, for: plan.request.responseFormat) : answer
+            ? try OpenAIResponseFormatSupport.normalizedContent(text, for: plan.request.responseFormat)
+            : text
         let validatedReasoning = reasoning.isEmpty ? nil : reasoning
         // Streamed reasoning and plain streamed content (never JSON-normalized)
         // already left through route; only the parser's residual text remains.

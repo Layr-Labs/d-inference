@@ -37,8 +37,8 @@ enum SuperOpenRouterCapabilityShapes {
                                   "conditions": ["type": "string", "description": "Short description"]]],
     ] as [String: Any]] }
 
-    /// Every capability test, reasoning enabled and disabled, plus the
-    /// response-format-with-tools combinations the owner used to refuse.
+    /// Every capability test, reasoning enabled and disabled, plus a JSON
+    /// response format with tools under auto and required choice.
     static func all() throws -> [Shape] {
         var shapes: [Shape] = []
         for reasoning in [true, false] {

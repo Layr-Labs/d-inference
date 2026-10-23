@@ -82,7 +82,8 @@ struct NemotronSuperOpenRouterCapabilityTests {
         + "<parameter=unit>\nfahrenheit\n</parameter>\n</function>\n</tool_call>"
     static let reasoning = "The user wants Boston's weather in fahrenheit.</think>\n"
 
-    /// A compliant response for the shape, after any reasoning.
+    /// A compliant response for the shape, after any reasoning. Step 5's
+    /// calls are all answered, so it summarizes.
     static func compliantAnswer(_ shape: Shape) -> String {
         switch shape.expectation {
         case .answerOnly: "It is 72°F and sunny in Boston, MA."
@@ -150,7 +151,7 @@ struct NemotronSuperOpenRouterCapabilityTests {
             #expect(result.calls.first.map { .object($0.function.arguments) } == weather, "\(label)")
             // A call turn's framing newline, if any, is all the text it carries.
             #expect(ToolChoiceEnforcementPolicy.isFramingWhitespace(result.content), "\(label)")
-        case .answerOrCall where shape.name != "tool-call-step-5":
+        case .answerOrCall where compliantAnswer(shape) == call:
             #expect(result.calls.map(\.function.name) == ["get_current_weather"], "\(label)")
         case .answerOnly, .answerOrCall:
             #expect(result.calls.isEmpty && !result.content.isEmpty, "\(label)")

@@ -892,3 +892,14 @@ KV/capture allowances and does not add persistent storage. A partial or whole
 final prompt chunk is recomputed on a repeat. This framing correction adds no
 qualified hardware shape or performance claim; separately observed cross-chip
 numerical failures remain failed until the unchanged qualification gate passes.
+
+## Gemma prompt projection qualification
+
+Registered Gemma prompt projections use an explicit singleton-token reduction
+policy for supported BF16 affine packing, as described in
+[inference](inference.md#gemma-prompt-projection-reductions). The exact arithmetic
+receipt separates older rectangular-projection results and cache identities.
+Component tests do not qualify a complete model, both rank orders, or prompt
+throughput. Keep existing cross-chip failures and require fresh full-artifact
+numerical and timing evidence for both scoped prompt policies. Attention and
+full-model composition retain their independent qualification requirements.

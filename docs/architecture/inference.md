@@ -3096,3 +3096,29 @@ This corrects the prefix-on versus prefix-off frame difference; it does not
 resolve or waive a separate cross-chip numerical difference. Each corrected
 full-artifact solo/pair run still uses the existing comparator. See
 [prefix reuse](prefix-cache.md#gemma-chunk-grid-reuse).
+
+## Gemma prompt projection reductions
+
+Registered Gemma stages explicitly scope multi-token BF16 affine4/8 group64
+projections to the singleton token reduction. The SDK helper views each prompt
+token as a separate native M=1 matrix product while broadcasting the existing
+packed weights; it adds no persistent weight copy. Query/key/value, output,
+shared MLP and router projections use their existing model call sites. Norms,
+the vocabulary head, independent decode lanes and singleton frames retain
+their existing operations.
+The same explicit prompt scope invokes each BF16 token's complete expert block
+with its unchanged selected indices and weights. This preserves singleton
+GeGLU and weighted reduction rather than entering a wide sorted expert graph;
+ordinary SDK prompts and speculative verification keep their existing paths. Custom modules, other dtypes/packing, and ordinary
+SDK callers retain the original forward method.
+
+The exact Gemma arithmetic receipt binds both prompt projection and expert
+reduction policies before LOAD, separating prior rectangular-projection cache and plan identities. The
+stable family policy identifier and required environment flags remain the same.
+Component byte equality is separate from full-model two-chip numerical
+qualification, and the M=1 prompt graph requires its own throughput measurement.
+The SDK helper is
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4PrefillProjection.swift`;
+stage activation and receipt binding are in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4LayerStageModel.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4ArithmeticEnvironment.swift`.

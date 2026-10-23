@@ -112,7 +112,9 @@ extension Gemma4LayerStageModel: LayerStageFrameForwarding {
     func layerStageForward(tokens: MLXArray, residual: MLXArray?,
                            caches: [any CBv2AttendingLayerCache], frame: QwenLayerStageFrame) -> MLXArray {
         Gemma4BatchDecodeScope.withDecodeFrame(tokens: tokens, enabled: frame.phase == .decode) {
-            forwardFrame(tokens: tokens, residual: residual, caches: caches, frame: frame)
+            Gemma4PrefillProjectionScope.withPrefillFrame(tokens: tokens, enabled: frame.phase == .prefill) {
+                forwardFrame(tokens: tokens, residual: residual, caches: caches, frame: frame)
+            }
         }
     }
 

@@ -1604,3 +1604,20 @@ fixtures execute on CPU. Source-matched both-host GPU and full-artifact MTP,
 compact and phase runs remain separate gates, with existing references and
 numeric tolerances unchanged. The CPU checks do not prove transport, installed
 worker loading or artifact throughput.
+
+The SDK integration suite `Gemma4PrefillProjectionTests` compares BF16 affine4/8
+prompt projections with actual singleton calls at chunk boundaries, checks
+explicit scope restoration and unsupported/custom fallbacks, and verifies the
+unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decoder, router,
+shared MLP and sparse expert block with the attention output isolated to zero;
+it assembles an independent projection/expert oracle while preserving the
+original rectangular normalization and elementwise operations, and compares
+selected routes across prompt boundaries. A separate expert-only composition
+check compares complete singleton calls with the shared branch isolated to
+zero. Ordinary and verification paths remain covered. These checks do not
+claim whole-layer singleton equivalence: existing normalization can depend on
+rectangle shape on CPU.
+`GemmaPrefillArithmeticTests` in the runtime target verifies that both exact
+policies change the receipt while the family environment and chunk policy
+remain bound. These CPU checks do not establish full-model cross-chip qualification
+or throughput.

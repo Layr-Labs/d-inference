@@ -42,6 +42,10 @@ enum Gemma4ArithmeticEnvironment {
         /// Prefix on/off use identical prefill chunk shapes; the exact receipt
         /// separates former final-token-split rank and cache implementations.
         let prefixFramePolicy = "gemma4-original-chunk-grid-v1"
+        /// Exact receipts separate this prompt graph from ordinary rectangular
+        /// affine projections; the stable family policy ID is unchanged.
+        let prefillProjectionPolicy = "gemma4-bf16-affine4-8-group64-token-m1-v1"
+        let prefillExpertPolicy = "gemma4-bf16-token-expert-reduction-v1"
         let actualProcessEnvironmentMustBePassedBeforeMLXInitialization = true
         let sourceBinaryMetalLibraryAndHardwareIdentityStillRequired = true
         let numericalOrPerformanceQualificationEstablished = false

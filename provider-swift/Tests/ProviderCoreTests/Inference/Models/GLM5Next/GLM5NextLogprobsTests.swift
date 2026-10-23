@@ -11,29 +11,6 @@ import Testing
     static let enabled =
         ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC"] == "1"
 
-    /// The coordinator relay's view of one submission: the closed failure a
-    /// thrown error or a bridge `.error` event becomes, as in
-    /// `MultiModelBatchSchedulerEngine` and the inference handler.
-    static func relayFailure(bridge: EngineV2Bridge, request: ChatCompletionRequest,
-                             requestID: String) async -> InferenceFailure? {
-        do {
-            let stream = try await bridge.submitTokenized(
-                promptTokens: [3, 3], request: request, requestId: requestID,
-                cacheEnabled: false, logprobsChannel: EngineV2LogprobsChannel(),
-                firstContentDeadline: nil)
-            for await event in stream {
-                if case .error(let message) = event {
-                    return ProviderLoop.sanitizedInferenceFailure(
-                        from: MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message),
-                        phase: .generation)
-                }
-            }
-            return nil
-        } catch {
-            return ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
-        }
-    }
-
     /// Generated tokens of a plain request, with any bridge errors.
     static func serve(bridge: EngineV2Bridge, request: ChatCompletionRequest,
                       requestID: String) async -> (tokens: Int, errors: [String]) {
@@ -100,30 +77,50 @@ import Testing
         await ModelContainerLoading.releaseExternalResources(in: container)
     }
 
-    /// The native engine refuses a logprobs row at submit. That refusal must
-    /// reach the coordinator as a typed 400 invalid_request, never the untyped
-    /// 500 generation failure that strikes its inference-error breaker, and
-    /// the engine keeps serving.
+    /// The protected native engine captures a logprob row on the relay path:
+    /// one OpenAI-shaped entry per generated token with the requested
+    /// alternatives, the row never drafts, the next plain request still
+    /// speculates, and native work stays unfaulted.
     @Test(.enabled(if: GLM5NextLogprobsTests.enabled))
-    func nativeLogprobsRefusalIsATypedClientError() async throws {
+    func protectedNativeEngineServesRelayLogprobs() async throws {
         try await Self.withProtectedBridge { bridge, engine, catalogID in
-            for (index, top) in [2, 0].enumerated() {
-                let failure = await Self.relayFailure(
-                    bridge: bridge,
-                    request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 3,
-                                   logprobs: true, top_logprobs: top),
-                    requestID: "glm-logprobs-\(index)")
-                #expect(failure?.code == .invalidRequest && failure?.statusCode == 400
-                    && failure?.errorReason == .clientError,
-                    "logprobs relay failure: \(String(describing: failure))")
+            #expect(engine.acceptsLogprobRows)
+            let channel = EngineV2LogprobsChannel()
+            let stream = try await bridge.submitTokenized(
+                promptTokens: [3, 3],
+                request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 3,
+                               logprobs: true, top_logprobs: 2),
+                requestId: "glm-logprobs", cacheEnabled: false, logprobsChannel: channel,
+                firstContentDeadline: nil)
+            var generated = 0
+            var errors: [String] = []
+            for await event in stream {
+                if case .info(_, let count, _, _) = event { generated = count }
+                if case .error(let reason) = event { errors.append(reason) }
             }
-            #expect(engine.nativeCompletionFault == nil)
-            #expect(await bridge.canSubmitWithNativeOwner())
+            let entries = channel.drain()
+            #expect(errors.isEmpty && generated == 3, "logprobs request errors: \(errors)")
+            #expect(entries.count == generated)
+            for entry in entries {
+                #expect(entry.logprob.isFinite && entry.logprob <= 0)
+                #expect(entry.bytes == entry.token.utf8.map(Int.init))
+                #expect(entry.topLogprobs.count == 2)
+                // Greedy decoding samples the most likely token.
+                #expect(entry.topLogprobs.first?.token == entry.token)
+                #expect(entry.topLogprobs.first?.logprob == entry.logprob)
+                #expect(zip(entry.topLogprobs, entry.topLogprobs.dropFirst()).allSatisfy {
+                    $0.logprob >= $1.logprob
+                })
+            }
+            #expect(try #require(engine.mtpMetricsSnapshot()).proposedTokens == 0)
             let plain = await Self.serve(
                 bridge: bridge,
-                request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 3),
-                requestID: "glm-plain-after-refusal")
-            #expect(plain.tokens == 3 && plain.errors.isEmpty, "plain request errors: \(plain.errors)")
+                request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 8),
+                requestID: "glm-plain-after-logprobs")
+            #expect(plain.tokens == 8 && plain.errors.isEmpty, "plain request errors: \(plain.errors)")
+            #expect(try #require(engine.mtpMetricsSnapshot()).proposedTokens > 0)
+            #expect(engine.nativeCompletionFault == nil)
+            #expect(await bridge.canSubmitWithNativeOwner())
         }
     }
 }

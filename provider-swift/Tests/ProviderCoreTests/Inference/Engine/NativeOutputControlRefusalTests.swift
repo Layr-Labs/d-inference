@@ -10,17 +10,26 @@ import Testing
 @Suite struct NativeOutputControlRefusalTests {
     @Test func onlyNativeTrackedEnginesRefuseLogprobsAndConstraints() {
         #expect(EngineV2Bridge.nativeOutputControlRefusal(
-            nativeTracked: false, topLogprobs: 5, constrained: true) == nil)
+            nativeTracked: false, capturesLogprobs: false, topLogprobs: 5, constrained: true) == nil)
         #expect(EngineV2Bridge.nativeOutputControlRefusal(
-            nativeTracked: true, topLogprobs: 0, constrained: false) == nil)
+            nativeTracked: true, capturesLogprobs: false, topLogprobs: 0, constrained: false) == nil)
         let logprobs = EngineV2Bridge.nativeOutputControlRefusal(
-            nativeTracked: true, topLogprobs: 1, constrained: false)
+            nativeTracked: true, capturesLogprobs: false, topLogprobs: 1, constrained: false)
         let constrained = EngineV2Bridge.nativeOutputControlRefusal(
-            nativeTracked: true, topLogprobs: 0, constrained: true)
+            nativeTracked: true, capturesLogprobs: true, topLogprobs: 0, constrained: true)
         for refusal in [logprobs, constrained] {
             #expect(refusal?.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix) == true)
         }
         #expect(logprobs != constrained)
+    }
+
+    /// A native contract that qualifies capture (GLM5-Next) serves logprob
+    /// rows; constraints stay refused on every native engine.
+    @Test func capturingNativeEnginesServeLogprobsButNotConstraints() {
+        #expect(EngineV2Bridge.nativeOutputControlRefusal(
+            nativeTracked: true, capturesLogprobs: true, topLogprobs: 20, constrained: false) == nil)
+        #expect(EngineV2Bridge.nativeOutputControlRefusal(
+            nativeTracked: true, capturesLogprobs: true, topLogprobs: 3, constrained: true) != nil)
     }
 
     /// `logprobs: true` captures even with `top_logprobs` omitted or 0, so the
@@ -34,7 +43,7 @@ import Testing
 
     @Test func refusalIsATypedClientErrorOnBothSubmitPaths() throws {
         let message = try #require(EngineV2Bridge.nativeOutputControlRefusal(
-            nativeTracked: true, topLogprobs: 2, constrained: false))
+            nativeTracked: true, capturesLogprobs: false, topLogprobs: 2, constrained: false))
         // Throwing submit (coordinator relay) and the non-throwing wrapper's
         // in-band `.error` marker classify identically.
         let parsed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)

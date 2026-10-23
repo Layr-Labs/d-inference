@@ -116,8 +116,14 @@ probe. These use tiny local fixtures, not the full downloaded model. With the
 same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
 opt-in refuses target-only GLM before any load state exists, and
 `GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
-from the same fixture: the relay must see a typed 400 `invalid_request`, never
-a 500, and the engine keeps serving. The pure
+from the same fixture: the relay channel must receive one entry per generated
+token with the requested alternatives, the row must not draft, and a later
+plain request must still speculate. In the SDK,
+`GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
+`protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
+values with the target's own log-softmax for serial and rectangular
+verification. `NativeOutputControlRefusalTests` keeps the typed 400 for
+native engines that do not capture logprobs (MiMo). The pure
 `GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
 the KV rate derived from the pinned architecture evidence.
 

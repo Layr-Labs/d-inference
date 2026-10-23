@@ -46,8 +46,6 @@ export function RequestTable({
         <tbody>
           {records.map((record) => {
             const speed = tokensPerSecond(record);
-            const timing = records.some((record) => record.duration_ms !== undefined);
-            const settled = records.every((record) => record.settled_at !== undefined);
             return (
               <tr key={record.id}>
                 <td>{clockTime(requestTime(record), now)}</td>

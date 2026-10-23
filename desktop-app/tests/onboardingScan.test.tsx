@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest';
 import { Onboarding } from '../src/renderer/components/Onboarding';
 import { scanTiming } from '../src/renderer/components/onboarding/scanScript';
 import type { BackendState } from '../src/renderer/useBackend';
-import { backendWith, eightGBMac, models, operation, snapshot } from './onboardingFixtures';
+import { backendWith, eightGBMac, operation, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
   install: vi.fn(),

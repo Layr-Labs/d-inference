@@ -9,7 +9,7 @@ import {
   waitlistError,
 } from '../src/renderer/components/onboarding/waitlist';
 import type { DesktopAPI } from '../src/shared/contracts';
-import { backendWith, eightGBMac, models, operation, snapshot } from './onboardingFixtures';
+import { backendWith, eightGBMac, operation, snapshot } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({
   act: vi.fn(),

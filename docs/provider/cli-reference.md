@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -11,9 +11,9 @@ version `ProviderCore.version` in
 and defaults are the ArgumentParser declarations; `—` means required.
 
 `waiting_inventory` means a selected model's ordinary update introduced an ID
-outside cached Autopilot consent. Enrollment remains saved, ordinary serving
-continues, and `darkbloom autopilot models` refreshes inventory before control
-can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+outside the Autopilot set. Enrollment remains saved, ordinary serving
+continues, and the update's verified prefetch or `darkbloom autopilot models`
+adds it to the set before control can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
 ## Local GLM qualification
 
@@ -752,7 +752,7 @@ Every subcommand accepts `--config`.
 
 | Command / option | Effect |
 |---|---|
-| `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result |
+| `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result. `Also downloaded` lists the verified downloaded catalog builds the running provider adds to the Autopilot set |
 | `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; normal startup selector, verification adds no downloads, default shadow mode is inactive, and an already-enrolled provider's pause is preserved |
 | `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; normal startup selector and no implicit resume |
 | `pause`, `resume` | Runtime participation update; pause preserves ready models and blocks new demand-based changes. Resume follows the coordinator's current mode and never promotes shadow to live. Retired, unadvertised residents may still unload when unpinned and unused |
@@ -790,8 +790,11 @@ bounds fail without stopping the existing daemon or installing a replacement.
 The recorded inventory is an exact-build allowlist. Ordinary starts with saved
 enrollment validate all recorded IDs or fail before persistence or drain: a
 missing, ineligible or unverified build, including a transient manifest error,
-cannot silently shrink consent. Newly discovered/downloaded models and
-coordinator-desired replacement builds do not enroll automatically.
+cannot silently shrink consent. The saved selection never grows by itself, but
+with saved consent the running provider adds every verified catalog build in
+the cache, including builds Autopilot downloads on the operator's behalf and
+verified coordinator-desired replacements, to the Autopilot set it reports
+([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 Explicit `--autopilot`, `enable` or `models` refreshes eligible cached inventory
 without downloading and may exclude/prune failed or ineligible builds.
 `saveAutopilotEnrollment` retains `paused` when consent already exists, including

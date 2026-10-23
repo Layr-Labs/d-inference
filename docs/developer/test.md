@@ -6,6 +6,21 @@ Run isolated Swift, native-resource, public-fixture, retained-console and landin
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
 
+`ClusterAPIParityTests` runs real loopback standalone and distributed HTTP
+handlers over fabricated engines for seven model-family fixtures. It compares
+all stable JSON/SSE fields and translated engine requests, including scalar
+stops, `min_p`, captured logprobs and reasoning usage. Only generated IDs and
+timestamps are normalized; no capability fields are removed. The capture-capable
+fixture supplies fixed logprob events explicitly. The strict streaming capture
+case commits one content token; a separate multi-token exercise checks every
+captured value in order. Per-content-frame association is not qualified: the
+existing channel decorator can drain later-token entries into an earlier frame.
+A separate unsupported-profile case requires HTTP 400 before reservation and
+successful text afterward. Run
+`swift test --package-path provider-swift --filter ClusterAPIParityTests` with
+the [provider build prerequisites](build.md). These CPU checks prove API wiring,
+not native model capabilities, numerical parity or hardware qualification.
+
 The placement checks also cover exact family request scopes, completion-heavy
 and long-prompt helper plans, overflow refusal, conservative memory refusal and
 unchanged GLM adapter bounds. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`

@@ -134,6 +134,38 @@ struct AutopilotPlacementHoldTests {
         #expect(await loop.state.modelAutopilot?.heldModels?.map(\.modelId) == [Fixture.ordinary])
     }
 
+    /// The ordinary model stays advertised and serves cold without a verified
+    /// hash, so only the hold basis can end its hold.
+    @Test func anOrdinaryHoldEndsWhenItsWeightHashBecomesUnverifiable() async throws {
+        let fixture = try await Fixture.make()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        await loop.settleAutopilotOperationForTesting(target: Fixture.ordinary, holdSeconds: 600)
+        #expect(await loop.autopilotHoldsModel(Fixture.ordinary))
+
+        await loop.markWeightHashUnavailable(modelId: Fixture.ordinary)
+        #expect(await loop.advertisedIDsForTesting().contains(Fixture.ordinary))
+        #expect(await loop.autopilotHoldsModel(Fixture.ordinary) == false)
+        #expect(await loop.evictableModelSlots().keys.contains(Fixture.ordinary))
+        #expect(await loop.autopilotHeldWeightBytes() == 0)
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.state.modelAutopilot?.heldModels == nil)
+        #expect(await loop.autopilotPlacementsForTesting.held.isEmpty)
+    }
+
+    /// The operation's own hash-checked load could not hash the build: it
+    /// loaded, but no placement may protect an unverified build.
+    @Test func noHoldIsRecordedOnABuildWithoutALiveHash() async throws {
+        let fixture = try await Fixture.make()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        await loop.markWeightHashUnavailable(modelId: Fixture.ordinary)
+        await loop.settleAutopilotOperationForTesting(target: Fixture.ordinary, holdSeconds: 600)
+        #expect(await loop.autopilotHoldsModel(Fixture.ordinary) == false)
+        #expect(await loop.autopilotPlacementsForTesting.held.isEmpty)
+        #expect(await loop.state.modelAutopilot?.heldModels == nil)
+    }
+
     @Test func adminUnloadOfAHeldVictimSucceedsAndClearsTheHold() async throws {
         let fixture = try await Fixture.make()
         defer { Task { await fixture.remove() } }

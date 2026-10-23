@@ -94,7 +94,9 @@ stops the driver at its next candidate, and the current step finishes normally.
    (`ProviderLoop.publishModelAutopilotSnapshot`, `superviseTransitions`).
 2. Only a succeeded operation's resident target is adopted or held
    (`recordAutopilotPlacement`).
-3. No placement outlives consent, selection, residency or a verified build
+3. No placement outlives consent, selection, residency or a verified build: a
+   live weight hash (`liveModelHashes`, cleared by `markWeightHashUnavailable`)
+   and no failed self-test. This applies to holds on ordinary models too
    (`reconcileAutopilotPlacements`).
 4. An expired hold protects nothing (`autopilotHoldsModel`).
 5. The watchdog clears no load, admission, drain or reconnect flag and

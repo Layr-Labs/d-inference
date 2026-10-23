@@ -9,15 +9,20 @@ struct AutopilotHold: Sendable, Equatable {
 
 /// Placements of succeeded operations outlive the operation-scoped lease, but
 /// never their basis: saved consent, the operator's selection, a resident slot
-/// and a build that has not failed verification. Adoption keeps a cached
-/// inventory target serving; a hold keeps a loaded target out of LRU eviction
-/// and idle unload. Both live in memory only: a restart restores the ordinary
-/// selection and idle policy. Neither is machine-level control: other models,
-/// ordinary cold loads into free memory and routing are unaffected.
+/// and a verified build: a live weight hash and no failed self-test. Adoption
+/// keeps a cached inventory target serving; a hold keeps a loaded target out
+/// of LRU eviction and idle unload. Both live in memory only: a restart
+/// restores the ordinary selection and idle policy. Neither is machine-level
+/// control: other models, ordinary cold loads into free memory and routing
+/// are unaffected.
 extension ProviderLoop {
+    /// `liveModelHashes`, not the scan-time `weightHash`: a load whose own
+    /// hash observation fails keeps serving cold but removes the live hash
+    /// (`markWeightHashUnavailable`), which ends any placement on it.
     private func autopilotPlacementBasisIsValid(_ id: String) -> Bool {
         !isShuttingDown && autopilotConsented && autopilotSettings.allows(id)
             && modelSlots[id] != nil && !retiringModels.contains(id) && failedSelfTestHashes[id] == nil
+            && liveModelHashes[id]?.isEmpty == false
     }
 
     /// A hold also ends when its model stops being advertised (withdrawal,

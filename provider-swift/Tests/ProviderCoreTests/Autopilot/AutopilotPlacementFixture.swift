@@ -35,6 +35,8 @@ struct AutopilotPlacementFixture {
                     provider: ProviderSettings(name: "autopilot-placement-test", memoryReserveGB: 0),
                     backend: backend,
                     coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
+                // As at daemon start: every candidate's startup hash is live.
+                modelHashes: Dictionary(uniqueKeysWithValues: all.map { ($0, weightHash) }),
                 autopilotInventory: [model(inventory), model(spare)]),
             attestationSigner: nil, beforeModelLoad: beforeModelLoad,
             kvBudgetForTesting: kvBudget ?? ScriptedProviderMemory.budget(modelIDs: all))

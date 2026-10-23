@@ -1,11 +1,16 @@
 # Repository Ownership And Navigation
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-21
 
 Use this map to find the provider/native owner before changing code. Centralized
 backend and web-application development belongs to a different repository.
 
 ## Workspace
+
+Coding agents share the repository instructions in [AGENTS.md](../../AGENTS.md).
+[CLAUDE.md](../../CLAUDE.md) imports those instructions for Claude. The copy
+fidelity rules require approved specs, Figma designs and copy files to remain
+authoritative: implementation work does not authorize invented or expanded copy.
 
 Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
 checkouts. Never nest them. Check remotes, branch and the full diff before pushing.

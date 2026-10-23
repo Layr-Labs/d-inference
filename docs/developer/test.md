@@ -1718,8 +1718,11 @@ single/multiple images, video, repeat isolation, expanded prompt bounds, metadat
 identity and refusal before native reservation. It also drives the real scheduler,
 bridge and distributed engine with explicitly fabricated native leases, proving
 routing, usage and independent completion/cancellation cleanup without claiming
-physical peers or model answers. JSON requests must refuse before preprocessing
-rather than lose their constraint.
+physical peers or model answers. The JSON/schema regression traverses the actual
+scheduler, media preprocessing and bridge into `MLXOpenAIService`; fabricated
+native tokens prove positive JSON responses, schema rejection and unchanged
+retirement. It observes the shared format instruction reaching the tokenizer.
+These results establish response plumbing, not model-generated schema accuracy.
 
 `DistributedQwenMediaLifetimeTests` and `DistributedQwenMediaHostMemoryTests`
 cover the two ownership fences, stale generation/request identity, cancellation,
@@ -1760,3 +1763,7 @@ both ranks' cleanup while the lane charge is still held, and that cancelled or
 failed lanes cannot donate. The registered-header quote test must continue
 matching the exact native LOAD budget. Full-artifact warm reuse and speed are
 separate paired-hardware gates.
+
+### Qwen27 feature-preserving placement
+
+Run `cd provider-swift && swift test --filter DistributedAutomaticBatchPlannerTests` for the actual provider mode-policy boundary. Constructed CPU profiles compare a cheaper pipeline against identical TP cost inputs, require explicit refusal on absent/unkeyed/stale/foreign link records, missing shard geometry or memory, and retain the other dense-model and GLM behavior. A real temporary configuration store loads an old pipeline record, refuses its startup/resave, then replans and saves TP without rewriting the old record. Actual bridge-factory tests reject missing/mismatched READY and absent logprob support before model-metadata reads. These tests run no models and establish no hardware speed or native TP concurrency result.

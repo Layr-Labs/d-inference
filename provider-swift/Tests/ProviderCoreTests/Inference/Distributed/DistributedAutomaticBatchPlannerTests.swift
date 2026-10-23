@@ -3,6 +3,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import Foundation
+import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
@@ -105,7 +106,8 @@ final class DistributedAutomaticBatchPlannerTests {
     @Test func testRecordedKeyedReductionReachesActualDecisionAndCanSelectTP() throws {
         let home = try home()
         let before = try decide(home)
-        #expect(before.result.chosen?.mode == .pipeline)
+        #expect(before.result.chosen == nil)
+        #expect(before.setup == nil)
         #expect(before.result.tensorParallel?.verdict == .reductionNotMeasured)
         record(home, members: ["b", "a"])
         let after = try decide(home)
@@ -122,7 +124,7 @@ final class DistributedAutomaticBatchPlannerTests {
         }
     }
 
-    @Test func testForeignStaleMalformedAndNonPrivateMeasurementsKeepFallback() throws {
+    @Test func testForeignStaleMalformedAndNonPrivateMeasurementsCannotLoseFeatures() throws {
         for kind in ["foreign", "stale", "malformed", "public"] {
             let home = try home()
             record(home, members: kind == "foreign" ? ["a", "other"] : ["a", "b"],
@@ -131,7 +133,8 @@ final class DistributedAutomaticBatchPlannerTests {
             if kind == "malformed" { try Data("{}".utf8).write(to: file) }
             if kind == "public" { try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
             let result = try decide(home)
-            #expect(result.result.chosen?.mode == .pipeline, Comment(rawValue: kind))
+            #expect(result.result.chosen == nil, Comment(rawValue: kind))
+            #expect(result.setup == nil, Comment(rawValue: kind))
             #expect(result.result.tensorParallel?.verdict == .reductionNotMeasured, Comment(rawValue: kind))
         }
     }
@@ -139,7 +142,8 @@ final class DistributedAutomaticBatchPlannerTests {
     @Test func testUnkeyedMeasurementDoesNotEnableTensorPlacement() throws {
         let home = try home(); record(home, keyed: false)
         let result = try decide(home)
-        #expect(result.result.chosen?.mode == .pipeline)
+        #expect(result.result.chosen == nil)
+        #expect(result.setup == nil)
         #expect(result.result.tensorParallel?.reductionKeyed == false)
     }
 
@@ -203,4 +207,150 @@ final class DistributedAutomaticBatchPlannerTests {
             deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
         #expect(actual.speedIndex == expected.speedIndex)
     }
+
+    private var slowReduction: ClusterLinkCosts {
+        .init(measured: true, perChunkSeconds: 0, perDecodeStepSeconds: [:], handoffSecondsPerByte: 0,
+            provenance: "constructed slow reduction", reduction: .init(fixedSeconds: 0.2,
+                secondsPerByte: 0.000001, keyed: true, provenance: "constructed, not hardware"))
+    }
+
+    @Test func testCheaperPipelineExcludedForExactContractWithoutChangingRates() throws {
+        let (pair, cap, layout, _) = try fixture()
+        func plan(_ cap: ClusterRuntimeCapability, _ layout: ClusterModelLayout) throws -> ClusterPlacementResult {
+            try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(), peerProfile: profile(), layout: layout, promptTokens: 1024, outputTokens: 128,
+                link: slowReduction, incumbentMode: .pipeline, environment: [:]).result
+        }
+        let required = try plan(cap, layout)
+        #expect(required.chosen?.mode == .tensorParallel)
+        #expect(required.alternatives.allSatisfy { $0.mode == .tensorParallel })
+        // Identical geometry, devices and link under another existing dense
+        // registration retain the ordinary cheaper-pipeline policy.
+        var co = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(cap)) as! [String: Any]
+        co["runtimeModelID"] = "registered_qwen35_9b"
+        var cp = co["profile"] as! [String: Any]; cp["id"] = "registered_qwen35_9b_greedy_generation_v1"; co["profile"] = cp
+        let other = try ClusterRuntimeCapabilityCodec.decode(JSONSerialization.data(withJSONObject: co, options: [.sortedKeys, .withoutEscapingSlashes]) + Data([10]))
+        var lo = try JSONSerialization.jsonObject(with: layout.encoded()) as! [String: Any]
+        lo["runtimeModelID"] = other.runtimeModelID
+        let otherLayout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: lo))
+        // No setup is synthesized with the pair's old capability digest: compare
+        // actual planner selection with an equally pinned pair for the other row.
+        var po = try JSONSerialization.jsonObject(with: JSONEncoder().encode(pair)) as! [String: Any]
+        po["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(other))
+        let otherPair = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: po))
+        let ordinary = try ClusterPlacementFlow.decide(description: otherPair, capability: other, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: otherLayout, promptTokens: 1024, outputTokens: 128,
+            link: slowReduction, environment: [:]).result
+        #expect(ordinary.chosen?.mode == .pipeline)
+        let sameTP = try #require(ordinary.alternatives.first { $0.mode == .tensorParallel })
+        let requiredTP = try #require(required.chosen)
+        #expect(sameTP.prediction(.rested) == requiredTP.prediction(.rested))
+        #expect(ClusterModelFeaturePolicy.admissibleModes(other) == other.supportedGenerationModes)
+    }
+
+    @Test func testMissingShapeAndMemoryCannotFallBackToPipeline() throws {
+        let (pair, cap, layout, _) = try fixture()
+        var lo = try JSONSerialization.jsonObject(with: layout.encoded()) as! [String: Any]
+        lo.removeValue(forKey: "tensorParallel")
+        let noShape = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: lo))
+        for (candidate, memory) in [(noShape, try profile()), (layout, try profile().cappedForBench(admissibleBytes: 6 * gib))] {
+            let value = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: memory, peerProfile: memory, layout: candidate, link: slowReduction, environment: [:])
+            #expect(value.result.chosen == nil)
+            #expect(value.setup == nil)
+            #expect(value.lines.contains { $0.contains("No reduced-feature setup was saved") })
+        }
+    }
+
+    @Test func testOldPipelineRecordLoadsForReplanButCannotBeStartedOrSavedAgain() throws {
+        let root = try home(), paths = try ClusterUserPaths(homeDirectory: root)
+        let (pair, cap, layout, _) = try fixture()
+        let capData = try ClusterRuntimeCapabilityCodec.encode(cap), capSHA = ClusterConfigurationCodec.sha256(capData)
+        let selected = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, link: slowReduction,
+            incumbentMode: .pipeline, environment: [:])
+        let setup = try #require(selected.setup), bytes = try #require(setup.configurations["a"])
+        var old = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+        old.removeValue(forKey: "generationMode"); old.removeValue(forKey: "tensorShares")
+        let secret = root.appendingPathComponent("paired.secret")
+        try Data(repeating: 7, count: 32).write(to: secret)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: secret.path)
+        var attachment = old["linkControl"] as! [String: Any]; attachment["secretFile"] = secret.path; old["linkControl"] = attachment
+        let oldConfig = try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: old), capability: cap, capabilitySHA256: capSHA)
+        let oldBytes = try ClusterConfigurationCodec.encode(oldConfig, capability: cap, capabilitySHA256: capSHA)
+        let oldSHA = ClusterConfigurationCodec.sha256(oldBytes), oldURL = try paths.configurationURL(sha256: oldSHA)
+        try FileManager.default.createDirectory(at: paths.configurationsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let capURL = try paths.capabilityURL(sha256: capSHA)
+        try capData.write(to: capURL); try oldBytes.write(to: oldURL)
+        for file in [capURL, oldURL] { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        let store = ClusterConfigurationStore(paths: paths)
+        let saved = try store.load(reference: .init(configuration: oldURL.path, sha256: oldSHA))
+        #expect(saved.configuration.selectedGenerationMode == .pipeline)
+        #expect(throws: ClusterConfigurationError.self) { try DistributedInstalledPlan(saved: saved, paths: paths) }
+        var pointer: ClusterConfigurationReference?
+        #expect(throws: ClusterConfigurationError.self) {
+            try store.save(configurationInput: oldURL, capabilityInput: capURL, capabilitySHA256: capSHA) { pointer = $0 }
+        }
+        #expect(pointer == nil)
+        let replanned = try ClusterPlacementFlow.decide(description: pair, capability: saved.capability, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, link: slowReduction,
+            incumbentMode: saved.configuration.selectedGenerationMode, environment: [:])
+        let replacement = try #require(replanned.setup?.configurations["a"])
+        var next = try JSONSerialization.jsonObject(with: replacement) as! [String: Any]; next["linkControl"] = attachment
+        let nextURL = root.appendingPathComponent("replacement.json")
+        try JSONSerialization.data(withJSONObject: next).write(to: nextURL)
+        _ = try store.save(configurationInput: nextURL, capabilityInput: capURL, capabilitySHA256: capSHA) { pointer = $0 }
+        let adopted = try store.load(reference: #require(pointer))
+        #expect(adopted.configuration.selectedGenerationMode == .tensorParallel)
+        _ = try DistributedInstalledPlan(saved: adopted, paths: paths)
+        #expect(try Data(contentsOf: oldURL) == oldBytes)
+    }
+
+    @Test func testActualBridgeRejectsMissingOrMismatchedReadinessBeforeMetadataIO() throws {
+        let id = DistributedResidentIdentity(membershipEpoch: UUID(), modelID: "registered_qwen38_27b",
+            artifactSHA256: hash("a"), configurationSHA256: hash("b"), peers: [
+                .init(id: "a", buildSHA256: hash("c")), .init(id: "b", buildSHA256: hash("d"))])
+        let profileID = "registered_qwen38_27b_greedy_generation_v1"
+        let foreign = DistributedResidentIdentity(membershipEpoch: UUID(), modelID: id.modelID,
+            artifactSHA256: id.artifactSHA256, configurationSHA256: id.configurationSHA256, peers: id.peers)
+        let valid = DistributedResidentReadiness(identity: id, profileID: profileID, requestCapacityBytes: 1024,
+            media: ClusterQwenMedia.contract)
+        let cases: [(DistributedResidentReadiness?, Bool)] = [(nil, true),
+            (.init(identity: id, profileID: profileID, requestCapacityBytes: 1024), true),
+            (.init(identity: foreign, profileID: profileID, requestCapacityBytes: 1024, media: ClusterQwenMedia.contract), true),
+            (.init(identity: id, profileID: "foreign", requestCapacityBytes: 1024, media: ClusterQwenMedia.contract), true),
+            (valid, false)]
+        for (ready, logprobs) in cases {
+            let profile = try DistributedResidentExecutionProfile(id: profileID, vocabularySize: 64,
+                maxPromptTokens: 32, maxOutputTokens: 8, maxContextTokens: 40, requestTimeout: .seconds(10), supportsLogprobs: logprobs)
+            #expect(throws: DistributedEngineError.invalidConfiguration("Qwen3.8 27B requires matching native media readiness and committed-token logprobs before serving")) {
+                try DistributedEngineFactory.makeBridge(owner: FeatureReadyOwner(ready), expectedIdentity: id,
+                    profile: profile, tokenizer: TokenizerHandle(FeatureTokenizer()), eosTokenIDs: [63],
+                    modelType: "qwen3_5", modelDirectory: URL(fileURLWithPath: "/nonexistent-feature-fixture"))
+            }
+        }
+        let profile = try DistributedResidentExecutionProfile(id: profileID, vocabularySize: 64,
+            maxPromptTokens: 32, maxOutputTokens: 8, maxContextTokens: 40, requestTimeout: .seconds(10), supportsLogprobs: true)
+        try ClusterModelFeaturePolicy.requireReady(valid, identity: id, profile: profile)
+    }
+
+}
+
+private final class FeatureReadyOwner: DistributedResidentExecutionOwner, @unchecked Sendable {
+    let ready: DistributedResidentReadiness?
+    init(_ ready: DistributedResidentReadiness?) { self.ready = ready }
+    func readiness() -> DistributedResidentReadiness? { ready }
+    func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {}
+    func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork { .unbounded(reason: nil) }
+    func reserve(_ request: CBv2Request, identity: DistributedResidentIdentity, profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease { throw DistributedEngineError.unavailable }
+    func shutdown() async {}
+}
+private struct FeatureTokenizer: Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }; var eosToken: String? { nil }; var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] { [] }
+    func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String) throws -> [Int] { [] }
 }

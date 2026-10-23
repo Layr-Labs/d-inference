@@ -981,3 +981,15 @@ A drained automatic batch replacement uses the device index and this pair's
 recorded keyed-link measurement. Missing or invalid measurements continue to
 exclude TP from automatic choice; a valid measurement permits cost comparison
 but does not prove that TP is faster or that any model is hardware-qualified.
+
+### Qwen27 endpoint features and automatic modes
+
+The registered Qwen3.8 27B provider route admits only tensor parallel because its installed media and committed-token-logprob contracts require that mode. This is a feature-preservation filter, not a change to measured speed or memory estimates; missing link, supported shape or capacity still blocks placement. See [Qwen27 feature-preserving mode selection](inference.md#qwen27-feature-preserving-mode-selection). CPU metadata/READY tests do not qualify full-artifact cross-Mac TP batching, media, accuracy, lifecycle or throughput.
+
+### Qwen27 media response formats
+
+Qwen27 cluster media `response_format` follows standalone HTTP semantics:
+shared prompt preparation and, for nonstream output, JSON/schema post-validation.
+It requires no token constraint or additional native model allocation. Forced
+media tool choices and nondefault processing controls remain unsupported; source
+acceptance does not qualify actual image/schema model answers.

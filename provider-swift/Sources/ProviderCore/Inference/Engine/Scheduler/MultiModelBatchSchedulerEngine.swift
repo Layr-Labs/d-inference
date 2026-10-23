@@ -1241,11 +1241,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let hostBudget = bridge.clusterQwenMediaHostBudget else {
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)
         }
-        // Preserve the ordinary Qwen media policy. Prompt forcing or a JSON
-        // grammar cannot be inferred merely from this native transport seam.
-        guard request.responseFormat?.requiresJSONOutput != true else {
-            throw DistributedEngineError.refused(.constrainedDecodingUnsupported)
-        }
+        // JSON/schema prompt preparation and response validation are shared with
+        // standalone serving. They do not require a native token constraint.
         guard prepared.mode == .auto || prepared.mode == .none else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                 "inference-enforced tool_choice is not supported for multimodal requests")

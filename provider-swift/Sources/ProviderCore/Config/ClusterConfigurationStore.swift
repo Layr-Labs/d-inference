@@ -75,6 +75,7 @@ public struct ClusterConfigurationStore: Sendable {
         let capability = try ClusterCapabilityRecord.decode(capabilityData, writtenBy: "the worker (\(capabilityInput.lastPathComponent))")
         let input = try ClusterConfigurationFiles.read(configurationInput, maximum: ClusterConfigurationCodec.maximumBytes)
         var configuration = try ClusterConfigurationCodec.decode(input, capability: capability, capabilitySHA256: capabilitySHA256)
+        try ClusterModelFeaturePolicy.requireSelectedMode(configuration.selectedGenerationMode, capability: capability)
         configuration.makePrefillSelectionExplicit()
         configuration.makeGenerationSelectionCanonical()
         let data = try ClusterConfigurationCodec.encode(configuration, capability: capability, capabilitySHA256: capabilitySHA256)

@@ -99,14 +99,15 @@ struct DistributedQwenMediaIngressTests {
                 artifactSHA256: String(repeating: "a", count: 64), expectedConfigurationSHA256: String(repeating: "b", count: 64), maximumPromptTokens: 1024)
         }
     }
-    private func bridge(_ owner: QwenIngressOwner, budget: GlobalKVCacheBudget) throws -> (EngineV2Bridge, URL) {
+    private func bridge(_ owner: QwenIngressOwner, budget: GlobalKVCacheBudget,
+        tokenizer: QwenIngressTokenizer = .init()) throws -> (EngineV2Bridge, URL) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try configuration().write(to: directory.appendingPathComponent("config.json"))
         try processor.write(to: directory.appendingPathComponent("preprocessor_config.json"))
         do {
             let bridge = try DistributedEngineFactory.makeBridge(owner: owner, expectedIdentity: owner.identity,
-                profile: owner.profile, tokenizer: TokenizerHandle(QwenIngressTokenizer()), eosTokenIDs: [63],
+                profile: owner.profile, tokenizer: TokenizerHandle(tokenizer), eosTokenIDs: [63],
                 publicModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
                 modelDirectory: directory, mediaHostBudget: budget)
             return (bridge, directory)
@@ -152,10 +153,7 @@ struct DistributedQwenMediaIngressTests {
 
     @Test func factoryCannotInferMediaFromTheModelNameOrForeignReadiness() async throws {
         let plain = try QwenIngressOwner(configuration: configuration(), contract: nil)
-        let (bridge, directory) = try bridge(plain, budget: budget())
-        defer { try? FileManager.default.removeItem(at: directory) }
-        #expect(await bridge.clusterQwenMediaIngress == nil)
-        await bridge.shutdown()
+        #expect(throws: (any Error).self) { try self.bridge(plain, budget: budget()) }
         let foreign = try QwenIngressOwner(configuration: configuration(), modelID: "foreign-model")
         #expect(throws: (any Error).self) { try self.bridge(foreign, budget: budget()) }
     }
@@ -189,14 +187,72 @@ struct DistributedQwenMediaIngressTests {
             #expect(await budget.outstandingReservedBytes() == 0)
             #expect(!owner.leases[index].holdsWire)
         }
-        // Explicit schema requests cannot silently become unconstrained text.
-        var json = try request([("image", QwenIngressFixtures.red)])
-        json.responseFormat = .jsonObject()
-        await #expect(throws: (any Error).self) { try await scheduler.streamChatCompletion(request: json) }
-        #expect(owner.leases.count == 2)
-        #expect(await releases.value == 3)
-        #expect(await budget.outstandingReservedBytes() == 0)
         await bridge.shutdown()
+    }
+
+    @Test func mediaJSONAndSchemaUseSharedPromptPreparationAndResponseValidation() async throws {
+        let schema = try JSONDecoder().decode(OpenAIResponseFormat.self, from: Data(#"{"type":"json_schema","json_schema":{"name":"color","strict":true,"schema":{"type":"object","properties":{"color":{"type":"string","enum":["red"]}},"required":["color"],"additionalProperties":false}}}"#.utf8))
+        // Fabricated completion tokens exercise shared HTTP behavior, not model capability.
+        for (format, output, succeeds) in [
+            (OpenAIResponseFormat.jsonObject(), #"{"color":"red"}"#, true),
+            (schema, #"{"color":"red"}"#, true),
+            (.jsonObject(), "not JSON", false),
+            (schema, #"{"color":"blue"}"#, false)
+        ] {
+            let capture = QwenIngressTemplateCapture()
+            let tokenizer = QwenIngressTokenizer(completionPieces: [4: output], templateCapture: capture)
+            let owner = try QwenIngressOwner(configuration: configuration()), budget = budget()
+            let (bridge, directory) = try bridge(owner, budget: budget, tokenizer: tokenizer)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let releases = QwenIngressReleaseCounter(), model = "EigenLabs/Qwen3.8-27B-4bit-mtp"
+            let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+                tokenizer: TokenizerHandle(tokenizer), modelType: "qwen3_5",
+                isVLM: true, engineV2Bridge: bridge)
+            let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [model: entry] },
+                releaseModel: { _ in await releases.increment() })
+            let service = MLXOpenAIService(engine: scheduler)
+            var request = try request([("image", QwenIngressFixtures.red)])
+            request.responseFormat = format
+            let task = Task { try await service.createChatCompletion(request: request) }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while owner.leases.isEmpty && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard let lease = owner.leases.first else {
+                task.cancel()
+                _ = await task.result
+                await bridge.shutdown()
+                Issue.record("JSON media request did not reach the actual distributed bridge")
+                continue
+            }
+            #expect(lease.holdsWire)
+            #expect(capture.descriptions.contains { $0.contains("JSON") })
+            if format.type == .jsonSchema {
+                #expect(capture.descriptions.contains { $0.contains("additionalProperties") && $0.contains("color") })
+            }
+            lease.send(.token(4))
+            lease.send(.finished(.stop))
+            lease.acknowledge()
+            do {
+                let response = try await task.value
+                #expect(succeeds)
+                let content = try #require(response.choices.first?.message.content)
+                let object = try JSONSerialization.jsonObject(with: Data(content.text.utf8)) as? [String: String]
+                #expect(object == ["color": "red"])
+                #expect(response.usage.completionTokens == 1)
+            } catch let error as MLXOpenAIServiceError {
+                #expect(!succeeds)
+                guard case .invalidResponseFormatOutput = error else {
+                    Issue.record("Unexpected shared service error: \(error)")
+                    await bridge.shutdown()
+                    continue
+                }
+            }
+            #expect(await releases.value == 1)
+            #expect(await budget.outstandingReservedBytes() == 0)
+            #expect(!lease.holdsWire && lease.releases == 1)
+            await bridge.shutdown()
+        }
     }
 
 }

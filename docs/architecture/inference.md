@@ -3352,8 +3352,12 @@ alone releases neither fence. Cleanup failure retains the outstanding charge.
 
 The bridge rejects foreign media identities and combinations with another media
 carrier. It disables prefix reuse for this ingress path. Nondefault image/video
-processing controls, forced media tool choices and JSON/schema constraints fail
-explicitly; the transport does not establish those capabilities. Logprobs still
+processing controls and forced media tool choices fail explicitly, matching the
+standalone Qwen HTTP media path. Media `response_format` uses the same shared
+JSON/schema prompt preparation as standalone serving. Nonstream responses use
+its JSON normalization and supported-schema post-validation; streaming keeps
+the same prompt-guided semantics without a terminal schema guarantee. This is
+not token-level constrained decoding. Logprobs still
 require the selected runtime's independent support. Plain text, GLM and MiMo
 retain their own routes. Full-artifact clustered image/video correctness and
 concurrent execution remain hardware qualification gates.
@@ -3362,3 +3366,9 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`, and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedEngineFactory.swift`.
+
+## Qwen27 feature-preserving mode selection
+
+The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
+
+New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.

@@ -64,6 +64,7 @@ struct DistributedInstalledPlan: Sendable {
             publicGrant:nil,records:observedServing.records)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
         (budgets, budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition, artifactBytes: nil)
+        try ClusterModelFeaturePolicy.requireSelectedMode(configuration.selectedGenerationMode, capability: capability)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
         try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
         // The record's adapter must register this model, name its one

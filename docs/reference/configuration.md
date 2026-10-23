@@ -1302,3 +1302,7 @@ registered headers and requires the native allocator metadata bound. Saved
 `batchLanes` may select 2, 4 or 8 in exact Qwen27 `tensor_parallel_v1`; omission
 keeps one. Other Qwen TP rows and GLM defaults remain unchanged.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
+
+### Qwen27 saved mode compatibility
+
+For the existing `qwen35-dense-layer-stage` / `registered_qwen38_27b` / `registered_qwen38_27b_greedy_generation_v1` tuple, new configuration saves and installed startup require `tensor_parallel_v1` to preserve the model's images, video and committed-token logprobs. Old pipeline records remain readable and immutable; rerun `darkbloom cluster` to replan them under current link and memory facts. An inadmissible TP plan produces no reduced-feature replacement. This is a provider mode restriction, not a new configuration field or evidence of native readiness. Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`, `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.

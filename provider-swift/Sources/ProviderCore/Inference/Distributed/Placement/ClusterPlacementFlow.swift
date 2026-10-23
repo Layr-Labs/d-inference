@@ -112,7 +112,11 @@ public enum ClusterPlacementFlow {
         let recordedRounds = ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: runtimeModelID,
             artifactSHA256: artifactSHA256)
         policy.recordedPipelineSpeculativeFactor = recordedRounds
-        policy.modes = capability.supportedGenerationModes
+        let admissibleModes = ClusterModelFeaturePolicy.admissibleModes(capability)
+        guard !admissibleModes.isEmpty else {
+            throw ClusterConfigurationError.invalid(ClusterModelFeaturePolicy.unavailable)
+        }
+        policy.modes = admissibleModes
         policy.handOffModes = handOff
         policy.forcedMode = forced
         policy.schedules = capability.supportedPrefillSchedules
@@ -167,7 +171,7 @@ public enum ClusterPlacementFlow {
             servedLines += ["Served requests by mode"]
                 + ClusterServedModes.lines(servedModes, promptTokens: reference.prompt, outputTokens: reference.output)
         }
-        let plannable = capability.supportedGenerationModes.filter { layout.generationModes.contains($0) && (handOff || !$0.isHandOff) }
+        let plannable = admissibleModes.filter { layout.generationModes.contains($0) && (handOff || !$0.isHandOff) }
         if forced == nil, let hold = ClusterServedModes.hold(incumbent: incumbentMode, figures: servedModes, plannable: plannable,
                                                               promptTokens: reference.prompt, outputTokens: reference.output) {
             policy.keptMode = hold.mode; policy.keptModeMargin = hold.margin; policy.keptModeReason = hold.reason
@@ -176,7 +180,7 @@ public enum ClusterPlacementFlow {
         // unmeasured, no tensor-parallel mode is chosen.
         if let batchScope {
             try batchScope.requireChunk(description.chunkTokens, derived: description.derivesRequestLimits)
-            let modes = batchScope.supportedModes.filter(capability.supportedGenerationModes.contains)
+            let modes = batchScope.supportedModes.filter(admissibleModes.contains)
             guard !modes.isEmpty, !capability.hasPrivateImages else {
                 throw ClusterConfigurationError.invalid("Batch placement requires a supported priced native mode")
             }
@@ -188,6 +192,10 @@ public enum ClusterPlacementFlow {
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if ClusterModelFeaturePolicy.requiresQwenMediaAndLogprobs(capability) {
+            lines += ["Model features", "  " + ClusterModelFeaturePolicy.explanation]
+            if result.chosen == nil { lines.append("  " + ClusterModelFeaturePolicy.unavailable) }
+        }
         if let why = ClusterPlacementExplanation.deploymentReason(result) {
             lines += ["Tensor parallel or pipeline", "  " + why]
         }
@@ -196,7 +204,7 @@ public enum ClusterPlacementFlow {
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
             lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
         }
-        if let recordedRounds, batchScope == nil, capability.supportedGenerationModes.contains(.pipelineMTP) {
+        if let recordedRounds, batchScope == nil, admissibleModes.contains(.pipelineMTP) {
             lines.append("Speculative rounds")
             lines.append("  " + String(format: "Pipeline speculative rounds are credited %.2fx", recordedRounds)
                 + " over the plain pipeline: the decode speed-up this model's passing qualification records measured. "

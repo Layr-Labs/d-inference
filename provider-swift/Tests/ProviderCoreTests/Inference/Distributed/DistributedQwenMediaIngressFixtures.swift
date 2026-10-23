@@ -11,6 +11,8 @@ enum QwenIngressFixtures {
 }
 
 struct QwenIngressTokenizer: Tokenizer {
+    var completionPieces: [Int: String] = [:]
+    var templateCapture: QwenIngressTemplateCapture? = nil
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         let markers = ["<|image_pad|>", "<|video_pad|>", "<|vision_start|>", "<|vision_end|>"]
         var rest = text[...], result: [Int] = []
@@ -21,7 +23,10 @@ struct QwenIngressTokenizer: Tokenizer {
         }
         return result
     }
-    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { tokenIds.map(String.init).joined(separator: ",") }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        completionPieces.isEmpty ? tokenIds.map(String.init).joined(separator: ",")
+            : tokenIds.compactMap { completionPieces[$0] }.joined()
+    }
     func convertTokenToId(_ token: String) -> Int? {
         ["<|image_pad|>": 60, "<|video_pad|>": 61, "<|vision_start|>": 57, "<|vision_end|>": 58][token]
     }
@@ -31,6 +36,7 @@ struct QwenIngressTokenizer: Tokenizer {
     var unknownToken: String? { nil }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?) throws -> [Int] {
+        templateCapture?.record(messages)
         var tokens = [1]
         for message in messages {
             for part in message["content"] as? [[String: String]] ?? [] {
@@ -66,7 +72,8 @@ final class QwenIngressOwner: DistributedResidentExecutionOwner, @unchecked Send
             peers: [.init(id: "fixture-rank0", buildSHA256: String(repeating: "c", count: 64)),
                     .init(id: "fixture-rank1", buildSHA256: String(repeating: "d", count: 64))])
         profile = try .init(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 64,
-            maxPromptTokens: 1024, maxOutputTokens: 8, maxContextTokens: 1032, requestTimeout: .seconds(10))
+            maxPromptTokens: 1024, maxOutputTokens: 8, maxContextTokens: 1032,
+            requestTimeout: .seconds(10), supportsLogprobs: true)
     }
     func readiness() -> DistributedResidentReadiness? {
         .init(identity: identity, profileID: profile.id, requestCapacityBytes: 1 << 20, media: contract)
@@ -107,4 +114,14 @@ final class QwenIngressLease: DistributedResidentRequestLease, @unchecked Sendab
 actor QwenIngressReleaseCounter {
     private(set) var value = 0
     func increment() { value += 1 }
+}
+
+/// Observes actual template inputs without inferring model output correctness.
+final class QwenIngressTemplateCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+    func record(_ messages: [[String: any Sendable]]) {
+        lock.withLock { values.append(String(describing: messages)) }
+    }
+    var descriptions: [String] { lock.withLock { values } }
 }

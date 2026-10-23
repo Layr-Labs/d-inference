@@ -25,6 +25,7 @@ public enum DistributedEngineFactory {
         mediaHostBudget: GlobalKVCacheBudget? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
+        try ClusterModelFeaturePolicy.requireReady(owner.readiness(), identity: expectedIdentity, profile: profile)
         if profile.id == ClusterMiMoImageCandidate.profileID {
             guard modelType == "mimo_v2",expectedIdentity.modelID == ClusterMiMoImageCandidate.runtimeModelID,
                   expectedIdentity.artifactSHA256 == ClusterMiMoImageCandidate.artifactSHA256,

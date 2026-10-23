@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -681,6 +681,14 @@ only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
 (`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
 version and aggregate, the revision receipt must match it and hash to that
 aggregate, and the admitted load hashes every file against the same manifest.
+That verification is the published weight hash: once every manifest file has
+matched and no file identity changed through construction, the load reports the
+manifest aggregate (`GLM5NextManagedLoad.verifiedArtifactSHA256`), which both
+modes publish instead of separate pre-load and post-load `WeightHasher` passes
+(`ProviderLoop.verifiedGLM5NextWeightHash`). The next coordinator-mode start
+registers that hash without reading the weights while every file keeps its
+device, inode, size and modification and status-change times
+(`VerifiedWeightHashStore`); the load verifies again before serving.
 An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
 reviewed shipped template remains mandatory. The enforced context is 262,144
 tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog

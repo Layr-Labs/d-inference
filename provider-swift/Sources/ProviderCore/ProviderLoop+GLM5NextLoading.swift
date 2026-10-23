@@ -53,12 +53,45 @@ extension ProviderLoop {
         }
     }
 
-    /// The bracketing load hashes must equal the manifest aggregate the plan
-    /// was resolved against.
+    /// The verified load hash must equal the manifest aggregate the plan was
+    /// resolved against.
     static func requireGLM5NextLoadedArtifact(hash: String?, plan: GLM5NextArtifactPlan) throws {
         guard hash == plan.weights.manifest.aggregateSHA256 else {
             throw GLM5NextManagedLoadError.identityMismatch
         }
+    }
+
+    /// The weight hash a completed managed load proved. Before returning, the
+    /// load SHA-256-verified every manifest file against the catalog manifest
+    /// and rechecked that no file identity changed since the plan was taken,
+    /// so this is the value a pre-load or post-load `WeightHasher` pass would
+    /// report, without reading 182 GB twice more.
+    func verifiedGLM5NextWeightHash(
+        load: GLM5NextManagedLoad, plan: GLM5NextArtifactPlan, modelPath: URL
+    ) async throws -> WeightHashSnapshot {
+        let hash = await load.verifiedArtifactSHA256
+        try Self.requireGLM5NextLoadedArtifact(hash: hash, plan: plan)
+        let fingerprint = await Task.detached(priority: .utility) {
+            WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+        }.value
+        try Task.checkCancellation()
+        if isShuttingDown { throw CancellationError() }
+        return WeightHashSnapshot(fingerprint: fingerprint, hash: hash, recomputed: true)
+    }
+
+    /// Persist the verified hash for the next start's registration, bound to
+    /// the file identities taken before the load began. Any change during the
+    /// load leaves the previous record, which then no longer matches.
+    func recordVerifiedGLM5NextWeightHash(
+        modelId: String, modelPath: URL, verified: WeightHashSnapshot,
+        identitiesBeforeLoad: [VerifiedWeightHashStore.FileIdentity]?
+    ) {
+        guard let file = verifiedWeightHashesFile, let hash = verified.hash,
+            let identitiesBeforeLoad,
+            VerifiedWeightHashStore.fileIdentities(snapshotDir: modelPath) == identitiesBeforeLoad
+        else { return }
+        VerifiedWeightHashStore.record(
+            modelID: modelId, aggregateSHA256: hash, identities: identitiesBeforeLoad, at: file)
     }
 
     /// The loaded tower must store exactly the configuration-derived rows the

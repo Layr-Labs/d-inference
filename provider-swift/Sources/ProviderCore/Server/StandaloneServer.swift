@@ -1961,14 +1961,12 @@ public actor StandaloneServer {
             let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
-            let preLoadArtifactHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
-            if let glmPlan {
-                guard preLoadArtifactHash == glmPlan.weights.manifest.aggregateSHA256 else {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
-                try glmPlan.weights.recheck()
-            }
+            // The managed GLM load SHA-256-verifies every manifest file before
+            // serving; its verified digest replaces both bracketing passes.
+            var preLoadArtifactHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId,
+                required: artifactIdentityRequired && glmPlan == nil)
+            if let glmPlan { try glmPlan.weights.recheck() }
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1998,10 +1996,16 @@ public actor StandaloneServer {
                 try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
             if glmPlan != nil { glmNewcomer = newcomer }
             try Task.checkCancellation()
-            let postLoadArtifactHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
-            if let glmPlan, postLoadArtifactHash != glmPlan.weights.manifest.aggregateSHA256 {
-                throw GLM5NextManagedLoadError.identityMismatch
+            let postLoadArtifactHash: String?
+            if let glmPlan, let glmLoad {
+                postLoadArtifactHash = await glmLoad.verifiedArtifactSHA256
+                guard postLoadArtifactHash == glmPlan.weights.manifest.aggregateSHA256 else {
+                    throw GLM5NextManagedLoadError.identityMismatch
+                }
+                preLoadArtifactHash = postLoadArtifactHash
+            } else {
+                postLoadArtifactHash = await computeStandaloneWeightHash(
+                    modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
             }
             let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?

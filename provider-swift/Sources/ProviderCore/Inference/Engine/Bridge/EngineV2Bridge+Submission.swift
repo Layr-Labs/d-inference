@@ -295,7 +295,7 @@ extension EngineV2Bridge {
         cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
-        if servesDistributedPair, let minP = request.min_p { cbv2Request.sampling.minP = minP }
+        if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
             firstContentDeadline,

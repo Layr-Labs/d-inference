@@ -55,7 +55,9 @@ establish hardware memory recovery or multi-lane output equivalence.
 
 A cluster request for a feature its selected runtime does not implement is a
 client error, not evidence of insufficient memory. Unsupported token logprobs
-return HTTP 400 before reservation; see [cluster logprob admission](inference.md)
+return HTTP 400 before reservation. Shared standalone/cluster HTTP metadata
+plumbing does not enable capture on unsupported native modes or change memory
+allowances; see [cluster logprob admission](inference.md)
 and `DistributedResidentExecutionProfile.refusal` in
 `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`.
 

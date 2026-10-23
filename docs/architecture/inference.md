@@ -11,6 +11,17 @@ legacy engine and no subprocess. For the memory model see
 The [native block adapter](native-block-inference.md) reuses this bridge boundary
 for committed diffusion output and explicit native-container slot ownership.
 
+Standalone and cluster chat HTTP use the same scalar-stop normalization,
+request-owned logprob plumbing and reasoning-token usage decoration for JSON
+and SSE responses. `EngineV2Bridge.submitTokenized` forwards an explicit
+`min_p` on both paths; existing engine validation still applies. Stream lifetime
+and distributed retirement remain separate from these API fields. A model-free
+parity fixture can supply captured logprobs, but does not establish that a
+native family or generation mode implements capture. Sources:
+`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
+`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`, and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
 Cluster logprob admission follows the selected resident runtime. Both installed
 and member-pair serving construct `DistributedResidentExecutionProfile` from the
 verified adapter and selected generation mode; only GLM tensor parallel currently
@@ -1491,7 +1502,8 @@ disabled for this hybrid model.
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
 | `stop` | `stopStrings`, matched on held-back detokenised text (`EngineV2Bridge+StopSequence.swift`) | `[]` |
-| `min_p`, `priority` | **Ignored**: always `0` | — |
+| `min_p` | `minP`, forwarded by `EngineV2Bridge.submitTokenized` after translation | `0` |
+| `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
 "Artifact default" means the value declared in the checkpoint's

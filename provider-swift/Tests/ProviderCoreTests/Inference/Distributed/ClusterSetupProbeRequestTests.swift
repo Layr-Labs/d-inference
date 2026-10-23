@@ -20,9 +20,18 @@ import Testing
         #expect(body["stream"] as? Bool == true)
     }
 
-    @Test func oldWizardBinaryThinkingControlIsStillRejected() throws {
+    @Test func explicitThinkingOffUsesTheCurrentGLMPromptContract() throws {
         var body = ClusterSetupProbeRequest.body(model: "fixture-model", text: "Say hello", maxTokens: 16)
         body["enable_thinking"] = false
+        let value = try context(body)
+        #expect(value["enable_thinking"] as? Bool == false)
+        #expect(value["reasoning_effort"] as? String == "max")
+    }
+
+    @Test func contradictoryThinkingControlsRemainRejected() throws {
+        var body = ClusterSetupProbeRequest.body(model: "fixture-model", text: "Say hello", maxTokens: 16)
+        body["enable_thinking"] = false
+        body["reasoning_effort"] = "max"
         #expect(throws: (any Error).self) { _ = try context(body) }
     }
 }

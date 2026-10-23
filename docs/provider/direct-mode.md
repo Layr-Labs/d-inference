@@ -8,6 +8,14 @@ earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
 operators who want their own tools to call the models they already host.
 Requests never leave the machine and are never billed.
 
+Chat completions accept `stop` as a string or string array and pass explicit
+`min_p` to the engine. JSON and SSE responses include requested captured
+logprobs and reasoning-token usage when available, using the same HTTP wiring
+as a local cluster endpoint. Capture still depends on the selected native
+runtime: an unsupported cluster mode returns `logprob_capture_unsupported`
+before reservation. Shared API tests do not establish native feature support.
+See [inference and logprob admission](../architecture/inference.md).
+
 ## Prerequisites
 
 - Provider installed ([installation](./installation.md)); no account or

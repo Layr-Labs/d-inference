@@ -106,29 +106,21 @@ func makeLocalInferenceApplication(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let service = serviceForTemplateControls(.init())
-    // The cluster's API only: a request that asks for logprobs gets them on
-    // its own frames (`LocalChatUploadResponder.logprobs`).
-    let serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)?
-    // The cluster's API reports `completion_tokens_details.reasoning_tokens`
-    // as the coordinator path does: the returned reasoning, re-tokenized.
-    let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
-    if distributedResponses != nil {
-        serviceForLogprobs = { (controls: ChatTemplateControls, logprobs: EngineV2LogprobsPlumbing) -> MLXOpenAIService in
-            MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
-                acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
-                defaultMaxTokens: defaultMaxTokens, templateControls: controls,
-                nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
-                seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
-                responseStore: responseStore, metrics: metrics)
-        }
-        reasoningTokenCounter = { (model: String) async -> (@Sendable (String) -> Int)? in
-            guard let resolution = try? await tokenizerProvider(model) else { return nil }
-            let tokenizer = resolution.tokenizer
-            return { (text: String) -> Int in tokenizer.inner.encode(text: text, addSpecialTokens: false).count }
-        }
-    } else {
-        serviceForLogprobs = nil
-        reasoningTokenCounter = nil
+    // Request-owned metadata is shared by standalone and cluster HTTP. The
+    // distributed response registry controls stream lifetime, not API fields.
+    let serviceForLogprobs: @Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService = {
+        controls, logprobs in
+        MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+            acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
+            defaultMaxTokens: defaultMaxTokens, templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
+            responseStore: responseStore, metrics: metrics)
+    }
+    let reasoningTokenCounter: @Sendable (String) async -> (@Sendable (String) -> Int)? = { model in
+        guard let resolution = try? await tokenizerProvider(model) else { return nil }
+        let tokenizer = resolution.tokenizer
+        return { text in tokenizer.inner.encode(text: text, addSpecialTokens: false).count }
     }
     let router = MLXServerApplication.buildRouter(service: service)
     if let clusterStatus {

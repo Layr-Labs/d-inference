@@ -35,12 +35,12 @@ where Inner.Context == BasicRequestContext {
     /// What `previous_response_id` continues; the fork's typed Responses request does not carry the field.
     let responseConversations: LocalResponseConversationStore
     let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)?
-    /// The cluster's API: the service for a chat request that asks for
-    /// logprobs (OpenAI `logprobs`/`top_logprobs`, read from the raw body as
-    /// the coordinator path reads them); nil serves none, as single-Mac.
+    /// A request-owned service for OpenAI `logprobs`/`top_logprobs`, read from
+    /// the raw body as the coordinator path reads them. The selected engine
+    /// still decides whether capture is supported; nil disables this plumbing.
     let serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)?
-    /// The cluster's API: counts a model's tokens in returned reasoning text, for
-    /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none, as single-Mac.
+    /// Counts model tokens in returned reasoning for
+    /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none.
     let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
 
     init(
@@ -174,12 +174,11 @@ where Inner.Context == BasicRequestContext {
         switch decodeBody(LocalChatRequest.self, from: buffer) {
         case .success(let decoded): item = decoded
         case .failure(let badRequest):
-            // The cluster's API repairs what the coordinator path repairs (a
+            // Both local APIs normalize what the coordinator path normalizes (a
             // scalar `stop`, the `developer` role, content-less messages,
             // hosted tools) and retries, as `ProviderLoop.decodeOpenAIRequest`
             // does; the original error stands when that cannot help.
-            guard distributedResponses != nil,
-                  let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
+            guard let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
                   case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
             else { return badRequest }
             item = decoded
@@ -235,7 +234,7 @@ where Inner.Context == BasicRequestContext {
             }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
-            return Self.sseResponse(frames)
+            return Self.sseResponse(Self.decorating(frames, logprobs: logprobs, countTokens: countTokens))
         }
         let completion = try await requestService.createChatCompletion(request: item.request)
         if logprobs != nil || countTokens != nil {
@@ -251,7 +250,7 @@ where Inner.Context == BasicRequestContext {
                             topLogprobs: Array($0.topLogprobs.prefix(max(0, top ?? 0)))) }
     }
 
-    /// The coordinator path's frame decorations on the cluster's own frames:
+    /// The coordinator path's frame decorations on either local API's frames:
     /// each token's logprobs spliced into the next content-bearing frame
     /// (`ProviderLoop.injectLogprobs`), and the usage frame's reasoning tokens
     /// (`ProviderLoop.injectReasoningTokens`).

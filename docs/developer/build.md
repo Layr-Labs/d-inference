@@ -14,6 +14,11 @@ For the Bonsai 9B request-generation regression, build the control-only
 This executable links the prompt tokenizer and qualification driver, without
 loading the native model runtime or requiring a Metal library.
 
+The model-free local HTTP parity suite uses the normal ProviderCore test build:
+`swift test --package-path provider-swift --filter ClusterAPIParityTests`.
+It binds only loopback listeners and scripted engines, without model downloads
+or GPU execution. See [test coverage and limits](test.md).
+
 ## Prerequisites
 
 Use sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform` checkouts.

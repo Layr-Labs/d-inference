@@ -766,6 +766,15 @@ public enum MediaIngest {
             by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
     }
 
+    /// Lowercased inline-video headers. `MemoryBackedVideoAsset` sniffs the
+    /// container from the bytes, so the label need only name an MP4 or
+    /// QuickTime video: `video/mov` is OpenRouter's documented QuickTime label
+    /// and `video/x-m4v` is Apple's label for MP4 `.m4v` files.
+    static let admittedVideoDataURIHeaders: Set<String> = [
+        "data:video/mp4;base64", "data:video/x-m4v;base64",
+        "data:video/quicktime;base64", "data:video/mov;base64",
+    ]
+
     /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The
     /// asset's custom resource loader serves strict byte ranges directly from
     /// the decoded `Data`; no plaintext file is created. Anything else is
@@ -786,13 +795,10 @@ public enum MediaIngest {
         guard let commaIndex = uri.firstIndex(of: ",") else {
             throw MediaError.malformedDataURI("missing ','")
         }
-        let header = String(uri[..<commaIndex])
-        let isMP4 = header.caseInsensitiveCompare("data:video/mp4;base64") == .orderedSame
-        let isQuickTime =
-            header.caseInsensitiveCompare("data:video/quicktime;base64") == .orderedSame
-        guard isMP4 || isQuickTime else {
+        guard admittedVideoDataURIHeaders.contains(uri[..<commaIndex].lowercased()) else {
             throw MediaError.malformedDataURI(
-                "inline video must use data:video/mp4;base64 or data:video/quicktime;base64")
+                "inline video must use a base64 data:video/mp4, video/quicktime, video/mov "
+                    + "or video/x-m4v URI")
         }
         let data = try dataFromDataURI(uri, maxMediaDecodedBytes: maxMediaDecodedBytes)
         let memoryAsset: MemoryBackedVideoAsset

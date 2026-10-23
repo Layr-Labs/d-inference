@@ -1,0 +1,4 @@
+### GLM-5.3-Flash variable-frame-rate video
+
+- Serve GLM-5.3-Flash `video_url` clips with a variable frame rate instead of refusing them with 400 `invalid_media`. OpenRouter's `input-video-base64` readiness clip (QuickTime, 211 frames in 10.8 s) was refused this way. Like the reference loader, the processor now indexes frames in presentation order and times frame i at i / the track's average frame rate, then applies the unchanged 2 FPS sampler; constant-frame-rate clips sample exactly as before.
+- Accept inline videos labeled `data:video/mov;base64,` (OpenRouter's documented QuickTime label) and `data:video/x-m4v;base64,` on the shared media path (GLM, Gemma and Qwen), in addition to `video/mp4` and `video/quicktime`. The container is still sniffed from the bytes, so anything other than an MP4 or QuickTime file is refused. Nemotron Super keeps its own `video/mp4` and `video/quicktime` labels.

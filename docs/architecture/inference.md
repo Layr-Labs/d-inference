@@ -807,8 +807,10 @@ positional encoding, so a submission carries causal spans and no position
 state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
 The original request is normalized by the GLM prompt policy exactly as text is,
 with symbolic image and video parts, and the processor expands each `<|image|>`
-to its feature count (16 to 8000 per image). A video's single constant-frame-rate
-MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+to its feature count (16 to 8000 per image). A video's single MP4 or QuickTime
+track is read frame by frame in presentation order. As in the reference loader,
+frame i is timed at i / the track's average frame rate (`nominalFrameRate`), so a
+variable-frame-rate track is indexed, not refused. Only its 2 FPS official
 sample is converted to RGB8 and kept, within the processor's decoded-frame cap
 (`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
 pair of sampled frames becomes one image-token span between
@@ -824,7 +826,7 @@ because videos decode one at a time, one decoded-frame cap when any video is
 present (`GLM5NextVisionBudget.mediaReservation`,
 `GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
 processor's prepared-pixel cap of 28,532 visual tokens.
-Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
+Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
 they decode without MTP speculation. A GLM slot serves media only when its
@@ -1891,6 +1893,10 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+- **Inline video labels** (`MediaIngest.admittedVideoDataURIHeaders`): base64
+  `data:video/mp4`, `data:video/x-m4v`, `data:video/quicktime` or
+  `data:video/mov`. The label only gates the part; `MemoryBackedVideoAsset`
+  identifies MP4 or QuickTime from the bytes and refuses anything else.
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
   slots require a backend that honors span masks. The current paged cache
   satisfies that structural gate; supported vision serving still requires its

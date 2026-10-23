@@ -49,7 +49,7 @@ Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP
-speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL) is sampled at 2 FPS and decoded target-only.
+speculation, no prefix reuse). Video input (`video_url` with an inline base64 MP4 or QuickTime URL, constant or variable frame rate; labels in `MediaIngest.admittedVideoDataURIHeaders`) is sampled at 2 FPS and decoded target-only.
 This variable never advertises the local identity to the coordinator
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
 `GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves

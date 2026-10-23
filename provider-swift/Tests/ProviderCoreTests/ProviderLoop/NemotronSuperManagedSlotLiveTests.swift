@@ -242,13 +242,16 @@ extension NemotronSuperManagedSlotTests {
     /// The pinned checkpoint's logprobs against teacher forcing. Through the
     /// encrypted relay a logprobs request drafts nothing and the same request
     /// without logprobs speculates to the same text. On the engine, a greedy
-    /// logprob row over the relay's rendered prompt carries the relay's
-    /// values, and at every step the relay served they match the
-    /// last-position log-softmax of a cold prefill of the prompt and the
-    /// tokens before it: the same argmax, within decode-versus-prefill
-    /// numerics (`NemotronSuperPagedLiveTests` bounds the paged decode's
-    /// logits). Loads about 80 GB; run only with
+    /// logprob row over the relay's rendered prompt, stopped at the relay's
+    /// end of turn, carries the relay's values, and at every step the relay
+    /// served they match the last-position log-softmax of a cold prefill of
+    /// the prompt and the tokens before it: the same argmax, within
+    /// decode-versus-prefill numerics (`NemotronSuperPagedLiveTests` bounds
+    /// the paged decode's logits). Loads about 80 GB; run only with
     /// `DARKBLOOM_SUPER_MANAGED_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
+    /// `DARKBLOOM_SUPER_LIVE_MTP=off` and
+    /// `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` vary the owner for numerics
+    /// experiments.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
         && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
         .timeLimit(.minutes(20)))
@@ -267,15 +270,21 @@ extension NemotronSuperManagedSlotTests {
             if logprobs { value["logprobs"] = true; value["top_logprobs"] = top }
             return try JSONSerialization.data(withJSONObject: value)
         }
-        let start = try #require(engine.mtpMetricsSnapshot())
+        // `DARKBLOOM_SUPER_LIVE_MTP=off` loads a plain owner, which has no
+        // speculation to check; the numerics checks below still apply.
+        let speculating = ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_LIVE_MTP"] != "off"
+        let start = engine.mtpMetricsSnapshot()
         let relayed = SuperSSE(try await Self.send(body(logprobs: true), to: loop, recorder: recorder,
                                                    consumer: consumer).sse)
-        let between = try #require(engine.mtpMetricsSnapshot())
+        let between = engine.mtpMetricsSnapshot()
         let plain = SuperSSE(try await Self.send(body(logprobs: false), to: loop, recorder: recorder,
                                                  consumer: consumer).sse)
-        let end = try #require(engine.mtpMetricsSnapshot())
-        #expect(between.draftedTokens == start.draftedTokens, "the logprob row drafted")
-        #expect(end.rounds > between.rounds, "the plain request did not speculate")
+        let end = engine.mtpMetricsSnapshot()
+        let logprobDrafted = (between?.draftedTokens ?? 0) - (start?.draftedTokens ?? 0)
+        let plainRounds = (end?.rounds ?? 0) - (between?.rounds ?? 0)
+        #expect(speculating == (start != nil), "the owner's speculation does not match DARKBLOOM_SUPER_LIVE_MTP")
+        #expect(logprobDrafted == 0, "the logprob row drafted")
+        #expect(!speculating || plainRounds > 0, "the plain request did not speculate")
         #expect(!relayed.content.isEmpty && plain.content == relayed.content)
         #expect(!relayed.logprobs.isEmpty
             && relayed.logprobs.allSatisfy { $0.top.count == top && $0.top.first == $0.logprob })
@@ -297,14 +306,18 @@ extension NemotronSuperManagedSlotTests {
             }
             return result
         }
-        let served = try await greedy(prompt, id: 0x5EED_0000, maxTokens: count)
-        #expect(served.entries.count == count && served.entries.map(\.token) == served.tokens)
+        // The relay ends at the end of turn, inside the token budget. The
+        // engine row has no stop token, so it stops at the relay's last
+        // served position; teacher forcing past it would score text no
+        // request returns.
+        #expect(relayed.finishReason == "stop" && relayed.logprobs.count < count)
+        let servedEnd = relayed.logprobs.count
+        let served = try await greedy(prompt, id: 0x5EED_0000, maxTokens: servedEnd)
+        #expect(served.entries.count == servedEnd && served.entries.map(\.token) == served.tokens)
         let relayDeviation = zip(relayed.logprobs, served.entries).map { abs($0.logprob - Double($1.logprob)) }.max() ?? 0
         #expect(relayDeviation < 1e-4, "relay and engine logprobs differ by \(relayDeviation)")
-        // The positions the relay served: the engine row has no stop token
-        // and continues past the end of turn, which the relay never returns.
         var deviations: [Float] = [], argmaxMismatches = 0, topSetMismatches = 0
-        for index in served.tokens.indices.prefix(relayed.logprobs.count) {
+        for index in served.tokens.indices {
             let forced = try await greedy(prompt + served.tokens[..<index], id: 0x5EED_1000 + UInt64(index), maxTokens: 1)
             let reference = try #require(forced.entries.first)
             let entry = served.entries[index]
@@ -317,10 +330,10 @@ extension NemotronSuperManagedSlotTests {
         }
         let worst = deviations.max() ?? .infinity
         let median = deviations.sorted().dropFirst(deviations.count / 2).first ?? .infinity
-        print("SUPER_LOGPROBS_LIVE relay_entries=\(relayed.logprobs.count) relay_vs_engine=\(relayDeviation) "
+        print("SUPER_LOGPROBS_LIVE relay_entries=\(servedEnd) judged_steps=\(deviations.count) relay_vs_engine=\(relayDeviation) "
             + "teacher_median=\(median) teacher_worst=\(worst) argmax_mismatches=\(argmaxMismatches) "
             + "top\(top)_set_mismatches=\(topSetMismatches) "
-            + "logprob_drafted=\(between.draftedTokens - start.draftedTokens) plain_rounds=\(end.rounds - between.rounds)")
+            + "logprob_drafted=\(logprobDrafted) plain_rounds=\(plainRounds) speculating=\(speculating)")
         #expect(argmaxMismatches == 0)
         #expect(worst < 0.25, "served logprobs differ from teacher forcing by \(worst)")
         #expect(await loop.unloadModel(Self.modelID))

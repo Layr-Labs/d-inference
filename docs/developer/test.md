@@ -238,9 +238,17 @@ of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
 bf16 spacings of the step's largest logit. A logprob row decodes one-token
 target steps, so the MTP greedy stream may leave it only at a reference
 near-tie. Batched with a plain row on another prompt, the logprob row keeps
-those values and every plain token is the reference argmax up to a near-tie;
-the plain row drafts again after the logprobs row finishes. The engine must end without a native fault or retained
-load. Results go to `logprobs-qualification.json` in the results directory.
+its chosen values within the same bound and its alternatives within
+`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_BATCHED_TOLERANCE` nats (default `1.0`),
+every alternative is a reference top-8 token, and every plain token is the
+reference argmax up to a near-tie; the plain row drafts again after the
+logprobs row finishes. Batch width alone moves GLM's non-top logits: the run
+also scores the reference as two identical rows and records its drift from
+the one-row reference (`pairedReferenceMaxDrift`, 0.56 nats on an M3 Ultra).
+The engine must end without a native fault or retained load. Results go to
+`logprobs-qualification.json` in the results directory. The model directory
+must hold regular files; a Hugging Face snapshot of symlinks fails with
+`regular file required`.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
@@ -1169,8 +1177,11 @@ shard (hashes about 75 GB, loads no weights); adding
 the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request.
 `pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
-against the engine's and, at every served step, against a cold prefill of the
-prompt and the tokens before it. Run them only with exclusive GPU access.
+against the engine's and, at every step the relay served up to its end of
+turn, against a cold prefill of the prompt and the tokens before it.
+`DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
+makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.
 
 `NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
 shapes, built from the captured tool request the platform's conformance fixture

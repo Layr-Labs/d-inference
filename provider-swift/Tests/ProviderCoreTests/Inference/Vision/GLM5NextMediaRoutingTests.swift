@@ -268,7 +268,7 @@ struct GLM5NextMediaRoutingTests {
             sha256: "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
         // The URL test arrives as the coordinator's sniffed data:video/mp4 URI.
         for (label, data, grid) in [
-            ("video/quicktime", mov, [11, 40, 108]), ("video/mov", mov, [11, 40, 108]),
+            ("video/quicktime", mov, [11, 40, 108]),
             ("video/mp4", mp4, [5, 52, 92]),
         ] {
             let engine = GLMScriptedEngine()

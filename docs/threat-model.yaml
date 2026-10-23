@@ -1966,8 +1966,7 @@ threats:
       - description: >
           AVURLAssetReferenceRestrictions.forbidAll prevents the container from
           following external references. Provider media ingestion still accepts
-          only base64 data:video/mp4, data:video/x-m4v, data:video/quicktime or
-          data:video/mov payloads whose bytes are an MP4 or QuickTime file, applies the
+          only base64 data:video/mp4 or data:video/quicktime payloads, applies the
           existing decoded-byte, duration, frame-pixel, video-count, and aggregate
           caps, and rejects http(s), file, and unsupported container MIME types.
         status: implemented

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1893,10 +1893,6 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
-- **Inline video labels** (`MediaIngest.admittedVideoDataURIHeaders`): base64
-  `data:video/mp4`, `data:video/x-m4v`, `data:video/quicktime` or
-  `data:video/mov`. The label only gates the part; `MemoryBackedVideoAsset`
-  identifies MP4 or QuickTime from the bytes and refuses anything else.
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
   slots require a backend that honors span masks. The current paged cache
   satisfies that structural gate; supported vision serving still requires its

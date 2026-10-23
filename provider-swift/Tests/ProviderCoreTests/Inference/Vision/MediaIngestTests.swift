@@ -231,25 +231,6 @@ func vlmDecodeVideoQuickTimeDataURI() async throws {
     #expect(framePixels == 64 * 64)
 }
 
-@Test("decodeVideo admits MP4 and QuickTime label aliases; the bytes still decide")
-func vlmDecodeVideoLabelAliases() async throws {
-    for label in ["video/mov", "video/x-m4v", "VIDEO/MOV"] {
-        let (_, framePixels) = try await MediaIngest.decodeVideo(
-            "data:\(label);base64,\(tinyMP4Base64)")
-        #expect(framePixels == 64 * 64, "\(label)")
-    }
-    let notVideo = Data("not a real video".utf8).base64EncodedString()
-    for uri in ["data:video/mov;base64,\(notVideo)", "data:video/mov,\(tinyMP4Base64)"] {
-        do {
-            _ = try await MediaIngest.decodeVideo(uri)
-            Issue.record("expected malformedDataURI for \(uri.prefix(24))")
-        } catch MediaIngest.MediaError.malformedDataURI {
-        } catch {
-            Issue.record("expected malformedDataURI, got \(error)")
-        }
-    }
-}
-
 @Test("startup purge removes only exact legacy plaintext-video temp files")
 func vlmLegacyVideoTempPurgeIsNarrow() throws {
     let fileManager = FileManager.default

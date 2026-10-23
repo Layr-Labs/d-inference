@@ -88,6 +88,9 @@ public struct StartupPreloader: Sendable {
         /// segments, MLX's buffer cache) before a candidate is skipped; the
         /// requirement and free memory are then sampled again.
         public var reclaimBeforeSkip: (@Sendable () async -> Void)?
+        /// Sees each failed load or self-test (modelId, error); production
+        /// prints the GLM wired-limit fix for a Metal out-of-memory failure.
+        public var onFailure: @Sendable (String, any Error) -> Void
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
@@ -102,7 +105,10 @@ public struct StartupPreloader: Sendable {
             canLoadMore: (@Sendable () async -> Bool)? = nil,
             onCandidateStarted: (@Sendable (String) async -> Void)? = nil,
             onInsufficientMemory: (@Sendable () -> Void)? = nil,
-            reclaimBeforeSkip: (@Sendable () async -> Void)? = nil
+            reclaimBeforeSkip: (@Sendable () async -> Void)? = nil,
+            onFailure: @escaping @Sendable (String, any Error) -> Void = { modelId, error in
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
+            }
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
@@ -117,6 +123,7 @@ public struct StartupPreloader: Sendable {
             self.onCandidateStarted = onCandidateStarted
             self.onInsufficientMemory = onInsufficientMemory
             self.reclaimBeforeSkip = reclaimBeforeSkip
+            self.onFailure = onFailure
         }
     }
 
@@ -187,6 +194,7 @@ public struct StartupPreloader: Sendable {
                 // The gate and its pending-load rechecks use two bounded
                 // insufficient-memory message shapes. Keep public text closed.
                 if Self.isInsufficientMemoryLoad(error) { deps.onInsufficientMemory?() }
+                deps.onFailure(modelId, error)
                 deps.log(
                     "WARN: startup preload failed for '\(modelId)': "
                         + "\(error.localizedDescription) — will lazy-load on first request")
@@ -210,6 +218,7 @@ public struct StartupPreloader: Sendable {
                 break
             } catch {
                 summary.selfTestFailed.append(modelId)
+                deps.onFailure(modelId, error)
                 deps.onSelfTestFailed(modelId, error.localizedDescription)
                 if deps.selfTestFailClosed {
                     await deps.retire(modelId)

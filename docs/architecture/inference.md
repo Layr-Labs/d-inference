@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -681,6 +681,14 @@ only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
 (`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
 version and aggregate, the revision receipt must match it and hash to that
 aggregate, and the admitted load hashes every file against the same manifest.
+That verification is the published weight hash: once every manifest file has
+matched and no file identity changed through construction, the load reports the
+manifest aggregate (`GLM5NextManagedLoad.verifiedArtifactSHA256`), which both
+modes publish instead of separate pre-load and post-load `WeightHasher` passes
+(`ProviderLoop.verifiedGLM5NextWeightHash`). The next coordinator-mode start
+registers that hash without reading the weights while every file keeps its
+device, inode, size and modification and status-change times
+(`VerifiedWeightHashStore`); the load verifies again before serving.
 An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
 reviewed shipped template remains mandatory. The enforced context is 262,144
 tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
@@ -807,8 +815,10 @@ positional encoding, so a submission carries causal spans and no position
 state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
 The original request is normalized by the GLM prompt policy exactly as text is,
 with symbolic image and video parts, and the processor expands each `<|image|>`
-to its feature count (16 to 8000 per image). A video's single constant-frame-rate
-MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+to its feature count (16 to 8000 per image). A video's single MP4 or QuickTime
+track is read frame by frame in presentation order. As in the reference loader,
+frame i is timed at i / the track's average frame rate (`nominalFrameRate`), so a
+variable-frame-rate track is indexed, not refused. Only its 2 FPS official
 sample is converted to RGB8 and kept, within the processor's decoded-frame cap
 (`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
 pair of sampled frames becomes one image-token span between
@@ -824,7 +834,7 @@ because videos decode one at a time, one decoded-frame cap when any video is
 present (`GLM5NextVisionBudget.mediaReservation`,
 `GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
 processor's prepared-pixel cap of 28,532 visual tokens.
-Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
+Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
 they decode without MTP speculation. A GLM slot serves media only when its
@@ -871,6 +881,26 @@ string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
+It renders reasoning that OpenRouter returns on earlier assistant turns
+(`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
+(`GLM5NextPromptPolicy.RawControls.returnedReasoning`), and serves `strict`
+tools by validating each `auto` call against its schema before exposure
+(`ToolConstraintValidation.validate`), not by constraining decoding.
+GLM's native engine refuses sampler token constraints, so a JSON
+`response_format` is likewise prompt-steered and validated, not constrained:
+the service's instruction message renders through the template, reasoning
+streams on a separate typed channel, and the answer is withheld until
+generation ends, then decoded and checked (`json_schema` against the shared
+fail-closed subset) before it is exposed; invalid output is a 422 with no
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
+`tool_choice` (required or a named function) is structured post-validation, as
+on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
+parser withholds the call until end of stream, and `ToolConstraintValidation`
+must accept it before it is exposed (`ToolChoiceEnforcementPolicy.forcedStrategy`).
+The provider advertises it for the managed GLM identities. Neither mode
+installs a token constraint or requests logprobs, so these rows stay
+MTP-eligible and pass the native engine's output-control refusal
+(`EngineV2Bridge.nativeOutputControlRefusal`).
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
@@ -1706,6 +1736,26 @@ remain separate from this automatic intent and validated loading path.
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
+
+A native-tracked engine (`EngineV2.nativeShutdownExecutionContractID` set: the
+protected GLM5-Next and MiMo V2.6 engines) refuses a token constraint at
+submit, and a `topLogprobs` row unless its contract qualifies capture
+(`EngineV2.acceptsLogprobRows`; the GLM5-Next page-bank profiles do, MiMo
+does not). The engine's SDK-internal error could reach the coordinator only
+as a 500 `generation_failure`, which strikes its inference-error breaker, so
+`EngineV2Bridge.nativeOutputControlRefusal`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`)
+refuses such a request first, before any reservation, as
+`MultiModelBatchSchedulerEngineError.unsupportedOutputControl`: 400
+`invalid_request` with reason `client_error` on both submit paths.
+
+A GLM5-Next logprob row samples through the engine's ordinary sampler, like a
+logprob row on any CBv2 engine: it never drafts or verifies
+(`EngineLoopV2.mtpBasicEligible`), and its gather rides the step's retained
+native work. GLM has no request-scoped target-only fallback, so while such a
+row decodes beside other rows the whole step decodes target-only, as it does
+beside a GLM media row; output stays exact and the other rows speculate again
+once it finishes.
 
 ### Collected and streaming reasoning state
 

@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -116,7 +116,10 @@ sorted by `path` ascending))). Implemented identically in
 `AggregateManifestFileHashes` ([coordinator/internal/api/catalog/registration/registry_validation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/api/catalog/registration/registry_validation.go)),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
-provider runs after download. The same value is the catalog `weight_hash`.
+provider runs after download. The same value is the catalog `weight_hash`. On
+macOS each file's read then drops its pages from the file cache
+(`provider-swift/Sources/ProviderCoreFoundation/PageCache.swift`), so a verified
+download does not stay resident beside the model it is loaded into.
 
 ### R2 layout
 

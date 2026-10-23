@@ -79,6 +79,12 @@ struct Doctor: AsyncParsableCommand {
                 now: Date().timeIntervalSince1970,
                 runningVersion: ProviderCore.version))
         }
+        // Here, not in `buildDoctorChecks`: a low limit must not fail `verify`.
+        let glmWiredLimit = GLMWiredLimitAdvice.doctorCheck(
+            hardware: snapshot.hardware,
+            glmInUse: GLMWiredLimitAdvice.glmInUse(snapshot: snapshot, daemonState: daemonState),
+            limits: .live())
+        if let glmWiredLimit { checks.append(glmWiredLimit.check) }
 
         // The high-signal diagnosis first (sectioned, with fixes).
         let color = DoctorTerminalStyle.enabled()
@@ -96,6 +102,11 @@ struct Doctor: AsyncParsableCommand {
         if let guide = bootSecurityActionGuide(bootSecurity) {
             print("")
             print("BOOT SECURITY — ACTION REQUIRED")
+            print(guide)
+        }
+        if let guide = glmWiredLimit?.actionGuide {
+            print("")
+            print(GLMWiredLimitAdvice.actionHeading)
             print(guide)
         }
         if support {

@@ -140,6 +140,10 @@ struct GLM5NextPromptPolicyTests {
         ["enable_thinking": true],
         ["chat_template_kwargs": ["enable_thinking": true]],
         ["chat_template_kwargs": ["thinking": true]],
+        ["thinking": ["type": "enabled"]],
+        ["thinking": true],
+        ["include_reasoning": NSNull(), "thinking": NSNull()],
+        ["reasoning": ["enabled": true, "max_tokens": NSNull(), "exclude": NSNull(), "summary": "auto"]],
         ["reasoning": ["enabled": true, "exclude": false], "include_reasoning": true,
          "enable_thinking": true, "chat_template_kwargs": ["thinking": true, "enable_thinking": true]],
     ] }
@@ -209,6 +213,8 @@ struct GLM5NextPromptPolicyTests {
         ["chat_template_kwargs": ["enable_thinking": false]],
         ["chat_template_kwargs": ["thinking": false]],
         ["chat_template_kwargs": ["reasoning_effort": "none"]],
+        ["thinking": ["type": "disabled"]],
+        ["thinking": false],
         ["reasoning": ["enabled": false, "exclude": false], "enable_thinking": false,
          "include_reasoning": true, "chat_template_kwargs": ["thinking": false]],
     ] }
@@ -227,6 +233,8 @@ struct GLM5NextPromptPolicyTests {
         ["reasoning": ["effort": "none"], "reasoning_effort": "high"],
         ["reasoning": ["enabled": true], "chat_template_kwargs": ["thinking": false]],
         ["enable_thinking": true, "chat_template_kwargs": ["enable_thinking": false]],
+        ["thinking": ["type": "disabled"], "reasoning": ["effort": "high"]],
+        ["thinking": ["type": "enabled"], "reasoning_effort": "none"],
     ] }
 
     private func body(_ controls: [String: Any]) throws -> Data {
@@ -299,7 +307,7 @@ struct GLM5NextPromptPolicyTests {
             try GLM5NextPromptPolicy.additionalContext(request: request, controls: .init(enableThinking: false))
         }
         // A malformed sibling remains the generic refusal.
-        let malformed = Data(#"{"model":"m","messages":[],"reasoning":{"enabled":false,"summary":"auto"}}"#.utf8)
+        let malformed = Data(#"{"model":"m","messages":[],"reasoning":{"enabled":false,"mode":"pro"}}"#.utf8)
         #expect(try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed).invalid)
     }
 
@@ -477,12 +485,16 @@ struct GLM5NextPromptPolicyTests {
             ["reasoning_effort": " none"], ["reasoning_effort": "0"],
             ["clear_thinking": NSNull()], ["clear_thinking": 0], ["clear_thinking": "false"],
             ["enable_thinking": NSNull()], ["enable_thinking": 1], ["enable_thinking": "true"],
-            ["include_reasoning": "true"], ["include_reasoning": NSNull()],
-            ["preserve_thinking": true], ["thinking": true], ["thinking": ["type": "enabled"]],
-            ["reasoning": NSNull()], ["reasoning": ["enabled": 1]], ["reasoning": ["exclude": "false"]],
+            ["include_reasoning": "true"], ["include_reasoning": 0],
+            ["preserve_thinking": true], ["preserve_thinking": NSNull()],
+            ["thinking": "enabled"], ["thinking": 1], ["thinking": ["type": "adaptive"]],
+            ["thinking": ["type": "enabled", "budget_tokens": 1024]], ["thinking": ["type": NSNull()]],
+            ["thinking": ["type": "enabled", "clear_thinking": "false"]],
+            ["reasoning": true], ["reasoning": ["enabled": 1]], ["reasoning": ["exclude": "false"]],
             ["reasoning": ["max_tokens": 0]], ["reasoning": ["max_tokens": -1]],
             ["reasoning": ["max_tokens": 1.5]], ["reasoning": ["max_tokens": "1024"]],
-            ["reasoning": ["max_tokens": NSNull()]], ["reasoning": ["summary": "auto"]],
+            ["reasoning": ["summary": "verbose"]], ["reasoning": ["summary": true]],
+            ["reasoning": ["generate_summary": "Auto"]], ["reasoning": ["context": "all_turns"]],
             ["reasoning": ["effort": "high"], "reasoning_effort": "low "],
             ["reasoning": ["enabled": false, "unrecognized": true]],
             ["clear_thinking": false, "chat_template_kwargs": ["clear_thinking": "true"]],
@@ -522,22 +534,39 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
-    @Test func modesDoNotAdvertiseConstrainedDecodingFromInstructions() throws {
+    @Test func forcedAndJSONModesRenderTheirInstructionsWithoutConstraints() throws {
         let tool = OpenAITool(function: .init(name: "ping", parameters: .object([
             "type": .string("object"), "properties": .object([:]),
         ])))
-        for choice: OpenAIToolChoice in [.mode(.required), .function(name: "ping")] {
-            let request = OpenAIChatCompletionRequest(model: "m", messages: [], tools: [tool], toolChoice: choice)
-            #expect(throws: (any Error).self) {
-                try GLM5NextPromptPolicy.normalizedTextInput(request: request,
-                    prepared: ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next"), controls: .init())
+        let other = OpenAITool(function: .init(name: "pong", parameters: .object([
+            "type": .string("object"), "properties": .object([:]),
+        ])))
+        // Forced choices render the shared forcing instruction; the call is
+        // withheld and validated after generation. Named offers one function.
+        for (choice, offered) in [(OpenAIToolChoice.mode(.required), ["ping", "pong"]), (.function(name: "ping"), ["ping"])] {
+            let request = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .user, content: .text("Hi"))],
+                tools: [tool, other], toolChoice: choice)
+            let input = try GLM5NextPromptPolicy.normalizedTextInput(request: request,
+                prepared: ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next"), controls: .init())
+            let names = input.tools?.compactMap { tool -> String? in
+                guard case .object(let function)? = tool["function"] as? Jinja.Value,
+                    case .string(let name)? = function["name"] else { return nil }
+                return name
             }
+            #expect(names == offered)
+            let instruction = input.messages.compactMap { message -> String? in
+                if case .string(let text)? = message["content"] as? Jinja.Value { return text }
+                return nil
+            }
+            #expect(instruction.contains { $0.contains("Your entire response must consist of") })
         }
+        // JSON output renders unchanged; its answer is withheld and validated
+        // after generation, never constrained by the prompt policy.
         let json = OpenAIChatCompletionRequest(model: "m", messages: [], responseFormat: .jsonObject())
-        #expect(throws: (any Error).self) {
-            try GLM5NextPromptPolicy.normalizedTextInput(request: json,
-                prepared: ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next"), controls: .init())
-        }
+        let jsonPrepared = try ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next")
+        #expect(jsonPrepared.glmResponseFormat != nil && jsonPrepared.responseFormat == nil)
+        _ = try GLM5NextPromptPolicy.normalizedTextInput(request: json, prepared: jsonPrepared, controls: .init())
+        #expect(try ToolChoicePromptPolicy.prepare(json, modelType: "qwen3_5").glmResponseFormat == nil)
         let none = OpenAIChatCompletionRequest(model: "m", messages: [], tools: [tool], toolChoice: .mode(.none), parallelToolCalls: false)
         let prepared = try ToolChoicePromptPolicy.prepare(none, modelType: "glm5_next")
         #expect(!prepared.allowsParallelCalls)
@@ -628,6 +657,259 @@ struct GLM5NextPromptPolicyTests {
             prepared: ToolChoicePromptPolicy.prepare(disabledChat, modelType: "glm5_next"),
             request: disabledChat, modelType: "glm5_next", templateControls: disabled.templateControls)
         #expect(thinkingOff.additionalContext?["enable_thinking"] as? Bool == false)
+    }
+
+    private static let returnedThought = "Boston needs the weather tool; call it in fahrenheit."
+
+    /// OpenRouter's returned-reasoning turn: the weather tool its tests
+    /// declare (closed schema, `strict` when asked), an assistant call with
+    /// the `assistant` fields (its reasoning) merged in, and the tool result.
+    /// `controls` is a JSON object merged into the request.
+    private func returnedReasoningConversation(
+        assistant fields: [String: Any], controls: String = "{}", strict: Bool = false
+    ) throws -> Data {
+        var assistant: [String: Any] = [
+            "role": "assistant", "content": "",
+            "tool_calls": [[
+                "id": "call_weather", "type": "function",
+                "function": ["name": "get_current_weather",
+                             "arguments": #"{"location":"Boston, MA","unit":"fahrenheit"}"#],
+            ]],
+        ]
+        assistant.merge(fields) { _, added in added }
+        var function: [String: Any] = [
+            "name": "get_current_weather", "description": "Get the current weather in a given location",
+            "parameters": [
+                "type": "object", "additionalProperties": false, "required": ["location", "unit"],
+                "properties": [
+                    "location": ["type": "string", "description": "The city and state, e.g. San Francisco, CA"],
+                    "unit": ["type": "string", "enum": ["celsius", "fahrenheit"]],
+                ],
+            ] as [String: Any],
+        ]
+        if strict { function["strict"] = true }
+        var body: [String: Any] = [
+            "model": "glm-5.3-flash", "stream": true,
+            "messages": [
+                ["role": "user", "content": "What is the weather like in Boston, MA in fahrenheit?"],
+                assistant,
+                ["role": "tool", "tool_call_id": "call_weather", "content": #"{"temperature":72}"#],
+            ],
+            "tools": [["type": "function", "function": function]],
+        ]
+        let merged = try #require(JSONSerialization.jsonObject(with: Data(controls.utf8)) as? [String: Any])
+        body.merge(merged) { _, added in added }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// OpenRouter returns an earlier turn's reasoning as `reasoning` or
+    /// `reasoning_details` (`reasoning_content` is its alias). Each renders
+    /// exactly as `reasoning_content`, which the template keeps in history
+    /// while `clear_thinking` is false. Summary and encrypted details carry no
+    /// replayable text and are skipped.
+    @Test func returnedAssistantReasoningRendersLikeReasoningContent() throws {
+        let template = try shippedTemplate()
+        let thought = Self.returnedThought
+        let half = thought.index(thought.startIndex, offsetBy: 20)
+        func text(_ value: String) -> [String: Any] {
+            ["type": "reasoning.text", "text": value, "signature": NSNull(), "id": NSNull(), "format": "unknown"]
+        }
+        let opaque: [[String: Any]] = [
+            ["type": "reasoning.summary", "summary": "Weather lookup.", "format": "anthropic-claude-v1", "index": 0],
+            ["type": "reasoning.encrypted", "data": "ZW5jcnlwdGVk", "format": "anthropic-claude-v1", "index": 1],
+        ]
+        func rendered(_ reasoning: [String: Any]) throws -> [String] {
+            try remoteAndLocalInputs(returnedReasoningConversation(assistant: reasoning)).map {
+                try render($0, with: template)
+            }
+        }
+        let expected = try rendered(["reasoning_content": thought])
+        #expect(expected[0] == expected[1])
+        #expect(expected[0].contains("<|assistant|><think>\(thought)</think><tool_call>get_current_weather"))
+        for spelling: [String: Any] in [
+            ["reasoning": thought],
+            ["reasoning_details": [text(thought)]],
+            ["reasoning_details": opaque + [text(String(thought[..<half])), text(String(thought[half...]))]],
+            ["reasoning": thought, "reasoning_details": [text(thought)]],
+            ["reasoning": "", "reasoning_details": [text(thought)]],
+            ["content": NSNull(), "reasoning_details": [text(thought)]],
+            ["reasoning_content": thought, "reasoning": "stale", "reasoning_details": [text("stale")]],
+        ] {
+            #expect(try rendered(spelling) == expected, "\(spelling.keys.sorted())")
+        }
+        // Without replayable text the turn keeps the template's empty block.
+        let empty = try rendered([:])
+        #expect(empty[0].contains("<|assistant|><think></think><tool_call>"))
+        for spelling: [String: Any] in [
+            ["reasoning_details": opaque], ["reasoning": NSNull(), "reasoning_details": NSNull()],
+            ["reasoning": ["text": thought]], ["reasoning_details": "not a list"],
+        ] {
+            #expect(try rendered(spelling) == empty, "\(spelling.keys.sorted())")
+        }
+        // `clear_thinking` still drops it before the last user turn.
+        var cleared = try #require(JSONSerialization.jsonObject(
+            with: returnedReasoningConversation(assistant: ["reasoning": thought])) as? [String: Any])
+        cleared["clear_thinking"] = true
+        cleared["messages"] = (cleared["messages"] as? [Any] ?? []) + [["role": "user", "content": "Thanks"]]
+        let clearedRender = try render(normalized(JSONSerialization.data(withJSONObject: cleared)), with: template)
+        #expect(!clearedRender.contains(thought) && clearedRender.contains("<|assistant|><think></think><tool_call>"))
+    }
+
+    /// OpenRouter's `reasoning-content-return` request shapes: the returned
+    /// tool turn with OpenRouter's reasoning fields, GLM's own API spelling of
+    /// the thinking switch, or OpenRouter's `strict` weather tool. MiMo and
+    /// Nemotron Super serve each. GLM served only the first and refused the
+    /// others with `invalid_request` before rendering.
+    @Test(arguments: [
+        ("{}", false),
+        (#"{"reasoning":null}"#, false),
+        (#"{"reasoning":{"enabled":true,"effort":null,"max_tokens":null,"exclude":false}}"#, false),
+        (#"{"reasoning":{"effort":"high","summary":"auto"}}"#, false),
+        (#"{"reasoning":{"effort":"max","generate_summary":"detailed"}}"#, false),
+        (#"{"include_reasoning":null}"#, false),
+        (#"{"include_reasoning":true,"reasoning":{"enabled":true,"exclude":null}}"#, false),
+        (#"{"thinking":{"type":"enabled","clear_thinking":false}}"#, false),
+        (#"{"thinking":{"type":"enabled"}}"#, false),
+        (#"{"thinking":true}"#, false),
+        (#"{"thinking":null}"#, false),
+        ("{}", true),
+        (#"{"reasoning":{"enabled":true}}"#, true),
+    ])
+    func openRouterReasoningContentReturnRequestIsServed(controls: String, strict: Bool) throws {
+        let template = try shippedTemplate()
+        let body = try returnedReasoningConversation(
+            assistant: ["reasoning_content": Self.returnedThought], controls: controls, strict: strict)
+        let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+        #expect(!evidence.invalid && !evidence.disablesThinking && !evidence.excludesReasoning)
+        for input in try remoteAndLocalInputs(body) {
+            #expect(input.additionalContext?["enable_thinking"] == nil)
+            #expect(input.additionalContext?["clear_thinking"] as? Bool == false)
+            let rendered = try render(input, with: template)
+            #expect(rendered.contains("<|assistant|><think>\(Self.returnedThought)</think><tool_call>"))
+            #expect(rendered.hasSuffix(#"<tool_response>{"temperature":72}</tool_response><|assistant|><think>"#))
+        }
+    }
+
+    /// A returned call without arguments (`""`) renders like `{}`, as MiMo,
+    /// Nemotron Super and vLLM read it.
+    @Test func emptyHistoryArgumentsRenderAsAnEmptyObject() throws {
+        let template = try shippedTemplate()
+        func rendered(_ arguments: String) throws -> [String] {
+            try remoteAndLocalInputs(returnedReasoningConversation(assistant: [
+                "reasoning_content": Self.returnedThought,
+                "tool_calls": [["id": "call_weather", "type": "function",
+                                "function": ["name": "get_current_weather", "arguments": arguments]]],
+            ])).map { try render($0, with: template) }
+        }
+        let empty = try rendered("")
+        #expect(try empty == rendered("{}"))
+        #expect(empty[0].contains("</think><tool_call>get_current_weather</tool_call><|observation|>"))
+    }
+
+    /// GLM's API spells history clearing inside `thinking`; the top-level and
+    /// template-kwargs spellings keep precedence.
+    @Test func thinkingObjectClearThinkingYieldsToTheOtherSpellings() throws {
+        func clear(_ controls: String) throws -> Bool? {
+            let body = try returnedReasoningConversation(assistant: [:], controls: controls)
+            let values = try remoteAndLocalInputs(body).map { $0.additionalContext?["clear_thinking"] as? Bool }
+            #expect(Set(values).count == 1, "\(controls)")
+            return values[0]
+        }
+        #expect(try clear(#"{"thinking":{"type":"enabled","clear_thinking":true}}"#) == true)
+        #expect(try clear(#"{"thinking":{"clear_thinking":true},"clear_thinking":false}"#) == false)
+        #expect(try clear(#"{"thinking":{"clear_thinking":true},"chat_template_kwargs":{"clear_thinking":false}}"#)
+            == false)
+    }
+
+    /// OpenRouter's captured tool-test requests, byte for byte as the platform
+    /// conformance fixtures hold them (`orIncidentOmitted` and `orIncidentAuto`
+    /// in `coordinator/tests/internal/conformance/incident_fixtures.go`).
+    private static let capturedOpenRouterToolOmitted = #"{"messages":[{"content":"What is the weather like in Boston, MA in fahrenheit?","role":"user"}],"reasoning":{"enabled":false},"stream":true,"tools":[{"function":{"description":"Get the current weather in a given location","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"},"strict":true},"type":"function"}]}"#
+    private static let capturedOpenRouterToolAuto = #"{"messages":[{"content":"What is the weather like in Boston, MA in fahrenheit?","role":"user"}],"reasoning":{"enabled":false},"stream":true,"tool_choice":"auto","tools":[{"function":{"description":"Get the current weather in a given location","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"},"strict":true},"type":"function"}]}"#
+
+    /// A captured body plus the routed `model` it lacks, as the platform
+    /// fixture adds it; `fields` replace top-level members.
+    private func capturedOpenRouterRequest(_ captured: String, replacing fields: [String: Any] = [:]) throws -> Data {
+        var body = try #require(JSONSerialization.jsonObject(with: Data(captured.utf8)) as? [String: Any])
+        body["model"] = "glm-5.3-flash"
+        body.merge(fields) { _, replacement in replacement }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Both paths, including the serving tool-stream handler, to the shipped
+    /// template. The captured requests turn thinking off.
+    private func renderedThinkingOffToolRequest(_ body: Data) throws -> [String] {
+        let (request, _) = try requestAndControls(body)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        _ = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "glm5_next")
+        let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+        #expect(!evidence.invalid && evidence.disablesThinking && !evidence.requestsThinking)
+        let template = try shippedTemplate()
+        return try remoteAndLocalInputs(body).map { input in
+            #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+            return try render(input, with: template)
+        }
+    }
+
+    /// OpenRouter's `tool-choice-auto`, `tool-call-step-1` and `tool-choice-none`
+    /// shapes: its captured `strict` weather tool with `tool_choice` omitted,
+    /// `auto` and `none`. GLM refused each with `invalid_request`.
+    @Test(arguments: ["omitted", "auto", "none"])
+    func capturedOpenRouterToolRequestIsServed(toolChoice: String) throws {
+        #expect(sha(Data(Self.capturedOpenRouterToolOmitted.utf8))
+            == "f0f8f60c48d944fb9270c6facfd5cc0c5543fc37b48cce6ef847abe3be8f2150")
+        #expect(sha(Data(Self.capturedOpenRouterToolAuto.utf8))
+            == "d63598aad05a4e1dda12a82c119616c490de714f1a51328b39eb598b6229844b")
+        let body = try toolChoice == "omitted"
+            ? capturedOpenRouterRequest(Self.capturedOpenRouterToolOmitted)
+            : capturedOpenRouterRequest(Self.capturedOpenRouterToolAuto,
+                replacing: toolChoice == "none" ? ["tool_choice": "none"] : [:])
+        for rendered in try renderedThinkingOffToolRequest(body) {
+            #expect(rendered.hasSuffix("<|user|>What is the weather like in Boston, MA in fahrenheit?<|assistant|><think>"))
+            #expect(!rendered.contains("strict"))
+            if toolChoice == "none" {
+                #expect(!rendered.contains("get_current_weather"))
+                #expect(rendered.contains("Do not call any tool."))
+            } else {
+                // The declaration renders unchanged, closed schema included.
+                #expect(rendered.contains(#"""
+                    <tools>
+                    {"description": "Get the current weather in a given location", "name": "get_current_weather", "parameters": {"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"}}
+                    </tools>
+                    """#))
+            }
+        }
+    }
+
+    /// OpenRouter's `tool-call-step-5` shape: the captured `strict` tool after
+    /// five completed calls, two of which return their reasoning.
+    @Test func capturedOpenRouterToolServesAFiveStepConversation() throws {
+        var body = try #require(JSONSerialization.jsonObject(
+            with: capturedOpenRouterRequest(Self.capturedOpenRouterToolAuto)) as? [String: Any])
+        var messages = try #require(body["messages"] as? [[String: Any]])
+        let cities = ["Boston, MA", "Cambridge, MA", "Providence, RI", "Hartford, CT", "Portland, ME"]
+        for (step, city) in cities.enumerated() {
+            let id = "call_step_\(step + 1)"
+            var call: [String: Any] = [
+                "role": "assistant", "content": NSNull(),
+                "tool_calls": [["id": id, "type": "function", "function": [
+                    "name": "get_current_weather",
+                    "arguments": #"{"location":"\#(city)","unit":"fahrenheit"}"#,
+                ]]],
+            ]
+            if !step.isMultiple(of: 2) { call["reasoning"] = "Next: \(cities[step])." }
+            messages.append(call)
+            messages.append(["role": "tool", "tool_call_id": id,
+                             "content": #"{"temperature":\#(60 + step),"unit":"fahrenheit"}"#])
+        }
+        body["messages"] = messages
+        for rendered in try renderedThinkingOffToolRequest(JSONSerialization.data(withJSONObject: body)) {
+            #expect(rendered.components(separatedBy: "<tool_call>get_current_weather").count == 6)
+            #expect(rendered.components(separatedBy: "<|observation|><tool_response>").count == 6)
+            #expect(rendered.contains("<|assistant|><think>Next: Cambridge, MA.</think><tool_call>"))
+            #expect(rendered.contains("<|assistant|><think>Next: Hartford, CT.</think><tool_call>"))
+            #expect(rendered.hasSuffix(#"<tool_response>{"temperature":64,"unit":"fahrenheit"}</tool_response><|assistant|><think>"#))
+        }
     }
 
     @Test func exactLargeSchemaNumbersArePreservedOrRejectedBeforeRounding() throws {

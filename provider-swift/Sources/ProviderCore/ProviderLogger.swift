@@ -168,4 +168,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureEncryption = "Inference failure: encryption"
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
+
+    // Operator guidance.
+    case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
 }

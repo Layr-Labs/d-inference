@@ -105,6 +105,7 @@ extension ProviderLoop {
         // serving (test instances never flip this, so their unload paths
         // cannot clobber the real ~/.darkbloom/loaded-models.json).
         loadedModelsPersistenceEnabled = true
+        if usesHostServices { verifiedWeightHashesFile = VerifiedWeightHashStore.path() }
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the

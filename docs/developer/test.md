@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -114,9 +114,33 @@ that suite to exercise actual bridge MTP submission, checked partial-load
 cleanup, expert-source retirement, and the resolved-tokenizer preallocation
 probe. These use tiny local fixtures, not the full downloaded model. With the
 same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
-opt-in refuses target-only GLM before any load state exists. The pure
+opt-in refuses target-only GLM before any load state exists, and
+`GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
+from the same fixture: the relay channel must receive one entry per generated
+token with the requested alternatives, the row must not draft, and a later
+plain request must still speculate. In the SDK,
+`GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
+`protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
+values with the target's own log-softmax for serial and rectangular
+verification. `NativeOutputControlRefusalTests` keeps the typed 400 for
+native engines that do not capture logprobs (MiMo). The pure
 `GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
 the KV rate derived from the pinned architecture evidence.
+
+The same flag runs `verifiedDigestExistsOnlyAfterEveryManifestFileVerified`:
+the load reports the manifest aggregate only after every file verified, equal to
+a `WeightHasher` pass, and a same-size corrupted shard leaves it unset. With
+`DARKBLOOM_TEST_GLM5_PROTECTED_FACTORY=1`, `GLM5NextProviderLoopTests` loads
+through `ProviderLoop.ensureModelLoaded` and checks that no load-time
+`WeightHasher` pass runs, the live hash is the aggregate, and the
+`VerifiedWeightHashStore` record matches the files. `VerifiedWeightHashStoreTests`
+and `RegistrationWeightHashTests` need no flag. `scripts/run-provider-tests.sh`
+points `DARKBLOOM_VERIFIED_WEIGHTS_FILE` at its isolated state directory.
+
+`scripts/benchmarks/glm_load_timeline.py` turns a provider log into a phase
+timeline (weight-hash passes, the GLM load's verification and tensor phases,
+shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
+test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
 selector per fresh process**, never as flags on the full suite:
@@ -170,6 +194,34 @@ unpatched pinned Swift-Jinja. It must match every official-template golden byte
 for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
 only the shipped template is recognized and passes the load-time render check.
+`returnedAssistantReasoningRendersLikeReasoningContent` and
+`openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
+returned-reasoning tool turn through the coordinator and local HTTP paths to the
+rendered prompt, with each of its reasoning spellings and controls.
+`capturedOpenRouterToolRequestIsServed` and
+`capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
+`strict` weather-tool requests, held byte for byte and hash-checked, with tool
+choice omitted, `auto` and `none`, and a five-step tool conversation built from
+them.
+
+`GLM5NextOpenRouterCapabilityTests` serves OpenRouter's capability request
+shapes through `MultiModelBatchSchedulerEngine` and `MLXOpenAIService`, with
+the shipped template rendered by Swift-Jinja, the serving
+`GLM5NextThinkingTokenizer` and a scripted CBv2 engine standing in for the
+model. JSON `response_format` requests must render the service instruction,
+stream reasoning, expose one validated answer, and fail with a content-free 422
+for prose, schema violations or truncation. OpenRouter's captured `strict`
+weather tool with `tool_choice` `required` or named must render the forcing
+instruction, expose exactly one validated call, and fail with a 422 and nothing
+exposed for prose, a wrong function, a schema violation or a truncated frame;
+the models update must list the GLM serving identity under tool-constraint
+protocol v1. Each served JSON or forced submission must carry no token
+constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
+evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
+a logprobs row that the same check refuses for a native engine without logprobs
+capture. The scripted completions prove the
+provider's withholding and validation, not the model's compliance; that needs
+the real-model run in `GLM5NextRealArtifactQualificationTests`.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.

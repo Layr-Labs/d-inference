@@ -187,6 +187,30 @@ private extension ProviderLoop {
 struct ProviderLoopMTPUpgradeTests {
     init() { _ = LiveInferenceFixtures.ensureMetallibColocated() }
 
+    @Test("default Bonsai provider idle upgrade selects exact model and architecture only",
+          arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    func bonsaiIdleCandidate(modelID: String) async throws {
+        for (id, type, mode, selected) in [
+            (modelID, "prism_hadamard_qwen35", MTPMode.auto, true),
+            (modelID, "prism_hadamard_qwen35", .off, false),
+            (modelID, "gemma4", .auto, false),
+            (modelID + "-copy", "prism_hadamard_qwen35", .on, false),
+        ] {
+            let loop = try mtpFloorLoop(models: [ModelInfo(id: id, modelType: type,
+                sizeBytes: 1, estimatedMemoryGb: 1)], mtpMode: mode)
+            let bridge = EngineV2Bridge(engine: UpgradeScriptedEngine(bytes: 1 << 20), modelId: id,
+                tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [])
+            await loop.installModelSlotForTesting(modelId: id, container: mtpFloorContainer(),
+                tokenizer: TokenizerHandle(MTPFloorTokenizer()), engineV2: bridge,
+                sizing: mtpFloorSizing(weightsGiB: 1), modelType: type)
+            #expect(await loop.pendingMTPUpgradeModels() == (selected ? [id] : []))
+            await loop.beginShutdownForTesting()
+            #expect(await loop.pendingMTPUpgradeModels().isEmpty)
+            await bridge.shutdown()
+            await loop.removeModelSlotForTesting(modelId: id)
+        }
+    }
+
     @Test("coordinator pins, local acquisition and engine capacity block the real publication")
     func realReservationsKeepOldEngineUntilIdle() async throws {
         let fixture = try await ProviderUpgradeFixture.make()

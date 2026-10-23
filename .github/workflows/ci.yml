@@ -38,6 +38,7 @@ jobs:
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-release-dev-branch.py
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-identity.py
@@ -57,8 +58,12 @@ jobs:
           python3 .github/scripts/test-threat-ensemble.py
           python3 .github/scripts/test-threat-budget.py
           python3 .github/scripts/test-threat-bedrock.py
+          python3 .github/scripts/test-threat-diagnostics.py
+          python3 .github/scripts/test-threat-integration-scope.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test model registry workflow with loopback HTTP
+        run: python3 scripts/test_model_registry_workflow.py
       - name: Test bounded MiMo provider fixture provisioning offline
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU

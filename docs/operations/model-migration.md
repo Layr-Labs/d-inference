@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-15
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -76,7 +76,12 @@ ramps, or migration controllers.
 
 ## Steps
 
-### 1. Publish the new build to R2
+### 1. Reuse a valid upload or publish the new build
+
+First apply the [operation and access checks](model-revisions.md#choose-the-operation-first).
+If the canonical manifest and its serving files are already published and valid,
+continue to step 2 without uploading or obtaining R2 write credentials. A backup
+URL with a different prefix or inventory requires a new canonical publication.
 
 ```bash
 R2_ACCOUNT_ID=<cloudflare account id> GCP_PROJECT=<gcp project> scripts/publish-model.sh
@@ -134,10 +139,11 @@ curl -fsS -X POST "$COORD/v1/admin/models/register" \
   }'
 ```
 
-`HandleRegisterModel` fetches `manifest.json` from the CDN, verifies every
-listed file exists with the declared size and hash, and stores the version;
+`HandleRegisterModel` fetches `manifest.json` from the CDN, validates its identity
+and declared inventory, checks listed file sizes, and stores the version;
 `promote: true` makes it the active version. Prices are micro-USD per 1M tokens
-and required. Confirm both old and new builds are visible:
+and required. Providers verify the actual file hashes when downloading.
+Confirm both old and new builds are visible:
 
 ```bash
 curl -fsS "$COORD/v1/models?include_builds=1" -H "Authorization: Bearer $API_KEY" | jq '.data[].id'

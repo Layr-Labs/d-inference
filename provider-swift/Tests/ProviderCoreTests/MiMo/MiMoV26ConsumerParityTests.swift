@@ -6,7 +6,7 @@ import XCTest
 @testable import ProviderCore
 
 final class MiMoV26ConsumerParityTests: XCTestCase {
-    func testRecordedTypelessAndBooleanSchemaIngressDivergence() async throws {
+    func testRecordedTypelessAndBooleanSchemaIngressParity() async throws {
         try MiMoTestPrerequisites.requireOptIn("MIMO_CONSUMER_DIVERGENCE_TESTS")
         struct Vectors: Decodable {
             struct Row: Decodable { let id: String; let request_json: String }
@@ -30,8 +30,8 @@ final class MiMoV26ConsumerParityTests: XCTestCase {
                 prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "mimo_v2", allowInternalSchemaMetadata: false),
                 request: local.request, tokenizer: tokenizer.inner, modelType: "mimo_v2",
                 templateControls: local.templateControls)
-            XCTAssertNotEqual(remoteIDs, localIDs, "Known unresolved normalization divergence, NOT parity")
-            let record: [String: Any] = ["id": row.id, "status": "observed-known-divergence",
+            XCTAssertEqual(remoteIDs, localIDs, "Native MiMo ingress must preserve tool schema declarations")
+            let record: [String: Any] = ["id": row.id, "status": "exact-parity",
                 "provider_tokens": remoteIDs, "local_tokens": localIDs,
                 "provider_rendered_decode": tokenizer.inner.decode(tokenIds: remoteIDs, skipSpecialTokens: false),
                 "local_rendered_decode": tokenizer.inner.decode(tokenIds: localIDs, skipSpecialTokens: false),

@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-22
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -44,6 +44,33 @@ native runtime change. The SDK's `MiMoOpenRouter` media fixtures are test-only
 resources, not provider product resources. MiMo provider fixture preparation
 uses bounded synthetic weights; the genuine audio codec is a separately
 hash-verified input. See [provider and SDK tests](test.md#provider-and-sdk).
+
+Building the GLM5Next target, media, MTP and loader candidates does not
+register the architecture with the model factories or provider. Follow the
+[prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
+successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
+
+The GLM official template uses numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
+the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact instead ships a
+separately identified template that writes those accesses as `[0]` subscripts.
+Its derivation and equivalence evidence are in
+`fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
+rewrite another artifact's template to hide the parser limitation.
+
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
+
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
 
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
@@ -108,8 +135,13 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 ## Dev Build Identity
 
 A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
-identity, so it runs beside a production provider on the same Mac. The only
-declaration of the values is `provider-swift/identity/provider-identity.json`.
+identity, so it runs beside a production provider on the same Mac. A `staging`
+release build (`DARKBLOOM_RELEASE_ENVIRONMENT=staging`) is a third environment
+with the same shape as dev: its own `darkbloom-staging` identity and the staging
+coordinator, built from the same source. It is dispatch-only and does not
+publish until its infra and `STAGING_RELEASE_KEY` exist (see
+[provider-release.md](../operations/provider-release.md)). The only declaration
+of the values is `provider-swift/identity/provider-identity.json`.
 `scripts/generate-provider-identity.py` generates the Swift `BuildEnvironment`
 properties (`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift`)
 and the table below from it; run the script after you change the JSON.
@@ -118,27 +150,27 @@ tests use the production values.
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 
-| Field | Production | Dev |
-|---|---|---|
-| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
-| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
-| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
-| `cliName` | `darkbloom` | `darkbloom-dev` |
-| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
-| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
-| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
-| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
-| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
-| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
-| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
-| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
-| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
-| `defaultLocalPort` | `8000` | `8001` |
-| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
-| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
-| `modelRevisionRef` | `main` | `darkbloom-dev` |
-| `releaseVersionMarker` | versions without it | `-dev.` |
+| Field | Production | Dev | Staging |
+|---|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` | `https://api.staging.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` | `wss://api.staging.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` | `darkbloom-enclave-staging` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` | `Darkbloom Staging.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` | `Darkbloom Staging` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` | `.darkbloom-staging` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` | `.config/darkbloom-staging` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
+| `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |
+| `releaseVersionMarker` | versions without it | `-dev.` | `-staging.` |
 
 <!-- END provider identity -->
 
@@ -211,6 +243,29 @@ Retaining source or running a build does not authorize hosting or traffic change
 
 ## Verify
 
+For changes to the trusted PR reviewer, no provider build is required. Run the
+offline Python suites in [threat-review verification](threat-model-review.md#verify)
+and validate changed workflow YAML. The review workflow uploads content-free
+failure diagnostics and last-request progress, including scanner and canonical
+context revisions. After merge, new runs use current default-branch scanner code
+and separately read the PR base threat model. Integration replays bounded exact
+source from each model's own reviewed scope. Native Bedrock response-format
+compatibility requires the bounded live smoke check in addition to offline tests.
+The local lifecycle checks inject invalid analysis/acknowledgment, native usage
+failures, concurrent state writes and failed final-result delivery. They verify
+bounded recovery, retained findings and denial of incomplete/stale clearance;
+a successful normal response alone does not test recovery.
+CI admits source, selected depth and integration work from the actual batch plan,
+with an emergency ceiling and a bounded deadline that leaves time for reporting.
+Native workload defaults allow larger reviews and output; maintainers can lower
+the dedicated call ceiling and output settings without a code change.
+Normal depth routing sends critical batches directly to Sol and other risky or
+uncertain batches to Opus. Full Sonnet coverage and integration remain; clean
+support files avoid filename-only extra passes, and integration findings target
+their cited batches. Global uncertainty retains the human-review handoff.
+Paid manual dispatches and job reruns are disabled; incomplete final reviews
+explicitly hand off to a human. See the verification guide for the exact limits.
+
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.
 Provider signing/publication follows [the release runbook](../operations/provider-release.md).
@@ -238,6 +293,37 @@ artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.
 Backend build and deployment configuration belongs in the platform repository.
+
+## Flint native dependency build
+
+1. Use `libs/mlx-swift-lm` at `65eaceb8b90bc65d01c2d2fb4a8801584f4ead7a`
+   ([SDK #322](https://github.com/Layr-Labs/mlx-swift-lm/pull/322)) and
+   `libs/mlx-swift` at `67dc752856ca3904e5de85b28e2f46ee3b182f62`.
+2. Run `make provider-build`. It builds the metallib from the nested MLX source
+   actually compiled by Cmlx. Preserve binary and metallib hashes with physical
+   evidence; rebuilding tests alone does not refresh a release benchmark binary.
+3. For Flint serving, select native live KV and native checkpoint precision,
+   including when general configuration supplies `balanced` checkpoint storage:
+
+   ```bash
+   export DARKBLOOM_CBV2_KV_QUANTIZATION=native
+   export DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native
+   ```
+
+   See [native Flint](../architecture/inference.md#native-flint) for the enforced
+   precision contract. The official artifact remains unchanged; the provider
+   executes in Swift/MLX without a Python inference process.
+
+Verify with [Flint tests](test.md#flint-native-validation); see the
+[SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) for provenance.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 

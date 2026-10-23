@@ -31,11 +31,22 @@ extension Start {
         // has no CBv2 adapter cannot serve at all. Say so per model, and
         // refuse to start when nothing serveable remains — a silent empty
         // catalog would 404 every request with no explanation.
-        let (advertised, unsupported) = EngineV2SupportedModels.partition(selected)
+        let (adapted, unsupported) = GLM5NextLocalQualification.partition(selected)
         for dropped in unsupported {
+            if let reason = GLM5NextLocalQualification.localSelectionRefusal(model: dropped) {
+                printError("Skipping \(dropped.id): \(reason)")
+                continue
+            }
             printError(
                 "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
                     + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
+        }
+        let (advertised, withoutNativeMTP) = GLM5NextLocalServing.partition(
+            adapted, mode: config.backend.mtpMode)
+        for dropped in withoutNativeMTP {
+            printError(
+                "Skipping \(dropped.id): GLM serves only with its embedded MTP, which is on by "
+                    + "default; remove backend mtp_mode = \"off\" and leave DARKBLOOM_CBV2_MTP enabled")
         }
         guard !advertised.isEmpty else {
             printError(

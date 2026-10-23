@@ -79,8 +79,9 @@ struct SegmentedProductionGrantTests {
             }
             #expect(admission.allocatedBytes(forTokens: tokens) == target + config.fixedBytesPerRequest + auxiliary)
             if fleet.id == "gpt-oss-20b" {
-                #expect(admission.fullKVBytesPerToken == 49_152)
-                #expect(target > 32_768 * 24_576) // full KV alone is twice old fp16 cost
+                // bf16 rows on every layer: the native rate is the fp16 rate.
+                #expect(admission.fullKVBytesPerToken == 24_576)
+                #expect(admission.fullKVBytesPerToken == fleet.resliceSlot.fp16KVBytesPerToken)
             }
             if fleet.id == "gemma-4-26b" {
                 let window = try #require(fleet.kinds.first)

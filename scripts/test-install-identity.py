@@ -33,7 +33,16 @@ STUBS = {
     "uname": '[ "${1:-}" = -m ] && echo arm64 || echo Darwin\n',
     "sysctl": 'case "$*" in *memsize*) echo 68719476736 ;; *) echo "Apple M5" ;; esac\n',
     "sw_vers": "echo 27.0\n",
-    "codesign": 'echo "codesign $*" >> "$STUB_TRACE"\n',
+    # Model the real codesign verdict: a correctly (Apple-anchored) signed app
+    # satisfies any requirement, but an ad-hoc signature cannot satisfy a
+    # requirement that demands `anchor apple generic`. With STUB_CODESIGN_ADHOC=1
+    # a --verify ... -R=<req> call fails when <req> carries the Apple anchor.
+    "codesign": 'echo "codesign $*" >> "$STUB_TRACE"\n'
+                'if [ "${STUB_CODESIGN_ADHOC:-0}" = 1 ]; then\n'
+                '    for arg in "$@"; do\n'
+                '        case "$arg" in -R=*"anchor apple generic"*) exit 1 ;; esac\n'
+                '    done\n'
+                'fi\n',
     "profiles": 'echo "profiles $*" >> "$STUB_TRACE"\n',
     # Never write outside the test home: refuse /usr/local/bin like a
     # non-admin account does.
@@ -104,7 +113,8 @@ def tree(root):
 
 
 class InstallerIdentityTests(unittest.TestCase):
-    def install(self, version, coord_url, app_name, cli_name, enclave_name, prepare=None):
+    def install(self, version, coord_url, app_name, cli_name, enclave_name, prepare=None,
+                adhoc=False):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -131,7 +141,8 @@ class InstallerIdentityTests(unittest.TestCase):
                  "TMPDIR": str(tmp), "COORD_URL": coord_url,
                  "REAL_LN": "/bin/ln", "STUB_TRACE": str(root / "trace"),
                  "STUB_RELEASE_JSON": str(root / "release.json"),
-                 "STUB_BUNDLE_URL": BUNDLE_URL, "STUB_BUNDLE": str(root / "bundle.tar.gz")},
+                 "STUB_BUNDLE_URL": BUNDLE_URL, "STUB_BUNDLE": str(root / "bundle.tar.gz"),
+                 "STUB_CODESIGN_ADHOC": "1" if adhoc else "0"},
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         trace = (root / "trace").read_text() if (root / "trace").exists() else ""
         self.assertEqual(list(tmp.iterdir()), [], result.stdout + result.stderr)
@@ -237,6 +248,66 @@ class InstallerIdentityTests(unittest.TestCase):
         self.assertIn("Release bundle has no Darkbloom Dev.app; flat-only bundles are no longer installable.",
                       result.stderr)
         self.assertFalse((home / ".darkbloom").exists())
+
+    def test_prerelease_dev_release_installs_with_an_adhoc_signature(self):
+        # Option B: a -dev. build is self-signed. The installer relaxes only the
+        # Apple-anchor/team-OU clause, so an ad-hoc signature installs.
+        result, home, trace = self.install(
+            "0.9.20-dev.branch.7", DEV_COORD, "Darkbloom Dev.app", "darkbloom-dev",
+            "darkbloom-enclave-dev", adhoc=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_installed(home, ".darkbloom-dev", "Darkbloom Dev.app", "darkbloom-dev",
+                              "darkbloom-enclave-dev")
+        # The relaxed requirement keeps the bundle identifier pinned and drops
+        # the Apple anchor and team OU.
+        self.assertIn('-R=identifier "io.darkbloom.provider"', trace)
+        self.assertNotIn("anchor apple generic", trace)
+
+    def test_prerelease_staging_release_installs_with_an_adhoc_signature(self):
+        # The same relaxation covers the -staging. marker, and a -staging. build
+        # installs as its own darkbloom-staging identity beside production.
+        result, home, trace = self.install(
+            "0.9.20-staging.3", "https://api.staging.darkbloom.dev", "Darkbloom Staging.app",
+            "darkbloom-staging", "darkbloom-enclave-staging", adhoc=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_installed(home, ".darkbloom-staging", "Darkbloom Staging.app",
+                              "darkbloom-staging", "darkbloom-enclave-staging")
+        self.assertIn('-R=identifier "io.darkbloom.provider"', trace)
+        self.assertNotIn("anchor apple generic", trace)
+
+    def test_production_release_with_an_adhoc_signature_is_refused(self):
+        # Prod verification is unchanged: an ad-hoc signature cannot satisfy the
+        # full Apple-team requirement, so the install is refused.
+        result, home, trace = self.install(
+            "0.9.21", PROD_COORD, "Darkbloom.app", "darkbloom", "darkbloom-enclave", adhoc=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Staged Darkbloom.app does not satisfy the pinned signature requirement.",
+                      result.stderr)
+        self.assertIn("Existing installation was left unchanged.", result.stdout)
+        self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
+                      'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
+        # No app is committed; only the empty install skeleton remains.
+        self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
+        self.assertEqual(list((home / ".darkbloom/bin").iterdir()), [])
+
+    def test_marker_only_matches_the_semver_prerelease_component(self):
+        # Review hardening: the pre-release match is anchored to the SemVer
+        # pre-release component, not an unanchored substring. A marker that
+        # appears only in +build metadata (1.2.3+x-dev.y), or that is not the
+        # exact dev./staging. pre-release token (devX has no dot, DEV. is the
+        # wrong case), is NOT a pre-release. The installer keeps the full
+        # Apple-team requirement and refuses the ad-hoc signature.
+        for version in ("1.2.3+x-dev.y", "1.2.3-devX", "1.2.3-DEV.1"):
+            with self.subTest(version=version):
+                result, home, trace = self.install(
+                    version, PROD_COORD, "Darkbloom.app", "darkbloom",
+                    "darkbloom-enclave", adhoc=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                # The full Apple-team requirement was used, not the relaxed one.
+                self.assertIn('-R=anchor apple generic and identifier "io.darkbloom.provider" '
+                              'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"', trace)
+                self.assertNotIn('-R=identifier', trace)
+                self.assertFalse((home / ".darkbloom/Darkbloom.app").exists())
 
 
 if __name__ == "__main__":

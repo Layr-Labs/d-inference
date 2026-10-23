@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-22
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -14,6 +14,51 @@ and defaults are the ArgumentParser declarations; `—` means required.
 outside cached Autopilot consent. Enrollment remains saved, ordinary serving
 continues, and `darkbloom autopilot models` refreshes inventory before control
 can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+
+## Local GLM qualification
+
+`darkbloom start --local --model EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+can include the experimental GLM root only when
+`DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` names an absolute qualification JSON file.
+Unset, empty, `1`, malformed selections and mismatched identities refuse GLM.
+The file pins the exact catalog record, manifest and expected aggregate; see
+[configuration](../reference/configuration.md#local-glm-qualification) for its schema.
+GLM always uses its native paged KV backend: automatic selection resolves
+`paged`, and an explicit `contiguous` selection or the `DARKBLOOM_CBV2_PAGED_KV`
+kill switch refuses the load instead of falling back. GLM serves only through
+its embedded-MTP engine, which is on by default: the default `mtp_mode = "auto"`
+enables it without any setting (`MTPMode.enablesMTP`). `mtp_mode = "off"` or
+the `DARKBLOOM_CBV2_MTP=0` kill switch skips the model at startup with a
+message, because GLM cannot serve target-only. This opt-in does not select a performance profile,
+bypass memory admission or qualify the model. It is not forwarded into launchd.
+Stop the isolated local process to disable it. There is no target-only GLM
+serving engine; target-only construction is limited to benchmarks.
+
+Every GLM load uses the native `GLM5NextExecutionPolicy.serving` arithmetic
+(absorbed sparse attention with native decode selection and sparse prefill kernels,
+parallel-threshold selection, native KDA
+recurrence, fused hyper-connections and routed-expert combine), recorded in the
+encrypted checkpoint identity. The encrypted SSD prefix store defaults on for
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`; `DARKBLOOM_PREFIX_CACHE=0` opts out.
+GLM MTP verifies up to three drafted tokens per round in one target forward with
+an adaptive depth; its greedy output is not token-identical to target-only
+decode. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` selects serial single-proposal
+verification instead.
+Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes are off, including
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
+artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
+runs through the native GLM media path; the embedded-MTP serving engine accepts
+prepared causal media, so image rows prefill and decode target-only (no MTP
+speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL) is sampled at 2 FPS and decoded target-only.
+This variable never advertises the local identity to the coordinator
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
+`GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
+only the catalog build `glm-5.3-flash`, downloaded by the normal revision path,
+on Apple M5 Max or M5 Ultra with at least 256 GB; other Macs report the exact
+refusal (chip and memory) in the load error and `doctor`
+(`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextCoordinatorServing.swift`,
+`GLM5NextCoordinatorServing`; `provider-swift/Sources/ProviderCore/Models/GLM5NextHardwareRequirement.swift`).
+`--local` does not serve the catalog build; use the selection file above.
 
 ## `darkbloom cache`
 
@@ -130,6 +175,18 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+The ordinary catalog picker uses the selected models' shared activation reserve
+when checking each model's load estimate. Adding an unmeasured model can raise
+that reserve: the TUI refuses a toggle that would invalidate an existing choice,
+and numbered input validates the complete requested set. `all` first excludes
+models that cannot fit alone, then filters the remaining rows under their shared
+reserve. Total selected weights may exceed the budget because models can take
+turns. These are nominal estimates; [live admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission)
+still applies the configured reserve and current available memory. A resolved
+Autopilot opt-in retains the conservative flat picker reserve used by its separate
+inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
+`provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports
@@ -331,9 +388,22 @@ darkbloom stop --force             # explicit interruption, including stalled wo
 Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
-standalone local mode also waits for active HTTP response bodies. The signal
+standalone local mode also waits for active HTTP response bodies. `SIGHUP`
+enters it too for a provider started by hand (`start --local`, or
+`start --foreground` typed into a terminal), so closing its terminal window
+drains it instead of ending the process at once. `SIGHUP` is not a stop signal
+in two cases: the provider's launchd job does not take it, so it has whatever
+action launchd started the job with, and a start that arrived with `SIGHUP`
+ignored, for example under `nohup`, keeps ignoring it. A provider that
+re-executes itself in place for a self-update carries the same choice into the
+new process (`ProviderStopSignals` in
+`provider-swift/Sources/ProviderCore/Service/ProviderStopSignals.swift`). The signal
 deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
+Once local HTTP admission closes, new POST requests receive HTTP 503 with the
+OpenAI JSON error message `Provider capacity is temporarily unavailable.` and
+the usual CORS header. Health reads and OPTIONS preflights remain available;
+already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
 With no accepted work left, a graceful drain retries native MiMo owner
@@ -491,14 +561,38 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
 | Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
-| Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`, `--runtime-assistant-directory <path>`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`) |
+| Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`, `--runtime-assistant-directory <path>`, `--runtime-concurrency <sizes>`, `--runtime-stagger`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`; `provider-swift/Sources/ProviderBenchmark/RuntimeConcurrencyBenchmark.swift`, `RuntimeConcurrencyBenchmark`) |
 | Live KV precision | `--kv-quantization balanced\|k8v4\|k8v8\|native`; overrides live config/environment for production benchmark engines; default resolves to native. Use `--runtime-generation`, teacher forcing, sweep or scheduler modes to exercise serving KV. Ordinary scalar `MLX.generate` benchmarks do not measure this representation. MiMo stays native. |
 | Checkpoint KV precision | `--kv-checkpoint-quantization balanced\|k8v4\|k8v8\|native`; independently overrides checkpoint config/environment; default requests balanced. Applies only to eligible complete stores and never forces the live backend. Cache-disabled modes do not measure checkpoint writes or restores. |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
-| Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
+| Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`), `--prefill-fixed-prompt` (`false`; scheduler-prefill only) (`BenchmarkCommand.swift`, `BenchmarkCommand+Sweep.swift`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-width` (`4`, range `1...16`), `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly one integer ≥2 per row, overrides uniform length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`); requested width alone is not measured forward-width evidence |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
+| Prompt preparation | `--prompt-prep`, `--prompt-prep-lengths` (`"2048,8192,32768"`), `--iterations`; CPU only, loads only the tokenizer, times uncached, first-sighting, next-turn and repeated prompt preparation and the body decode for chat, agent and tool-loop conversations with the prompt token cache's background comparisons off, prints JSON and exits 2 on any token-ID or decoded-field difference (`provider-swift/Sources/ProviderBenchmark/PromptPreparationBenchmark.swift`) |
+
+Scheduler prefill defaults to rotating the seed tokens by `iteration * 17` for
+measured iterations; both bootstrap and full-context warmups use offset `0`.
+`--prefill-fixed-prompt` keeps offset `0` for every request, repeating identical
+input tokens at each prompt length for sustained repeated-input measurements.
+It preserves fresh engines, disabled prefix caching, chunk policy and timing.
+The JSON report records `promptMode` (`"rotating"` or `"fixed"`),
+`warmupPromptOffset`, and each sample's `promptOffset` before wrapping by the
+seed length. These optional fields extend schema `4`; absent metadata in older
+reports remains unspecified. The flag is rejected outside `--scheduler-prefill`
+before runtime loading (`provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift`,
+`run`, `makePrompt`, `SchedulerPrefillBenchmarkReport`). Schema `5` adds
+`prefillChunkTokens` and `maxBatchedTokensPerStep`; with
+`soloPrefillStripeTokens` they record the scheduler the production build handed
+the warm-up engine, after serving, calibration and GLM policy
+(`EngineV2Factory.ProductionBuild.prefillGeometry`), and a measured engine built
+with different geometry fails the run.
+
+Scheduler prefill installs `MLXMemoryGuard.configureOnce` before loading weights,
+matching serving and the throughput sweep. Stderr records the selected allocator
+limits and effective cache limit. Earlier scheduler-prefill runs omitted this
+setup; account for that difference when comparing saved results. This does not
+change memory reserves or establish wired weight residency.
 
 Ordinary DiffusionGemma generation uses its production native block engine and
 honors `--kv-quantization`. Its `NATIVE_BLOCK_BENCHMARK` records include resolved
@@ -979,7 +1073,11 @@ For a guarded automatic AR paged retry, use
 Diffusion assembly does not consult this crash-loop guard. For explicit contiguous recovery, resolve
 `native` precision before selecting `contiguous` or disabling paged storage
 with `DARKBLOOM_CBV2_PAGED_KV=0`; see the
-[precision settings](#providertoml-keys-read-by-the-cli). A posture pass alone
+[precision settings](#providertoml-keys-read-by-the-cli).
+`DARKBLOOM_CBV2_PAGED_KV=0` also fails the Nemotron Super load, which serves
+paged KV only and ignores `engine_v2_kv_backend`
+([configuration reference](../reference/configuration.md#engine-and-scheduler)).
+A posture pass alone
 does not qualify precision or the runtime. Explicit `paged` construction
 failures refuse the load; a native policy veto that serves contiguous still
 fails the explicit-request check (`KVBackendPosture.backendCheck`,
@@ -1113,6 +1211,8 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 | `--runtime-generation` | Generate through the production CBv2 slot and emit tokens/text, resolved precision/backend, model/runtime identity, timings and memory as JSON |
 | `--runtime-assistant-directory <path>` | Offline local Gemma assistant for `--runtime-generation --runtime-mtp`; normal artifact and target checks apply, with assistant hashes in the report |
+| `--runtime-concurrency <sizes>` | Comma-separated batch sizes from 1 to 64 (for example `1,2,4,8`) for `--runtime-generation`; an empty, non-numeric or out-of-range entry refuses the whole list (`RuntimeConcurrencyBenchmark.batchSizes`). One production slot per size, warmed by one identical batch, then distinct greedy rows; a slot whose model policy lowers its width below the size is listed in `refusedCells` instead of measured. JSON carries the verified model hash, prompt hash, render date and per-row prompt-token hashes; per cell, the resolved backend, KV precisions, MTP state and assistant identity; per-row tokens, arrival times of the first, third and first eight tokens, decode rates, chained steps (measured batch) and MTP metrics (warmup included). Exit status 2 when a cell is refused or a row does not end with `length` at its quota or a configured stop token within it (`provider-swift/Sources/ProviderBenchmark/RuntimeConcurrencyBenchmarkReport.swift`, `RuntimeConcurrencyBenchmark.rowFailure`) |
+| `--runtime-stagger` | With `--runtime-concurrency`: row i of a B-row batch stops after `max-tokens*(B-i)/B` tokens, so the decode cohort shrinks to one row (speculation resuming as concurrency drops). `--max-tokens` must be at least 3×B for every size, keeping the quotas distinct and at least 3 (`RuntimeConcurrencyBenchmark.rowMaxTokens`); a row that stops before its quota fails the cell |
 | `--kv-quantization <precision>` | Live `balanced`, `k8v4`, `k8v8` or `native`; overrides config/environment, otherwise the provider default is native |
 | `--kv-checkpoint-quantization <precision>` | Independent complete-checkpoint request with the same values; overrides config/environment, otherwise defaults to balanced; does not enable a cache or change the live backend |
 
@@ -1274,7 +1374,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit` and the exact Prism/Eigen Bonsai 9B identities under `prism_hadamard_qwen35`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -1508,7 +1608,7 @@ override `provider.toml` for one process, are in
 | `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused during active or explicitly paused Autopilot |
 | `[backend] max_model_slots` | `3` | Resident models |
-| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4`; explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed higher default. `ServingPerformanceProfiles`, `BackendSettings` |
+| `[backend] engine_v2_max_concurrent` | Absent: automatic, legacy `4` (`8` on M5 Pro, Max and Ultra for models on the native `auto` paged allowlist); explicit values preserved | Concurrent requests per engine, bounded by exact reviewed profile or legacy `[1, 8]`, architecture and memory. Only an automatic setting may inherit a reviewed or M5 paged higher default; a width above the configured one returns to it under Low Power Mode or thermal pressure. `ServingPerformanceProfiles`, `BackendSettings` |
 | `[backend] engine_v2_max_concurrent_by_model` | `{}` | Exact model ID → operator cap; overrides the default for that model under the same qualification, architecture and memory bounds. `status` and `doctor` show the default policy and all configured model overrides, with unknown-profile bounds when different from the requested cap (`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`, `ServingPerformanceProfiles.summary`) |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Only live packed precision requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback; checkpoint compression does not change it (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] engine_v2_kv_quantization` | `"native"` | Live attention precision: `balanced` K4/V4, `k8v4` K8/V4, `k8v8` K8/V8 or `native`. Explicit live packed `auto` selects paged; unavailable paging refuses rather than silently serving native. Its durable reuse remains the existing complete packed contract; legacy resident/tensor prefixes stay disabled. MiMo remains native (`EngineV2KVQuantizationPolicy.resolve`). |
@@ -1644,7 +1744,10 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
+| `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
+| `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |
 | `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, checkpoint) |
@@ -1654,7 +1757,12 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
+| `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
+| `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
+| `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
+| `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |
 

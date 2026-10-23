@@ -960,7 +960,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                                 maximumBytes: policy.maximumReservationBytes,
                                 additionalSystemReserveBytes: policy.additionalSystemReserveBytes,
                                 ledger: self.budget.processLedger,
-                                serviceBudget: self.budget.serviceBudget,audioBinding:audio)
+                                serviceBudget: self.budget.serviceBudget,audioBinding:audio,
+                                onRefusal: self.budget.directChargeRefusalSignal())
                             // Retain the real charged owner before returning it
                             // to the SDK or crossing any further veto.
                             self.lock.withLock { self.mediaReservations[reservation.id] = reservation }
@@ -1070,7 +1071,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         let reservation = try MiMoV26ManagedMediaReservation(initialBytes:initialBytes,hostBytes:hostBytes,
             maximumBytes:policy.maximumReservationBytes,
             additionalSystemReserveBytes:policy.additionalSystemReserveBytes,ledger:budget.processLedger,
-            serviceBudget:budget.serviceBudget)
+            serviceBudget:budget.serviceBudget,onRefusal:budget.directChargeRefusalSignal())
         lock.withLock { mediaReservations[reservation.id] = reservation }
         do {
             try lease.installMediaHostCompletion(id:reservation.id) { [weak self, reservation] in

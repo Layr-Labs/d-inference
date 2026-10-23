@@ -74,6 +74,22 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertNil(sanitizeForJinja(none))
     }
 
+    func testLeafFastPathKeepsDynamicTypesAndUnwrapsBoxedOptionals() throws {
+        let decoded = try JSONSerialization.jsonObject(
+            with: Data(#"{"n": 1.5, "b": true, "s": "x"}"#.utf8)) as? [String: Any]
+        let leaves: [Any] = ["text", 7, 3.5, true, NSNumber(value: 2), "ns" as NSString]
+            + [decoded?["n"], decoded?["b"], decoded?["s"]].compactMap { $0 }
+        for leaf in leaves {
+            let output = try XCTUnwrap(sanitizeForJinja(leaf))
+            XCTAssertTrue(type(of: output) == type(of: leaf), "\(type(of: leaf))")
+        }
+        // Boxed Optionals of the fast-path types still unwrap or drop.
+        XCTAssertTrue(sanitizeForJinja(Optional<Int>.some(3) as Any) as? Int == 3)
+        XCTAssertTrue(type(of: try XCTUnwrap(sanitizeForJinja(Optional<NSNumber>.some(1) as Any))) != Optional<NSNumber>.self)
+        XCTAssertNil(sanitizeForJinja(Optional<Bool>.none as Any))
+        XCTAssertNil(sanitizeForJinja(Optional<NSString>.none as Any))
+    }
+
     func testRecursesIntoNestedContainers() {
         let input: [String: any Sendable] = [
             "outer": [

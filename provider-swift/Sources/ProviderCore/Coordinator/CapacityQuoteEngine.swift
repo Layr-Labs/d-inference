@@ -23,7 +23,10 @@
 //     model's padded weight footprint;
 //   * template/capability — the advertised `ModelInfo`'s
 //     `templateRenderOK`/`isVision` self-check results;
-//   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`.
+//   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`;
+//   * Nemotron Super image media — the policy's media charge against the
+//     cold-load room, or for a resident slot the process ledger's runtime
+//     room that admits the media reservation (`process_memory.remaining_bytes`).
 
 import Foundation
 
@@ -104,6 +107,10 @@ enum CapacityQuoteEngine {
         {
             return reject(.memoryCap)
         }
+        let superMedia = nemotronSuperMediaCharge(probe: probe, model: model)
+        if case .refused = superMedia {
+            return reject(.capability)
+        }
         guard let capacity = inputs.capacity, seq != 0 else {
             // No published snapshot yet on this connection: the coordinator
             // cannot order a quote it cannot sequence, and we cannot consult
@@ -126,6 +133,11 @@ enum CapacityQuoteEngine {
             // models the real load gate (weights + headroom ≤ raw free
             // memory) would admit.
             guard capacity.freeForLoadGb >= max(0, model.estimatedMemoryGb) else {
+                return reject(.memoryCap)
+            }
+            // The footprint holds no media: the probe's whole charge must fit beside it.
+            if case .charged(let bytes) = superMedia,
+                capacity.freeForLoadGb - max(0, model.estimatedMemoryGb) < gib(bytes) {
                 return reject(.memoryCap)
             }
             if probe.deadlineRemainingMs <= 0 {
@@ -169,11 +181,51 @@ enum CapacityQuoteEngine {
                 deadlineRemainingMs: probe.deadlineRemainingMs)
         }
 
+        // A resident slot's media reservation is admitted by the process
+        // ledger's runtime room (activation reserve and outstanding
+        // commitments already subtracted), not by a load gate: it keeps no
+        // load reserve.
+        if case .charged(let bytes) = superMedia {
+            guard let remaining = capacity.telemetry?.processMemory?.remainingBytes, remaining >= bytes
+            else { return reject(.memoryCap) }
+        }
+
         if probe.deadlineRemainingMs <= 0 {
             return reject(.deadline)
         }
         return admissible(inputs, seq: seq, slot: slot, availableTokens: availableTokens)
     }
+
+    enum NemotronSuperMediaCharge: Equatable {
+        /// Not a Super image probe: a text probe or another model.
+        case notApplicable
+        /// More images than the Super image binding admits, or a one-part
+        /// probe without a video bound.
+        case refused
+        /// The binding's worst-case reservation for the probe.
+        case charged(bytes: UInt64)
+    }
+
+    /// Pure and Super-specific. A probe without an image count is charged
+    /// for the most images the binding admits. The count is of media parts,
+    /// images and videos alike, so a one-part probe may be the binding's one
+    /// video and is charged the larger of the two; only such a probe needs
+    /// the video bound.
+    static func nemotronSuperMediaCharge(
+        probe: CoordinatorMessage.CapacityProbe, model: ModelInfo
+    ) -> NemotronSuperMediaCharge {
+        guard probe.requiresVision || probe.visionImageCount > 0,
+            NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
+        else { return .notApplicable }
+        let images = probe.visionImageCount > 0 ? probe.visionImageCount : NemotronSuperServingPolicy.maximumImages
+        guard let imageBytes = NemotronSuperServingPolicy.mediaChargeBytes(imageCount: images)
+        else { return .refused }
+        guard images == 1 else { return .charged(bytes: imageBytes) }
+        guard let video = NemotronSuperServingPolicy.videoMediaChargeBytes else { return .refused }
+        return .charged(bytes: max(imageBytes, video))
+    }
+
+    private static func gib(_ bytes: UInt64) -> Double { Double(bytes) / 1_073_741_824 }
 
     private static func admissible(
         _ inputs: Inputs,

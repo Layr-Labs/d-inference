@@ -95,7 +95,7 @@ def render_swift(document):
         lines += ["    /// " + line if line else "    ///" for line in doc.split("\n")]
         lines.append(f"    public var {field}: {swift_type(field, environments)} {{")
         lines.append("        switch self {")
-        for name in ("prod", "dev"):
+        for name in environments:
             lines.append(f"        case .{name}: return {swift_literal(environments[name][field])}")
         lines += ["        }", "    }"]
     lines += ["}", ""]
@@ -108,14 +108,22 @@ def markdown_value(value):
     return f"`{value}`"
 
 
+COLUMN_LABELS = {"prod": "Production", "dev": "Dev", "staging": "Staging"}
+
+
 def render_table(document):
     environments = document["environments"]
-    rows = [BEGIN, "", "| Field | Production | Dev |", "|---|---|---|"]
+    markers = document["releaseVersionMarkers"]
+    columns = list(environments)
+    rows = [BEGIN, "",
+            "| Field | " + " | ".join(COLUMN_LABELS[name] for name in columns) + " |",
+            "|---|" + "---|" * len(columns)]
     for field in FIELDS:
-        rows.append(f"| `{field}` | {markdown_value(environments['prod'][field])} "
-                    f"| {markdown_value(environments['dev'][field])} |")
-    rows += [f"| `releaseVersionMarker` | versions without it | `{document['releaseVersionMarker']}` |",
-             "", END]
+        rows.append("| `" + field + "` | "
+                    + " | ".join(markdown_value(environments[name][field]) for name in columns) + " |")
+    marker_cells = [f"`{markers[name]}`" if name in markers else "versions without it"
+                    for name in columns]
+    rows += ["| `releaseVersionMarker` | " + " | ".join(marker_cells) + " |", "", END]
     return "\n".join(rows)
 
 

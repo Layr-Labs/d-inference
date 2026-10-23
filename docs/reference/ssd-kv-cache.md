@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-21
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -58,7 +58,7 @@ header comment and `enum SSDBlockStore`).
 | Cryptographic detail | Value | Code |
 |---|---|---|
 | Per-chunk nonce | HKDF-Expand(DEK, info = `"dbkv-chunk-v3"` ‖ `file_IV` ‖ uint32 BE chunk index, L = 12) | `SSDBlockStore.swift` (`chunkInfoPrefix`) |
-| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`); `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`) |
+| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`); `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit. A DEBUG build with `DARKBLOOM_DEBUG_CACHE_KEY_FILE` derives a persistent KEK from that operator-created file instead; release builds do not contain this path | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` |
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
@@ -116,6 +116,7 @@ and MTP codec. No public header field exposes those token boundaries
 | Tensor segment | `maximumSegmentBytes = 4 << 20`; logical segments stream through authenticated DBK3 chunks | `CompleteCheckpointContract.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift` |
 | Initial read admission | Metadata-only candidate match precedes any file read. Shared mode reserves `ioScratchBytes = 20 << 20` once in the provider ledger; its native IO lease does not duplicate that charge. Contiguous compatibility keeps its existing two-ledger path | `SSDHybridCheckpointStore+Read.swift` (`stage`), `EngineV2+CompleteCheckpoint.swift` (`reserveCompleteCheckpointReadScratch`) |
 | Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `CompleteCheckpointImportPlan.swift` (`allocate`) |
+| Provider-staged destinations | The provider-staged (non-native-bound) import creates contiguous destinations, paged segment storage and recent rows already available from zeroed host bytes, then skips `eval` and stream fences for them. Staging therefore never waits for MLX-Swift's process-wide `evalLock`, which the engine holds for a whole prefill chunk. The zero source is read by the copy and can briefly commit up to one destination outside the MLX allocator, so the import plan charges the largest as staging scratch. Native-bound imports and engine pool growth keep device allocation | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHostZeros.swift` (`MLXArray.cbv2HostZeros`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift` (`CBv2CompleteCheckpointImport`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift` (`CBv2PagedCheckpointStorage`, `hostMaterialized`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointImportPlan.swift` (`CBv2CompleteCheckpointImportPlan.scratchBytes`, `evaluateUnavailable`) |
 | Lossy-to-native conversion | CPU row encoding/decoding; `64 << 10` bytes of conversion scratch, reserved per export read and in the import plan. Import reuses row buffers, retains at most one fragmented input row, and batches validated native writes up to `16 << 10` bytes within that allowance. Native destination sizes, not encoded bytes, price restored state | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `CompleteCheckpointImportPlan.swift`, `NativeQuantizedCheckpointRestore.swift` |
 | Idle state | Metadata index only; no resident tensor bank or persistent slot carve | `SSDHybridCheckpointStore.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isMemoryEnabled`) |
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
@@ -140,6 +141,15 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
+The unregistered GLM prototype defines
+`native-paged-glm5next-full-state-v1`: asymmetric latent/index/gate/validity rows
+plus exact FP32 convolution and recurrent state. The provider store recognizes
+that format, but the protected native binding, MTP serialization and encrypted
+restore qualification remain separate gates. It is not permission to emit
+durable-ready routing evidence
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
+See the [GLM integration gates](../design/glm53-flash-native.md).
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
@@ -183,7 +193,7 @@ checkpoint from a longer file.
 | First attempt | Existing candidate size/estimated-time and per-file plaintext limits remain unchanged; the new meter only records first-attempt reads and elapsed time | `SSDCheckpointReadBudget.swift` (`beforeRead`, `checkTime`) |
 | Retry raw-byte ceiling | The original `maxReadBytes`, less the already-spent first manifest probe; the retry's own manifest probe and whole-file read share that remainder. Every header/framing span is charged before allocation/read, plus a conservative one-byte EOF allowance. Partial OS reads do not grant another allowance | `SSDCheckpointReadBudget.swift` (`beginRetry`, `beforeRead`), `SSDBlockStore.swift` (`readExactly`), `SSDBlockStore+Streaming.swift` (`readStreaming`) |
 | Retry time checks | The original start plus `maxStageMillis`, including first-attempt work, file waits and refunds. Remaining time must also admit the candidate's existing estimated cost. Checks are cooperative, including awaited file-access/refund/native work: they do not impose a timer on those waits, preempt an OS/native operation, or guarantee return/cancellation at `maxStageMillis`. The original request cancellation remains authoritative; elapsed time is rechecked before further retry work and publication | `SSDCheckpointReadBudget.swift` (`beginRetry`, `checkTime`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readAttempt`) |
-| Retirement and identity | Failed import/plan aliases unwind, scratch/native owners retire and the original host refund completes before another reservation. One continuous logical registration atomically changes file access; lifecycle invalidation cannot resurrect it or erase its replacement | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDCheckpointStageReservation.swift` (`waitForRefund`) |
+| Retirement and identity | Failed import/plan aliases unwind, scratch/native owners retire and the original host refund completes before another reservation. A cold result returns only after its attempt's host IO refund has completed. One continuous logical registration atomically changes file access; lifecycle invalidation cannot resurrect it or erase its replacement | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDCheckpointStageReservation.swift` (`waitForRefund`) |
 
 The pinned AR `CompleteCheckpointImportPlan.allocate` API may retain its charged
 manifest on queued native retirement after capacity refusal. It exposes no
@@ -228,12 +238,13 @@ list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | Sliding TTL; can only shorten `maxTTLSeconds` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`ttlSeconds`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | Daily write cap; `0` = unlimited | `SSDPrefixCachePolicy.swift` (`maxWriteBytesPerDay`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | Adoption-benefit floor (raise-only against the long-hybrid floor) | `SSDPrefixCachePolicy.swift` (`minEffectiveTokens`) |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | Max staged bytes per adoption | `SSDPrefixCachePolicy.swift` (`maxStageBytes`) |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | Max estimated staging time | `SSDPrefixCachePolicy.swift` (`maxStageMillis`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | Max staged bytes per adoption; when set, also overrides the large-memory complete-checkpoint default | `SSDPrefixCachePolicy.swift` (`maxStageBytes`, `completeCheckpointMaxStageBytes`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | Max estimated staging time; when set, also overrides the large-memory complete-checkpoint default | `SSDPrefixCachePolicy.swift` (`maxStageMillis`, `completeCheckpointMaxStageMillis`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | Enables writing window sidecar files (format only) | `SSDPrefixCachePolicy.swift` (`windowSidecarEnabled`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only: the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |
 
 An isolated restart benchmark sets `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`
 to enable `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, then sets
@@ -280,7 +291,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Owned retirement coordination | Capacity/TTL and active-owner whole-root retirement acquire the store removal lock, validate the durable epoch/binding and try the shared per-file lease without waiting. A busy renamed-but-not-indexed file is skipped; its writer commits the index before releasing that lease. Survivor identity and sequence are unchanged. | `SSDOwnedEntryRetirement.swift`, `SSDCacheEpochStore.performOwnedRetirement`, `SSDDiskBudget.retireActiveEntries` |
 | Epoch record read failure | Owned retirement and whole-root rotation reread the persisted record first. A failed no-follow parent open, status probe, descriptor stat or read (EACCES, EIO, EBUSY and the like) proves nothing about the record: that operation is refused, nothing is written, the first such failure after a successful read is logged, and the store keeps its epoch; the next owned operation rereads and proceeds once the record matches. Sequence issue also refuses without disowning. Confirmed absence (the record is replaced by rename, never unlinked), an unsafe parent, an observed symlink, directory or other non-regular entry, or a read record that is unparseable, oversized or names another schema, epoch or binding disowns the store permanently. | `SSDCacheEpochStore.swift` (`performOwnedRetirement`, `performOwnedDestructiveChange`), `SSDNoFollowIO.swift` (`checkedRegularFileStatus`, `openRegularFileForReading`) |
 | Low-disk write stop | `lowDiskFloorBytes = lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824` (20 GiB), independent of total disk capacity; reads continue; ENOSPC starts `enospcCooldownSeconds = 600` | `SSDPrefixCachePolicy.swift` |
-| Payload/staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000` | `SSDPrefixCachePolicy.swift` |
+| Payload/staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000`. Complete checkpoints on Macs with at least `largeMemoryThresholdBytes = 48 << 30` physical memory default to `largeMemoryCompleteCheckpointStageBytes = 7168 * 1_048_576` and `largeMemoryCompleteCheckpointStageMillis = 15_000`; a full-size file estimates about 5 s at the planning rate, so the byte cap binds. Both caps gate capture and read. Measured Qwen 3.8 MTP checkpoint files grow about 76 KB per token over a 154 MB base ([publication cost](../reports/2026-09-05-ssd-prefix-cache-model-check.md#publication-cost-and-memory)), so on the 4,096-token prefill grid 1 GiB fits 8,192 restored tokens and 7 GiB about 94,000. Explicit settings win where the process receives them; the daily write cap is unchanged | `SSDPrefixCachePolicy.swift` (`completeCheckpointMaxStageBytes`), `SSDHybridCheckpointStoreFactory.swift`, `SSDHybridCheckpointStore.swift` (`acceptsCheckpoint`) |
 | Attention donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |
 | Write-behind queue | `writeQueueMaxJobs = 2`, `writeQueueMaxBytes = 512 * 1_048_576`, `writeQueueSlackBytes = 256 * 1_048_576`; overflow drops the donation | `SSDPrefixCachePolicy.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` |
 | Staging RAM | Reserved per staged entry in `GlobalKVCacheBudget`; the engine keeps its full slot grant | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
@@ -384,6 +395,18 @@ the coordinator's consumption is in
 | `PrefixCacheStatusReason` | `ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed` |
 | `PrefixCacheDonationOutcome` | `donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel` |
 
+Store construction refusals use the provider-local closed enum
+`SSDPrefixCacheConstructionFailure` (`SSDPrefixCacheFactory.swift`): `missing_weight_hash`,
+`unsupported_plan`, `unsafe_path`, `key_unavailable`, `ephemeral_key_unavailable`,
+`block_contract_mismatch`, `epoch_unavailable`, `prompt_contract_unavailable`,
+`identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`. Both
+factories log them, and local `/metrics` shows the one behind an `error` status;
+the attention-block factory also sends them as `prefix_construction_failure`
+engine-health telemetry. The
+heartbeat keeps the `PrefixCacheStatusReason` above: a refused complete store
+reports `cache_init_failed`, and a refused attention-block store reports
+`disk_unavailable` for `unsafe_path` (`PrefixCacheConstructionStatusBox`).
+
 `PrefixCacheDonationOutcome` has 23 known buckets.
 Outcomes are cumulative process-local counters carrying no identifiers; each
 donation call settles exactly one outcome
@@ -406,7 +429,9 @@ observations remain available through these surfaces.
 
 | Surface | What to look for | Code |
 |---|---|---|
-| `darkbloom logs` | `prefix cache stats (engine=v2, tier=ssd, model=…)` line every `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` with cache kind, index/disk/staging counts and cumulative writes/drops; complete stores add I/O totals | `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift` (`startSSDPrefixCacheStatsLogger`) |
+| Unified log subsystem `com.darkbloom.provider` (dev: `com.darkbloom.provider.dev`), category `prefix_cache` | Info-level `prefix cache stats (engine=v2, tier=ssd, model=…)` line every `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` with cache kind, index/disk/staging counts and cumulative writes/drops; complete stores add I/O totals. `darkbloom logs` reads only the service subsystem `dev.darkbloom.provider` and does not show it; use `log show --info --last 1h --predicate 'subsystem == "com.darkbloom.provider" AND category == "prefix_cache"'` | `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift` (`startSSDPrefixCacheStatsLogger`), `provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (`logSubsystem`, `serviceLogSubsystem`) |
+| Same subsystem, category `ssd_prefix_cache` | One public warning per refused complete store: `complete prefix cache disabled for <model>: <failure> (<cause>)`, for example `key_unavailable` with the Secure Enclave/Keychain `OSStatus`. The cause is an error description, never key bytes or file contents. Attention-block stores log `ssd prefix cache disabled for <model>: …` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift` (`build`), `SSDPrefixCacheFactory.swift` (`make`) |
+| Local `/metrics` | `prefix_cache_status{model,state,reason}` mirrors the heartbeat status; an `error` status adds `detail="<construction failure>"`. `complete_prefix_key_persistent` is `1` only when the complete store's key is persistent | `provider-swift/Sources/ProviderCore/Server/LocalServingPosture.swift` (`LocalServingPostureRenderer`) |
 | Typed heartbeat | Optional `slots[].prefix_cache` observation with advancing age; cumulative units, freshness and bounded metrics are in [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheTelemetry.swift` (`SSDPrefixCacheTelemetryBox`) |
 | Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |

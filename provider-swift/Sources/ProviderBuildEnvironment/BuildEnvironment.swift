@@ -4,8 +4,9 @@ import Foundation
 /// is compiled.
 ///
 /// Package.swift defines DARKBLOOM_ENV_DEV for this target when the release
-/// workflow builds with DARKBLOOM_RELEASE_ENVIRONMENT=dev. Every other build,
-/// including local `swift build` and all tests, uses production values.
+/// workflow builds with DARKBLOOM_RELEASE_ENVIRONMENT=dev, and
+/// DARKBLOOM_ENV_STAGING for DARKBLOOM_RELEASE_ENVIRONMENT=staging. Every other
+/// build, including local `swift build` and all tests, uses production values.
 /// provider.toml, CLI flags and DARKBLOOM_R2_CDN_URL still override the
 /// coordinator and CDN defaults.
 ///
@@ -40,9 +41,12 @@ import Foundation
 public enum BuildEnvironment: String, Sendable, CaseIterable {
     case prod
     case dev
+    case staging
 
     #if DARKBLOOM_ENV_DEV
     public static let current: BuildEnvironment = .dev
+    #elseif DARKBLOOM_ENV_STAGING
+    public static let current: BuildEnvironment = .staging
     #else
     public static let current: BuildEnvironment = .prod
     #endif

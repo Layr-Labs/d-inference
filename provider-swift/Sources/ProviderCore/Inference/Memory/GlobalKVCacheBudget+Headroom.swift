@@ -19,6 +19,22 @@ extension GlobalKVCacheBudget {
         let capBytes: UInt64
         let policyEpoch: UInt64
         let capturedUptimeNanoseconds: UInt64
+
+        /// What a new LOAD claim keeping `systemReserveBytes` of OS-available
+        /// memory beside it could charge in this sample: the process ledger's
+        /// admission headroom, min(cap - used, available - systemReserveBytes)
+        /// - activation reserve, less the commitments not yet materialized
+        /// (`ProcessMemoryLedger.replaceCharge`). With no system reserve it is
+        /// `runtimeRemainingBytes`.
+        func loadClaimRemainingBytes(systemReserveBytes: UInt64) -> UInt64 {
+            let (used, overflow) = activeBytes.addingReportingOverflow(cacheBytes)
+            guard !overflow else { return 0 }
+            let cap = capBytes > used ? capBytes - used : 0
+            let system = systemAvailableBytes > systemReserveBytes ? systemAvailableBytes - systemReserveBytes : 0
+            let headroom = min(cap, system)
+            let admissible = headroom > activationReserveBytes ? headroom - activationReserveBytes : 0
+            return admissible > unmaterializedCommittedBytes ? admissible - unmaterializedCommittedBytes : 0
+        }
     }
 
     nonisolated func memoryHeadroomSnapshot() -> HeadroomSnapshot {

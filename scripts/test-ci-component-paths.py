@@ -212,7 +212,8 @@ class GitDiffTests(unittest.TestCase):
 class WorkflowRoutingTests(unittest.TestCase):
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
         for filename in ("ci.yml", "component-changes.yml", "provider-release-cache.yml",
-                         "provider-signing-validation.yml", "release-swift.yml"):
+                         "provider-signing-validation.yml", "release-swift.yml",
+                         "release-provider.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             with self.subTest(filename=filename):
                 for forbidden in ("actions/setup-go@", "go.mod", "coordinator/",

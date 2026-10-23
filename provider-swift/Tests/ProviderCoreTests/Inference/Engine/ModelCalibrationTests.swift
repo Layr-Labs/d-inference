@@ -347,6 +347,24 @@ struct ModelCalibrationTests {
         }
         await bridge.shutdown()
     }
+
+    @Test("prompt sizing returns the largest complete prompt within each target")
+    func promptSizingIsMaximal() async throws {
+        let (bridge, _, _) = try fixture()
+        for variant in 0..<2 {
+            var previous = 0
+            for target in [128, 300, 512, 777, 1_024, 2_048, 4_096, 4_796, 6_000] {
+                let count = try await bridge.modelCalibrationPrompt(targetTokens: target, variant: variant).count
+                #expect(count <= target && count >= previous)
+                // One fixture repetition is under 128 tokens; an exact fit is a fixed point.
+                #expect(count > target - 128, "variant \(variant), target \(target): \(count)")
+                let refit = try await bridge.modelCalibrationPrompt(targetTokens: count, variant: variant)
+                #expect(refit.count == count)
+                previous = count
+            }
+        }
+        await bridge.shutdown()
+    }
 }
 
 private extension EngineV2Bridge {

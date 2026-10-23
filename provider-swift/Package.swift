@@ -8,10 +8,14 @@ import Foundation
 // DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
 let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
     .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
-precondition(["prod", "dev"].contains(releaseEnvironment),
-             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod or dev")
-let buildEnvironmentSwiftSettings: [SwiftSetting] =
-    releaseEnvironment == "dev" ? [.define("DARKBLOOM_ENV_DEV")] : []
+precondition(["prod", "dev", "staging"].contains(releaseEnvironment),
+             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod, dev or staging")
+let buildEnvironmentSwiftSettings: [SwiftSetting]
+switch releaseEnvironment {
+case "dev": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_DEV")]
+case "staging": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_STAGING")]
+default: buildEnvironmentSwiftSettings = []
+}
 
 let package = Package(
     name: "DarkbloomProvider",
@@ -159,6 +163,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Tokenizer configurations for the prompt token cache.
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),

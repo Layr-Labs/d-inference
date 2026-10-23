@@ -65,7 +65,9 @@ def summarize_cell(report, spec):
         result.update({"ttftMedianMs": median(times), "ttftDistribution": dispersion(times),
                        "promptTokensPerSecond": median([cell["context"] * 1000 / t for t in times]),
                        "peakMemoryBytes": max(s["peakMemoryBytes"] for s in report["samples"]),
-                       "soloPrefillStripeTokens": report.get("soloPrefillStripeTokens")})
+                       "soloPrefillStripeTokens": report.get("soloPrefillStripeTokens"),
+                       "prefillChunkTokens": report.get("prefillChunkTokens"),
+                       "maxBatchedTokensPerStep": report.get("maxBatchedTokensPerStep")})
     else:
         result["patterns"] = [{"name": p["name"], "ttftMedianMs": p["medianTTFTMs"],
                                "perRequestDecodeTPS": p["medianPerRequestDecodeTokensPerSecond"],

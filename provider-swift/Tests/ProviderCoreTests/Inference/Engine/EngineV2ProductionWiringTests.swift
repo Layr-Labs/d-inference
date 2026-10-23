@@ -309,7 +309,7 @@ private func recordServerStream(
             events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
-        case .toolCall:
+        case .toolCall, .toolCallDelta:
             continue
         }
     }
@@ -558,6 +558,41 @@ struct EngineV2SlotBuildTests {
 
 @Suite("EngineV2 production wiring: KV re-slicing", .serialized)
 struct EngineV2ReslicingWiringTests {
+    /// Run alone: a failed native fence intentionally remains process-retained.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_RETAINED_RESLICE"] == "1"))
+    func glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridge, survivor, _) = try await buildAndInstallSlotA(loop, runtime: runtime,
+            recorder: recorder, engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let oldGrant = await bridge.engineKVBytesCapacity()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: wiringPhysicalBytes,
+            makeEngine: { _, _ in throw GLM5NextManagedLoadError.retirementUnproven }))
+        let newcomer = EngineV2NewcomerBox(makeStubContainer())
+        await loop.acquireResliceGate()
+        await #expect(throws: GLM5NextManagedLoadError.retirementUnproven) {
+            try await loop.resliceAndBuildEngineV2Bundle(modelId: "failed-native-glm", modelType: "glm5_next",
+                isVLM: false, modelDirectory: nil, newcomer: newcomer, tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                targetSizing: makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072),
+                specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)))
+        }
+        await loop.releaseResliceGate()
+        #expect(newcomer.container != nil)
+        let shrunkGrant = await bridge.engineKVBytesCapacity()
+        #expect(shrunkGrant < oldGrant)
+        #expect(survivor.shutdownCalls == 0)
+        #expect(GLM5NextLoadFaultState.isRetained)
+        // The GLM fence no longer blocks other families' reclamation; the
+        // retained newcomer's weights + grant are charged to the fleet budget.
+        #expect(ProviderLoop.nativeProcessAllowsReclamation())
+        #expect(GLM5NextLoadFaultState.retainedResidentBytes >= 12 * wiringGiB)
+        // A survivor regrow cannot reclaim memory the retained owner holds.
+        await loop.resliceGrowSurvivorsForTesting()
+        let regrown = await bridge.engineKVBytesCapacity()
+        #expect(regrown < oldGrant && regrown - shrunkGrant < 1 << 20)
+        GLM5NextLoadFaultState.retain([loop, survivor])
+    }
 
     init() {
         // unloadModel / updateAggregateCapacity read MLX GPU counters.
@@ -1270,7 +1305,7 @@ struct EngineV2RequestRoutingTests {
     /// prompt tail, backed by a scripted close-only (Qwen3.6-style)
     /// thinking stream.
     private func makeThinkProbeEngine(
-        decodedTail: String
+        decodedTail: String, modelType: String = "qwen3_next"
     ) -> (WiringScriptedEngine, MultiModelBatchSchedulerEngine) {
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "step one ", tokens: [10], logprobs: nil),
@@ -1284,7 +1319,7 @@ struct EngineV2RequestRoutingTests {
                     "qwen3.6-test": .init(
                         tokenizer: TokenizerHandle(
                             WiringStubTokenizer(decodeOverride: decodedTail)),
-                        modelType: "qwen3_next",
+                        modelType: modelType,
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1325,6 +1360,33 @@ struct EngineV2RequestRoutingTests {
         let stream = try await providerEngine.streamChatCompletion(request: request)
         let events = try await recordServerStream(stream)
         #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain tail keeps close-only Qwen output undecided", arguments: ["qwen3_5", "qwen3_5_moe"])
+    func plainPromptTailKeepsCloseOnlyQwenUndecided(modelType: String) async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: modelType)
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain Qwen3-VL Instruct tail seeds content state ahead of output")
+    func plainQwen3VLPromptTailSeedsContent() async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: "qwen3_vl_moe")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("<think></think>"))
+        #expect(events.dropFirst().first == .content("step one "))
     }
 
     @Test("no injection for a non-think reasoning parser even with a pre-opened tail")

@@ -76,6 +76,32 @@ struct BuildEnvironmentTests {
         #expect(dev.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-dev")
     }
 
+    @Test func stagingValuesPointAtStagingDevNet() {
+        #expect(BuildEnvironment.staging.coordinatorWebSocketURL == "wss://api.staging.darkbloom.dev/ws/provider")
+        #expect(BuildEnvironment.staging.coordinatorHTTPURL == "https://api.staging.darkbloom.dev")
+        #expect(BuildEnvironment.staging.modelCDNURL == "https://models.darkbloom.ai")
+    }
+
+    @Test func stagingIdentityIsSuffixed() {
+        let staging = BuildEnvironment.staging
+        #expect(staging.cliName == "darkbloom-staging")
+        #expect(staging.enclaveName == "darkbloom-enclave-staging")
+        #expect(staging.appBundleName == "Darkbloom Staging.app")
+        #expect(staging.appDisplayName == "Darkbloom Staging")
+        #expect(staging.installDirectoryName == ".darkbloom-staging")
+        #expect(staging.configDirectoryName == ".config/darkbloom-staging")
+        #expect(staging.legacyConfigDirectoryNames == [])
+        #expect(staging.launchAgentLabel == "io.darkbloom.provider.staging")
+        #expect(staging.watchdogAgentLabel == "io.darkbloom.watchdog.staging")
+        #expect(staging.logSubsystem == "com.darkbloom.provider.staging")
+        #expect(staging.serviceLogSubsystem == "dev.darkbloom.provider.staging")
+        #expect(staging.defaultLocalPort == 8002)
+        #expect(staging.encryptedCacheNamespace == "darkbloom-staging")
+        #expect(staging.modelRevisionRef == "darkbloom-staging")
+        #expect(staging.keychainServicePrefix == "io.darkbloom.staging")
+        #expect(staging.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-staging")
+    }
+
     @Test func environmentsShareNoPathPortOrLabel() {
         func identity(_ environment: BuildEnvironment) -> [String] {
             [environment.cliName, environment.enclaveName, environment.appBundleName,
@@ -86,8 +112,13 @@ struct BuildEnvironmentTests {
              environment.modelRevisionRef,
              String(environment.defaultLocalPort)]
         }
-        for (prod, dev) in zip(identity(.prod), identity(.dev)) {
-            #expect(prod != dev)
+        let allIdentities = BuildEnvironment.allCases.map(identity)
+        for i in allIdentities.indices {
+            for j in allIdentities.indices where j > i {
+                for (left, right) in zip(allIdentities[i], allIdentities[j]) {
+                    #expect(left != right)
+                }
+            }
         }
         let paths = BuildEnvironment.allCases.flatMap {
             [$0.installDirectoryName, $0.configDirectoryName] + $0.legacyConfigDirectoryNames

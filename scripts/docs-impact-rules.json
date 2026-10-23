@@ -55,7 +55,7 @@
     },
     {
       "name": "provider release",
-      "source_patterns": [".github/workflows/release-swift.yml", ".github/workflows/provider-release*.yml", ".github/workflows/provider-signing-validation.yml", ".github/actions/provider-release-build/**", "provider-swift/Sources/ProviderCore/ProviderCore.swift", "scripts/install.sh", "scripts/admin.sh", "scripts/check-release-version.sh", "scripts/resolve-provider-release.sh", "scripts/provider-release*", "scripts/provider_release*", "scripts/provider-signing-validation.py", "scripts/prepare-provider-release-toolchain.sh"],
+      "source_patterns": [".github/workflows/release-swift.yml", ".github/workflows/release-provider.yml", ".github/workflows/release-dev-branch.yml", ".github/workflows/provider-release*.yml", ".github/workflows/provider-signing-validation.yml", ".github/actions/provider-release-build/**", "provider-swift/Sources/ProviderCore/ProviderCore.swift", "scripts/install.sh", "scripts/admin.sh", "scripts/check-release-version.sh", "scripts/resolve-provider-release.sh", "scripts/provider-release*", "scripts/provider_release*", "scripts/provider-signing-validation.py", "scripts/prepare-provider-release-toolchain.sh", "scripts/test-release-dev-branch.py"],
       "docs_any_of": ["docs/operations/provider-release.md"]
     },
     {

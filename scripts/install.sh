@@ -29,25 +29,56 @@ COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 # production installer removes that url instead of writing one.
 PRODUCTION_COORD_URL="https://api.darkbloom.dev"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+# Pre-release builds (versions carrying -dev. or -staging.) are self-signed and
+# served only by the dev and staging coordinators, which accept an ad-hoc or
+# otherwise non-Apple-anchored signature. For those the Apple-anchor and team-OU
+# clause is dropped; the bundle identifier io.darkbloom.provider stays pinned and
+# every other check (deep/strict verify and the staged-app checks) is unchanged.
+DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT='identifier "io.darkbloom.provider"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 
-# A dev release (version X.Y.Z-dev.N) installs as its own provider beside the
-# production provider. The two identities share no name and no path, so a dev
-# install never reads, moves or deletes production files, and the reverse.
-# Nothing may use these names or paths before this function runs.
+# A dev release (version X.Y.Z-dev.N) or a staging release (X.Y.Z-staging.N)
+# installs as its own provider beside the production provider. The identities
+# share no name and no path, so one install never reads, moves or deletes
+# another's files. Nothing may use these names or paths before this function runs.
 select_provider_identity() {
-    case "$1" in
-        *-dev.*)
+    # Classify by the SemVer pre-release component, not an unanchored substring.
+    # Strip any +build metadata first, then take the segment after the first "-".
+    # A marker that appears only in build metadata (e.g. 1.2.3+x-dev.y) is not a
+    # pre-release and stays prod, so it never relaxes the signature requirement.
+    local prerelease=
+    case "${1%%+*}" in
+        *-*) prerelease="${1%%+*}" ; prerelease="${prerelease#*-}" ;;
+    esac
+    case "$prerelease" in
+        dev.*)
             PROVIDER_LABEL="Darkbloom Dev"
             CLI_NAME="darkbloom-dev"
             ENCLAVE_NAME="darkbloom-enclave-dev"
+            ;;
+        staging.*)
+            PROVIDER_LABEL="Darkbloom Staging"
+            CLI_NAME="darkbloom-staging"
+            ENCLAVE_NAME="darkbloom-enclave-staging"
             ;;
         *)
             PROVIDER_LABEL="Darkbloom"
             CLI_NAME="darkbloom"
             ENCLAVE_NAME="darkbloom-enclave"
+            ;;
+    esac
+    # Choose the designated requirement from the same pre-release component. A
+    # pre-release version relaxes only the Apple-anchor/team-OU clause; prod gets
+    # the full Apple-team requirement. A prod coordinator is never served a
+    # pre-release version, so the relaxed branch is unreachable on prod.
+    case "$prerelease" in
+        dev.*|staging.*)
+            DESIGNATED_REQUIREMENT="$DARKBLOOM_PRERELEASE_DESIGNATED_REQUIREMENT"
+            ;;
+        *)
+            DESIGNATED_REQUIREMENT="$DARKBLOOM_DESIGNATED_REQUIREMENT"
             ;;
     esac
     APP_NAME="$PROVIDER_LABEL.app"
@@ -87,7 +118,9 @@ verify_code_requirement() {
 
 verify_staged_app_signature() {
     local app=$1
-    local requirement=${2:-$DARKBLOOM_DESIGNATED_REQUIREMENT}
+    # Defaults to the per-identity requirement that select_provider_identity
+    # chose from the version marker (relaxed for pre-release, full for prod).
+    local requirement=${2:-$DESIGNATED_REQUIREMENT}
     verify_code_requirement "$app" 1 "$requirement" || {
         fail_install "Staged $APP_NAME does not satisfy the pinned signature requirement."
         return 1
@@ -271,7 +304,9 @@ install_bundle_atomically() {
     local stage="$install_dir/.install-staging-$$-$RANDOM"
     rm -rf "$stage"
     mkdir -p "$stage"
-    if ! tar xzf "$archive" -C "$stage"; then
+    # Restore ordinary release modes without changing private-state creation
+    # elsewhere in the installer or enabling tar's full-permissions mode.
+    if ! (umask 022; /usr/bin/tar xzf "$archive" -C "$stage"); then
         rm -rf "$stage"
         return 1
     fi

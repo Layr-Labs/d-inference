@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-22
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -15,21 +15,50 @@ R2 staging and publication are separate jobs. Staging/publication failures retry
 the retained artifact rather than rebuilding or re-signing it.
 
 A push to `master` that changes the provider or its release tooling publishes a
-dev release automatically. A `vX.Y.Z` tag publishes production. To find the
-newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
+dev release automatically, and a staging release too once the `STAGING_ENABLED`
+repository variable is set (DBLM-771: staging tracks main). A `vX.Y.Z` tag
+publishes production. `.github/workflows/release-swift.yml` is the
+thin caller that routes each trigger to one or more environment lanes; the
+reusable `.github/workflows/release-provider.yml` runs the resolve, build,
+qualification, signing, R2 staging and publication chain for one environment. To
+find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.21`. This candidate excludes startup
-health-check timings from throughput learning and enables bounded calibration
-for ordinary autoregressive and native block engines without requiring a customer
-job. It pins the merged ordinary-request retirement API from
-[mlx-swift-lm #305](https://github.com/Layr-Labs/mlx-swift-lm/pull/305).
-Preparation does not tag, register or publish a release.
+`ProviderCore.version` is prepared as `0.10.0`. The candidate moves request
+normalization to v9 for every model, adds native Flint, Nemotron 3.5 Super and
+GLM-5.3-Flash serving, and updates the MLX pins, so its metallib changes. See
+the [`v0.10.0` changelog entry](../../CHANGELOG.md) for the full scope and its
+qualification limits.
 
-`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
-Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
-from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
-[published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
-from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
+Tag `v0.10.0` only after production runs a `darkbloom-platform` coordinator
+that normalizes requests with v9, enforces the Nemotron 3.5 Super
+provider-version floor at `0.10.0`, gates GLM-5.3-Flash on the `glm5_next_v1`
+capability and serves a provider-contract snapshot pinned to the merged
+preparation commit. A v8 coordinator accepts the `0.10.0` registration and
+serves its providers, but without cache scopes and without the new models'
+gates. Then tag promptly: until providers update, a v9 coordinator serves
+0.9.22 providers without cache scopes. The platform owns the coordinator
+deployment and its cache-routing allowlist; model registration and promotion
+are separate approvals. This preparation does not tag, register, upload or
+deploy anything.
+
+Platform evidence, inspected on 2026-10-22 (recheck current `master` before
+tagging):
+
+| Claim | Source |
+|---|---|
+| Platform `master` normalizes with v9 | [`identity/contract.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| Production `74e9f989` normalizes with v8 | [`identity/contract.go` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/blob/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
+| A cache plan applies only to a matching prompt contract | [`registry/cache_tiers.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/cache_tiers.go) (`CapabilityMatchesPlan`) |
+| Super has a per-identity provider-version floor | [`registry/catalog_version_floor.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`, unset there; [darkbloom-platform#400](https://github.com/Layr-Labs/darkbloom-platform/pull/400) sets `0.10.0`) |
+| GLM-5.3-Flash requires `glm5_next_v1` | [`registry/provider_capabilities.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/provider_capabilities.go) (`ProviderCapabilityGLM5Next`, `embeddedRequiredProviderCapabilities`) |
+| Production `74e9f989` has neither gate | Neither symbol exists in the [platform registry package at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
+
+`v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was
+[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)
+from `9951a7db72d3db9a9cb0ec5e777969afe968c9b6`, and `v0.9.20` was
+[published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20)
+from `5dc5313e5201e8d84db15adc153ceaf56147cc71`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -114,7 +143,9 @@ release-preparation commit. Rendering itself neither edits history nor consumes
 notes. Ordinary PRs never regenerate the root history; see
 [contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 The pipeline takes its registered `changelog` from the annotated tag message,
-not `CHANGELOG.md`; derive that message from the reviewed release entry.
+not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
+it to a short summary: the release API refuses registration bodies above
+64 KiB, and that refusal comes only after signing and notarization.
 
 ### 3. Merge And Verify Release Preparation
 
@@ -159,12 +190,20 @@ Never move an existing release tag to repair a failed run.
 
 ### 5. Select Dev Or Validation Mode When Needed
 
-A push to `master` starts a dev release when it changes a path in the workflow's
-`on.push.paths` list: `provider-swift/**`, `libs/**`, the release workflow, the
-build action, or a script that the release runs. The trigger, not an input,
-selects dev. Path filters do not apply to tags, so tags publish as before. One
-dev release runs at a time. A running dev release always completes; when more
-merges arrive, only the newest waiting run continues.
+A push to `master` starts a dev release — and a staging release when the
+`STAGING_ENABLED` repository variable is `'true'` — when it changes a path in the
+caller's `on.push.paths` list: `provider-swift/**`, `libs/**`, the release
+caller, the reusable workflow, the build action, or a script that the release
+runs. The trigger, not an input, selects the lanes: the caller's `dev` and
+`staging` jobs each call `release-provider.yml` and run in parallel in one GitHub
+run (the `staging` job is skipped while `STAGING_ENABLED` is unset). They are different binaries — identity is compile-time, so a master
+push runs two full build, sign, notarize and publish lanes. A plain matrix
+cannot carry each lane's artifact id and digest across the dependent jobs, which
+is why each lane is a separate call of the reusable workflow. Path filters do not
+apply to tags, so tags publish production as before. One dev release and one
+staging release run at a time (the caller's `release-dev` and `release-staging`
+groups); a running release always completes, and when more merges arrive only
+the newest waiting run of each lane continues.
 
 To publish a dev release by hand:
 
@@ -216,27 +255,27 @@ declaration of these values:
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 
-| Field | Production | Dev |
-|---|---|---|
-| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
-| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
-| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
-| `cliName` | `darkbloom` | `darkbloom-dev` |
-| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
-| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
-| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
-| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
-| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
-| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
-| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
-| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
-| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
-| `defaultLocalPort` | `8000` | `8001` |
-| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
-| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
-| `modelRevisionRef` | `main` | `darkbloom-dev` |
-| `releaseVersionMarker` | versions without it | `-dev.` |
+| Field | Production | Dev | Staging |
+|---|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` | `https://api.staging.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` | `wss://api.staging.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` | `darkbloom-enclave-staging` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` | `Darkbloom Staging.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` | `Darkbloom Staging` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` | `.darkbloom-staging` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` | `.config/darkbloom-staging` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
+| `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |
+| `releaseVersionMarker` | versions without it | `-dev.` | `-staging.` |
 
 <!-- END provider identity -->
 
@@ -311,6 +350,44 @@ names. Its updater expects `Darkbloom.app`, so it cannot install a
 `Darkbloom Dev.app` release. Install the dev provider again with the dev
 `install.sh`.
 
+#### Staging Build Identity
+
+`staging` is a third build environment, listed in the identity table above
+beside production and dev. It is the staging analog of dev: the same source,
+its own install identity (`darkbloom-staging`, port `8002`, keychain prefix
+`io.darkbloom.staging`, cache namespace `darkbloom-staging`), and its own
+coordinator `wss://api.staging.darkbloom.dev/ws/provider`. It reads the shared
+production model CDN like dev. A `X.Y.Z-staging.N` version selects the staging
+identity (`scripts/install.sh`, `select_provider_identity`;
+`scripts/provider_release_identity.py`). For `staging`,
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_STAGING`.
+
+Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
+when it is `'true'`, a master push publishes a staging release in parallel with
+the dev release (DBLM-771), signed with the same Developer ID as dev and prod —
+staging is a normal Developer-ID dev-family release, not the self-signed build of
+`release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
+number, like the dev lane's `X.Y.Z-dev.N`. Publish a staging build by hand with
+the same version form (the flag gates the manual lane too):
+
+```bash
+gh workflow run release-swift.yml --ref master -f environment=staging
+```
+
+A staging run uses only `STAGING_*` secrets (`STAGING_R2_*`,
+`STAGING_COORDINATOR_URL`, `STAGING_RELEASE_KEY`). These secrets and the staging
+coordinator infra do not exist yet (a separate `darkbloom-devnet-infra` effort,
+DBLM-771 infra PR 18). Until they do, leave `STAGING_ENABLED` unset (the default):
+the caller's `staging` job is skipped, so a master push builds and publishes dev
+only and never burns a second macOS build + notarization that would hard-fail at
+staging publication for want of credentials. Turn staging publishing on by
+setting the `STAGING_ENABLED` repository variable to `true` once that infra PR is
+applied and the `STAGING_*` secrets exist. The dev lane is never gated — it
+publishes on every qualifying master push. A push never selects prod:
+`scripts/resolve-provider-release.sh` refuses prod on any non-tag trigger, so the
+production signing identity stays tag-gated.
+
 For a signed, notarized validation bundle without registration/publication:
 
 ```bash
@@ -328,6 +405,45 @@ asserts the host is below macOS 27, verifies hashes/notarization and requires
 the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
+
+#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+
+`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
+commit and publishes it to the dev coordinator without merging to master. It is
+dispatch-only on `master`, so the credentialed publication logic runs the
+reviewed master copy of every script; it checks out the chosen `ref` only to
+compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
+the production Apple signing identity. The branch binary is compiled and signed
+in a job that holds no secret, and is never run in a step that holds a
+credential. The version is `X.Y.Z-dev.branch.<run>`, which
+`scripts/check-release-version.sh` accepts and which stays distinct from the
+master dev lane's `X.Y.Z-dev.<run>`.
+
+```bash
+gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
+```
+
+The installer accepts an ad-hoc signature for pre-release versions: for a
+version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
+relaxed designated requirement that keeps the bundle identifier
+`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
+(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
+the full Apple-team requirement unchanged, and a prod coordinator is never
+served a pre-release version. The installer extracts the release archive with
+`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
+installed app owner-only; private state it creates elsewhere keeps its own modes
+(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
+than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
+device-attestation tier, not a code-signature tier.
+
+The installer is a pinned provider-contract snapshot, so the dev coordinator
+serves the relaxed installer only after the `darkbloom-platform` served copy is
+re-snapshotted from the merged commit in a separate platform PR. Until that
+re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
+and rejects the self-signed build. Because `/v1/releases/latest` orders by
+`created_at`, publishing makes the branch build the latest dev release; an
+existing install's self-updater may not downgrade to a lower run number, while a
+fresh install takes the newest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

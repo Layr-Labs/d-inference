@@ -83,11 +83,12 @@ private final class ScriptedGLMEngine: CBv2Engine, @unchecked Sendable {
         self.output = output
         self.finish = finish
     }
-    /// What GLM's native-tracked engine decides for each submission
-    /// (`EngineV2Bridge.nativeOutputControlRefusal`); nil admits it.
-    var nativeRefusals: [String?] {
+    /// What a native-tracked engine decides for each submission
+    /// (`EngineV2Bridge.nativeOutputControlRefusal`); nil admits it. GLM's
+    /// engine captures logprobs (`EngineV2.acceptsLogprobRows`); MiMo's does not.
+    func nativeRefusals(capturesLogprobs: Bool) -> [String?] {
         lock.withLock { submitted }.map {
-            EngineV2Bridge.nativeOutputControlRefusal(nativeTracked: true,
+            EngineV2Bridge.nativeOutputControlRefusal(nativeTracked: true, capturesLogprobs: capturesLogprobs,
                 topLogprobs: $0.sampling.topLogprobs, constrained: $0.tokenConstraint != nil)
         }
     }
@@ -121,8 +122,10 @@ private struct ServedResponse {
     var error: (any Error)?
     /// When the provider first recorded generated but withheld output.
     var firstWithheldOutputAt: ContinuousClock.Instant?
-    /// The native engine's output-control decision for each submission.
+    /// GLM's native engine's output-control decision for each submission.
     var nativeRefusals: [String?] = []
+    /// The same decision by a native engine that does not capture logprobs (MiMo).
+    var nonCapturingNativeRefusals: [String?] = []
 }
 
 @Suite("GLM-5.3-Flash OpenRouter capability requests")
@@ -220,7 +223,8 @@ struct GLM5NextOpenRouterCapabilityTests {
             served.error = error
         }
         served.firstWithheldOutputAt = usage.firstWithheldOutputAt
-        served.nativeRefusals = engine.nativeRefusals
+        served.nativeRefusals = engine.nativeRefusals(capturesLogprobs: true)
+        served.nonCapturingNativeRefusals = engine.nativeRefusals(capturesLogprobs: false)
         return served
     }
 
@@ -405,16 +409,19 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(!prompt.contains("get_forecast"))
     }
 
-    /// Control for the native-engine evidence above: the same check refuses a
-    /// GLM logprobs row, which the native engine cannot serve.
-    @Test func nativeEngineEvidenceRefusesALogprobsRow() async throws {
+    /// Control for the native-engine evidence above: GLM's engine captures
+    /// logprobs (`EngineV2.acceptsLogprobRows`), so it admits a logprobs row,
+    /// and the same check refuses that row for a native engine that cannot
+    /// capture them (MiMo), so the evidence is not vacuous.
+    @Test func nativeEngineEvidenceAdmitsGLMLogprobsButRefusesNonCapturingEngines() async throws {
         var body = Self.jsonObjectBody()
         body.removeValue(forKey: "response_format")
         // The coordinator handler threads the sealed body's logprobs request
         // this way (`ProviderLoop+InferenceHandler`).
         let served = try await serve(body, output: ["Sunny."], logprobs: EngineV2LogprobsPlumbing(
             topLogprobs: 2, channel: EngineV2LogprobsChannel()))
-        let refusal = try #require(served.nativeRefusals.first ?? nil)
+        #expect(served.nativeRefusals == [nil])
+        let refusal = try #require(served.nonCapturingNativeRefusals.first ?? nil)
         #expect(refusal.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix))
     }
 

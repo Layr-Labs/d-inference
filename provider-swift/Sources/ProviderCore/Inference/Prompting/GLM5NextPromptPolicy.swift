@@ -18,6 +18,13 @@ enum GLM5NextPromptPolicy {
         modelType == "glm5_next" || modelType == "glm5_next_text" || modelType == "glm5_next_mtp"
     }
 
+    /// A JSON answer (`GLM5NextResponseFormat`) or a required/named call is
+    /// withheld until it validates. Only the text path withholds, so media
+    /// refuses these requests and text splits reasoning on its typed channel.
+    static func withholdsOutput(_ prepared: ToolChoicePromptPolicy.Prepared, modelType: String?) -> Bool {
+        prepared.glmResponseFormat != nil || (applies(modelType: modelType) && prepared.requiresToolCall)
+    }
+
     /// Fixed client text for every reasoning-exclusion request. It never
     /// echoes request content.
     static let reasoningExclusionUnsupportedMessage =
@@ -410,10 +417,11 @@ enum GLM5NextPromptPolicy {
         prepared: ToolChoicePromptPolicy.Prepared
     ) -> [String?] {
         guard var captured else { return Array(repeating: nil, count: prepared.messages.count) }
-        let instruction = (request.messages.firstIndex { $0.role != .system } ?? request.messages.endIndex) - 1
+        // The inserted turn is the last of the leading system turns.
+        let instructionIndex = (request.messages.firstIndex { $0.role != .system } ?? request.messages.endIndex) - 1
         if request.responseFormat?.requiresJSONOutput == true, captured.count + 1 == request.messages.count,
-            instruction >= 0 {
-            captured.insert(nil, at: instruction)
+            instructionIndex >= 0 {
+            captured.insert(nil, at: instructionIndex)
         }
         let offset = prepared.messages.count - request.messages.count
         guard captured.count == request.messages.count, (0...1).contains(offset) else {

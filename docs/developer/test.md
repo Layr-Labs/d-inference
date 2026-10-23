@@ -202,8 +202,9 @@ exposed for prose, a wrong function, a schema violation or a truncated frame;
 the models update must list the GLM serving identity under tool-constraint
 protocol v1. Each served JSON or forced submission must carry no token
 constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
-evaluated as GLM's native-tracked engine admits it; a logprobs row is the
-refused control. The scripted completions prove the
+evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
+a logprobs row that the same check refuses for a native engine without logprobs
+capture. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
 

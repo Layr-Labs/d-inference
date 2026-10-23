@@ -1,6 +1,6 @@
 # Provider telemetry
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-23
 
 Provider diagnostics travel on typed heartbeats and terminal profiles. The Swift event-emitter facade is inert; do not add prompt or completion content to heartbeats or profiles. The [wire schema](../reference/telemetry-schema.md) and [protocol reference](../reference/protocol-messages.md) define the boundary.
 
@@ -30,6 +30,17 @@ bucket ceilings and closed phase/cache/contention values, with at most 32
 engine-local aggregate buckets. Warm-pool planning retains numeric work means
 in memory; process logs and event emitters omit the measured prompt/output
 means and work rates.
+
+### Autopilot busy reasons and stalled transitions
+
+With saved Autopilot consent, the heartbeat's `model_autopilot` state names why
+the provider would refuse a residency operation (`busy_reason`, `busy_reasons`,
+`busy_since_ms`) and counts stuck-transition watchdog stalls per process
+(`transition_stalls`). These are typed heartbeat fields, not event emissions;
+the provider log also records each `transition_stalled`. The closed
+vocabularies are in the [state object](../reference/protocol-messages.md#model_autopilot-state)
+and the watchdog's rules in the
+[Autopilot architecture](model-autopilot.md#busy-reasons-and-stalled-transitions).
 
 ### KV storage and precision attribution
 

@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -330,6 +330,12 @@ load would have evicted, and that load then fails this gate after acceptance.
 The gate, pending-load claims and eviction still decide every load. Native MiMo
 keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
 every model.
+
+An unexpired Autopilot placement hold removes its slot from every eviction
+snapshot (`ProviderLoop.evictableModelSlots`), and `free_for_load_gb` gives the
+held weights no reclaim credit (`ProviderLoop.autopilotHeldWeightBytes`). A load
+that fits only by evicting a held slot fails with the ordinary slot or
+insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#placements-after-an-operation).
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)

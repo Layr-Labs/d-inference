@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -851,6 +851,7 @@ Swift `ModelAutopilotStatus`
 | `command_id` | `string` / `String` | req | Identifies the immutable command on this provider session |
 | `status` | `string` / `State` | req | `started`, `succeeded`, `failed` |
 | `error` | `string` / `String?` | opt | Diagnostic failure text; not an authorization or capacity signal |
+| `detail` | — / `String?` | opt; Swift only; with consent | With `provider_busy`, the first [busy reason](#model_autopilot-state); `autopilot_operation` when another accepted command owns residency. Absent otherwise; older coordinators ignore it |
 | `model_autopilot` | `*ModelAutopilotState` / `ModelAutopilotSnapshot` | opt in Go; current Swift includes it | Provider command/residency state; status alone never changes scheduler capacity |
 
 `Registry.HandleAutopilotStatus` accepts only the matching current session and
@@ -1204,6 +1205,7 @@ whole-device reservation. Shadow leases cannot authorize this message.
 | `expected_resident_models` | `[]string` / `[String]` | req | Complete unique resident set expected before mutation, at most32 |
 | `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#model-autopilot) |
 | `lease_seconds` | `int` / `Int` | req | `0...86400`; minimum hold lease on a newly loaded target, separate from provider residence/idle dwell |
+| `hold_seconds` | — / `Int?` | opt; Swift only | `0...86400` placement hold on the loaded target; absent or `0` records none and leaves an earlier hold; a positive value replaces it; without `load_model_id` it is `invalid_command`. A succeeded operation's hold keeps the target out of LRU eviction and idle unload after its lease ends; another operation may still unload it. Honoured only by providers reporting `placement_holds` |
 
 The provider rejects a changed resident set, busy device, pinned/young victim,
 active lease, unsupported hardware, missing local primary/assistant or infeasible
@@ -1350,6 +1352,32 @@ support.
 | `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
 | `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
 | `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
+| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`. Absent on older providers, which do not adopt or hold |
+| `adopted_models` | — / `[String]?` | opt; with consent | Cached inventory targets of succeeded operations that keep serving without a lease; each is resident. Absent when none |
+| `held_models` | — / `[ModelAutopilotHold]?` | opt; with consent | Active holds `{model_id, expires_at_ms}` (Unix milliseconds); each held model is resident and is never evicted for an ordinary cold load. Absent when none |
+| `busy_reasons` | — / `[String]?` | opt; with consent | Every condition that would make the provider answer `provider_busy` now, in report order; absent when not busy |
+| `busy_reason` | — / `String?` | opt; with consent | The first of `busy_reasons` |
+| `busy_since_ms` | — / `Int64?` | opt; with consent | Unix milliseconds since `busy_reason` has been continuously observed |
+| `transition_stalls` | — / `[ModelAutopilotTransitionStall]?` | opt; with consent | Cumulative watchdog stalls in this process, `{transition, count, last_age_ms}`; absent before the first |
+
+The consent-gated fields above are additive: a provider without saved consent
+omits all of them, and coordinators that predate them ignore them because they
+decode provider frames without rejecting unknown keys
+([coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/protocol/messages.go),
+`ProviderMessage.UnmarshalJSON`). `protocol` stays `3`: the coordinator accepts
+inventory only from protocol `3`. A coordinator may rely on adoption or holds
+only after a provider reports the matching capability.
+
+Closed vocabularies (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilotBusyReason.swift`).
+Report order lists an owner before the work it owns:
+
+| Field | Values |
+|---|---|
+| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
+| `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
+
+Bounds and the watchdog's cancellation rules are in the
+[Autopilot architecture](../architecture/model-autopilot.md#busy-reasons-and-stalled-transitions).
 
 Resident entries:
 
@@ -1439,7 +1467,9 @@ There is no separate generic unload command. The provider's ordinary idle timer
 is paused during active control or an explicit pause. Recorded consent alone
 does not pause it during shadow, while waiting or after lease expiry. Commands cannot fall through to implicit LRU
 victims. Standalone surplus unloading follows the configured quiet window; load-driven replacement
-still requires all dwell, memory, pin and donor protections.
+still requires all dwell, memory, pin and donor protections. A succeeded operation's
+`hold_seconds` keeps its target out of the idle timer and LRU eviction until expiry, and its
+adopted inventory serves after the lease; see [placements](../architecture/model-autopilot.md#placements-after-an-operation).
 
 Non-enrolled providers keep their existing idle and legacy model lifecycle.
 `desired_models` release reconciliation remains independent, is deferred behind

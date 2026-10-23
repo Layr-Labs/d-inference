@@ -114,7 +114,10 @@ that suite to exercise actual bridge MTP submission, checked partial-load
 cleanup, expert-source retirement, and the resolved-tokenizer preallocation
 probe. These use tiny local fixtures, not the full downloaded model. With the
 same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
-opt-in refuses target-only GLM before any load state exists. The pure
+opt-in refuses target-only GLM before any load state exists, and
+`GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
+from the same fixture: the relay must see a typed 400 `invalid_request`, never
+a 500, and the engine keeps serving. The pure
 `GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
 the KV rate derived from the pinned architecture evidence.
 

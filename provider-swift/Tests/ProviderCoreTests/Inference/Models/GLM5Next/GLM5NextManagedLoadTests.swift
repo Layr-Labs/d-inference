@@ -114,7 +114,7 @@ final class GLM5NextManagedFixture {
         shard.append(encodedHeader)
         shard.append(payload)
         let vocabulary = [
-            "<unk>": 0, "<s>": 1, "</s>": 2, "x": 3,
+            "<unk>": 0, "<s>": 1, "</s>": 2, "x": 3, "<think>": 4, "</think>": 5,
             "<|image|>": 154854, "<|video|>": 154855, "<|begin_of_image|>": 154830,
             "<|end_of_image|>": 154831, "<|begin_of_video|>": 154832, "<|end_of_video|>": 154833,
         ]

@@ -1714,6 +1714,16 @@ Other model identities keep the legacy defaults in the table byte-for-byte. `do_
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
+A native-tracked engine (`EngineV2.nativeShutdownExecutionContractID` set: the
+protected GLM5-Next and MiMo V2.6 engines) refuses a `topLogprobs` row or a
+token constraint at submit with an SDK-internal error, which the bridge could
+report only as a 500 `generation_failure`; that status strikes the
+coordinator's inference-error breaker. `EngineV2Bridge.nativeOutputControlRefusal`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`)
+refuses such a request first, before any reservation, as
+`MultiModelBatchSchedulerEngineError.unsupportedOutputControl`: 400
+`invalid_request` with reason `client_error` on both submit paths.
+
 ### Collected and streaming reasoning state
 
 The local HTTP responder selects an omitted reasoning parser from the model

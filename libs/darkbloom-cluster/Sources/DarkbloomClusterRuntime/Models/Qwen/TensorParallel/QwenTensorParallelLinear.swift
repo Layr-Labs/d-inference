@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXLLM
 
 /// The cross-rank sum a tensor-parallel layer needs. `allSum` builds the
 /// reduction into the graph (it runs when the graph is evaluated); it never
@@ -26,7 +27,7 @@ public enum QwenTensorParallelReductionTiming: String, Sendable, CaseIterable {
 /// all-sum of the partials in float32, then one rounding to the activation
 /// type. Slice 0 measured this to be bit-exact against the CPU float32 sum on
 /// the M3 Ultra and the M5 Max, and the same on both ranks.
-final class QwenTensorParallelRowLinear: QuantizedLinear {
+final class QwenTensorParallelRowLinear: QuantizedLinear, Qwen35BatchDecodeProjecting {
     private let reduction: Box
     private let timing: QwenTensorParallelReductionTiming
     private let partialDType: DType
@@ -45,6 +46,26 @@ final class QwenTensorParallelRowLinear: QuantizedLinear {
         super.init(weight: source.weight, bias: source.bias, scales: source.scales, biases: source.biases,
                    groupSize: source.groupSize, bits: source.bits, mode: source.mode)
         freeze()
+    }
+
+    /// One actual batched partial, with the singleton M=1 affine kernel for
+    /// each independent row. The collective sees the whole [B,1,H] tensor;
+    /// it is not repeated once per row. Ordinary/prefill dispatch is unchanged.
+    func qwen35BatchDecode(_ x: MLXArray) -> MLXArray {
+        guard x.ndim == 3, (2...8).contains(x.dim(0)), x.dim(1) == 1,
+              partialDType == .float32, mode == .affine,
+              [4, 8].contains(bits), [64, 128].contains(groupSize), bias == nil else {
+            return concatenated((0..<x.dim(0)).map { callAsFunction(x[$0..<$0 + 1]) }, axis: 0)
+        }
+        let partial = quantizedMM(x.asType(.float32), weight.expandedDimensions(axis: 0),
+            scales: scales.expandedDimensions(axis: 0),
+            biases: biases?.expandedDimensions(axis: 0), transpose: true,
+            groupSize: groupSize, bits: bits, mode: mode)
+        if timing == .explicit {
+            eval(partial)
+            Stream.gpu.synchronize()
+        }
+        return reduction.value.allSum(partial).asType(x.dtype)
     }
 
     override func callAsFunction(_ x: MLXArray) -> MLXArray {

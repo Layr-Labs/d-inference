@@ -92,7 +92,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         }
         switch owner {
         case .qwenDense(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
-        case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
+        case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
         // Reads each answer after its next step was submitted.
         case .glm5NextTensorParallel(let runtime): result = try runtime.start(requestID: id, tokens: channel)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
@@ -127,19 +127,20 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenTensorParallel, .mimoV26, .glm5Next: nil
         }
     }
-    // Batch lanes: qualified plain pipelines and the existing GLM tensor parallel owner.
+    // Batch lanes are supplied by each admitted native owner.
     var batchLanes: Int {
         switch owner {
         case .qwenDense(let runtime): runtime.batch.lanes
         case .mimoV26(let runtime): runtime.batchLanes
         case .glm5NextTensorParallel(let runtime): runtime.lanes.lanes
-        case .qwenTensorParallel, .glm5Next: 1
+        case .qwenTensorParallel(let runtime): runtime.batchLanes
+        case .glm5Next: 1
         }
     }
-    /// GLM tensor parallel publishes each token's logprobs from its decoding
-    /// rank, on its one-request path and in its batch lanes alike.
+    /// Native owners explicitly advertise raw-token logprob publication.
     var capturesLogprobs: Bool {
         if case .glm5NextTensorParallel = owner { return true }
+        if case .qwenTensorParallel(let runtime) = owner { return runtime.capturesLogprobs }
         return false
     }
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
@@ -147,7 +148,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .mimoV26(let runtime): try runtime.reserveLane(requestID: id, request: value)
         case .glm5NextTensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
-        case .qwenTensorParallel, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        case .qwenTensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
+        case .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
         }
     }
     func startLane(_ id: UUID) throws {
@@ -155,7 +157,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.startLane(requestID: id)
         case .mimoV26(let runtime): try runtime.startLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): try runtime.startLane(requestID: id)
-        case .qwenTensorParallel, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        case .qwenTensorParallel(let runtime): try runtime.startLane(requestID: id)
+        case .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
         }
     }
     func cancelLane(_ id: UUID) {
@@ -163,7 +166,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.cancelLane(requestID: id)
         case .mimoV26(let runtime): runtime.cancelLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): runtime.cancelLane(requestID: id)
-        case .qwenTensorParallel, .glm5Next: break
+        case .qwenTensorParallel(let runtime): runtime.cancelLane(requestID: id)
+        case .glm5Next: break
         }
     }
     func withdrawLane(_ id: UUID) -> Bool {
@@ -171,7 +175,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.withdrawLane(requestID: id)
         case .mimoV26(let runtime): runtime.withdrawLane(requestID: id)
         case .glm5NextTensorParallel(let runtime): runtime.withdrawLane(requestID: id)
-        case .qwenTensorParallel, .glm5Next: false
+        case .qwenTensorParallel(let runtime): runtime.withdrawLane(requestID: id)
+        case .glm5Next: false
         }
     }
     var hasStartedLanes: Bool {
@@ -179,7 +184,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): runtime.hasStartedLanes
         case .mimoV26(let runtime): runtime.hasStartedLanes
         case .glm5NextTensorParallel(let runtime): runtime.hasStartedLanes
-        case .qwenTensorParallel, .glm5Next: false
+        case .qwenTensorParallel(let runtime): runtime.hasStartedLanes
+        case .glm5Next: false
         }
     }
     func serveBatch(host: QwenBatchServingHost) throws {
@@ -187,11 +193,13 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .qwenDense(let runtime): try runtime.serveBatch(host: host)
         case .mimoV26(let runtime): try runtime.serveBatch(host: host)
         case .glm5NextTensorParallel(let runtime): try runtime.serveBatch(host: host)
-        case .qwenTensorParallel, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        case .qwenTensorParallel(let runtime): try runtime.serveBatch(host: host)
+        case .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
         }
     }
     /// Each enabled lane loop proves native retirement before its cancel ACK.
     var retiresCancelledLanes: Bool {
+        if case .qwenTensorParallel(let runtime) = owner { return runtime.batchLanes > 1 }
         if case .glm5NextTensorParallel = owner { return true }
         if case .mimoV26(let runtime) = owner {
             return Self.qwenLanesRetireAlone(mode: runtime.generationMode, lanes: runtime.batchLanes)

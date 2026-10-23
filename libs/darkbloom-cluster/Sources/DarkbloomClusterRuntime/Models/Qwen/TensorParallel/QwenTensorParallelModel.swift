@@ -44,7 +44,7 @@ public final class QwenTensorParallelModel {
     public let loadSeconds: Double
     public let loadedActiveBytes: Int
     public let loadedParameterBytes: Int
-    private let model: Qwen35Model
+    let model: Qwen35Model
     private let reduction: QwenTensorParallelReduction?
 
     /// `reduction` is required for `shard` and refused otherwise. Reads the

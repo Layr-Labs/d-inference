@@ -931,3 +931,24 @@ geometry through the original tower. Cancellation retains preparation custody
 until the producer exits, then retains native roots until checked drain. A
 readiness ceiling is not a memory grant: every reservation still passes the
 live native/OS gate. See [request-owned media](inference.md#request-owned-qwen27-tp-media).
+
+### Qwen27 TP batch admission boundary
+
+`QwenTensorParallelBatchBudget` derives each lane's complete state from the
+registered canonical tensor inventory. One shared maximum covers the original
+prefill workspace, widest decode graph and logits gather. Retained scalar FP32
+projection constants and the transient batch conversion bank are charged
+separately, including unequal shards. Paged backing includes replacement/gather
+banks, segment slack and allocator overhead. Collective scratch prices complete
+sealed frames, including authentication overhead, through the existing request
+allowance. Media and assistant charges are not hidden in this text quote.
+
+The verified loader reserves this full future budget while reading weights and
+the vision tower. Reservation and live checks use the same ledger; readiness is
+a ceiling, not a memory grant. Wider lanes require the exact27 model and keyed
+pair. The tiny numerical fixtures do not establish safe full-artifact capacity,
+throughput or automatic placement; each requires installed hardware evidence.
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
+(`derive`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`
+(`load`).

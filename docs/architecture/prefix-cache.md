@@ -973,3 +973,11 @@ globals. Native retirement releases them only after preparation completion and
 checked drain. This preserves identity separation; it is not a full-artifact
 media-prefix performance qualification. Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
+
+The initial exact27 multi-lane TP owner has request-private CBv2 histories and
+sets its shared prefix budget to zero. It does not advertise reused/stored
+frontiers. Singleton TP retains its existing bilateral prefix behavior, including
+media identity. Warm multi-lane capture/restore requires a separate owned-state
+integration and hardware gate; batching arithmetic tests do not prove it.
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`
+(`load`).

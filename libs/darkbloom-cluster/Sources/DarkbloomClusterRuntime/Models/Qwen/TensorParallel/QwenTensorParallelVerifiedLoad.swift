@@ -36,6 +36,7 @@ struct QwenTensorParallelShardReceipt: Equatable {
 enum QwenTensorParallelVerifiedLoad {
     static func load(_ admission: QwenResidentAdmission, rank: Int, shares: [Int],
                      reduction: QwenTensorParallelReduction, partialDType: DType = .float32, includeVision: Bool = false,
+                     requestAllowance: ((QwenRegisteredDenseModelProfile, QwenTensorParallelPlan) throws -> Int)? = nil,
                      check: () throws -> Void) throws
         -> (model: QwenTensorParallelModel, receipt: QwenTensorParallelShardReceipt, profile: QwenRegisteredDenseModelProfile,
             visionInventory: QwenStageVisionInventory?, vision: QwenStageVision?) {
@@ -68,10 +69,12 @@ enum QwenTensorParallelVerifiedLoad {
         let commitment = try qwenLayerStageStorageCommitment(source: source, originalConfiguration: admission.configBytes,
             plan: plan, inventories: inventories)
         let entries = inventories.flatMap(\.active)
-        var receiptPlanName = "", shardBytes = 0
+        var receiptPlanName = "", shardBytes = 0, futureRequest = 0
         let model = try QwenTensorParallelModel.assemble(configurationData: admission.configBytes,
             role: .shard(rank: rank, size: 2), reduction: reduction, partialDType: partialDType, shares: shares) { tpPlan, keep in
             receiptPlanName = tpPlan.name
+            futureRequest = try requestAllowance?(local.metadata.profile, tpPlan) ?? 0
+            guard futureRequest >= 0 else { throw ProbeError("Negative tensor-parallel load request allowance") }
             // The entries this rank keeps, and what each will hold after its cut.
             var kept: [(entry: QwenStageActiveTensor, bytes: Int)] = []
             for entry in entries {
@@ -81,7 +84,7 @@ enum QwenTensorParallelVerifiedLoad {
                 }
             }
             let gate = try QwenTensorParallelLoadGate(entries: kept.map(\.entry), shardBounds: kept.map(\.bytes),
-                additionalResidentBytes: futureVision)
+                additionalResidentBytes: QwenLongPrefillCheckedBytes.sum([futureVision, futureRequest]))
             try local.payload.begin(kept.map(\.entry), gate: gate)
             for (entry, _) in kept {
                 try autoreleasepool {
@@ -107,7 +110,7 @@ enum QwenTensorParallelVerifiedLoad {
         let vision: QwenStageVision?
         if rank == 0, let visionInventory {
             vision = try QwenStageVision(source: local, inventory: visionInventory,
-                remainingResidentAllowanceBytes: 0, check: check)
+                remainingResidentAllowanceBytes: futureRequest, check: check)
         } else { vision = nil }
         try check()
         return (model, .init(verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,

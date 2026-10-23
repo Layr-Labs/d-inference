@@ -464,3 +464,10 @@ The Qwen native media source closure needs the matching SDK `Qwen3VLMediaProcess
 `ClusterQwenMedia` protocol carrier. Build these together with Runtime and Worker;
 a worker gate without its protocol dependency does not compile. Preserve the
 regular-file source manifest when preparing isolated validation mirrors.
+
+Qwen27 TP batching needs the matching `MLXLLM` task-local row policy and projection
+protocol, media `MLXVLM` seams, Protocol/Placement, Runtime and Worker modules.
+Build that closure together; a worker lane setting alone does not install a
+native batch owner. The standalone tiny probe also needs the source-matched
+`mlx.metallib` and `pagedattention.metal` beside its binary. Preserve exact source
+and resource hashes for both machines; see the [TP batch checks](test.md#qwen27-tensor-parallel-native-batch-checks).

@@ -3248,8 +3248,8 @@ positions, tower work, features and sealed transfers before raster preparation.
 
 Native readiness advertises media only for the exact registered 27B model with
 a verified keyed peer. Worker dispatch refuses a carrier if readiness, rank or
-identity differs. This native owner is singleton; provider ingress and the
-independent TP batch owner are separate integrations. Pipeline/MTP media and
+identity differs. The singleton and independently admitted TP batch paths share this request-owned
+media seam; provider ingress is a separate integration. Pipeline/MTP media and
 other models are not activated by these changes. Tiny CPU tests establish
 interfaces and ownership; full-artifact image/video parity and concurrent
 hardware qualification remain required.
@@ -3266,3 +3266,35 @@ Owner and peer deadline translation preserve the entire media envelope. The
 request owner drops its encoded alias only after definitive retirement and
 resource release, preserving immutable metadata for accounting. This transport
 prerequisite does not advertise media support or activate a native model path.
+
+### Independent Qwen27 tensor-parallel batch lanes
+
+The exact keyed Qwen3.8 27B TP owner accepts two through eight native lanes;
+its default remains one. `QwenTensorParallelBatchSettings` binds capacity,
+KV backend and arithmetic policy into the sealed load agreement before model
+reads. Other Qwen rows keep singleton admission. Each lane owns its attention,
+conv/SSM, prompt grid, sampler and optional media positions/features. Each
+row-parallel projection performs one FP32 collective for the decode rectangle;
+the TP row helper preserves singleton matmul shape. Mixed text/media rows retain
+their own original fused RoPE or MRoPE calculation.
+
+The driver coordinates join, one prefill frame and a decode cohort on both
+ranks. A held token credit blocks only its request. Cancellation or expiry before
+opening discards a lane bilaterally; once a media phase is announced, both ranks
+finish and drain it before applying that request's stop at the next boundary.
+Native and host resource release must succeed on both ranks before retirement
+acknowledgement. Failed release retains the reservation for cleanup or the
+worker's process fence. The exact27 singleton and batch owners publish raw
+selection logprobs through the committed-token channel.
+
+This initial batch path uses cold histories; shared prefix capture/restore and
+TP speculative rounds remain follow-ups. Provider width adoption and automatic
+placement are separate integration gates. Synthetic CPU and both-chip native
+fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
+(`QwenTensorParallelBatchSession`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchDriver.swift`
+(`serve`, `join`, `leave`), and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
+(`serveBatch`, `prepareBatch`).

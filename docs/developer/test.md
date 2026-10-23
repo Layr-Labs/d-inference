@@ -1678,3 +1678,22 @@ clock translation. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 bytes, cancellation before start, early-release refusal and idempotent release
 after retirement. It runs no model or MLX code; it does not replace the full
 provider contract or hardware suites.
+
+### Qwen27 tensor-parallel native batch checks
+
+Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`
+and `QwenTensorParallelBatchSettingsTests` in the Runtime test target for
+bilateral scheduling/retirement, canonical inventory pricing and exact keyed
+model admission. Run `QwenTensorParallelBatchSessionTests` with the matching SDK
+for physically sliced native attention, greedy ties, seeded mixed sampling,
+raw logprobs, reordered histories, nonfinite refusal and resource-release retry.
+The default execution is CPU; the production hybrid recurrence requires Metal.
+
+For its tiny attention/hybrid fixture, set `QWEN_TP_BATCH_GPU=1` and run separately
+with `QWEN_TP_BATCH_KV=contiguous` and `QWEN_TP_BATCH_KV=paged` on both chips.
+Keep source, binary and Metal resources identical and retain negative logs.
+These tests use local ordered reductions, synthetic tensors and synthetic
+media positions/features. They do not exercise RDMA, the registered tower or
+actual artifact, installed owner capacity, warm prefixes or TP speculation.
+Full model/reference, media, concurrency, throughput and logical-retirement
+checks remain required.

@@ -298,7 +298,11 @@ extension ClusterPlacementPlanner {
                         tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
                     }
                 }
-                let load = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let textLoad = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let additional = tp.family.additionalResidentBytes ?? 0
+                let load = (need: textLoad.need + 3 * additional,
+                            held: textLoad.held + additional,
+                            largest: max(textLoad.largest, additional))
                 func part(_ bytes: Int) -> Int { k > 1 && tp.family.stateDividesByHeads ? (bytes + k - 1) / k : bytes }
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))

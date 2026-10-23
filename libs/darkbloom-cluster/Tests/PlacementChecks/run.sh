@@ -34,6 +34,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Checkpoints/CheckpointAlignedReadAccounting.swift" \
   "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
   "$R/Models/Qwen/Resources/QwenTensorParallelRequestBudget.swift" \
+  "$R/Models/Qwen/Metadata/QwenVisionResidentBudget.swift" \
   "$R/Models/Qwen/Resources/QwenResidentPrefillTransient.swift" \
   "$R/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
   "$R/Models/Qwen/Resources/QwenDenseStageLoadPolicy.swift" \

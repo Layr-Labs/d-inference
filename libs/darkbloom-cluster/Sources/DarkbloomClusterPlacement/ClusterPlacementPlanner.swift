@@ -804,7 +804,14 @@ public enum ClusterPlacementPlanner {
                 tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
             }
             let parts = (pipelined ? [(own.loadedBytes, own.tensorCount, own.largestTensorBytes)] : []) + [(shard, tensors, largest)]
-            let load = loadNeed(parts.map { (loaded: $0.0, tensors: $0.1, largest: $0.2) }, memory: memory)
+            let textLoad = loadNeed(parts.map { (loaded: $0.0, tensors: $0.1, largest: $0.2) }, memory: memory)
+            let additional = tp.family.additionalResidentBytes ?? 0
+            // Resident bytes are additive outside the request maximum. With
+            // no extra tensor geometry, conservatively allow two host copies
+            // and one native allocation as large as the complete supplement.
+            let load = (need: textLoad.need + 3 * additional,
+                        held: textLoad.held + additional,
+                        largest: max(textLoad.largest, additional))
             let divides = tp.family.stateDividesByHeads
             func share(_ bytes: Int) -> Int {
                 guard divides else { return bytes }

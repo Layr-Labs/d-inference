@@ -3180,3 +3180,25 @@ Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorP
 (`ClusterTensorParallelFamilyPlan`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
 (`tensorRequirement`).
+
+### Qwen27 vision tower residency in TP placement
+
+The native Qwen3.8 27B TP layout includes the tower's persistent allocations through
+`ClusterTensorParallelFamilyPlan.additionalResidentBytes`. `QwenVisionResidentBudget`
+binds the exact 333-array visual inventory and configuration, validates BF16 byte
+conservation, and bounds each allocation independently. The separately prepared native media loader must use this same helper; this
+pricing patch alone does not install or activate that loader. Placement charges the tower on
+both ranks; rank zero owns the actual tower.
+
+This resident charge is added outside the maximum of request estimates, so it
+cannot disappear under a larger text request allowance. LOAD also permits two
+host copies of the complete supplement and treats it as a possible largest
+allocation, a conservative bound without extra tensor geometry. Nil preserves
+legacy layout encoding and behavior. The field changes neither pipeline pricing
+nor media execution eligibility; native feature admission and full-artifact
+media qualification are separate.
+
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Metadata/QwenVisionResidentBudget.swift`
+(`QwenVisionResidentBudget`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
+(`tensorRequirement`).

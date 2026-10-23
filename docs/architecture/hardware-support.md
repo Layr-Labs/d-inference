@@ -908,3 +908,13 @@ Component tests do not qualify a complete model, both rank orders, or prompt
 throughput. Keep existing cross-chip failures and require fresh full-artifact
 numerical and timing evidence for both scoped prompt policies. Attention and
 full-model composition retain their independent qualification requirements.
+
+### Additional TP resident allocations
+
+TP layouts may carry allocator-bounded resident allocations outside their text
+weights. The planner adds them to weights, LOAD, request coexistence and GPU
+working-set fit; request floors never absorb this charge. The registered Qwen3.8
+27B visual inventory is validated before quoting. A malformed or overflowing
+supplement fails layout decoding. This metadata proof does not qualify image or
+video inference on hardware. See
+[inference residency](inference.md#qwen27-vision-tower-residency-in-tp-placement).

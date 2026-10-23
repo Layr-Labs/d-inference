@@ -4,7 +4,7 @@ import Foundation
 
 /// Complete native quotes are floors, and expert reductions retain top-K.
 /// Constructed metadata and actual planner only; no native/GPU execution.
-func checkTensorParallelRequestAllowance(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks) throws {
+func checkTensorParallelRequestAllowance(_ inputs: RetainedQwenInputs, golden: URL, _ checks: PlacementChecks) throws {
     let base = try ClusterPlacementLayouts.layout(configuration: inputs.twentySeven.configuration,
         tensors: inputs.twentySeven.stored)
     let layout = try executing(base, [.tensorParallel])
@@ -114,7 +114,8 @@ func checkTensorParallelRequestAllowance(_ inputs: RetainedQwenInputs, _ checks:
         }
         let native = try budget(canonical)
         let quoted = try ClusterPlacementLayouts.layout(configuration: input.configuration,
-            tensors: input.stored, tensorParallelAllocationBound: { $0 + 16_384 })
+            tensors: input.stored + (name == "27B" ? try QwenVisionBudgetFixture.read(golden).stored : []),
+            tensorParallelAllocationBound: { $0 + 16_384 })
         let allowance = quoted.tensorParallel!.family.requestAllowance!
         let recurrentLayers = family.geometry.layers - family.geometry.layers / family.geometry.fullAttentionInterval
         let storedFusionBytes = input.stored.reduce(0) {

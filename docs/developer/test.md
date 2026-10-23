@@ -1641,3 +1641,10 @@ rectangle shape on CPU.
 policies change the receipt while the family environment and chunk policy
 remain bound. These CPU checks do not establish full-model cross-chip qualification
 or throughput.
+
+The placement suite retains the exact Qwen3.8 27B visual header fixture in
+`libs/darkbloom-cluster/Tests/PlacementChecks/Inputs/qwen27-vision-budget.json`.
+`QwenVisionResidencyChecks` verifies all 333 independently bounded allocations,
+inventory and configuration corruption, decoded invalid charges, strictly
+additive TP rank memory, working-set refusal, and unchanged pipeline/legacy
+behavior. It uses metadata only and is not a model or media execution test.

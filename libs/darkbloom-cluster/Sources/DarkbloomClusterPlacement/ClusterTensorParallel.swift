@@ -40,16 +40,21 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public let shareUnits: Int?
     /// Optional complete native request reservation; nil preserves existing families.
     public let requestAllowance: ClusterTensorParallelRequestAllowance?
+    /// Allocator-bounded weights outside the text layout, charged whole to
+    /// every TP rank. Nil preserves existing layout bytes and behavior.
+    public let additionalResidentBytes: Int?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil,
-                shareUnits: Int? = nil, requestAllowance: ClusterTensorParallelRequestAllowance? = nil) {
+                shareUnits: Int? = nil, requestAllowance: ClusterTensorParallelRequestAllowance? = nil,
+                additionalResidentBytes: Int? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.stateDividesByHeads = stateDividesByHeads
         self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
         self.shareUnits = shareUnits
         self.requestAllowance = requestAllowance
+        self.additionalResidentBytes = additionalResidentBytes
     }
 
     /// Each share option as fractions of the model (equal first).
@@ -119,6 +124,21 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
               egressDividedBytes >= 0, egressReplicatedBytes >= 0,
               egressDividedBytes + egressReplicatedBytes == layout.egress.loadedBytes else {
             throw ClusterPlacementError("Model layout's tensor-parallel facts are malformed")
+        }
+        if let additional = f.additionalResidentBytes {
+            guard (1...ClusterWorkerLimits.capacityBytes).contains(additional) else {
+                throw ClusterPlacementError("Invalid tensor-parallel additional resident bytes")
+            }
+            // The LOAD quote permits two simultaneous host copies of the
+            // supplement. Validate before any nonthrowing planner arithmetic.
+            var total = additional * 3
+            for part in [layout.ingress, layout.egress] + layout.layers.map(\.weights) {
+                let next = total.addingReportingOverflow(part.loadedBytes)
+                guard !next.overflow, next.partialValue <= Int.max / 4 else {
+                    throw ClusterPlacementError("Overflowing tensor-parallel additional resident bytes")
+                }
+                total = next.partialValue
+            }
         }
         try f.requestAllowance?.validate(layout: layout, partialBytesPerToken: f.partialBytesPerToken)
     }

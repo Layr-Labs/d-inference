@@ -32,6 +32,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// `QwenTensorParallelPlan.candidateShares`; each part in whole units).
     let tensorParallelShareOptions: [[Int]]
     var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
+    var tensorParallelAdditionalResidentBytes: Int?
 
     init(configuration: Data) throws {
         definition = try QwenResidentModelDefinition(configuration: configuration)
@@ -85,7 +86,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
                 ranks: [plan.size],
                 reductionsPerLayer: plan.reductionsPerForward / plan.layerCount, reductionsPerStep: 1,
                 partialBytesPerToken: plan.maximumPartialBytesPerToken, stateDividesByHeads: true,
-                shareOptions: tensorParallelShareOptions, requestAllowance: tensorParallelRequestAllowance)
+                shareOptions: tensorParallelShareOptions, requestAllowance: tensorParallelRequestAllowance,
+                additionalResidentBytes: tensorParallelAdditionalResidentBytes)
         }
     }
 
@@ -385,6 +387,14 @@ public enum ClusterPlacementLayouts {
             let bound = allocationBound
             #endif
             if let bound {
+                if family.definition.specification.model == .qwen38TwentySevenB {
+                    let visual = tensors.filter { $0.name.hasPrefix("vision_tower.") }.map {
+                        QwenDenseCanonicalTensor(name: $0.name, shape: $0.shape, sourceDType: $0.dtype, byteCount: $0.byteCount)
+                    }
+                    family.tensorParallelAdditionalResidentBytes = try QwenVisionResidentBudget(
+                        configurationSHA256: family.definition.specification.configurationSHA256,
+                        tensors: visual, allocationBound: bound).allocationBytes
+                }
                 family.tensorParallelRequestAllowance = try QwenTensorParallelRequestBudget.derive(
                     geometry: family.geometry, plan: plan, tensors: canonical,
                     maximumTokens: family.largestContextTokens, chunkSize: family.maximumChunkTokens,

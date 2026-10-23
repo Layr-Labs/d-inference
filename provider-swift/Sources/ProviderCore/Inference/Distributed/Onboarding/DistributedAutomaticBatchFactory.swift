@@ -40,7 +40,11 @@ public actor DistributedAutomaticBatchFactory {
         let reference = try ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration)
         guard child.configurationSHA256 == reference.sha256 else { return nil }
         let preview = try await Task.detached {
-            try planner.snapshot(reference: reference, demand: demand, widths: widths, requireNow: false)
+            // Price Qwen27's complete simultaneous LOAD before disrupting its
+            // serving owner. Do not credit the old shard back speculatively:
+            // the descending width search can choose a smaller current fit.
+            try planner.snapshot(reference: reference, demand: demand, widths: widths,
+                requireNow: demand.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID)
         }.value
         guard let preview else { return nil }
         clusterObservabilityLog(.info, "cluster.batch_replan proposal lanes=\(preview.lanes)", [

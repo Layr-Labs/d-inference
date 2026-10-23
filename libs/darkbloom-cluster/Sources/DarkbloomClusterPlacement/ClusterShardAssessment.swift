@@ -310,11 +310,14 @@ extension ClusterPlacementPlanner {
                     + part(range.transientBytes(chunk: memoryChunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
                 let batchFloor = k > 1 ? context.policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0 : 0
                 let request = max(memory.minimumAdmissibleBytes, max(components, batchFloor) + memory.loadingHeadroomBytes)
-                let need = max(load.need, load.held + request)
-                let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                // The native batch reservation remains future live memory
+                // throughout shard loading, including its host read buffers.
+                let need = max(load.need + batchFloor, load.held + request)
+                let allocatorHeld = load.held + batchFloor
+                let fit = device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 tier = max(tier, fit.tier)
                 hardwareFits = hardwareFits
-                    && device.profile.hardwareFits(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                    && device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 members.append(.init(device: device.label, firstLayer: range.layers.lowerBound, endLayer: range.layers.upperBound,
                     share: k > 1 ? 1 / Double(k) : nil, weightsBytes: load.held, needBytes: need, tier: fit.tier))
                 let split = ClusterDecodeSplit(rates: rates)

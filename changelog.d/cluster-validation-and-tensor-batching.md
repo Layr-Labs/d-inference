@@ -4,8 +4,10 @@
   request-scoped placement and delayed automatic batch replacement without
   weakening native teardown, memory or failed-qualification gates.
 - Preserve measured shard rates and independently price native batch capacity;
-  exact Qwen3.8 27B automatic selection now compares eligible TP and pipeline
-  plans with the complete native TP LOAD allowance.
+  exact Qwen3.8 27B retains feature-preserving TP selection with the complete
+  native request reservation coexisting with LOAD scratch and allocator demand.
+- Preview Qwen27 widths 8, 4 and 2 against current bilateral memory before
+  replacing the serving owner, then recheck the exact proposed width after release.
 - Pass the indexed devices, recorded keyed pair-link costs and filtered served
   history into automatic replacement, allowing its tensor candidates to be
   considered instead of silently using an unmeasured link.

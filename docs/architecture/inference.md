@@ -70,15 +70,22 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `DistributedAutomaticBatchFactory` keeps the initial singleton placement. A
 managed cluster API with queued demand may propose a wider plain pipeline for
 Qwen dense/routed experts, Bonsai, Nemotron Lightning, Gemma, GPT-OSS or the
-MiMo text plain-pipeline owner. Exact Qwen3.8 27B additionally compares its
-native TP batch owner against plain pipeline using ordinary measured rates,
-keyed-link evidence, qualification shape gates and the existing TP margin.
+MiMo text plain-pipeline owner. Exact Qwen3.8 27B admits its native TP batch
+owner through the feature-preserving mode filter, retaining ordinary measured
+rates, keyed-link evidence and qualification shape gates.
 It uses the full
 listener request envelope because acquisition precedes tokenization; raw body
 size never reduces the memory charge. `ClusterPlacementBatchScope` prices
 independent state on both ranks, trying widths 8, 4 and 2 in that order once
 real concurrent pressure exists. Each width retains the full listener envelope;
 the largest separately priced fit avoids repeated reloads as a burst grows.
+For Qwen27, the read-only preview requires that both ranks fit their current
+memory observations, including the simultaneous LOAD reservation described in
+[hardware support](hardware-support.md#automatic-qwen27-tp-width-quotation).
+A higher width that fits only idle hardware does not displace a smaller width
+that fits now. No arithmetic credits the old shard's memory before release.
+After release, the planner rechecks the exact proposed width with fresh profiles;
+it cannot silently adopt a different width from the listener's retained intent.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this

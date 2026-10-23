@@ -1456,6 +1456,14 @@ measurements retain fallback, served costs reach calibration, and the real
 helper child receives `device --json --index`. These are CPU metadata checks;
 they do not execute models or claim measured batch throughput.
 
+The current-fit case prices descending widths 8, 4 and 2 with constructed
+bilateral pressure and checks that a hardware-possible width cannot pass the
+current admission predicate. `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+also checks complete simultaneous LOAD/request coexistence and a smaller
+allocator ceiling independently of OS memory. These checks preserve the native
+thresholds; an installed automatic two-Mac run must separately prove successful
+replacement, actual batch widths and recovery.
+
 ```bash
 cd provider-swift
 swift test --filter DistributedAutomaticBatchPlannerTests

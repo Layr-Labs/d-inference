@@ -25,15 +25,15 @@ final class DistributedAutomaticBatchPlannerTests {
         return result
     }
 
-    private func profile() throws -> ClusterDeviceProfile {
-        let physical = 256 * gib, free = 200 * gib
+    private func profile(free: Int = 200 * 1_073_741_824) throws -> ClusterDeviceProfile {
+        let physical = 256 * gib
         var p = try ClusterDeviceProfile(chip: "Constructed planner fixture", performanceCores: 8, efficiencyCores: 4,
             gpuCores: 40, osVersion: "27.0", osBuild: "CHECK", physicalMemoryBytes: physical,
             gpuRecommendedWorkingSetBytes: 192 * gib, gpuMaximumBufferBytes: 128 * gib,
             allocatorLimitBytes: 230 * gib,
             memory: .init(gatePolicy: "fixture", sampledUTC: "2026-10-23T00:00:00Z", judged: true, unjudgedReason: nil,
                 physicalMemoryBytes: physical, actualFreeBytes: free, countedFileCacheBytes: 0, admissibleNowBytes: free,
-                fileBackedBytes: 0, fileCacheReserveBytes: 0, fileCacheAboveReserveBytes: 0, anonymousBytes: 52 * gib,
+                fileBackedBytes: 0, fileCacheReserveBytes: 0, fileCacheAboveReserveBytes: 0, anonymousBytes: physical - free - 4 * gib,
                 wiredBytes: 4 * gib, compressorBytes: 0, pageableBytes: 252 * gib, pressureLevel: 1, swapUsedBytes: 0,
                 minimumAdmissibleBytes: 6 * gib, minimumTrulyFreeBytes: 16 * 1_048_576, loadingHeadroomBytes: 4 * gib,
                 allocatorHeadroomBytes: 2 * gib, loadScratchBytes: 8 * 1_048_576, pageSizeBytes: 16_384),
@@ -122,6 +122,51 @@ final class DistributedAutomaticBatchPlannerTests {
             #expect(value.selectedGenerationMode == .tensorParallel)
             #expect(value.batchLanes == 4)
         }
+    }
+
+    @Test func testCurrentFitPreviewRejectsHigherWidthAndKeepsLowerWidthEligible() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, original) = try fixture()
+        func scope(_ lanes: Int) throws -> ClusterPlacementBatchScope {
+            let payload = max(512 * 4096, lanes * 248320 * 4)
+            let quote = try ClusterPlacementTensorBatchQuote(request: original.request, lanes: lanes,
+                chunkTokens: 128, perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib,
+                allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                    requestBytesExcludingCollectives: (lanes + 1) * gib,
+                    maximumCollectivePayloadBytes: payload, maximumCollectiveFrameBytes: payload + 1024,
+                    allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+            return try ClusterPlacementBatchScope(request: original.request, lanes: lanes, tensorParallelQuote: quote)
+        }
+        func choose(_ lanes: Int, free: Int) throws -> ClusterPlacementCandidate {
+            let decision = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap,
+                localMemberID: "a", localProfile: profile(free: free), peerProfile: profile(), layout: layout,
+                scope: scope(lanes), homeDirectory: home)
+            return try #require(decision.result.chosen)
+        }
+        let two = try choose(2, free: 200 * gib), four = try choose(4, free: 200 * gib)
+        let eight = try choose(8, free: 200 * gib)
+        let available = (two.ranks[0].needBytes + four.ranks[0].needBytes) / 2
+        let currentTwo = try choose(2, free: available), currentFour = try choose(4, free: available)
+        #expect(DistributedAutomaticBatchPlanner.accepts(currentFour, requireNow: false))
+        #expect(!DistributedAutomaticBatchPlanner.accepts(currentFour, requireNow: true))
+        #expect(DistributedAutomaticBatchPlanner.accepts(currentTwo, requireNow: true))
+        #expect(currentTwo.mode == .tensorParallel && currentFour.mode == .tensorParallel)
+        let widths = ClusterPlacementBatchScope.candidateWidths(waitingRequests: 8)
+        #expect(widths == [8, 4, 2])
+        for (free, expected) in [(200 * gib, 8),
+                                 ((four.ranks[0].needBytes + eight.ranks[0].needBytes) / 2, 4),
+                                 (available, 2)] {
+            let admitted = try widths.first { lanes in
+                DistributedAutomaticBatchPlanner.accepts(try choose(lanes, free: free), requireNow: true)
+            }
+            #expect(admitted == expected)
+        }
+        let noWidthFits = two.ranks[0].needBytes - 1
+        #expect(try widths.allSatisfy { lanes in
+            !DistributedAutomaticBatchPlanner.accepts(try choose(lanes, free: noWidthFits), requireNow: true)
+        })
+        // These are exact admission capacities, never measured kernel widths.
+        #expect(try scope(2).lanes == 2 && scope(4).lanes == 4)
     }
 
     @Test func testForeignStaleMalformedAndNonPrivateMeasurementsCannotLoseFeatures() throws {

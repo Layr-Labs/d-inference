@@ -959,13 +959,21 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Res
 
 ### Automatic Qwen27 TP width quotation
 
-Exact Qwen27 automatic batching compares native TP and plain pipeline only after
-pricing both. TP uses the same canonical-inventory full LOAD allowance as its
-native owner at widths 2, 4 and 8; a narrower reference request or installed
-chunk does not shrink that floor. Both ranks must fit after previous ownership
+Exact Qwen27 automatic batching retains the feature-preserving TP mode filter.
+TP uses the same canonical-inventory full request allowance as its native owner
+at widths 2, 4 and 8; a narrower reference request or installed chunk does not
+shrink that floor. During LOAD, this complete future reservation coexists with
+the shard, two whole host tensors, aligned-read scratch and loading headroom.
+The placement and shard assessment add it to the LOAD peak and allocator ask;
+resident and request phases are not substitutes for that simultaneous peak.
+No native gate or headroom threshold is reduced. Both ranks must fit current
+observations before replacement is proposed and again after previous ownership
 releases. Source-bound metadata and child-launch checks establish budget and
 width propagation, not full-artifact TP throughput, media parity or native
 concurrent execution. See [automatic batching](inference.md#automatic-local-cluster-batching).
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
+(`tensorRequirement`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterShardAssessment.swift`.
 
 ### Qwen27 TP batch prefix ownership
 

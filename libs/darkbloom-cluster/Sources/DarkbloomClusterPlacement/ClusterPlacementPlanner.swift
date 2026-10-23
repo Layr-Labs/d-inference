@@ -844,15 +844,22 @@ public enum ClusterPlacementPlanner {
             let nativeFloor = (policy.tensorParallelBatchQuote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
-            let need = max(load.need, load.held + requestNeed)
+            // Qwen27 batch LOAD reserves its complete future request while
+            // reading the shard. Those bytes coexist with the two whole host
+            // tensors and aligned read scratch; they are not alternate peaks.
+            // A missing batch quote preserves all existing family behavior.
+            let batchLoadReservation = policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0
+            let loadPeak = load.need + batchLoadReservation
+            let allocatorHeld = load.held + batchLoadReservation
+            let need = max(loadPeak, load.held + requestNeed)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
-                weightsBytes: load.held, loadNeedBytes: load.need, requestNeedBytes: requestNeed, needBytes: need,
+                weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
-                fit: device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest),
+                fit: device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest),
                 withinGPUWorkingSet: load.held + max(state + work + extra + transient, nativeFloor) <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
-                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: load.held,
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld,
                     largestTensorBytes: load.largest))
         }
 

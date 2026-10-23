@@ -51,6 +51,45 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         prefillSchedule: .serial, layout: layout, policy: p, link: link)
     checks.require("TP batch: full native floor is a max, with loading headroom added only once",
         zip(two.ranks, fast).allSatisfy { $0.requestNeedBytes == q.allowance.reservedBytes + $1.profile.memory.loadingHeadroomBytes })
+    let noBatchReservation = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: .init(), link: link)
+    checks.require("TP batch: native request allowance coexists with complete load scratch on both ranks",
+        zip(two.ranks, noBatchReservation.ranks).allSatisfy {
+            $0.loadNeedBytes == $1.loadNeedBytes + q.allowance.reservedBytes
+                && $0.needBytes >= $0.loadNeedBytes && $0.weightsBytes == $1.weightsBytes
+        })
+    checks.require("TP batch: simultaneous load is larger than the former alternate-peaks estimate",
+        zip(two.ranks, noBatchReservation.ranks).allSatisfy {
+            $0.needBytes > max($1.loadNeedBytes, $0.weightsBytes + $0.requestNeedBytes)
+        })
+    // Keep hardware identical and put live admissible bytes strictly between
+    // the real two- and four-lane LOAD peaks. Both widths remain hardware-
+    // possible; only two lanes may disturb the existing serving owner now.
+    let fourQuote = try quote(4)
+    let four = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: policy(fourQuote), link: link)
+    let available = (two.ranks[0].needBytes + four.ranks[0].needBytes) / 2
+    let pressured = try [SyntheticMac(physicalGiB: 256, freeGiB: Double(available) / Double(gib),
+        inactiveCacheGiB: 0).device("a", speed: fast[0].speed), fast[1]]
+    let fitsTwo = try ClusterPlacementPlanner.evaluate(devices: pressured, cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: p, link: link)
+    let waitsFour = try ClusterPlacementPlanner.evaluate(devices: pressured, cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: policy(fourQuote), link: link)
+    checks.require("TP batch: lower width fits current pair when higher width only fits at rest",
+        fitsTwo.ranks.allSatisfy { $0.fit == .now } && waitsFour.possible
+            && waitsFour.ranks[0].fit != .now && waitsFour.ranks[1].fit == .now)
+    // The native allocator also reserves the future request during LOAD.
+    // Sufficient OS memory must not hide a smaller allocator ceiling.
+    let largest = ([layout.ingress, layout.egress] + layout.layers.map(\.weights)).map(\.largestTensorBytes).max()!
+    var allocatorObject = try JSONSerialization.jsonObject(with: fast[0].profile.encoded()) as! [String: Any]
+    allocatorObject["allocatorLimitBytes"] = two.ranks[0].weightsBytes + largest
+        + fast[0].profile.memory.allocatorHeadroomBytes + q.allowance.reservedBytes - 1
+    let allocatorProfile = try ClusterDeviceProfile.decode(JSONSerialization.data(withJSONObject: allocatorObject))
+    let allocatorBounded = try ClusterPlacementPlanner.evaluate(devices: [
+        .init(label: "a", profile: allocatorProfile, speed: fast[0].speed), fast[1]], cuts: [], mode: .tensorParallel,
+        prefillSchedule: .serial, layout: layout, policy: p, link: link)
+    checks.require("TP batch: allocator limit includes native future request before LOAD",
+        allocatorBounded.ranks[0].hardwareFits == false && allocatorBounded.ranks[1].hardwareFits == true)
     for lanes in [2, 4, 8] {
         let value = try quote(lanes), policy = try policy(value)
         let candidate = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,

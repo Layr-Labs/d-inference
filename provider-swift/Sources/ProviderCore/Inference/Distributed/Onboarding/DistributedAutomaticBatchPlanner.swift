@@ -52,6 +52,15 @@ struct DistributedAutomaticBatchPlanner {
             environment: [:], benchDebugBuild: false)
     }
 
+    /// An automatic replacement cannot promise that unrelated memory will
+    /// disappear. A present-fit preview uses the same bilateral predicate as
+    /// the mandatory post-release recheck; hardware possibility alone is not
+    /// current admission.
+    static func accepts(_ candidate: ClusterPlacementCandidate, requireNow: Bool) -> Bool {
+        candidate.possible && candidate.withinGPUWorkingSet
+            && (!requireNow || candidate.ranks.allSatisfy { $0.fit == .now })
+    }
+
     func snapshot(reference: ClusterConfigurationReference, demand: DistributedLocalBatchDemand,
                   widths: [Int], requireNow: Bool) throws -> Snapshot? {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
@@ -154,8 +163,7 @@ struct DistributedAutomaticBatchPlanner {
                 localMemberID: configuration.memberID, localProfile: profile, peerProfile: peerProfile,
                 layout: layout, scope: scope, homeDirectory: paths.homeDirectory)
             guard let chosen = decision.result.chosen, let setup = decision.setup,
-                  chosen.possible, chosen.withinGPUWorkingSet,
-                  !requireNow || chosen.ranks.allSatisfy({ $0.fit == .now }) else { continue }
+                  Self.accepts(chosen, requireNow: requireNow) else { continue }
             for peer in configuration.peers {
                 guard let bytes = setup.configurations[peer.id] else { return nil }
                 let after = try ClusterConfigurationCodec.decode(bytes, capability: capability,

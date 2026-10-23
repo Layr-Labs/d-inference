@@ -731,8 +731,9 @@ for exclusions, rollback and the unchanged singleton preference at initial setup
 | Variable | Installed behavior | Source |
 |---|---|---|
 | `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: event synchronization for exact Qwen3.8 27B TP capacity above one, fast synchronization for single-lane Qwen27 and other TP models. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_EAGER_FENCE_COMMIT` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values are not forwarded; MLX keeps its existing off default. Explicit values are reported before MLX initializes. | `DistributedInstalledPlan.eagerFenceCommit`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerEagerFenceCommit.report` |
 
-The setting is read from each Mac's own cluster service process; it is not taken
+These settings are read from each Mac's own cluster service process; they are not taken
 from its peer or an API request. A terminal export does not update an installed
 service job. Restart jobs with the intended environment, confirm fresh native
 `fast_synch=0 source=launcher` or `fast_synch=1 source=launcher` markers on both

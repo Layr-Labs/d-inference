@@ -35,6 +35,11 @@ import Foundation
                                                                 environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
+            // Evidence only: do not change MLX's eager-fence-commit default.
+            if let line = WorkerEagerFenceCommit.report(mode: configuration.generationMode,
+                                                       environment: ProcessInfo.processInfo.environment) {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             // Before anything native: tensor parallel's command-buffer budget (read once too).
             if let line = WorkerCommandBufferBudget.apply(mode: configuration.generationMode,
                                                           environment: ProcessInfo.processInfo.environment) {

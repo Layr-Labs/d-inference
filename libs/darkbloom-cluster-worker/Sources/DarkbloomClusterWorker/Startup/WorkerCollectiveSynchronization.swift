@@ -37,6 +37,18 @@ enum WorkerCollectiveSynchronization {
     }
 }
 
+/// Evidence of a local diagnostic choice before MLX latches it. This reporter
+/// never changes the environment or enables eager commits by default.
+enum WorkerEagerFenceCommit {
+    static let variable = "MLX_EAGER_FENCE_COMMIT"
+
+    static func report(mode: ClusterGenerationMode, environment: [String: String]) -> String? {
+        guard mode == .tensorParallel, let value = environment[variable],
+              value == "0" || value == "1" else { return nil }
+        return "darkbloom-eager-fence-commit-v1 enabled=\(value) source=launcher"
+    }
+}
+
 /// How much a Metal command buffer may take before MLX commits it. MLX
 /// commits after 50 operations or after 50 Mi elements of distinct inputs,
 /// and weights count: under tensor parallel every GLM MoE launch takes a

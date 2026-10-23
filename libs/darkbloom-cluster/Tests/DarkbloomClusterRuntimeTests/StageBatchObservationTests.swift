@@ -87,6 +87,71 @@ final class StageBatchObservationTests: XCTestCase {
         XCTAssertEqual(reads, 4)
     }
 
+    func testCompletedStepCountsIncludeRepeatedAndDecreasingWidthsOnlyWithinLiveScope() {
+        let observation = StageBatchObservation(rank: 1, scope: scope, capacity: 4)
+        XCTAssertTrue(observation.completedDecode(width: 4, memory: active).isEmpty)
+        XCTAssertTrue(observation.finished(success: true, memory: empty).isEmpty)
+        _ = observation.started(memory: empty)
+        for width in [-1, 0, 5, 8, Int.max] {
+            XCTAssertTrue(observation.completedDecode(width: width, memory: active).isEmpty)
+        }
+        for width in [1, 2, 2, 1, 4, 2, 1] {
+            _ = observation.completedDecode(width: width, memory: active)
+        }
+        let final = observation.finished(success: true, memory: empty)
+        XCTAssertEqual(final.count, 2)
+        XCTAssertTrue(final[0].hasPrefix("darkbloom-stage-batch-memory-v1"))
+        XCTAssertEqual(final[1], "darkbloom-stage-batch-decode-counts-v1 rank=1 scope=\(scope.uuidString.lowercased()) phase=retired capacity=4 width1=3 width2=3 width3=0 width4=1 width5=0 width6=0 width7=0 width8=0")
+        XCTAssertTrue(observation.completedDecode(width: 4, memory: active).isEmpty)
+        XCTAssertTrue(observation.finished(success: false, memory: empty).isEmpty)
+    }
+
+    func testFailedScopeKeepsCompletedCountsWithoutClaimingRetirement() {
+        let observation = StageBatchObservation(rank: 0, scope: scope, capacity: 2)
+        _ = observation.started(memory: empty)
+        _ = observation.completedDecode(width: 2, memory: active)
+        _ = observation.completedDecode(width: 2, memory: active)
+        let final = observation.finished(success: false, memory: empty)
+        XCTAssertEqual(final.count, 2)
+        XCTAssertTrue(final.allSatisfy { $0.contains("phase=failed") && !$0.contains("retired") })
+        XCTAssertTrue(final[1].hasSuffix("width1=0 width2=2 width3=0 width4=0 width5=0 width6=0 width7=0 width8=0"))
+    }
+
+    func testAllWidthsKeepLogsAndMemoryReadsBoundedWithOneFinalSummary() {
+        let observation = StageBatchObservation(rank: 0, scope: scope, capacity: 8)
+        var reads = 0
+        func snapshot() -> StageBatchObservation.Memory { reads += 1; return active }
+        var lines = observation.started(memory: snapshot())
+        lines += observation.completedPrefill(memory: snapshot())
+        for width in 1...8 {
+            lines += observation.completedDecode(width: width, memory: snapshot())
+            for _ in 0..<1024 {
+                XCTAssertTrue(observation.completedDecode(width: width, memory: snapshot()).isEmpty)
+            }
+        }
+        XCTAssertEqual(reads, 10)
+        lines += observation.finished(success: true, memory: snapshot())
+        XCTAssertEqual(reads, 11)
+        XCTAssertEqual(lines.count, 20)
+        XCTAssertEqual(lines.filter { $0.hasPrefix("darkbloom-stage-batch-decode-counts-v1") }.count, 1)
+        for width in 1...8 { XCTAssertTrue(lines.last!.contains("width\(width)=1025")) }
+        XCTAssertTrue(observation.finished(success: true, memory: snapshot()).isEmpty)
+        XCTAssertTrue(observation.completedDecode(width: 8, memory: snapshot()).isEmpty)
+        XCTAssertEqual(reads, 11)
+    }
+
+    func testInvalidCapacityAndNoCompletedWorkReportOnlyZeroCounts() {
+        for capacity in [-1, 0, 2, 9] {
+            let observation = StageBatchObservation(rank: 0, scope: scope, capacity: capacity)
+            _ = observation.started(memory: empty)
+            if capacity != 2 {
+                for width in 1...8 { XCTAssertTrue(observation.completedDecode(width: width, memory: active).isEmpty) }
+            }
+            XCTAssertTrue(observation.finished(success: true, memory: empty)[1].hasSuffix(
+                "width1=0 width2=0 width3=0 width4=0 width5=0 width6=0 width7=0 width8=0"))
+        }
+    }
+
     func testContiguousBackingIsUnavailableRatherThanInferredFromLiveBytes() {
         let observation = StageBatchObservation(rank: 0, scope: scope, capacity: 2)
         let memory = StageBatchObservation.Memory(backend: "contiguous", capacity: 4096,

@@ -19,6 +19,8 @@ final class StageBatchObservation {
     private let scope: UUID
     private let capacity: Int
     private var maximumWidth = 0
+    // Fixed storage; counters saturate instead of trapping in a long-lived scope.
+    private var completedSteps = [UInt64](repeating: 0, count: 8)
     private var began = false
     private var prefilled = false
     private var ended = false
@@ -41,7 +43,9 @@ final class StageBatchObservation {
 
     func completedDecode(width: Int, memory: @autoclosure () -> Memory) -> [String] {
         guard began, !ended, (1...8).contains(capacity),
-              width > maximumWidth, width <= capacity else { return [] }
+              (1...capacity).contains(width) else { return [] }
+        if completedSteps[width - 1] < UInt64.max { completedSteps[width - 1] += 1 }
+        guard width > maximumWidth else { return [] }
         maximumWidth = width
         return ["darkbloom-stage-batch-decode-v1 \(identity) width=\(width) capacity=\(capacity)",
                 memoryLine("decode", memory())]
@@ -51,7 +55,10 @@ final class StageBatchObservation {
         guard began, !ended else { return [] }
         ended = true
         // A failed loop is never called idle, even if its cleanup drained.
-        return [memoryLine(success ? "retired" : "failed", memory())]
+        let phase = success ? "retired" : "failed"
+        let counts = completedSteps.enumerated().map { "width\($0.offset + 1)=\($0.element)" }.joined(separator: " ")
+        return [memoryLine(phase, memory()),
+                "darkbloom-stage-batch-decode-counts-v1 \(identity) phase=\(phase) capacity=\(capacity) \(counts)"]
     }
 
     private var identity: String { "rank=\(rank) scope=\(scope.uuidString.lowercased())" }

@@ -2312,6 +2312,14 @@ unchanged. Single-lane Qwen27 and other models, including GLM, retain their
 existing defaults. A local launcher override still wins. This policy addresses
 collective progress; exact output comparisons remain a separate release gate.
 
+An optional local `MLX_EAGER_FENCE_COMMIT=0|1` diagnostic follows the same typed
+owner/native boundaries. It keeps the existing default off and is forwarded only
+for TP. `WorkerEagerFenceCommit.report` emits its explicit canonical value before
+MLX initialization without changing it. In the MLX fork, enabling this choice
+commits a cross-device GPU producer immediately after its fence update. It does
+not change lane capacity, tensor placement, memory guards or the synchronization
+default; native progress and throughput must be measured separately.
+
 Optional Qwen batch diagnostics leave selection and scheduling unchanged.
 `QwenBatchStepSummary` records decode-width and token-credit counts, emitting
 one content-free summary per batch. `QwenBatchRowCapture` copies selected
@@ -3063,6 +3071,14 @@ not inferred. Retirement preserves the observed counters even if nonzero; a
 failed loop is labeled failed even after successful cleanup. The fixed-size
 `StageBatchObservation` policy reads no request content and suppressed events
 do not read backend counters. This does not change GLM, GPT-OSS or MiMo logging.
+
+At scope completion, `darkbloom-stage-batch-decode-counts-v1` follows the existing
+final memory record once. It reports rank, scope, retired/failed phase, admission
+capacity, and eight per-width completed-step counters (`width1` through `width8`).
+Repeated and decreasing widths count; invalid widths and calls before start or
+after finish do not. Fixed UInt64 counters saturate at their maximum. This is a
+step distribution, not token throughput or timing, and records no request content.
+Existing high-water logs and memory snapshot frequency are unchanged.
 
 ### MiMo plain-pipeline independent histories
 

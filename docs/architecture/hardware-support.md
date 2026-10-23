@@ -963,6 +963,9 @@ with capacity above one default to event synchronization; single-lane Qwen27
 and other models keep their existing defaults. Both paths still require paired
 native progress, actual decode width, output comparisons and retirement; a
 service-job setting alone proves none of these.
+The optional `MLX_EAGER_FENCE_COMMIT` diagnostic also requires explicit typed
+forwarding and a fresh native startup marker. Its default remains off; enabling
+it is neither a qualified configuration nor evidence of batching efficiency.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
 (`derive`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`

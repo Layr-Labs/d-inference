@@ -161,7 +161,8 @@ struct DistributedInstalledPlan: Sendable {
         throws -> ClusterLocalOwnerConfiguration {
         try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
             batchLanes: batchLanes(ownerEnvironment),
-            fastSynchronization: fastSynchronization(ownerEnvironment))
+            fastSynchronization: fastSynchronization(ownerEnvironment),
+            eagerFenceCommit: eagerFenceCommit(ownerEnvironment))
     }
 
     func nativeEnvironment(matrix: URL,
@@ -169,6 +170,9 @@ struct DistributedInstalledPlan: Sendable {
         var environment = baseNativeEnvironment(matrix: matrix)
         if let fast = fastSynchronization(ownerEnvironment) {
             environment[Self.fastSynchronizationSwitch] = fast ? "1" : "0"
+        }
+        if let eager = eagerFenceCommit(ownerEnvironment) {
+            environment[Self.eagerFenceCommitSwitch] = eager ? "1" : "0"
         }
         let prefixCacheOff = prefixCacheOff(ownerEnvironment)
         if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
@@ -226,6 +230,16 @@ struct DistributedInstalledPlan: Sendable {
         default: return nil
         }
     }
+    /// A local diagnostic choice only. No value means MLX's existing default.
+    private func eagerFenceCommit(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.eagerFenceCommitSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    static let eagerFenceCommitSwitch = "MLX_EAGER_FENCE_COMMIT"
     static let fastSynchronizationSwitch = "MLX_METAL_FAST_SYNCH"
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"

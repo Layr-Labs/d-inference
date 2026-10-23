@@ -1936,6 +1936,12 @@ service job and restart the service before the comparison. Verify fresh native
 `darkbloom-collective-sync-v1` startup lines on both Macs, then restore the jobs
 and restart after the diagnostic. See the [configuration contract](../reference/configuration.md#installed-tensor-parallel-synchronization).
 
+The optional local `MLX_EAGER_FENCE_COMMIT=0|1` diagnostic uses the same restart
+and restoration procedure. It leaves the default off and requires a fresh
+`darkbloom-eager-fence-commit-v1 enabled=0|1 source=launcher` marker from each
+native TP worker. A service-job setting alone does not prove forwarding. Keep
+batch width and other guards fixed when comparing synchronization behavior.
+
 ### Qwen27 tensor batch planning metadata
 
 The private `darkbloom-cluster-plan tensor-batch-scope --model-dir DIR

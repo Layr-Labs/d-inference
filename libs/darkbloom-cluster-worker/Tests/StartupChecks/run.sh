@@ -78,6 +78,13 @@ check tensor-shares-reach-the-model 1 "" "tensor-shares" -- --generation-mode te
 check tensor-parallel-turns-fast-synch-on 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=0 source=launcher" "" MLX_METAL_FAST_SYNCH=0 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
+# Eager commit is a local diagnostic only; absent settings do not enable it.
+check tensor-parallel-eager-default-absent 1 "" "darkbloom-eager-fence-commit-v1" -- --generation-mode tensor_parallel_v1
+for enabled in 0 1; do
+  check tensor-parallel-eager-explicit-$enabled 1 "darkbloom-eager-fence-commit-v1 enabled=$enabled source=launcher" "" MLX_EAGER_FENCE_COMMIT=$enabled -- --generation-mode tensor_parallel_v1
+done
+check pipeline-eager-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=1 --
+check tensor-parallel-eager-malformed-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=true -- --generation-mode tensor_parallel_v1
 # A fixed Qwen27 batch capacity uses event synchronization while retaining native batching.
 for lanes in 2 4 8; do
   CHECK_MODEL=registered_qwen38_27b check qwen27-batched-event-synch-$lanes 1 "darkbloom-collective-sync-v1 fast_synch=0 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=$lanes -- --generation-mode tensor_parallel_v1

@@ -98,33 +98,48 @@ extension InstalledSessionCheck {
             try require(profile.supportsLogprobs, "Qwen27 TP width lost actual native raw-logprob capture")
             // Both local service roles use this exact launcher. Only the typed
             // local binary setting survives both child environment boundaries.
-            let sync = DistributedInstalledPlan.fastSynchronizationSwitch
             let baseline = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: child)
-            try require(child[sync] == nil && baseline[sync] == nil, "Absent sync choice changed the worker default")
-            for choice in ["0", "1", "", "true", "false", "2", "-1", "00", "01", " 0", "0\n", "$(false)"] {
-                let caller = [sync: choice, "DYLD_INSERT_LIBRARIES": "must-not-forward",
-                    "MLX_METAL_FUSED_FENCE_UPDATE": "1", "UNRELATED": "must-not-forward"]
-                let expected = ["0", "1"].contains(choice) ? choice : nil
-                let observedChild = try observed(plan.localOwnerConfiguration(ownerEnvironment: caller))
-                var expectedChild = child
-                if let expected { expectedChild[sync] = expected }
-                try require(observedChild == expectedChild, "Sync choice widened or escaped the fixed owner environment")
-                var expectedNative = baseline
-                if let expected { expectedNative[sync] = expected }
-                let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: observedChild)
-                try require(native == expectedNative, "Sync choice changed unrelated native guards or did not reach the worker")
-                // Exercise the final native launch constructor, not just its environment helper.
-                let binding = try plan.binding(epoch: UUID(), lease: UUID(), incarnation: UUID())
-                let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000_000
-                let starts = try DistributedInstalledNativeStart.starts(plan: plan, epoch: binding.identity.membershipEpoch)
-                let attachment = try ClusterOwnerBootstrapAttachment(profile: .nativeKeyPreludeMesh2, deadline: deadline,
-                    nativeStart: starts[plan.configuration.localRank])
-                defer { attachment.cancel() }
-                let trust = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch: binding.identity.membershipEpoch)[plan.configuration.localRank]
-                let launch = try DistributedInstalledOwner.nativeLaunch(prepared: prepared, binding: binding, deadline: deadline,
-                    startupDeadline: nil, attachment: attachment, dataPlaneTrust: trust, prefixSSDKey: nil,
-                    ownerEnvironment: observedChild)
-                try require(launch.environment == expectedNative, "Final native launch dropped the typed sync choice")
+            for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
+                try require(child[sync] == nil && baseline[sync] == nil, "Absent sync choice changed the worker default")
+                for choice in ["0", "1", "", "true", "false", "2", "-1", "00", "01", " 0", "0\n", "$(false)"] {
+                    let caller = [sync: choice, "DYLD_INSERT_LIBRARIES": "must-not-forward",
+                        "MLX_METAL_FUSED_FENCE_UPDATE": "1", "UNRELATED": "must-not-forward"]
+                    let expected = ["0", "1"].contains(choice) ? choice : nil
+                    let observedChild = try observed(plan.localOwnerConfiguration(ownerEnvironment: caller))
+                    var expectedChild = child
+                    if let expected { expectedChild[sync] = expected }
+                    try require(observedChild == expectedChild, "Sync choice widened or escaped the fixed owner environment")
+                    var expectedNative = baseline
+                    if let expected { expectedNative[sync] = expected }
+                    let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: observedChild)
+                    try require(native == expectedNative, "Sync choice changed unrelated native guards or did not reach the worker")
+                    // Exercise the final native launch constructor, not just its environment helper.
+                    let binding = try plan.binding(epoch: UUID(), lease: UUID(), incarnation: UUID())
+                    let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000_000
+                    let starts = try DistributedInstalledNativeStart.starts(plan: plan, epoch: binding.identity.membershipEpoch)
+                    let attachment = try ClusterOwnerBootstrapAttachment(profile: .nativeKeyPreludeMesh2, deadline: deadline,
+                        nativeStart: starts[plan.configuration.localRank])
+                    defer { attachment.cancel() }
+                    let trust = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch: binding.identity.membershipEpoch)[plan.configuration.localRank]
+                    let launch = try DistributedInstalledOwner.nativeLaunch(prepared: prepared, binding: binding, deadline: deadline,
+                        startupDeadline: nil, attachment: attachment, dataPlaneTrust: trust, prefixSSDKey: nil,
+                        ownerEnvironment: observedChild)
+                    try require(launch.environment == expectedNative, "Final native launch dropped the typed sync choice")
+                }
+            }
+            // Independent booleans: choosing eager commits must not replace
+            // the fast/event choice or alter the saved native lane count.
+            for fast in ["0", "1"] {
+                for eager in ["0", "1"] {
+                    let choices = [DistributedInstalledPlan.fastSynchronizationSwitch: fast,
+                        DistributedInstalledPlan.eagerFenceCommitSwitch: eager]
+                    let observedChild = try observed(plan.localOwnerConfiguration(ownerEnvironment: choices))
+                    var expectedChild = child; expectedChild.merge(choices) { _, value in value }
+                    try require(observedChild == expectedChild, "Combined synchronization choices changed the fixed owner")
+                    var expectedNative = baseline; expectedNative.merge(choices) { _, value in value }
+                    try require(plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: observedChild) == expectedNative,
+                        "Combined synchronization choices changed native guards or lane capacity")
+                }
             }
             try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL)
         }
@@ -147,6 +162,11 @@ extension InstalledSessionCheck {
             adapter: .glm5NextLayerStage)
         let glmPrepared = try glm.prepare()
         try require(glmPrepared.plan.batchLanes([:]) == 8, "GLM tensor-parallel default changed")
+        let glmChild = try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))
+        let glmNative = glmPrepared.plan.nativeEnvironment(matrix: glmPrepared.matrixURL, ownerEnvironment: glmChild)
+        for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
+            try require(glmChild[sync] == nil && glmNative[sync] == nil, "Diagnostic forwarding changed a GLM default")
+        }
         try require(try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))[key] == "8",
             "GLM default did not reach its owner")
         try malformedOverrideKeepsOneLane(glmPrepared.plan, matrix: glmPrepared.matrixURL)
@@ -177,12 +197,13 @@ extension InstalledSessionCheck {
             try require(Int(native[key] ?? "1") == lanes, "Gemma native lane width differs from its actual owner")
             try require(native[DistributedInstalledPlan.kvBackendSwitch] == nil, "Gemma batching changed the paged default")
         }
-        let sync = DistributedInstalledPlan.fastSynchronizationSwitch
-        for choice in ["0", "1"] {
-            let caller = [sync: choice]
-            let owner = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: caller))
-            let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: caller)
-            try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
+        for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
+            for choice in ["0", "1"] {
+                let caller = [sync: choice]
+                let owner = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: caller))
+                let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: caller)
+                try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
+            }
         }
         let diagnostic = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: [key: "8", DistributedInstalledPlan.kvBackendSwitch: "contiguous"])

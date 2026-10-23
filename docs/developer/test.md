@@ -1365,6 +1365,15 @@ and keep absent/default and non-TP behavior unchanged. They do not establish
 Metal progress; require fresh bilateral native startup markers and completed
 batch retirement in the installed synchronization comparison.
 
+The actual-child and final-native tests also exercise canonical local
+`MLX_EAGER_FENCE_COMMIT=0|1`, malformed values, combined fast/eager choices,
+unchanged GLM defaults and exclusion from pipeline launches.
+`WorkerEagerFenceCommitTests` checks that the startup reporter describes only
+explicit canonical TP choices and does not mutate the environment. The real
+worker StartupChecks cover the marker against a missing model directory. These
+checks prove propagation only; they do not establish a faster or stall-free
+collective path.
+
 Run `swift test --package-path libs/darkbloom-cluster-worker --filter WorkerCollectiveSynchronizationTests`
 for the startup policy checks. `WorkerCollectiveSynchronizationTests` exercises the actual startup policy and
 runtime lane parser without loading a model or opening a Metal device. It checks
@@ -1519,7 +1528,9 @@ repeat full-artifact paired output, cancellation and throughput qualification.
 `StageBatchObservationTests` covers both ranks' shared scope, bounded increasing
 width evidence, pre-work and out-of-capacity rejection, suppressed counter reads,
 reservation versus materialized backing, unavailable contiguous allocation, and
-truthful failed or non-drained retirement. These CPU tests verify the reporting
+truthful failed or non-drained retirement. Per-width step tests cover repeated and
+decreasing widths, zero-work and failed scopes, exclusion outside a live valid scope,
+and exactly one final summary with unchanged bounded logs and memory reads. These CPU tests verify the reporting
 policy; two-Mac full-model qualification must still show actual completed native
 width and paged growth followed by retirement counters for each worker generation.
 

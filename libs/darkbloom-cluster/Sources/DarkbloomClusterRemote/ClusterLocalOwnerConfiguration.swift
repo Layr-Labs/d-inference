@@ -4,13 +4,15 @@ import DarkbloomClusterProcess
 
 /// The local equivalent of the fixed installed SSH owner command. No caller
 /// arguments, arbitrary environment, script or shell expression crosses this API.
-/// Only this Mac's typed lane count and optional synchronization choice are forwarded.
+/// Only this Mac's typed lane count and optional synchronization choices are forwarded.
 public struct ClusterLocalOwnerConfiguration: Sendable {
     public let installedDarkbloom: URL
     private let batchLanes: Int?
     private let fastSynchronization: Bool?
+    private let eagerFenceCommit: Bool?
 
-    public init(installedDarkbloom: URL, batchLanes: Int? = nil, fastSynchronization: Bool? = nil) throws {
+    public init(installedDarkbloom: URL, batchLanes: Int? = nil, fastSynchronization: Bool? = nil,
+                eagerFenceCommit: Bool? = nil) throws {
         if let batchLanes, !(1...8).contains(batchLanes) {
             throw ClusterOwnerStateError.invalid("Installed local owner batch lanes must be 1...8")
         }
@@ -23,6 +25,7 @@ public struct ClusterLocalOwnerConfiguration: Sendable {
         self.installedDarkbloom = installedDarkbloom
         self.batchLanes = batchLanes
         self.fastSynchronization = fastSynchronization
+        self.eagerFenceCommit = eagerFenceCommit
     }
 
     func launch() throws -> ClusterWorkerLaunch {
@@ -35,6 +38,7 @@ public struct ClusterLocalOwnerConfiguration: Sendable {
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"]
         if let batchLanes { environment["DARKBLOOM_CLUSTER_BATCH_LANES"] = String(batchLanes) }
         if let fastSynchronization { environment["MLX_METAL_FAST_SYNCH"] = fastSynchronization ? "1" : "0" }
+        if let eagerFenceCommit { environment["MLX_EAGER_FENCE_COMMIT"] = eagerFenceCommit ? "1" : "0" }
         return .init(executable: installedDarkbloom, arguments: ["cluster", "worker-owner", "--stdio"],
             environment: environment)
     }

@@ -38,3 +38,5 @@
   and final automatic-planner validation remain separate gates.
 
 - Preserve an explicit local fast-synchronization diagnostic choice through both installed TP owner and native worker launches. Only canonical `0` or `1` is forwarded; normal defaults and placement remain unchanged.
+
+Qwen3.8 27B tensor-parallel workers with more than one configured lane now default to event synchronization to avoid a fast-fence collective stall. Native batching and model capabilities remain enabled. Single-lane and other-model defaults, including GLM, remain unchanged; explicit local synchronization choices still take precedence.

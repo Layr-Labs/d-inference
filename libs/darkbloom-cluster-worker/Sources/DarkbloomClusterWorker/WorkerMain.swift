@@ -30,7 +30,8 @@ import Foundation
             let now = DispatchTime.now().uptimeNanoseconds
             let configuration = try WorkerConfiguration(arguments: arguments, now: now)
             // Before anything native: tensor parallel's collective wait (MLX reads it once).
-            if let line = WorkerCollectiveSynchronization.apply(mode: configuration.generationMode,
+            if let line = try WorkerCollectiveSynchronization.apply(mode: configuration.generationMode,
+                                                                modelID: configuration.load.identity.modelID,
                                                                 environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }

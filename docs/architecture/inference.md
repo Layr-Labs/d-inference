@@ -2301,6 +2301,17 @@ do not forward it. The service's arbitrary environment, peer inputs and secrets
 remain excluded. A job setting alone is insufficient evidence: fresh native
 startup must report `fast_synch=0 source=launcher` for a slow-fence diagnostic.
 
+Before native initialization, `WorkerCollectiveSynchronization` defaults exact
+Qwen3.8 27B TP workers with a configured capacity above one to MLX event
+synchronization. The existing runtime lane parser determines capacity, and
+invalid values refuse startup. Automatic widening retires the old native pair
+and starts replacement workers, so the startup-only setting can change from
+single-lane fast synchronization to batched event synchronization. The batch
+driver, tensor shards, simultaneous rows, media and memory accounting are
+unchanged. Single-lane Qwen27 and other models, including GLM, retain their
+existing defaults. A local launcher override still wins. This policy addresses
+collective progress; exact output comparisons remain a separate release gate.
+
 Optional Qwen batch diagnostics leave selection and scheduling unchanged.
 `QwenBatchStepSummary` records decode-width and token-credit counts, emitting
 one content-free summary per batch. `QwenBatchRowCapture` copies selected

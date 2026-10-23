@@ -730,7 +730,7 @@ for exclusions, rollback and the unchanged singleton preference at initial setup
 
 | Variable | Installed behavior | Source |
 |---|---|---|
-| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values leave the worker default unchanged (currently fast synchronization enabled for TP). | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: event synchronization for exact Qwen3.8 27B TP capacity above one, fast synchronization for single-lane Qwen27 and other TP models. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
 
 The setting is read from each Mac's own cluster service process; it is not taken
 from its peer or an API request. A terminal export does not update an installed

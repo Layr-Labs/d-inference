@@ -1365,6 +1365,17 @@ and keep absent/default and non-TP behavior unchanged. They do not establish
 Metal progress; require fresh bilateral native startup markers and completed
 batch retirement in the installed synchronization comparison.
 
+Run `swift test --package-path libs/darkbloom-cluster-worker --filter WorkerCollectiveSynchronizationTests`
+for the startup policy checks. `WorkerCollectiveSynchronizationTests` exercises the actual startup policy and
+runtime lane parser without loading a model or opening a Metal device. It checks
+Qwen27 capacities 2...8, omitted/single capacity, malformed lanes, launcher
+precedence and every other catalog entry and generation mode. The actual worker
+checks in `libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` verify startup
+markers and malformed-lane refusal against a missing model directory. These
+checks do not prove native progress or output equality: the installed product
+must still complete concurrent two-row TP decoding and clean retirement on both
+Macs, followed by the unchanged full capability and output checks.
+
 ### Gemma per-request decode equality
 
 With the pinned native dependencies built as in [build](build.md), run the

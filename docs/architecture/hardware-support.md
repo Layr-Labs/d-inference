@@ -958,9 +958,11 @@ A completed native decode marker on both ranks is required to establish a width;
 concurrent HTTP requests alone do not establish it.
 An explicit local `MLX_METAL_FAST_SYNCH=0|1` choice can reach an installed TP
 worker through the typed owner launch. This enables a synchronization comparison
-without changing model placement or arithmetic. The normal worker default is
-unchanged, and either path still requires paired native progress and retirement;
-a service-job setting alone proves neither.
+without changing model placement or arithmetic. Exact Qwen3.8 27B TP workers
+with capacity above one default to event synchronization; single-lane Qwen27
+and other models keep their existing defaults. Both paths still require paired
+native progress, actual decode width, output comparisons and retirement; a
+service-job setting alone proves none of these.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
 (`derive`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`

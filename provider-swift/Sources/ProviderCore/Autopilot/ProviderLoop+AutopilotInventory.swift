@@ -7,11 +7,12 @@ extension ProviderLoop {
 
     /// Revocation only removes loadability. Actual resident ownership remains
     /// in the capacity snapshot and memory reserve until normal cleanup.
+    /// Validly adopted inventory keeps serving without a lease.
     func withdrawInactiveAutopilotModels() {
         guard !modelAutopilotEnabled else { return }
         for id in Array(advertisedModels.keys)
         where autopilotInventoryModels[id] != nil && !ordinaryServingModelIDs.contains(id)
-            && autopilotCommand?.loadModelId != id {
+            && autopilotCommand?.loadModelId != id && !autopilotAdoptionIsValid(id) {
             advertisedModels.removeValue(forKey: id)
         }
     }

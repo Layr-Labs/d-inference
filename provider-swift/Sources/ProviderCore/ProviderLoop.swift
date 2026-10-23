@@ -339,7 +339,8 @@ public actor ProviderLoop {
     internal var autopilotTask: Task<Void, Never>?
     internal var autopilotMutationStarted = false
     internal var autopilotGeneration: UInt64 = 0
-    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistory: [String: (command: ModelAutopilotCommand, status: ModelAutopilotStatus.State,
+        error: String?, detail: String?)] = [:]
     internal var autopilotHistoryOrder: [String] = []
     internal var autopilotLastCommandId: String?
     internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
@@ -351,6 +352,23 @@ public actor ProviderLoop {
     /// Explicit desired-build retirements, never inferred from missing catalog
     /// entries. Release cleanup is distinct from network placement authority.
     internal var autopilotSupersededModels: Set<String> = []
+    /// Inventory targets of succeeded operations that keep serving after the
+    /// lease (`ProviderLoop+AutopilotPlacement`). In memory only.
+    internal var autopilotAdoptedModelIDs: Set<String> = []
+    /// Placement holds by model. An expired hold stays as the idle anchor
+    /// until the placement ends; only an unexpired hold protects a slot.
+    internal var autopilotHolds: [String: AutopilotHold] = [:]
+    /// Unix milliseconds at which each reported busy reason was first
+    /// continuously observed.
+    internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()
+    internal var transitionWatchdog = TransitionWatchdog()
+    /// The operation the watchdog cancelled; it fails as `transition_stalled`.
+    internal var autopilotStalledCommandId: String?
+    /// The watchdog asked the startup preload to stop before its next model.
+    internal var startupPreloadStopRequested = false
+    /// Advances on every reslice-gate acquisition, so the transition watchdog
+    /// ages each acquisition separately.
+    internal var resliceGateGeneration: UInt64 = 0
 
 
     /// The running local OpenAI HTTP server task (unified mode), if any.

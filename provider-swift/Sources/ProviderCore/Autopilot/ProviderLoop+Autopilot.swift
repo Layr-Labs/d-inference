@@ -18,6 +18,7 @@ extension ProviderLoop {
     }
 
     func publishModelAutopilotSnapshot() {
+        reconcileAutopilotPlacements()
         state.autopilotInventory = autopilotInventoryModels.values.sorted { $0.id < $1.id }
         loadAutopilotTimingHistory()
         let now = ContinuousClock.now
@@ -26,7 +27,7 @@ extension ProviderLoop {
         for id in modelSlots.keys where autopilotResidentSince[id] == nil {
             autopilotResidentSince[id] = now
         }
-        state.modelAutopilot = ModelAutopilotSnapshot(
+        var snapshot = ModelAutopilotSnapshot(
             enabled: autopilotConsented && !autopilotNeedsInventoryRefresh,
             consentEnabled: autopilotSettings.hasConsent,
             minDwellSeconds: autopilotSettings.effectiveMinDwellSeconds,
@@ -42,17 +43,41 @@ extension ProviderLoop {
             freeForLoadNoEvictGb: autopilotCommand == nil ? autopilotFreeNoEvictGb : nil,
             activeCommandId: autopilotCommand?.commandId,
             lastCommandId: autopilotLastCommandId, lastCommandStatus: autopilotLastCommandStatus)
-        state.modelAutopilot?.active = modelAutopilotEnabled
-        state.modelAutopilot?.observeOnly = autopilotControlIsValid && autopilotControl?.observeOnly == true
-        state.modelAutopilot?.paused = autopilotSettings.paused
-        state.modelAutopilot?.sessionId = autopilotControl?.sessionId
-        state.modelAutopilot?.revision = autopilotSettings.revision
-        state.modelAutopilot?.selectedModels = autopilotSettings.selectedModels
-        state.modelAutopilot?.minIdleSeconds = autopilotSettings.effectiveMinIdleSeconds
-        state.modelAutopilot?.loadHistory = autopilotTimingHistory.loads
-        state.modelAutopilot?.lastElapsedMs = autopilotLastElapsedMs
-        state.modelAutopilot?.lastReleaseMs = autopilotLastReleaseMs
-        state.modelAutopilot?.lastLoadMs = autopilotLastLoadMs
+        snapshot.active = modelAutopilotEnabled
+        snapshot.observeOnly = autopilotControlIsValid && autopilotControl?.observeOnly == true
+        snapshot.paused = autopilotSettings.paused
+        snapshot.sessionId = autopilotControl?.sessionId
+        snapshot.revision = autopilotSettings.revision
+        snapshot.selectedModels = autopilotSettings.selectedModels
+        snapshot.minIdleSeconds = autopilotSettings.effectiveMinIdleSeconds
+        snapshot.loadHistory = autopilotTimingHistory.loads
+        snapshot.lastElapsedMs = autopilotLastElapsedMs
+        snapshot.lastReleaseMs = autopilotLastReleaseMs
+        snapshot.lastLoadMs = autopilotLastLoadMs
+        if autopilotConsented {
+            attachAutopilotProviderReport(to: &snapshot, now: now)
+        } else {
+            // Busy reasons go unobserved without consent; restart their
+            // continuity so `busy_since_ms` never spans that gap.
+            autopilotBusyClock = ContinuityClock()
+        }
+        state.modelAutopilot = snapshot
+    }
+
+    /// Fields beyond protocol 3, attached only with saved consent so that a
+    /// provider without it publishes an unchanged protocol-3 snapshot.
+    private func attachAutopilotProviderReport(to snapshot: inout ModelAutopilotSnapshot,
+                                               now: ContinuousClock.Instant) {
+        let reasons = reportedAutopilotBusyReasons()
+        autopilotBusyClock.observe(reasons, at: Self.autopilotNowMs)
+        let placements = autopilotPlacementReport(now: now)
+        snapshot.capabilities = ModelAutopilotCapability.allCases.map(\.rawValue)
+        snapshot.adoptedModels = placements.adopted
+        snapshot.heldModels = placements.held
+        snapshot.busyReasons = reasons.isEmpty ? nil : reasons.map(\.rawValue)
+        snapshot.busyReason = reasons.first?.rawValue
+        snapshot.busySinceMs = reasons.first.flatMap { autopilotBusyClock.since($0) }
+        snapshot.transitionStalls = transitionWatchdog.report
     }
 
     private static func autopilotSeconds(_ duration: Duration) -> Int {
@@ -75,30 +100,33 @@ extension ProviderLoop {
         }
     }
 
-    private static func autopilotMilliseconds(_ duration: Duration) -> Int64 {
-        max(0, duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000)
-    }
-
-    private static var autopilotNowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1_000) }
+    static var autopilotNowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1_000) }
 
     func handleModelAutopilot(_ command: ModelAutopilotCommand, send: SendHandle) {
         refreshAutopilotSettings()
         publishModelAutopilotSnapshot()
         if let previous = autopilotHistory[command.commandId] {
-            let matches = previous.0 == command
-            emitModelAutopilotStatus(command, status: matches ? previous.1 : .failed,
-                error: matches ? previous.2 : "command_id_reused", send: send)
+            if previous.command == command {
+                emitModelAutopilotStatus(command, status: previous.status, error: previous.error,
+                    detail: previous.detail, send: send)
+            } else {
+                emitModelAutopilotStatus(command, status: .failed, error: "command_id_reused", send: send)
+            }
             return
         }
         if let active = autopilotCommand {
-            emitModelAutopilotStatus(command,
-                status: active == command ? .started : .failed,
-                error: active == command ? nil : "provider_busy", send: send)
+            if active == command {
+                emitModelAutopilotStatus(command, status: .started, send: send)
+            } else {
+                emitModelAutopilotStatus(command, status: .failed, error: "provider_busy",
+                    detail: ModelAutopilotBusyReason.autopilotOperation.rawValue, send: send)
+            }
             return
         }
         if let rejection = autopilotRejection(command) {
             autopilotLastElapsedMs = 0; autopilotLastReleaseMs = 0; autopilotLastLoadMs = 0
-            finishModelAutopilot(command, status: .failed, error: rejection, send: send)
+            finishModelAutopilot(command, status: .failed, error: rejection.message,
+                detail: rejection.detail, send: send)
             return
         }
         // No suspension between the all-idle validation and this reservation.
@@ -116,27 +144,25 @@ extension ProviderLoop {
         }
     }
 
-    private func autopilotRejection(_ command: ModelAutopilotCommand) -> String? {
+    /// A `provider_busy` rejection carries its first busy reason as `detail`.
+    private func autopilotRejection(_ command: ModelAutopilotCommand) -> AutopilotFailure? {
         refreshAutopilotSettings()
         publishModelAutopilotSnapshot()
-        guard let snapshot = state.modelAutopilot else { return "not_opted_in" }
-        let busy = modelSwitchTask != nil || modelAdvertisementsInFlight > 0 || isShuttingDown || isDraining || isReconnectingAfterRetirement || hasInflightWork || isLoadingAny || isReslicing
-            || !modelsLoading.isEmpty || !modelsUnloading.isEmpty || !retiringModels.isEmpty
-            || startupPreloadTask != nil || !preloadTasks.isEmpty
-            || !pendingAdvertise.isEmpty || mtpStagingReservations.hasRetainedTargets
-            || !mtpUpgradeTransitions.isEmpty || !engineV2RecoveryInProgress.isEmpty
-            || modelRevisionActivationID != nil || !revisionUpdatesInProgress.isEmpty
-            || !nativeMiMoAllowsReclamation()
-        if let error = ModelAutopilotPolicy.rejection(command: command, snapshot: snapshot,
-            busy: busy, nowMs: Self.autopilotNowMs) { return error }
+        guard let snapshot = state.modelAutopilot else { return AutopilotFailure("not_opted_in") }
+        let busyReasons = autopilotBusyReasons()
+        if let code = ModelAutopilotPolicy.rejection(command: command, snapshot: snapshot,
+            busy: !busyReasons.isEmpty, nowMs: Self.autopilotNowMs) {
+            return AutopilotFailure(code, detail: code == "provider_busy" ? busyReasons.first?.rawValue : nil)
+        }
         if command.unloadModelIds.contains(where: {
             autopilotLeaseUntil[$0].map { ContinuousClock.now < $0 } ?? false
-        }) { return "active_lease" }
+        }) { return AutopilotFailure("active_lease") }
         if let target = command.loadModelId {
             guard autopilotModelInfo(target) != nil,
-                  ModelScanner.resolveLocalPath(modelID: target) != nil else { return "model_not_cached" }
+                  ModelScanner.resolveLocalPath(modelID: target) != nil
+            else { return AutopilotFailure("model_not_cached") }
             guard ModelRuntimeRequirements.isEligible(modelID: target,
-                available: loopConfig.runtimeCapabilities) else { return "hardware_ineligible" }
+                available: loopConfig.runtimeCapabilities) else { return AutopilotFailure("hardware_ineligible") }
         }
         return nil
     }
@@ -149,7 +175,7 @@ extension ProviderLoop {
             // The loader handles optional cached MTP with target-only fallback;
             // preflight proves the independently serveable target fits first.
             let available = await availableMemoryGb()
-            if let error = autopilotRejection(command) { throw AutopilotFailure(error) }
+            if let rejection = autopilotRejection(command) { throw rejection }
             // Validate TOTAL victim feasibility before removing even one model.
             // Use actual resident weights here, never the padded load estimate
             // as reclaim credit. The subsequent load re-samples OS memory.
@@ -174,7 +200,7 @@ extension ProviderLoop {
             autopilotMutationStarted = true
             do {
                 let releaseStart = ContinuousClock.now
-                defer { autopilotLastReleaseMs = Self.autopilotMilliseconds(.now - releaseStart) }
+                defer { autopilotLastReleaseMs = (ContinuousClock.now - releaseStart).autopilotMilliseconds }
                 for victim in command.unloadModelIds {
                     try Task.checkCancellation()
                     try checkAutopilotLoadOwnership(command.commandId)
@@ -186,7 +212,7 @@ extension ProviderLoop {
             }
             if let target = command.loadModelId {
                 let loadStart = ContinuousClock.now
-                defer { autopilotLastLoadMs = Self.autopilotMilliseconds(.now - loadStart) }
+                defer { autopilotLastLoadMs = (ContinuousClock.now - loadStart).autopilotMilliseconds }
                 try Task.checkCancellation()
                 try await prepareAutopilotTarget(command)
                 try await ensureModelLoaded(modelId: target, allowEviction: false,
@@ -194,12 +220,16 @@ extension ProviderLoop {
                 guard modelSlots[target] != nil, !modelsUnloading.contains(target),
                       advertisedModels[target] != nil else { throw AutopilotFailure("load_did_not_settle") }
                 autopilotLeaseUntil[target] = .now.advanced(by: .seconds(command.leaseSeconds))
+                recordAutopilotPlacement(command)
             }
-            autopilotLastElapsedMs = Self.autopilotMilliseconds(.now - operationStart)
+            autopilotLastElapsedMs = (ContinuousClock.now - operationStart).autopilotMilliseconds
             finishModelAutopilot(command, status: .succeeded, send: send)
         } catch {
-            autopilotLastElapsedMs = Self.autopilotMilliseconds(.now - operationStart)
-            finishModelAutopilot(command, status: .failed, error: error.localizedDescription, send: send)
+            autopilotLastElapsedMs = (ContinuousClock.now - operationStart).autopilotMilliseconds
+            let stalled = autopilotStalledCommandId == command.commandId && error is CancellationError
+            finishModelAutopilot(command, status: .failed,
+                error: stalled ? Self.transitionStalledError : error.localizedDescription,
+                detail: (error as? AutopilotFailure)?.detail, send: send)
         }
         // Terminal snapshot is rebuilt WITH backend capacity before the forced
         // heartbeat; coordinator must reconcile the pair, not trust status alone.
@@ -210,7 +240,7 @@ extension ProviderLoop {
     }
 
     private func finishModelAutopilot(_ command: ModelAutopilotCommand,
-        status: ModelAutopilotStatus.State, error: String? = nil, send: SendHandle) {
+        status: ModelAutopilotStatus.State, error: String? = nil, detail: String? = nil, send: SendHandle) {
         if autopilotCommand?.commandId == command.commandId {
             autopilotCommand = nil
             withdrawInactiveAutopilotModels()
@@ -219,29 +249,36 @@ extension ProviderLoop {
             state.refusingNewWork = isShuttingDown || isDraining || isReconnectingAfterRetirement
             if !autopilotManagesResidency { startIdleMonitor() }
         }
-        autopilotHistory[command.commandId] = (command, status, error)
+        if autopilotStalledCommandId == command.commandId { autopilotStalledCommandId = nil }
+        autopilotHistory[command.commandId] = (command, status, error, detail)
         autopilotHistoryOrder.append(command.commandId)
         if autopilotHistoryOrder.count > 64 {
             autopilotHistory.removeValue(forKey: autopilotHistoryOrder.removeFirst())
         }
-        logger.info("Model autopilot command=\(command.commandId) status=\(status.rawValue) error=\(error ?? "none")")
+        logger.info("Model autopilot command=\(command.commandId) status=\(status.rawValue) error=\(error ?? "none") detail=\(detail ?? "none")")
         autopilotGeneration &+= 1
         autopilotLastCommandId = command.commandId
         autopilotLastCommandStatus = status
         publishModelAutopilotSnapshot()
-        emitModelAutopilotStatus(command, status: status, error: error, send: send)
+        emitModelAutopilotStatus(command, status: status, error: error, detail: detail, send: send)
     }
 
+    /// `detail` is consented detail: an operation that outlived revoked
+    /// consent, or a replayed result, answers exactly as before it.
     private func emitModelAutopilotStatus(_ command: ModelAutopilotCommand,
-        status: ModelAutopilotStatus.State, error: String? = nil, send: SendHandle) {
+        status: ModelAutopilotStatus.State, error: String? = nil, detail: String? = nil, send: SendHandle) {
         guard let snapshot = state.modelAutopilot else { return }
         send.send(.modelAutopilotStatus(ModelAutopilotStatus(commandId: command.commandId,
-            status: status, error: error, modelAutopilot: snapshot)))
+            status: status, error: error, detail: autopilotConsented ? detail : nil, modelAutopilot: snapshot)))
     }
 }
 
 private struct AutopilotFailure: LocalizedError {
     let message: String
-    init(_ message: String) { self.message = message }
+    let detail: String?
+    init(_ message: String, detail: String? = nil) {
+        self.message = message
+        self.detail = detail
+    }
     var errorDescription: String? { message }
 }

@@ -38,4 +38,7 @@ final class AutopilotRecorder: @unchecked Sendable {
     var legacyStatuses: [ProviderMessage.LoadModelStatus.Status] {
         lock.withLock { messages.compactMap { if case .loadModelStatus(_, let status, _) = $0 { return status }; return nil } }
     }
+    var legacyErrors: [String?] {
+        lock.withLock { messages.compactMap { if case .loadModelStatus(_, _, let error) = $0 { return .some(error) }; return nil } }
+    }
 }

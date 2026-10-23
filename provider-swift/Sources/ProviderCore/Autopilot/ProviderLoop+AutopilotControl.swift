@@ -28,7 +28,7 @@ extension ProviderLoop {
     }
 
     var autopilotOperationView: DaemonState.AutopilotOperation? {
-        let last = autopilotLastCommandId.flatMap { autopilotHistory[$0]?.0 }
+        let last = autopilotLastCommandId.flatMap { autopilotHistory[$0]?.command }
         guard let command = autopilotCommand ?? last else { return nil }
         return .init(reason: command.reason ?? "coordinator placement", target: command.loadModelId,
             releasing: command.unloadModelIds, elapsedMs: autopilotCommand == nil ? autopilotLastElapsedMs : nil)

@@ -204,7 +204,7 @@ extension ProviderLoop {
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         try checkAutopilotLoadOwnership(autopilotCommandId)
-        guard autopilotAllowsModel(modelId)
+        guard autopilotServesModel(modelId)
             || (autopilotCommandId != nil && autopilotCommand?.commandId == autopilotCommandId
                 && autopilotCommand?.loadModelId == modelId)
         else { throw InferenceError.modelLoadFailed("model_not_selected") }
@@ -1143,6 +1143,9 @@ extension ProviderLoop {
         // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)
+        // Leaving residency ends any Autopilot placement now: the awaits below
+        // must not let a new request reload an adopted model under it.
+        reconcileAutopilotPlacements()
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
         // load-admission counts as used — without this the box 503s every load
         // until restart.
@@ -1290,11 +1293,15 @@ extension ProviderLoop {
 
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
     /// pre-accept admission decisions. Callers still recheck after suspension;
-    /// unloadModel(forEviction:) is the authoritative final gate.
+    /// unloadModel(forEviction:) is the authoritative final gate. An Autopilot
+    /// placement hold is created only by a settled operation, which excludes
+    /// concurrent loads, so a slot cannot become held after this snapshot.
     internal func evictableModelSlots() -> [String: ModelSlot] {
         let modelsWithInflight = Set(requestToModel.values)
+        let now = ContinuousClock.now
         return modelSlots.filter {
             !(autopilotProtectsPins && autopilotPinnedModels.contains($0.key))
+                && !autopilotHoldsModel($0.key, now: now)
                 && !modelsWithInflight.contains($0.key)
                 && !hasLocalReservation($0.key)
                 && !modelsUnloading.contains($0.key)

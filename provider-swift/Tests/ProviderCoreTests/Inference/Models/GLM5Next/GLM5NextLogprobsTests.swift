@@ -11,50 +11,34 @@ import Testing
     static let enabled =
         ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC"] == "1"
 
-    /// Generated tokens and text of a plain request, with any bridge errors.
-    static func serve(bridge: EngineV2Bridge, request: ChatCompletionRequest, requestID: String,
-                      prompt: [Int] = [3, 3]) async -> (tokens: Int, text: String, errors: [String]) {
-        let stream = await bridge.submitTokenized(
-            promptTokens: prompt, request: request, requestId: requestID, cacheEnabled: false)
-        var tokens = 0
-        var text = ""
-        var errors: [String] = []
-        for await event in stream {
-            if case .chunk(let chunk) = event { text += chunk }
-            if case .info(_, let count, _, _) = event { tokens = count }
-            if case .error(let reason) = event { errors.append(reason) }
-        }
-        return (tokens, text, errors)
-    }
-
-    struct LogprobRun: Sendable {
+    /// One request's text, generated-token count and bridge errors, and the
+    /// entries its relay channel received when it asked for logprobs.
+    struct Served: Sendable {
         var text = ""
         var generated = 0
         var errors: [String] = []
         var entries: [SSETokenLogprob] = []
     }
 
-    /// One greedy logprobs request through the relay channel.
-    static func serveLogprobs(bridge: EngineV2Bridge, catalogID: String, prompt: [Int],
-                              maxTokens: Int, top: Int, requestID: String) async throws -> LogprobRun {
-        let channel = EngineV2LogprobsChannel()
+    /// One request through the bridge relay path; a `logprobs` request gets
+    /// a relay channel.
+    static func serve(bridge: EngineV2Bridge, request: ChatCompletionRequest, requestID: String,
+                      prompt: [Int] = [3, 3]) async throws -> Served {
+        let channel = request.logprobs == true ? EngineV2LogprobsChannel() : nil
         let stream = try await bridge.submitTokenized(
-            promptTokens: prompt,
-            request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: maxTokens,
-                           logprobs: true, top_logprobs: top),
-            requestId: requestID, cacheEnabled: false, logprobsChannel: channel,
-            firstContentDeadline: nil)
-        var run = LogprobRun()
+            promptTokens: prompt, request: request, requestId: requestID, cacheEnabled: false,
+            logprobsChannel: channel, firstContentDeadline: nil)
+        var served = Served()
         for await event in stream {
             switch event {
-            case .chunk(let text): run.text += text
-            case .info(_, let count, _, _): run.generated = count
-            case .error(let reason): run.errors.append(reason)
+            case .chunk(let text): served.text += text
+            case .info(_, let count, _, _): served.generated = count
+            case .error(let reason): served.errors.append(reason)
             default: break
             }
         }
-        run.entries = channel.drain()
-        return run
+        served.entries = channel?.drain() ?? []
+        return served
     }
 
     /// Runs `body` on a protected GLM bridge with embedded serial MTP, then
@@ -119,23 +103,14 @@ import Testing
     func protectedNativeEngineServesRelayLogprobs() async throws {
         try await Self.withProtectedBridge { bridge, engine, catalogID in
             #expect(engine.acceptsLogprobRows)
-            let channel = EngineV2LogprobsChannel()
-            let stream = try await bridge.submitTokenized(
-                promptTokens: [3, 3],
+            let served = try await Self.serve(
+                bridge: bridge,
                 request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 3,
                                logprobs: true, top_logprobs: 2),
-                requestId: "glm-logprobs", cacheEnabled: false, logprobsChannel: channel,
-                firstContentDeadline: nil)
-            var generated = 0
-            var errors: [String] = []
-            for await event in stream {
-                if case .info(_, let count, _, _) = event { generated = count }
-                if case .error(let reason) = event { errors.append(reason) }
-            }
-            let entries = channel.drain()
-            #expect(errors.isEmpty && generated == 3, "logprobs request errors: \(errors)")
-            #expect(entries.count == generated)
-            for entry in entries {
+                requestID: "glm-logprobs")
+            #expect(served.errors.isEmpty && served.generated == 3, "logprobs request errors: \(served.errors)")
+            #expect(served.entries.count == served.generated)
+            for entry in served.entries {
                 #expect(entry.logprob.isFinite && entry.logprob <= 0)
                 #expect(entry.bytes == entry.token.utf8.map(Int.init))
                 #expect(entry.topLogprobs.count == 2)
@@ -147,11 +122,11 @@ import Testing
                 })
             }
             #expect(try #require(engine.mtpMetricsSnapshot()).proposedTokens == 0)
-            let plain = await Self.serve(
+            let plain = try await Self.serve(
                 bridge: bridge,
                 request: .init(model: catalogID, messages: [], temperature: 0, max_tokens: 8),
                 requestID: "glm-plain-after-logprobs")
-            #expect(plain.tokens == 8 && plain.errors.isEmpty, "plain request errors: \(plain.errors)")
+            #expect(plain.generated == 8 && plain.errors.isEmpty, "plain request errors: \(plain.errors)")
             #expect(try #require(engine.mtpMetricsSnapshot()).proposedTokens > 0)
             #expect(engine.nativeCompletionFault == nil)
             #expect(await bridge.canSubmitWithNativeOwner())
@@ -169,25 +144,27 @@ import Testing
         try await Self.withProtectedBridge(maxConcurrentRequests: 2) { bridge, engine, catalogID in
             let steps = 10, plainSteps = 20, top = 3
             let prompt = [3, 3], neighbor = [5, 7, 2]
-            let solo = try await Self.serveLogprobs(bridge: bridge, catalogID: catalogID, prompt: prompt,
-                maxTokens: steps, top: top, requestID: "glm-logprobs-solo")
+            let logprobRequest = ChatCompletionRequest(model: catalogID, messages: [], temperature: 0,
+                max_tokens: steps, logprobs: true, top_logprobs: top)
+            let plainRequest = ChatCompletionRequest(model: catalogID, messages: [], temperature: 0,
+                max_tokens: plainSteps)
+            let solo = try await Self.serve(bridge: bridge, request: logprobRequest,
+                requestID: "glm-logprobs-solo", prompt: prompt)
             #expect(solo.errors.isEmpty && solo.generated == steps, "solo errors: \(solo.errors)")
             #expect(solo.entries.count == steps && solo.entries.map(\.token).joined() == solo.text)
             #expect(try #require(engine.mtpMetricsSnapshot()).proposedTokens == 0,
                 "a logprob row must never draft")
-            let plainRequest = ChatCompletionRequest(model: catalogID, messages: [], temperature: 0,
-                max_tokens: plainSteps)
-            let plainSolo = await Self.serve(bridge: bridge, request: plainRequest,
+            let plainSolo = try await Self.serve(bridge: bridge, request: plainRequest,
                 requestID: "glm-plain-solo", prompt: neighbor)
-            #expect(plainSolo.tokens == plainSteps && plainSolo.errors.isEmpty)
+            #expect(plainSolo.generated == plainSteps && plainSolo.errors.isEmpty)
             let before = try #require(engine.mtpMetricsSnapshot()).proposedTokens
 
             async let plain = Self.serve(bridge: bridge, request: plainRequest,
                 requestID: "glm-plain-beside-logprobs", prompt: neighbor)
-            async let batched = Self.serveLogprobs(bridge: bridge, catalogID: catalogID, prompt: prompt,
-                maxTokens: steps, top: top, requestID: "glm-logprobs-beside-plain")
+            async let batched = Self.serve(bridge: bridge, request: logprobRequest,
+                requestID: "glm-logprobs-beside-plain", prompt: prompt)
             let (plainRun, logprobRun) = try await (plain, batched)
-            #expect(plainRun.tokens == plainSteps && plainRun.errors.isEmpty, "plain errors: \(plainRun.errors)")
+            #expect(plainRun.generated == plainSteps && plainRun.errors.isEmpty, "plain errors: \(plainRun.errors)")
             #expect(plainRun.text == plainSolo.text, "the logprob row changed the plain row's text")
             #expect(logprobRun.errors.isEmpty && logprobRun.generated == steps,
                 "batched errors: \(logprobRun.errors)")

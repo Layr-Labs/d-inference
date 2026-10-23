@@ -726,6 +726,20 @@ memory planning and full release. No environment setting is needed for that
 path. See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
 for exclusions, rollback and the unchanged singleton preference at initial setup.
 
+### Installed tensor-parallel synchronization
+
+| Variable | Installed behavior | Source |
+|---|---|---|
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values leave the worker default unchanged (currently fast synchronization enabled for TP). | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+
+The setting is read from each Mac's own cluster service process; it is not taken
+from its peer or an API request. A terminal export does not update an installed
+service job. Restart jobs with the intended environment, confirm fresh native
+`fast_synch=0 source=launcher` or `fast_synch=1 source=launcher` markers on both
+Macs, and restore/restart the original jobs after the comparison. This does not
+add general environment inheritance or change automatic placement. Native
+progress, width and retirement remain independent validation requirements.
+
 ### Private batch qualification diagnostics
 
 `DARKBLOOM_CLUSTER_BATCH_TRACE=1` and

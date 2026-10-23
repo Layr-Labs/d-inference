@@ -1,6 +1,8 @@
 import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
+import DarkbloomClusterBootstrap
+import DarkbloomClusterSecurity
 @testable import DarkbloomClusterRemote
 @testable import InstalledContract
 
@@ -94,6 +96,36 @@ extension InstalledSessionCheck {
             let profile = try DistributedResidentExecutionProfile(capability: plan.capability, generationMode: .tensorParallel,
                 requestTimeout: .seconds(10))
             try require(profile.supportsLogprobs, "Qwen27 TP width lost actual native raw-logprob capture")
+            // Both local service roles use this exact launcher. Only the typed
+            // local binary setting survives both child environment boundaries.
+            let sync = DistributedInstalledPlan.fastSynchronizationSwitch
+            let baseline = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: child)
+            try require(child[sync] == nil && baseline[sync] == nil, "Absent sync choice changed the worker default")
+            for choice in ["0", "1", "", "true", "false", "2", "-1", "00", "01", " 0", "0\n", "$(false)"] {
+                let caller = [sync: choice, "DYLD_INSERT_LIBRARIES": "must-not-forward",
+                    "MLX_METAL_FUSED_FENCE_UPDATE": "1", "UNRELATED": "must-not-forward"]
+                let expected = ["0", "1"].contains(choice) ? choice : nil
+                let observedChild = try observed(plan.localOwnerConfiguration(ownerEnvironment: caller))
+                var expectedChild = child
+                if let expected { expectedChild[sync] = expected }
+                try require(observedChild == expectedChild, "Sync choice widened or escaped the fixed owner environment")
+                var expectedNative = baseline
+                if let expected { expectedNative[sync] = expected }
+                let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: observedChild)
+                try require(native == expectedNative, "Sync choice changed unrelated native guards or did not reach the worker")
+                // Exercise the final native launch constructor, not just its environment helper.
+                let binding = try plan.binding(epoch: UUID(), lease: UUID(), incarnation: UUID())
+                let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000_000
+                let starts = try DistributedInstalledNativeStart.starts(plan: plan, epoch: binding.identity.membershipEpoch)
+                let attachment = try ClusterOwnerBootstrapAttachment(profile: .nativeKeyPreludeMesh2, deadline: deadline,
+                    nativeStart: starts[plan.configuration.localRank])
+                defer { attachment.cancel() }
+                let trust = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch: binding.identity.membershipEpoch)[plan.configuration.localRank]
+                let launch = try DistributedInstalledOwner.nativeLaunch(prepared: prepared, binding: binding, deadline: deadline,
+                    startupDeadline: nil, attachment: attachment, dataPlaneTrust: trust, prefixSSDKey: nil,
+                    ownerEnvironment: observedChild)
+                try require(launch.environment == expectedNative, "Final native launch dropped the typed sync choice")
+            }
             try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL)
         }
         for model in ["registered_qwen35_9b", "registered_qwen35_35b_a3b", "unknown"] {
@@ -144,6 +176,13 @@ extension InstalledSessionCheck {
             let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: child)
             try require(Int(native[key] ?? "1") == lanes, "Gemma native lane width differs from its actual owner")
             try require(native[DistributedInstalledPlan.kvBackendSwitch] == nil, "Gemma batching changed the paged default")
+        }
+        let sync = DistributedInstalledPlan.fastSynchronizationSwitch
+        for choice in ["0", "1"] {
+            let caller = [sync: choice]
+            let owner = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: caller))
+            let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: caller)
+            try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
         }
         let diagnostic = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: [key: "8", DistributedInstalledPlan.kvBackendSwitch: "contiguous"])

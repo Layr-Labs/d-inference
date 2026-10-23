@@ -956,6 +956,11 @@ Capacity is not observed decode width: the TP driver briefly coalesces nearby
 owner token credits within the [bounded scheduling contract](inference.md#independent-qwen27-tensor-parallel-batch-lanes).
 A completed native decode marker on both ranks is required to establish a width;
 concurrent HTTP requests alone do not establish it.
+An explicit local `MLX_METAL_FAST_SYNCH=0|1` choice can reach an installed TP
+worker through the typed owner launch. This enables a synchronization comparison
+without changing model placement or arithmetic. The normal worker default is
+unchanged, and either path still requires paired native progress and retirement;
+a service-job setting alone proves neither.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
 (`derive`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`

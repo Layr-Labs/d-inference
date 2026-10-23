@@ -154,18 +154,22 @@ struct DistributedInstalledPlan: Sendable {
         return result
     }
 
-    /// The local leader and link follower pass only their own effective lane
-    /// count to the fixed owner child. Its lease and native worker then derive
-    /// the same width as provider admission; no peer-supplied environment is used.
+    /// The local leader and link follower pass their own effective lane count
+    /// and optional typed synchronization choice to the fixed owner child.
+    /// No peer-supplied environment is used.
     func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
         throws -> ClusterLocalOwnerConfiguration {
         try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
-            batchLanes: batchLanes(ownerEnvironment))
+            batchLanes: batchLanes(ownerEnvironment),
+            fastSynchronization: fastSynchronization(ownerEnvironment))
     }
 
     func nativeEnvironment(matrix: URL,
                            ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var environment = baseNativeEnvironment(matrix: matrix)
+        if let fast = fastSynchronization(ownerEnvironment) {
+            environment[Self.fastSynchronizationSwitch] = fast ? "1" : "0"
+        }
         let prefixCacheOff = prefixCacheOff(ownerEnvironment)
         if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
         // The prefix cache's SSD tier (on with the cache; see the type). Its
@@ -212,6 +216,17 @@ struct DistributedInstalledPlan: Sendable {
         ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
             || !DistributedInstalledPrefixSSD.productSettings(home: paths.homeDirectory).prefixCacheEnabled
     }
+    /// Only an explicit local binary choice reaches a TP rank; absence and
+    /// malformed values retain the worker's synchronization default.
+    private func fastSynchronization(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.fastSynchronizationSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    static let fastSynchronizationSwitch = "MLX_METAL_FAST_SYNCH"
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
     static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"

@@ -36,3 +36,5 @@
   do not establish universal TP, media parity or release readiness; Qwen27 TP
   text speculation remains unfinished; full-artifact prefix/media qualification
   and final automatic-planner validation remain separate gates.
+
+- Preserve an explicit local fast-synchronization diagnostic choice through both installed TP owner and native worker launches. Only canonical `0` or `1` is forwarded; normal defaults and placement remain unchanged.

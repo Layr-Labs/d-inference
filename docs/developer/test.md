@@ -1358,7 +1358,12 @@ eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
 started. The checks preserve the singleton and GLM tensor-parallel defaults;
 actual multi-lane output, encrypted transport and retirement still require
-qualification on both Macs.
+qualification on both Macs. The same real-child checks pass canonical local
+`MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
+reject free-text spellings from forwarding, preserve unrelated native guards,
+and keep absent/default and non-TP behavior unchanged. They do not establish
+Metal progress; require fresh bilateral native startup markers and completed
+batch retirement in the installed synchronization comparison.
 
 ### Gemma per-request decode equality
 

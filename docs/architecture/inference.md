@@ -2293,6 +2293,14 @@ admission from offering multiple lanes while the sanitized owner child silently
 falls back to one. Both workers still bind their lane count in load agreement
 and refuse a disagreement before serving.
 
+For installed tensor-parallel diagnostics, each Mac may also resolve its own
+`MLX_METAL_FAST_SYNCH=0|1` into an optional boolean. The fixed owner launcher
+passes its canonical binary spelling, and the native launch preserves it.
+Absent or malformed values leave the worker default unchanged; non-TP modes
+do not forward it. The service's arbitrary environment, peer inputs and secrets
+remain excluded. A job setting alone is insufficient evidence: fresh native
+startup must report `fast_synch=0 source=launcher` for a slow-fence diagnostic.
+
 Optional Qwen batch diagnostics leave selection and scheduling unchanged.
 `QwenBatchStepSummary` records decode-width and token-credit counts, emitting
 one content-free summary per batch. `QwenBatchRowCapture` copies selected

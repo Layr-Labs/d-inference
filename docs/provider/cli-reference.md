@@ -1925,6 +1925,17 @@ See [automatic local cluster batching](../architecture/inference.md#automatic-lo
 for memory bounds, lifecycle and exclusions. Source:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchFactory.swift`.
 
+### Installed tensor-parallel synchronization diagnostic
+
+A local `MLX_METAL_FAST_SYNCH=0` or `1` in each Mac's cluster service
+process reaches its fixed owner child and native TP worker as a typed boolean.
+Only those exact values are forwarded; absence keeps the worker's normal default.
+This is a diagnostic, not a placement or batch-width setting. Installed service
+jobs do not inherit a later terminal's environment: supply the setting in each
+service job and restart the service before the comparison. Verify fresh native
+`darkbloom-collective-sync-v1` startup lines on both Macs, then restore the jobs
+and restart after the diagnostic. See the [configuration contract](../reference/configuration.md#installed-tensor-parallel-synchronization).
+
 ### Qwen27 tensor batch planning metadata
 
 The private `darkbloom-cluster-plan tensor-batch-scope --model-dir DIR

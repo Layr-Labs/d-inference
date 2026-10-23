@@ -512,7 +512,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
         // Only the GLM text path withholds and validates a JSON answer or a
         // forced call.
-        if glmMedia, prepared.glmResponseFormat != nil || prepared.requiresToolCall {
+        if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
             await releaseBox.fire()
             let mode = prepared.requiresToolCall ? "required/named tool_choice" : "JSON response_format"
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
@@ -985,8 +985,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // GLM's JSON answer and forced calls are withheld until they validate,
         // so its reasoning must already be a separate typed channel, as on the
         // native families.
-        let withholdsGLMOutput = prepared.glmResponseFormat != nil
-            || (GLM5NextPromptPolicy.applies(modelType: modelType) && prepared.requiresToolCall)
+        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,

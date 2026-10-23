@@ -323,12 +323,11 @@ enum GLM5NextPromptPolicy {
         controls: ChatTemplateControls
     ) throws -> ProviderPromptContractPipeline.NormalizedInput {
         let context = try additionalContext(request: request, controls: controls)
-        guard !prepared.requiresToolCall else {
-            throw invalid("required/named tool_choice is not qualified by the native prompt format")
-        }
-        // A JSON response_format renders the service's instruction message;
-        // the answer is withheld and validated after generation
-        // (`GLM5NextResponseFormat`), never constrained here.
+        // Neither mode is constrained here. Required/named choice renders the
+        // forcing instruction already in `prepared.messages`, and a JSON
+        // response_format the service's instruction message; the call or
+        // answer is withheld and validated after generation
+        // (`ToolConstraintValidation`, `GLM5NextResponseFormat`).
         guard request.responseFormat?.requiresJSONOutput != true || prepared.glmResponseFormat != nil else {
             throw invalid("JSON response_format requires its output validator")
         }
@@ -387,7 +386,14 @@ enum GLM5NextPromptPolicy {
             }
             return try value.mapValues { try templateValue($0) as any Sendable }
         }
-        let visibleTools = prepared.mode == .none ? nil : originalTools
+        // A named choice offers only its function, as every other family's
+        // prepared tools do.
+        let visibleTools: [OpenAITool]?
+        switch prepared.mode {
+        case .none: visibleTools = nil
+        case .named(let name): visibleTools = originalTools?.filter { $0.function.name == name }
+        case .auto, .required: visibleTools = originalTools
+        }
         let tools: [[String: any Sendable]]? = try visibleTools?.map {
             try $0.toolSpec().mapValues { try templateValue($0) as any Sendable }
         }

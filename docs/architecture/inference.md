@@ -884,8 +884,13 @@ the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the shared
 fail-closed subset) before it is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). The rows
-carry no constraint, so they stay MTP-eligible.
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
+`tool_choice` (required or a named function) is structured post-validation, as
+on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
+parser withholds the call until end of stream, and `ToolConstraintValidation`
+must accept it before it is exposed (`ToolChoiceEnforcementPolicy.forcedStrategy`).
+The provider advertises it for the managed GLM identities. Neither mode
+installs a constraint, so these rows stay MTP-eligible.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it

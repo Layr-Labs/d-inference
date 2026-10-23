@@ -234,9 +234,10 @@ struct GLM5NextMediaRoutingTests {
         #expect(capture.requests.isEmpty)
     }
 
-    /// Only the GLM text path withholds and validates a JSON answer, so media
-    /// with a JSON response_format is refused before any media work.
-    @Test func jsonResponseFormatWithMediaIsRefusedBeforePreparation() async throws {
+    /// Only the GLM text path withholds and validates a JSON answer or a forced
+    /// call, so media with either is refused before any media work.
+    @Test(arguments: ["json", "required", "named"])
+    func withheldOutputModesWithMediaAreRefusedBeforePreparation(mode: String) async throws {
         let engine = GLMScriptedEngine()
         let bridge = EngineV2Bridge(
             engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
@@ -248,9 +249,17 @@ struct GLM5NextMediaRoutingTests {
                 return preparedSubmission()
             }, emitTelemetry: { _ in })
         var request = imageRequest()
-        request.responseFormat = .jsonObject()
+        if mode == "json" {
+            request.responseFormat = .jsonObject()
+        } else {
+            request.tools = [OpenAITool(function: .init(name: "ping", parameters: .object([
+                "type": .string("object"), "properties": .object([:]),
+            ])))]
+            request.toolChoice = mode == "required" ? .mode(.required) : .function(name: "ping")
+        }
+        let refused = mode == "json" ? "JSON response_format" : "required/named tool_choice"
         await #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "GLM5: JSON response_format is not supported with image or video input")) {
+            "GLM5: \(refused) is not supported with image or video input")) {
             _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
         }
         #expect(capture.requests.isEmpty && engine.submitted.isEmpty)

@@ -534,16 +534,31 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
-    @Test func modesDoNotAdvertiseConstrainedDecodingFromInstructions() throws {
+    @Test func forcedAndJSONModesRenderTheirInstructionsWithoutConstraints() throws {
         let tool = OpenAITool(function: .init(name: "ping", parameters: .object([
             "type": .string("object"), "properties": .object([:]),
         ])))
-        for choice: OpenAIToolChoice in [.mode(.required), .function(name: "ping")] {
-            let request = OpenAIChatCompletionRequest(model: "m", messages: [], tools: [tool], toolChoice: choice)
-            #expect(throws: (any Error).self) {
-                try GLM5NextPromptPolicy.normalizedTextInput(request: request,
-                    prepared: ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next"), controls: .init())
+        let other = OpenAITool(function: .init(name: "pong", parameters: .object([
+            "type": .string("object"), "properties": .object([:]),
+        ])))
+        // Forced choices render the shared forcing instruction; the call is
+        // withheld and validated after generation. Named offers one function.
+        for (choice, offered) in [(OpenAIToolChoice.mode(.required), ["ping", "pong"]), (.function(name: "ping"), ["ping"])] {
+            let request = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .user, content: .text("Hi"))],
+                tools: [tool, other], toolChoice: choice)
+            let input = try GLM5NextPromptPolicy.normalizedTextInput(request: request,
+                prepared: ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next"), controls: .init())
+            let names = input.tools?.compactMap { tool -> String? in
+                guard case .object(let function)? = tool["function"] as? Jinja.Value,
+                    case .string(let name)? = function["name"] else { return nil }
+                return name
             }
+            #expect(names == offered)
+            let instruction = input.messages.compactMap { message -> String? in
+                if case .string(let text)? = message["content"] as? Jinja.Value { return text }
+                return nil
+            }
+            #expect(instruction.contains { $0.contains("Your entire response must consist of") })
         }
         // JSON output renders unchanged; its answer is withheld and validated
         // after generation, never constrained by the prompt policy.

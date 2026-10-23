@@ -510,11 +510,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
-        // Only the GLM text path withholds and validates a JSON answer.
-        if glmMedia, prepared.glmResponseFormat != nil {
+        // Only the GLM text path withholds and validates a JSON answer or a
+        // forced call.
+        if glmMedia, prepared.glmResponseFormat != nil || prepared.requiresToolCall {
             await releaseBox.fire()
+            let mode = prepared.requiresToolCall ? "required/named tool_choice" : "JSON response_format"
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "GLM5: JSON response_format is not supported with image or video input")
+                "GLM5: \(mode) is not supported with image or video input")
         }
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
@@ -980,9 +982,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
-        // GLM's JSON answer is withheld until it validates, so its reasoning
-        // must already be a separate typed channel, as on the native families.
-        let withholdsGLMAnswer = prepared.glmResponseFormat != nil
+        // GLM's JSON answer and forced calls are withheld until they validate,
+        // so its reasoning must already be a separate typed channel, as on the
+        // native families.
+        let withholdsGLMOutput = prepared.glmResponseFormat != nil
+            || (GLM5NextPromptPolicy.applies(modelType: modelType) && prepared.requiresToolCall)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
@@ -996,11 +1000,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // without fabricating prompt/seed bytes. Output permission is the
             // independently validated Boolean, never this generic probe.
             nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
-                ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMAnswer
+                ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMOutput
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil),
-            recordsWithheldOutput: withholdsGLMAnswer,
+            recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                 .init(modelId: modelId, modelType: modelType)),
             nativeGemmaChannels: modelType == "diffusion_gemma",

@@ -280,6 +280,115 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
+    // MARK: - Forced tool_choice
+
+    /// OpenRouter's captured `orIncidentAuto` request, byte for byte as the
+    /// platform conformance fixture holds it (`coordinator/tests/internal/
+    /// conformance/incident_fixtures.go`): its `strict` weather tool with
+    /// thinking off. The capability tests replace only `tool_choice`.
+    static let capturedOpenRouterToolAuto = #"{"messages":[{"content":"What is the weather like in Boston, MA in fahrenheit?","role":"user"}],"reasoning":{"enabled":false},"stream":true,"tool_choice":"auto","tools":[{"function":{"description":"Get the current weather in a given location","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"},"strict":true},"type":"function"}]}"#
+    static let weatherCall = "<tool_call>get_current_weather<arg_key>location</arg_key><arg_value>Boston, MA</arg_value><arg_key>unit</arg_key><arg_value>fahrenheit</arg_value></tool_call>"
+    static var requiredChoice: Any { "required" }
+    static var namedChoice: Any { ["type": "function", "function": ["name": "get_current_weather"]] }
+
+    static func forcedToolBody(_ choice: Any, replacing fields: [String: Any] = [:]) throws -> [String: Any] {
+        var body = try #require(JSONSerialization.jsonObject(
+            with: Data(capturedOpenRouterToolAuto.utf8)) as? [String: Any])
+        body["model"] = model
+        body["tool_choice"] = choice
+        body.merge(fields) { _, replacement in replacement }
+        return body
+    }
+
+    /// OpenRouter's `tool-choice-required` and `tool-choice-function`. The
+    /// coordinator refused both (no GLM provider advertised the tool-constraint
+    /// protocol) and the provider refused them in its prompt policy. Now the
+    /// forcing instruction renders, the call is withheld until it parses and
+    /// validates, and it is exposed as one OpenAI tool call.
+    @Test(arguments: ["required", "named"])
+    func openRouterForcedToolChoiceIsServedWithAValidatedCall(choice: String) async throws {
+        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice)
+        let prompts = PromptCapture()
+        let served = try await serve(body, output: ["\n", Self.weatherCall], prompts: prompts)
+        #expect(served.error == nil && served.content.isEmpty && served.reasoning.isEmpty)
+        #expect(served.toolCalls.count == 1 && served.toolCalls.first?.name == "get_current_weather")
+        let arguments = try #require(try JSONSerialization.jsonObject(
+            with: Data((served.toolCalls.first?.arguments ?? "").utf8)) as? [String: String])
+        #expect(arguments == ["location": "Boston, MA", "unit": "fahrenheit"])
+        #expect(served.finishReason == "tool_calls")
+        let prompt = try #require(prompts.prompts.first)
+        #expect(prompt.contains("<tools>\n{\"description\": \"Get the current weather in a given location\", \"name\": \"get_current_weather\""))
+        #expect(prompt.contains(choice == "required"
+            ? "Call the declared function 'get_current_weather' now." : "even when another function seems more relevant"))
+        #expect(prompt.hasSuffix("fahrenheit?\n\nCall the declared function 'get_current_weather' now. You must emit one or more 'get_current_weather' tool calls with valid arguments before any final answer, "
+            + (choice == "required" ? "even when the user's request does not require the tool. " : "even when another function seems more relevant. ")
+            + "Include all independent calls to 'get_current_weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. "
+            + "Your entire response must consist of " + (choice == "required" ? "tool calls" : "'get_current_weather' tool calls")
+            + "; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.<|assistant|><think>"))
+        #expect(served.firstWithheldOutputAt != nil)
+    }
+
+    /// With thinking on, reasoning streams first and the withheld call follows.
+    /// A named choice offers only the selected function.
+    @Test func forcedCallAfterReasoningStreamsTheReasoningFirst() async throws {
+        var body = try Self.forcedToolBody(Self.namedChoice, replacing: ["reasoning": ["enabled": true]])
+        var tools = try #require(body["tools"] as? [[String: Any]])
+        tools.append(["type": "function", "function": ["name": "get_forecast",
+            "parameters": ["type": "object", "properties": ["city": ["type": "string"]]]] as [String: Any]])
+        body["tools"] = tools
+        let prompts = PromptCapture()
+        let served = try await serve(body, output: [
+            "Boston weather needs the tool", " in fahrenheit.</think>", Self.weatherCall,
+        ], prompts: prompts)
+        #expect(served.error == nil)
+        #expect(served.reasoning == "Boston weather needs the tool in fahrenheit.")
+        #expect(served.order.first == "reasoning" && served.order.last == "tool" && served.content.isEmpty)
+        #expect(served.toolCalls.map(\.name) == ["get_current_weather"])
+        let prompt = try #require(prompts.prompts.first)
+        #expect(!prompt.contains("get_forecast"))
+    }
+
+    /// Prose, a missing call, the wrong function, a schema violation, a
+    /// truncated frame or a call with trailing text is a typed 422 and nothing
+    /// is exposed.
+    @Test(arguments: [
+        ("required", ["PRIVATE: it is 72F in Boston."], CBv2FinishReason.stop),
+        ("required", ["PRIVATE " + weatherCall], .stop),
+        ("required", [weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")], .stop),
+        ("named", ["<tool_call>get_forecast<arg_key>city</arg_key><arg_value>PRIVATE</arg_value></tool_call>"], .stop),
+        ("named", [String(weatherCall.prefix(60))], .length),
+        ("named", [weatherCall + "PRIVATE trailing"], .stop),
+    ])
+    func noncompliantForcedOutputIsATyped422WithNothingExposed(
+        choice: String, output: [String], finish: CBv2FinishReason
+    ) async throws {
+        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice)
+        let served = try await serve(body, output: output, finish: finish)
+        #expect(served.toolCalls.isEmpty && served.content.isEmpty && served.finishReason == nil)
+        let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
+        guard case .toolChoiceViolation(let message) = error else {
+            Issue.record("unexpected \(error)"); return
+        }
+        #expect(!message.contains("PRIVATE"))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+    }
+
+    /// The coordinator routes required/named GLM requests only to providers
+    /// that list the concrete model under tool-constraint protocol v1.
+    @Test func providerAdvertisesForcedToolChoiceForTheGLMServingIdentity() throws {
+        func model(_ id: String, _ type: String?) -> ModelInfo {
+            ModelInfo(id: id, modelType: type, sizeBytes: 1, estimatedMemoryGb: 1)
+        }
+        let models = [model(Self.model, "glm5_next"), model(GLM5NextLocalQualification.modelID, "glm5_next"),
+                      model("glm-5.3-flash-unqualified", "glm5_next"), model(Self.model, "llama")]
+        let bytes = try CoordinatorClientCodec.encodeOutboundMessage(.modelsUpdate(models: models))
+        guard case .modelsUpdate(let update) = try ProviderProtocolCodec.decodeProviderMessage(from: bytes) else {
+            Issue.record("expected models_update"); return
+        }
+        #expect(update.toolConstraintProtocol == 1)
+        #expect(update.toolConstraintModels == [GLM5NextLocalQualification.modelID, Self.model].sorted())
+    }
+
     /// Unsupported shapes stay explicit client errors before any generation.
     @Test func unsupportedJSONShapesAreRefusedBeforeGeneration() async throws {
         var withTools = Self.jsonObjectBody()

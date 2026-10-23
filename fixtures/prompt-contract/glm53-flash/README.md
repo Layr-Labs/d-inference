@@ -43,10 +43,9 @@ not Swift/Rust parity evidence.
 The GLM text path preserves raw schemas and nulls after trusted model-type
 selection. Media still requires a verified native wrapper; the reasoning-control
 resolver itself has no unconditional family-wide media prohibition. GLM has no
-constrained decoding: `strict` tools and JSON output modes are served by
-validating the generated output before it is exposed, and forced tool choice
-remains an explicit refusal. These vectors render prompts only; they do not
-qualify any of those modes.
+constrained decoding: `strict` tools, forced tool choice and JSON output modes
+are served by validating the generated output before it is exposed. These
+vectors render prompts only; they do not qualify any of those modes.
 
 The `metadata.json` `claims` flags describe only what this fixture corpus proves.
 In particular, `media: false` means these vectors do not qualify media rendering

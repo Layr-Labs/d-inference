@@ -1,4 +1,5 @@
-### GLM-5.3-Flash serves JSON mode and structured outputs
+### GLM-5.3-Flash serves JSON mode, structured outputs and forced tool choice
 
 - Serve `response_format` `json_object` and `json_schema` on GLM-5.3-Flash text requests instead of refusing them with 400 `invalid_request`. GLM's native engine has no constrained decoding, so the format's instruction steers the model, reasoning streams as usual, and the answer is withheld until generation ends. Only a valid JSON value that satisfies the schema is returned, without markdown fences; anything else fails the request with 422 and no content.
-- A JSON format combined with tools, a schema outside the supported subset, or image and video input is refused with 400.
+- Serve `tool_choice` `required` and a named function on GLM-5.3-Flash text requests, the way Qwen 3.5/3.8 and Nemotron do: the request's forcing instruction is rendered, the call is withheld until it parses and matches the declared schema, and anything else fails with 422 and nothing returned. Providers now advertise this for `glm-5.3-flash`, so the coordinator no longer refuses these requests with 400.
+- A JSON format combined with tools, a schema outside the supported subset, and image or video input with either mode are refused with 400.

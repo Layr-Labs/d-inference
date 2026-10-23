@@ -185,7 +185,12 @@ the shipped template rendered by Swift-Jinja, the serving
 `GLM5NextThinkingTokenizer` and a scripted CBv2 engine standing in for the
 model. JSON `response_format` requests must render the service instruction,
 stream reasoning, expose one validated answer, and fail with a content-free 422
-for prose, schema violations or truncation. The scripted completions prove the
+for prose, schema violations or truncation. OpenRouter's captured `strict`
+weather tool with `tool_choice` `required` or named must render the forcing
+instruction, expose exactly one validated call, and fail with a 422 and nothing
+exposed for prose, a wrong function, a schema violation or a truncated frame;
+the models update must list the GLM serving identity under tool-constraint
+protocol v1. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
 

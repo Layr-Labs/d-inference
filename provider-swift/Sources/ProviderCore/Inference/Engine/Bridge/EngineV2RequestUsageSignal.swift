@@ -245,9 +245,9 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     }
 
     /// Answer output was generated but is withheld until it validates (GLM's
-    /// JSON `response_format`). Like withheld reasoning, its generation ends
-    /// the pre-content interval; it is never counted as reasoning. Recorded
-    /// before any later event is yielded.
+    /// JSON `response_format` and forced calls). Like withheld reasoning, its
+    /// generation ends the pre-content interval; it is never counted as
+    /// reasoning. Recorded before any later event is yielded.
     func recordWithheldOutput() {
         lock.withLock {
             if _firstWithheldOutputAt == nil { _firstWithheldOutputAt = .now }

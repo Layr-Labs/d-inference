@@ -6,9 +6,11 @@ task_cluster="$task_repo/libs/darkbloom-cluster"
 task_sources="$task_provider/Sources/ProviderCore"
 task_fixtures="$task_provider/Tests/ClusterInstalledSessionChecks"
 task_checks="$task_provider/Tests/ClusterConsoleChecks"
-# The real installed-file policy rejects symlinked path components, including
-# /var aliases. Keep the test-owned binaries and files in the checkout tree.
-task_build="$(mktemp -d "$task_provider/.cluster-console.XXXXXXXX")"
+# The installed-file policy rejects symlinked path components. Resolve the
+# temporary root instead of using the checkout, where file-sync services may
+# change a fixture's metadata after its identity has been verified.
+task_temporary="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+task_build="$(mktemp -d "$task_temporary/cluster-console.XXXXXXXX")"
 trap 'rm -rf "$task_build"' EXIT
 task_target="$(uname -m)-apple-macos14.0"
 task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")

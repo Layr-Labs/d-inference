@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -10,6 +10,17 @@ legacy engine and no subprocess. For the memory model see
 [`prefix-cache.md`](prefix-cache.md).
 The [native block adapter](native-block-inference.md) reuses this bridge boundary
 for committed diffusion output and explicit native-container slot ownership.
+
+Cluster logprob admission follows the selected resident runtime. Both installed
+and member-pair serving construct `DistributedResidentExecutionProfile` from the
+verified adapter and selected generation mode; only GLM tensor parallel currently
+captures token logprobs. Other modes return `logprob_capture_unsupported` as HTTP
+400 before either worker reserves the request. Numeric `top_logprobs` limits
+remain separate, and an ordinary request remains admissible after the refusal.
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`
+(`DistributedResidentExecutionProfile.refusal`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation+PairServing.swift`.
 
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
@@ -28,6 +39,52 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2DiffusionVisionPrefill.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/Gemma4TurnStructure.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
+
+## Automatic local cluster batching
+
+`DistributedAutomaticBatchFactory` keeps the initial singleton placement. A
+managed cluster API with queued demand may propose a wider plain pipeline for
+Qwen dense/routed experts, Bonsai, Nemotron Lightning, Gemma, GPT-OSS or the
+MiMo text plain-pipeline owner. It uses the full
+listener request envelope because acquisition precedes tokenization; raw body
+size never reduces the memory charge. `ClusterPlacementBatchScope` prices
+independent state on both ranks for widths 2, 4 and 8. Existing per-request
+admission and LOAD safeguards remain authoritative. GLM, private-image and
+coordinator-installed native-member sessions do not use this
+automatic policy. Explicit diagnostic mode or lane settings retain their choice.
+
+GPT-OSS and MiMo use a separate `ClusterPlacementBatchQuote` from the native
+`batch-scope` metadata helper. It binds the exact width, original chunk and full
+listener prompt/output limits. `ClusterPlacementBatchBudget` retains each
+lane's whole request allowance; GPT-OSS includes page/COW/gather and selected
+prefill charges, while MiMo adds its page supplement and host histories to the
+whole existing state budget. Shared native and host decode workspace is charged
+once beside all lanes. The quote takes conservative maxima across admitted
+nonempty stage cuts and covers the whole-model layer-state floor; it never
+changes singleton layout/request-scope results or discounts LOAD/transient
+reserves. A changed or derived chunk cannot reuse it. Native arithmetic,
+paged-path qualification and useful throughput remain independent gates.
+
+Planning changes no setup. The HTTP host first drains acquired work and proves
+both native owners and its bridge released. The deferred factory resamples
+memory, adopts compatible immutable setups over the authenticated pair control
+link, waits for the follower's exact launched setup digest, and prepares a fresh
+session. The supervisor keeps the same leader listener only after checking its
+process incarnation, both setup identities and empty device journal. A bounded
+handoff record defers a setup-publication or compensation race for at most 60
+seconds; it grants no worker ownership. A failed candidate is fully retired
+before exact previous-setup rollback can prepare another session. Unrelated
+operator changes are never overwritten.
+
+Queued requests retain their original absolute deadlines and may expire during
+planning or loading. The policy grows capacity without idle scale-down; it does
+not infer batch throughput by multiplying a singleton prediction. Initial-mode
+cost calibration and full-artifact throughput qualification remain separate
+from this lifecycle and memory policy. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchFactory.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchPlanner.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift`,
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchScope.swift`.
 
 ## Cluster setup presentation
 
@@ -1976,6 +2033,29 @@ or change consumer/OpenRouter routing.
 
 ### Two-Mac cluster stages (experimental)
 
+The registered `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` revision
+`2026-10-15-base-r2` has its own Prism pipeline row. Its 32 layers admit
+whole-interval cuts 4 through 28; pipeline, compact decode and phase split
+retain F32 activations and the artifact's 4096-wide Hadamard blocks. The 27B
+pack retains its 1024-wide blocks. Configuration, manifest and canonical text
+inventory hashes bind each row before loading; mixed or unsupported blocks
+and a transform file that disagrees with the declaration fail closed. Neither
+Prism row declares tensor parallelism or an inline speculative head. Sources:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift`
+(`QwenDenseRegisteredSpecification`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prism/QwenPrismHadamardStage.swift`
+(`QwenPrismHadamardSource`). This implementation still requires the installed
+worker's numerical and hardware qualification before a pair-serving grant.
+
+The Bonsai 9B qualification request and prompt catalogs bind the same exact
+manifest and runtime identity. `PromptTokenizer` verifies the three tokenizer
+files before encoding the artifact's existing Qwen wrapper; `QualificationRequest`
+selects this row's profile, cuts and Prism arithmetic switches. Its declared
+context is cut by the worker protocol limits in `QualificationLimits`, and
+`PairBatchCancellation` applies the Qwen pipeline lane retirement contract.
+These control-only catalogs live in `libs/darkbloom-cluster-worker/Sources/`;
+request construction does not establish a numerical or hardware qualification.
+
 A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
 runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
 installed owner, driven over the owner-authenticated link control channel, with
@@ -2010,13 +2090,142 @@ below that they are the same share of the observed Mac's memory, never under
 so a smaller Mac takes the share it can hold instead of none. Every load and
 request is still checked against that Mac's memory at that moment.
 
-An admitted batch lane can be withdrawn only before its start command is
-accepted. `WorkerCoordinator` retires that lane while an unrelated lane waits
-for token credit, without consuming the other lane's decisions or queued work.
-Repeated cancellation before retirement shares the pending acknowledgment.
-Accepting start closes this withdrawal window even if native execution is
-still queued; cancelling a started lane retains the batch failure and fenced
-cleanup path. `QwenBatchLaneBook` releases only the withdrawn lane's reservation.
+Explicit placement requests may exceed a layout's default prompt or output
+reference while remaining inside the registered family profile. Both the native
+helper and provider obtain a metadata-only `ClusterPlacementRequestScope` for
+that exact request, bound to the model, artifact and configuration. The provider
+also compares its bounds with the pinned worker capability. The planner applies
+the family's conservative every-rank charge and continues pricing per-layer
+state and transients at the requested context. Missing or mismatched quotes
+refuse extension; default layouts and GLM's exact adapter quotations are
+unchanged. Sources: `ClusterPlacementArtifact.requestedScope` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementArtifact.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementRequestScope.swift`,
+and `ClusterPlacementFlow.decide` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`.
+
+In optional Qwen pipeline batches, decode selection uses each row's own
+request sampler, including its bias, penalties, seed and output history.
+`QwenResidentRuntime.selectBatchTokens` checks the complete logits matrix
+before advancing any sampler. An all-greedy batch keeps the vectorized argmax
+path. Qwen 3.5's batched decode frame scopes its GDN, attention, dense MLP
+and readout projections to singleton matmul arithmetic. Supported ordinary
+affine packed projections broadcast the weights over `[B,1,K]`, preserving
+native `M=1` without repeating the weights. Floating/custom modules (including
+Hadamard transforms) and routed sparse blocks use their original forward once
+per row. The scope applies only to the model's ordinary CBv2 decode entry
+points; singleton, prompt, speculative, Qwen4 and GLM paths keep their original
+graph. Both peers bind `qwen35-row-m1` in batch load agreement v3, so an older
+batch worker cannot silently join. Full-model output agreement remains an
+artifact qualification requirement; projection tests alone do not establish
+recurrent/attention parity or throughput
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35BatchDecodeProjection.swift`,
+`Qwen35BatchDecodeProjection`;
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageSession.swift`,
+`decodeBatch`).
+
+
+Nemotron Lightning's installed plain text pipeline accepts an explicit
+`DARKBLOOM_CLUSTER_BATCH_LANES` width through the existing typed owner launch.
+The default remains one, and speculative, compact, phase-split, tensor-parallel
+and media paths do not gain lanes. The qualification driver admits only the
+registered Lightning row for isolated lane cancellation. Each lane retains
+the existing live memory and request-capacity gates; this source capability
+is not full-artifact or paired throughput qualification. Sources:
+`DistributedInstalledPlan.laneAdapters` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`
+and `PairConfiguration.lanesRetireAlone` in
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairBatchCancellation.swift`.
+
+Qwen's pipeline loop retains an outstanding token credit for each published
+lane. `QwenBatchDecisionProgress` services queued control and polls answers at
+step boundaries; a lane without its answer cannot run another forward. The
+leader still exchanges headers and replies when no lane can advance, with
+`role.none` and no model work. This lets the follower admit a joining request
+while the provider's synchronous reservation is holding the queue needed to
+answer an older token. The installed lane default stays one; multi-lane
+sampling, joining and native output equivalence require separate qualification
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecisionProgress.swift`,
+`QwenResidentRuntime.leadBatch`).
+
+If some decode rows are ready while other decode rows still owe a token
+credit, `QwenBatchDecodeCoalescing` gives nearby answers up to two milliseconds
+from the first partial-ready observation. This absolute scheduling window
+never extends as answers arrive; an unanswered client cannot hold the other
+rows indefinitely. A complete or sole live decode lane needs no clock read or
+delay. Joins, prefills and retirement bypass the window, and every deferred
+step still services control and exchanges a header/reply before the existing
+idle backoff. Cancellation and deadline checks remain before planning. The
+window changes no model arithmetic or token credit. Width and clean throughput
+measurements, separate from output parity, determine its benefit
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecodeCoalescing.swift`).
+
+```mermaid
+flowchart LR
+    A["Service control and poll answers"] --> B["Retire finished lanes and plan work"]
+    B --> C["Exchange header, available work and reply"]
+    C --> D["Publish tokens and retain their credits"]
+    D --> A
+    classDef control fill:#dbeafe,stroke:#1d4ed8,color:#172554;
+    classDef native fill:#dcfce7,stroke:#15803d,color:#14532d;
+    class A,D control;
+    class B,C native;
+```
+
+A step with no available work still exchanges control; it changes no lane's
+native frontier. In the optional plain-pipeline batch loop, cancellation or a
+request deadline retires that lane at a common step boundary. A forward already
+announced by rank 0 completes on both ranks before either leaves it. Rank 1
+reports cancellation in its reply; rank 0's next header names the cancelled
+leave and both ranks validate the request and selected frontier. Batch wire
+version 2 and the load agreement refuse older peers before native work.
+
+`QwenBatchCancellation.retire` attempts every active or tentatively restored
+session's cleanup, verifies closure and discards captured prefixes before
+releasing that lane's charge and publishing retirement. A cleanup failure
+still fails the pair; an acknowledgment never substitutes for native release.
+The loop removes only the retiring lane's token credit. A start accepted but
+not yet joined follows the same matched join/leave protocol, so it cannot be
+withdrawn while the other rank expects it. A reservation whose start was never
+accepted retains the existing withdrawal path. Duplicate cancellation shares
+the worker's pending acknowledgment
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchCancellation.swift`,
+`QwenResidentRuntime.cancelLane`, `QwenBatchLaneBook`, `WorkerCoordinator`).
+
+Native, installed-owner and qualification gates enable independent retirement
+only for the existing Qwen-family lane adapters in plain pipeline with 2...8
+lanes (installed image candidates are excluded). The default stays one. Other
+modes retain their existing failure policy, and GLM tensor-parallel retirement
+and its eight-lane default are unchanged. A cancellation racing an already
+finishing lane retains the existing clean-finish linearization: native state
+is closed and the coordinator reports cancellation, but a valid prompt prefix
+may already have entered the cache. Multi-lane hardware cancellation and
+output agreement remain separate qualification requirements
+(`NativeWorkerRuntime.qwenLanesRetireAlone`,
+`DistributedInstalledPlan.lanesRetireAlone`, `PairConfiguration.lanesRetireAlone`).
+
+The installed provider, owner lease and native worker use the same locally
+resolved lane count. `DistributedInstalledPlan.localOwnerConfiguration` passes
+only that typed 1...8 value through the fixed local-owner launch for the leader
+and link follower; coordinator-member installation carries the same value.
+Unsupported modes and pipeline image profiles keep nil; model defaults are unchanged.
+A malformed override resolves explicitly to one lane on both sides; absence
+cannot silently restore a wider family default.
+`ClusterLocalOwnerConfiguration` validates the integer before child creation and
+adds only its canonical decimal spelling to the otherwise fixed environment.
+No peer-supplied environment or launch argument is accepted. This prevents API
+admission from offering multiple lanes while the sanitized owner child silently
+falls back to one. Both workers still bind their lane count in load agreement
+and refuse a disagreement before serving.
+
+Optional Qwen batch diagnostics leave selection and scheduling unchanged.
+`QwenBatchStepSummary` records decode-width and token-credit counts, emitting
+one content-free summary per batch. `QwenBatchRowCapture` copies selected
+native rows at six fixed output ordinals only when explicitly requested through
+the qualification helper; raw rows, request identities and frontier hashes stay
+in the separately named private directory. Its bounded output is diagnostic
+evidence, not a change to the normal final-row contract or the near-tie rule
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDiagnostics.swift`).
 
 ## Invariants
 
@@ -2305,6 +2514,65 @@ mandatory. See `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibr
 (`execute`, `drainLocalOwnership`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationDispatchFence.swift` (`finish`).
 
+## Measured tensor-parallel costs
+
+`ClusterDecodeSplit` preserves an actual measured shard step at its measured
+share, including a half that runs slower than the whole model. The nonnegative
+floor/weight model is a fallback for unmeasured shares; it cannot cap or replace
+an exact measured point. Equal-rank and fractional-share lookups agree on those
+points. `ClusterServedCalibration` can therefore retain a severe observed
+slowdown when the next plan compares tensor parallel with a pipeline. Finite,
+positive speed-record validation, unmeasured hardware priors, memory gates and
+qualification rules are unchanged. A calibrated estimate is not a new hardware
+qualification or a batch-throughput measurement. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallel.swift`.
+
+## Qwen3.5 routed-expert tensor parallel
+
+The registered `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` text targets
+can use two equal tensor-parallel shares. `QwenResidentModelDefinition` advertises
+the mode for these routed rows; `QwenTensorParallelVerifiedLoad.requireSupportedProduct`
+checks the exact row and equal positive shares before source preparation. Vision
+and the inline speculative head are not loaded for this target-only mode. The
+existing whole-artifact identity, canonical inventories, pinned file reads and
+memory gate still apply.
+
+Qwen3.6's text projections and expert banks use affine4/group64. Its 80 routing
+and shared-expert gate modules use affine8/group64 and remain replicated.
+`QwenTensorParallelPlan.affineQuantization(forModule:)` preserves those per-module
+settings during construction while every divided projection retains default
+packing. The plan admits only complete routing-gate pairs for every layer;
+missing, malformed, extra, non-affine or divided-module overrides are refused
+before tensor reads. MXFP8 vision and MTP payloads remain outside this text path.
+The existing uniform Qwen3.5 and dense packing is unchanged.
+
+Every rank retains the routers and each expert, with half its intermediate
+channels. Verified payloads fuse each expert's gate rows before its up rows:
+`QwenTensorParallelPlan.disposition` assigns two ordered axis-1 ranges, and
+`QwenTensorParallelSlicer.cut` gathers the same ranges from weights, scales and
+biases. For width 512, rank 0 keeps `[0..<256, 512..<768]` and rank 1 keeps
+`[256..<512, 768..<1024]`. The loader materializes each cut before releasing the
+whole tensor; stored separate-bank diagnostic checkpoints retain their existing
+cuts. The registered geometry gives each rank eight query heads, one KV head,
+eight GDN key heads, sixteen GDN value heads and 256 shared/expert channels.
+
+`QwenTensorParallelBlockReduction` computes the local routed/shared block in the
+activation type, widens that combined output to float32, sums it and rounds to
+the activation type. The pre-load agreement binds
+`qwen-moe-block-activation-partials-f32-sum-v1` for routed rows. Dense projections
+keep their existing arithmetic and agreement fields. The routed path retains
+existing kernel eligibility; a half-width projection can use a general kernel.
+These structural cuts do not establish numerical acceptance or a speedup:
+qualification must retain the existing comparator and near-tie rules. Placement
+uses measured keyed link costs and native rates and may select pipeline.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentModelDefinition.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLinear.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`.
+See [focused cluster tests](../developer/test.md#focused-qwen35-moe-tensor-parallel-checks).
+
 ## Exact-quote placement
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.
@@ -2441,3 +2709,378 @@ after the setup terminal exits. A one-way connection failure can expire the
 control lease even while an established native session still runs. Setup lease
 diagnostics retain the dial failure; the lease timeout and election rules stay
 unchanged. See [cluster permissions](../provider/cluster-always-on.md#permissions-asked-once).
+
+
+## GPT-OSS cluster paged KV
+
+The GPT-OSS layer-stage runtime stores full and sliding attention histories in
+request-owned 64-token pages. Pages are allocated as tokens arrive; constructing
+a request cache allocates no KV buffers. Full attention appends pages. Sliding
+attention preserves `RotatingKVCache(keep: 0)` physical ring order for decode and
+its chronological window-minus-one prefix for a multi-token chunk. Absolute
+RoPE offsets, masks, key/value dtypes and learned per-head sinks retain the
+SDK's behavior. The cache gathers a temporary attention view for the existing
+SDPA call; this change does not introduce a paged attention kernel or change
+MXFP4 projections, expert routing, activation functions or residual math.
+
+`GPTOSSPagedKVLayout` binds this policy into the GPT-OSS peer load agreement.
+`GPTOSSLayerStageSession` evaluates page roots with each completed forward and
+synchronizes before dropping request caches on completion or failure. Copies
+share immutable old pages; a later write replaces the affected page handle.
+Sliding histories release old pages when they repack or enter the fixed ring.
+
+`GPTOSSRequestStateBudget` keeps the existing full-request admission scope and
+never lowers its previous contiguous allowance. It also charges each page's
+allocator bound separately, the gathered attention view, and partial-page
+copies; sliding repacking includes old and new page versions. Physical
+allocation is demand-grown even though the request is admitted conservatively
+for its whole declared scope. LOAD and live-memory gates remain authoritative.
+CPU parity against the actual SDK caches covers ring/page/chunk boundaries and
+sinks. Real two-Mac numerical acceptance, resource release and performance
+remain separate qualification gates.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Generation/GPTOSSPagedKVCache.swift`
+(`GPTOSSPagedKVCache`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift`, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Resident/GPTOSSResidentAdmission.swift` (`loadAgreementFingerprint`).
+See [focused cache checks](../developer/test.md#gpt-oss-cluster-paged-kv-checks).
+
+## GPT-OSS native residual dtype
+
+The registered GPT-OSS checkpoint stores its floating parameters in BF16. The
+pinned SDK clips expert activations with scalar limits, preserving BF16 through
+the residual stream, KV state and output head. The cluster profile and loaded
+stage therefore declare BF16; the session refuses a differing native result.
+No forward cast is added. Profile fingerprints bind the dtype, so workers using
+the obsolete float32 promotion contract cannot silently pair with this one.
+
+Placement charges the actual two-byte residual on the wire. Request-state,
+boundary-buffer and score-workspace memory allowances retain their conservative
+four-byte estimates. Exact configuration, manifest and tensor inventory pins,
+MXFP4 experts, affine projections and GLM behavior remain unchanged. Small CPU
+model tests establish the dtype and split-forward behavior; exact-artifact
+hardware numerical acceptance remains a separate qualification gate.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Loading/GPTOSSStageLoading.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Generation/GPTOSSLayerStageSession.swift`, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift`.
+
+### Gemma ordinary batch decode arithmetic
+
+`Gemma4LayerStageModel.layerStageForward` explicitly enables
+`Gemma4BatchDecodeScope` only for decode frames containing 2–8 independent
+one-token requests. Ordinary affine 4/8-bit group-64 projections retain native
+matmul `M=1` through leading weight views; custom and floating modules retain
+their original per-request forward method. The unscaled value RMS reduction
+and each routed expert operation retain singleton request shapes as well.
+The scope owns no cache, changes no shared MLX dispatcher, and is disabled for
+singletons, prefill and speculative rectangles.
+
+Both ranks bind `gemma4-batch-row-m1-v1` and the lane count before loading
+weights (`Gemma4BatchArithmeticAgreement`). Other families and singleton
+agreement bytes remain unchanged. Existing cache ownership, admission,
+fences and retirement remain in the stage session. The projections broadcast
+weight views without replicating checkpoint arrays. No persistent request state
+or allowance changes; full-artifact peak memory remains a hardware check.
+
+The implementation is in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4BatchDecodeProjection.swift`,
+`Gemma4Text.swift` beside it, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4LayerStageModel.swift`.
+Tiny seeded BF16 fixtures exercise the actual Gemma decoder and contiguous
+ring/full caches, mixed quantization, differing histories, reordered membership
+and leaving/rejoining rows. Their CPU checks require identical native logits
+and all live KV values. This is not full-artifact GPU, pair or throughput
+qualification; those checks remain required.
+
+### Qualification records for identical catalog files
+
+The plain `gemma-4-26b` and `gemma-4-26b-8bit` catalog entries have identical
+files and aggregate digest, but distinct manifest pins and runtime identities
+(`Gemma4RegisteredSpecification` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift`).
+`scripts/cluster-bundle-pair-qualifications.sh` accepts both identities only
+for that exact registered aggregate and preserves each record unchanged. Other
+multiple-identity aggregates remain refused. A run of one alias supplies no
+record or serving grant for the other: `ClusterPairServingDecisions` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift`
+continues to scope decisions by runtime identity and artifact.
+
+
+## GPT-OSS independent-history batch forward
+
+`GPTOSSLayerStageSession.decodeBatch` provides a native decode primitive for up
+to eight requests on the same loaded stage. The GPT-OSS plain-pipeline owner
+uses it when the locally selected batch width exceeds one. The default remains
+one while full-artifact arithmetic, cancellation and throughput are qualified.
+
+The SDK's model-local `GPTOSSPerRowAttentionCache` hook accepts each row's
+absolute position and delegates attention to its owner. The cluster supplies an
+ephemeral view of existing request-owned pages, preserving each full or sliding
+history's ordinary physical row order and mask. It never pads histories or
+migrates them into a shared cache. Each request's prefill remains unchanged.
+The independent-history decode path preserves singleton arithmetic for each
+request. Ordinary stored affine8/group64 projections use a leading weight
+broadcast so each native matrix multiply retains M=1, including the final
+output head. Custom modules and other packing keep their original per-row
+forward. Scalar RoPE offsets, RMS normalization and the complete original
+router/MXFP4 expert block execute per row; learned sinks and full/sliding
+attention remain request-local. Stored weights are shared without dequantizing
+or changing the MXFP4 activation math. Ordinary prefill and CBv2 dispatch remain
+unchanged. The multi-lane LOAD agreement binds this arithmetic version, so a
+peer using the former wide projection graph cannot join the same owner.
+Registered-dimension synthetic checks include the full 201088-by-2880 head;
+full-artifact output equality and useful throughput still require pair testing.
+
+Only the registered native BF16 dtype is admitted. Before any forward, the
+primitive refuses other dtypes, duplicate histories, inconsistent
+frontiers or layer geometry, invalid tokens and a foreign residual shape/dtype.
+A session advances its schedule only after evaluating outputs and page roots.
+Any failure retires all participating sessions through the existing synchronized
+cleanup. The primitive does not sample, transfer, reserve memory or publish a
+finished event. The resident driver owns these operations and charges every
+live request separately, with additional batch workspace.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Generation/GPTOSSBatchForward.swift`,
+`GPTOSSBatchAttentionCache.swift`, and `GPTOSSLayerStageSession.swift`; SDK
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSSPerRowAttentionCache.swift` and
+`GPTOSS.swift`. See [native batch checks](../developer/test.md#gpt-oss-native-batch-prerequisite-checks).
+
+### GPT-OSS pipeline lane owner
+
+`GPTOSSBatchDriver` runs the existing lane book and token-credit protocol on both
+ranks. Rank 0 names joining/leaving requests, all ready decode rows and at most
+one original-grid prefill frame per step; rank 1 verifies local request identity,
+frontier and frame before selecting each request's token. Pending token answers
+do not block admission/control progress. Decode uses the native batch primitive;
+full and sliding histories stay request-owned, and the shared selector retains
+each request's seed and penalty history. GPT-OSS does not restore prefixes here.
+
+`GPTOSSBatchSettings` admits widths 2...8 only in plain pipeline mode and binds
+width, BF16 history policy and serial prefill framing into LOAD agreement.
+Other modes use one lane. The fixed installed-owner launcher receives the local
+plan's effective width, so provider admission, owner lease and native worker
+agree. Recording remains single-lane and refuses a concurrent launch before
+opening evidence or loading weights. Qwen-only batch diagnostics remain refused.
+
+Each reservation retains the whole existing request budget, including any
+selected prefill-lookahead host/native allowance. Although this loop transfers
+one prefill frame at a time, it does not reduce that selected schedule's quote.
+Admission adds all other live reservations and bounded batch control, offset,
+attention-output and vocabulary-row workspace; the full LOAD floor is unchanged.
+Cancellation and deadlines finish any announced transfer, retire native state,
+release that lane's charge and then publish its retirement. A failed cleanup
+retains its session and charge until the worker is fenced; it never publishes a
+successful retirement. Other admitted lanes continue after a successful cancel.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Batch/GPTOSSBatchDriver.swift`,
+`GPTOSSNativeBatchExecutor.swift`, `GPTOSSBatchSettings.swift`, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Resident/GPTOSSResidentRuntime+Batch.swift`.
+The worker facade is `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/GPTOSSWorkerRuntime.swift`.
+See [owner checks](../developer/test.md#gpt-oss-batch-owner-checks).
+Nemotron 3.5 Lightning has a separate experimental CBv2 stage-batch entry
+for one-token decode, bounded to eight independent requests. Its attention
+and Mamba input/output projections preserve singleton arithmetic; MLP and
+routed MoE blocks execute their original forward per row. Each row has its
+own KV state and recurrent transaction. After the recurrent forward, native
+one-row gathers retain compact convolution and FP32 SSM buffers, so retiring
+other lanes cannot leave a survivor holding the whole batch allocation.
+The load agreement binds `nemotron35-batch-v1`, `row-m1` and
+`owned-recurrent-rows` for this model when lanes exceed one. Ordinary,
+speculative, Nano, Super and GLM entry points are unchanged. Installed plain
+pipeline owners can carry an explicit width to this primitive; lane defaults
+and public qualification grants are unchanged. Tiny model parity does not
+establish full-artifact output equality, memory headroom or paired throughput.
+Sources: `NemotronH35Model.cbv2BatchedStageResidual` and
+`NemotronH35Model.cbv2BatchedStageLogits` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Nemotron35BatchDecode.swift`,
+`QwenLayerStageSession.decodeBatch` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageSession.swift`,
+and `CBv2StageKVHost.supports` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2StageKVHost.swift`.
+
+### Failed tensor-parallel qualification shapes
+
+A pure tensor-parallel qualification has no layer cuts: every rank shards
+every layer for prefill and decode. Its installed capability still describes
+whole-layer partitions for model metadata. The installed rank guard uses the
+selected generation mode to normalize that bookkeeping cut to the same empty
+list the planner and qualification record use. Pipeline and pipeline-prefill
+hybrid modes keep their layer cuts. A divergent record therefore excludes its
+recorded chip classes at their recorded ranks during both planning and direct
+saved-plan startup; reversing the ranks remains a distinct shape.
+
+`DistributedInstalledPlan.requireLocalRankGranted` performs this normalization.
+`ClusterPairServingDecisions` can explain a withheld family containing only
+no-cut tensor-parallel failures without indexing an absent layer cut. A passing
+run does not override a divergent record of the same shape. Comparator thresholds,
+artifact scoping and the grant rules are unchanged.
+
+
+### Pending requests during a batch mode replacement
+
+`DistributedLocalServer` can accept a trusted `batchReplacement` planner. The default remains absent. When real pending demand justifies a wider mode, the listener keeps its bounded HTTP response registry and FIFO queue while stopping new native acquisitions. Already acquired requests stay with their original generation, deadlines and cancellation hooks until retirement. Only after every pin and engine row retires and both the session and bridge prove release may the deferred factory prepare and start a new generation. Pending requests claim that generation at acquisition; their original absolute queue ceilings do not restart. The first-token/native deadline still begins on queue exit.
+
+Placement may change only for the same model artifact, tokenizer/model contract, full request limits, cluster/member/role and ordered peer binaries/ranks. The host verifies actual new capacity before admission. A failed candidate must release before an optional factory prepares a fresh previous-mode session; unresolved release prevents both replacement and rollback. Setup adoption and supervisor handoff belong to the trusted factory, not an HTTP parameter.
+
+A temporarily unavailable recommendation may be retried after 30 seconds even when queued demand remains unchanged. Increased demand may trigger an earlier attempt; no retry restarts a ticket deadline. This prevents a planner cooldown from permanently stranding a sustained burst at its earlier width.
+
+After successful native start and capacity validation, the host logs `cluster.batch_replan activated` (or `restored` after a fresh rollback) with requested/effective lane counts, generation, process incarnation and installed setup digest/mode. These content-free diagnostics do not establish native kernel width or numerical equivalence.
+
+### GPT-OSS native batch width observations
+
+The resident load record includes the effective configured lane capacity.
+`GPTOSSNativeBatchExecutor` separately emits a size-only
+`darkbloom-gptoss-batch-decode-v1` record when a completed native decode reaches
+a new maximum width. It records the rank, shared batch scope, observed width
+and configured capacity, at most eight times per owner loop. The record follows
+successful output/page evaluation and contains no tokens, logits or prompt text.
+A load width alone does not establish that a wide decode actually ran; these
+observations also do not establish byte equality, peer completion or throughput.
+
+### Native stage batch observations
+
+The shared Qwen/Bonsai, Gemma and Nemotron plain-pipeline owner reports
+`darkbloom-stage-batch-decode-v1 rank=N scope=UUID width=N capacity=N` only
+after `QwenLayerStageSession.decodeBatch` returns with evaluated native output
+and cache/recurrent roots. Each rank reports a new maximum width only, at most
+eight events per owner loop. This is completed native work; the configured
+lane count or HTTP admission capacity alone does not establish that width.
+
+`darkbloom-stage-batch-memory-v1` reports counters at batch begin, first completed
+prefill, each new maximum decode width, and final retirement or failure. Fields
+are backend, capacity, reserved, in_use, materialized, bound_rows and drained.
+Paged materialized bytes come from `PagedKVPool.bytesMaterialized`, separately
+from capacity and request reservations. Contiguous materialization is unavailable,
+not inferred. Retirement preserves the observed counters even if nonzero; a
+failed loop is labeled failed even after successful cleanup. The fixed-size
+`StageBatchObservation` policy reads no request content and suppressed events
+do not read backend counters. This does not change GLM, GPT-OSS or MiMo logging.
+
+### MiMo plain-pipeline independent histories
+
+The registered MiMo text row uses demand-grown pages for one through eight
+requests in its plain-pipeline native owner. `MiMoBatchSettings` keeps the default at one;
+MTP, phase handoff, compact decode and image candidates retain their existing
+single-request paths. Both ranks bind the effective width, 64-token page policy,
+BF16 row arithmetic, original-grid serial prefill and disabled prefix reuse in
+their LOAD agreement. Installed-child admission and qualification propagate
+that same effective width; this is not an automatic planner or serving grant.
+
+`MiMoV26TextModel.decodeIndependentHistories` uses shared affine8 broadcast-M1
+projections and each request's original scalar RoPE, attention mask, learned
+sinks, value scale, complete MXFP4 expert/router graph and fused normalization
+carry. The producer captures the unnormalized final-layer residual; the consumer
+normalizes and projects its own vocabulary rows. Histories are bound to the
+loaded model, request and local layer order. Their full/sliding physical order
+matches the ordinary SDK caches, including unequal key/value widths, while
+64-token pages grow with forwarded rows. Gathered attention arrays are temporary.
+This SDK seam does not change the ordinary validator, engine capabilities,
+speculative rollback, phase handoff or media behavior.
+
+`MiMoLayerStageSession` evaluates every output and page root before committing
+all participating request schedules. `MiMoNativeBatchExecutor` owns native
+execution and encrypted, scoped residual transfer. The model-free
+`IndependentHistoryBatchDriver` reuses the GPT-OSS lane/credit schedule with
+typed reservations: joins, pending token credits, deadlines and cancellation
+retain their existing ordering. Native retirement must succeed before a lane's
+charge is released or completion is acknowledged. GPT-OSS keeps its existing
+typed adapter; no GLM path uses this driver.
+
+Each MiMo lane keeps its entire previous request budget plus separately rounded
+page/COW/gather allowances and both host token-history copies. Shared decode
+workspace is additional. LOAD context admission, reservation and periodic live
+checks all include their applicable host/native charges. `MiMoPagedKVAllowance`
+and `MiMoBatchMemory` are metadata-only pricing helpers, not serving grants.
+
+The resident LOAD record reports `kv_backend=paged` only for this plain text
+page path; other modes report `contiguous`.
+
+`darkbloom-mimo-batch-decode-v1` reports a new maximum completed native width,
+at most eight records per owner loop. Size-only `darkbloom-mimo-batch-memory-v1`
+records report initial owned page bytes, evaluated frontiers at exponential
+token intervals, and zero after synchronized session retirement. Their
+`page_bytes` is owned page-array backing, excluding allocator rounding and
+transient aliases. A separate `phase=drained` record observes the empty lane
+ledger. None of these records contains token IDs, logits or prompt text, and
+none substitutes for full-artifact byte equality, cleanup or throughput tests.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Resident/MiMoResidentRuntime+Batch.swift`,
+`MiMoNativeBatchExecutor` and `MiMoLayerStageSession`; SDK
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26IndependentHistory.swift`
+and `MiMoV26IndependentHistoryCache.swift`. See
+[MiMo independent-history checks](../developer/test.md#mimo-independent-history-batch-checks).
+
+### Gemma paged prefix restoration
+
+Installed plain Gemma pipelines retain the paged KV default at every supported
+lane width (`DistributedInstalledPlan.nativeEnvironment`). Sliding prefix
+tails can exceed a pool's legal prefill write size.
+`CBv2PagedPrefixRestore.write` restores each chronological tail in bounded
+chunks after positioning its absolute frontier; malformed shapes refuse before
+the write, and adoption releases newly allocated rows on error. This does not
+change attention arithmetic or the cached frontier. See
+[the prefix mechanism](prefix-cache.md#cluster-sliding-prefix-adoption) and
+[focused checks](../developer/test.md#gemma-paged-prefix-and-prompt-checks).
+
+## Bonsai 27B packed FP32 rows
+
+The registered Bonsai 27B signed-Hadamard pack preserves the singleton packed
+FP32 reduction for each input row. `HadamardQuantizedLinear.callAsFunction` in
+`libs/mlx-swift/Source/MLXNN/Hadamard.swift` selects this path only for FP32
+multi-row input, affine2/group128, block1024 and stored F16 scales. The signed
+transform and grouped gated-delta layout are unchanged. A leading weight
+dimension keeps the packed projection at M=1 per row, avoiding the
+architecture-dependent TF32 matrix projection without unpacking weights.
+Singleton calls, other packs, ordinary affine modules and global arithmetic
+switches retain their existing paths.
+
+`QuantizedLinear.constantCachedForward` in
+`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact F16-to-F32
+constant caches; the row layout adds no persistent weight or constant copy.
+The registered block4096 Bonsai 9B pack retains its original arithmetic.
+`QwenResidentArithmeticPolicy.prismHadamardRows` adds the
+`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The family policy
+name remains stable while the exact arithmetic SHA changes, so mixed old/new
+ranks refuse the load agreement before reading stage weights.
+
+Independent singleton comparisons and cross-chip projection diagnostics do not
+replace full-artifact qualification. Preserve earlier solo/pair reports and
+failed records; remeasure the candidate with the original comparator and
+qualification schedules. See [the test guide](../developer/test.md).
+
+## Nemotron prefix chunk arithmetic
+
+The registered Nemotron 3.5 Lightning stage preserves the original global
+prefill chunk boundaries when prompt-prefix caching is enabled. Its Mamba
+reductions depend on chunk shape: splitting a final chunk to capture the
+penultimate prompt token changes the scan schedule.
+`QwenLayerStageGenerationRequest.planned` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageGenerationRequest.swift`
+therefore refuses off-grid restored prefixes and does not split Nemotron's
+final prompt token. Both the one-request and batch paths offer only existing
+chunk-grid frontiers. Other model profiles keep their original framing.
+
+The Nemotron-only `nemotron-prefix-chunk-grid-v1` numerical receipt binding
+changes load agreement and cache scope hashes. Mixed implementations cannot
+reuse the previous namespace or agree to load together. No model operator,
+arithmetic environment switch or qualification tolerance changes. See
+[prefix caching](prefix-cache.md#nemotron-chunk-grid-reuse) for the reuse tradeoff.
+
+## Gemma prefix chunk arithmetic
+
+Every registered Gemma 4 pipeline profile preserves its original global
+prefill chunk boundaries when prefix caching is on. The shared
+`QwenLayerStageGenerationRequest` grid policy accepts only existing chunk ends
+and keeps the final chunk intact. Gemma's final-layer tail/query controls,
+model operators and environment requirements remain unchanged.
+`Gemma4ArithmeticEnvironment.Receipt` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4ArithmeticEnvironment.swift`
+binds `gemma4-original-chunk-grid-v1`, separating old final-token-split cache
+scopes and rank agreements for all three registered catalog rows.
+
+This corrects the prefix-on versus prefix-off frame difference; it does not
+resolve or waive a separate cross-chip numerical difference. Each corrected
+full-artifact solo/pair run still uses the existing comparator. See
+[prefix reuse](prefix-cache.md#gemma-chunk-grid-reuse).

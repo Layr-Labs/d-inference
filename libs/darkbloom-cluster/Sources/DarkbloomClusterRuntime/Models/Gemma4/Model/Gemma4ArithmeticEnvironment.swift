@@ -39,6 +39,9 @@ enum Gemma4ArithmeticEnvironment {
         let finalLayerTailRows: Int
         let finalLayerTailMinimumChunk: Int
         let finalLayerLastQuery: Bool
+        /// Prefix on/off use identical prefill chunk shapes; the exact receipt
+        /// separates former final-token-split rank and cache implementations.
+        let prefixFramePolicy = "gemma4-original-chunk-grid-v1"
         let actualProcessEnvironmentMustBePassedBeforeMLXInitialization = true
         let sourceBinaryMetalLibraryAndHardwareIdentityStillRequired = true
         let numericalOrPerformanceQualificationEstablished = false

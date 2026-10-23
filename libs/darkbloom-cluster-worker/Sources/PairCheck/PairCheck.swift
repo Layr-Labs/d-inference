@@ -64,6 +64,9 @@ import Foundation
               [--stage-residency yes|no|off (qualification: yes = both workers hold a standing MLX wired limit for
                                              the loaded stage; off = MiMo runs without its standing residency)]
               [--mimo-step-evidence on (qualification, MiMo: rank 1 reports each selected row's digests and top logits)]
+              [--batch-trace yes|no (qualification: content-free decode-width and credit counts)]
+              [--batch-logit-directory /ABS (qualification: bounded private rows on rank 1's Mac;
+                  plain Qwen pipeline lanes 2...8 and --evidence none; off unless explicitly named)]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
@@ -220,7 +223,7 @@ import Foundation
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
-            "--kv-backend",
+            "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
             "--remote-prefix-ssd-key-file"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
@@ -308,6 +311,11 @@ import Foundation
             guard (1...8).contains(lanes) else { throw Failure("--batch-lanes takes 1...8") }
             configuration.batchLanes = lanes
         }
+        if let trace = fields["--batch-trace"]?.first {
+            guard ["yes", "no"].contains(trace) else { throw Failure("--batch-trace takes yes or no") }
+            configuration.batchTrace = trace == "yes"
+        }
+        configuration.batchLogitDirectory = fields["--batch-logit-directory"]?.first
         if let backend = fields["--kv-backend"]?.first {
             guard ["paged", "contiguous"].contains(backend) else { throw Failure("--kv-backend takes paged or contiguous") }
             configuration.kvBackend = backend

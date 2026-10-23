@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -9,6 +9,71 @@ understand why a box refuses a load that "should fit"; for the operator view
 [`../provider/hardware-requirements.md`](../provider/hardware-requirements.md).
 
 ## Context
+
+Automatic local cluster batching prices each lane's full registered request
+state on each rank, verifies that quote covers the layout's complete layer
+state, and retains ordinary shared work, prefill transients, LOAD and headroom
+charges. It tries bounded widths 2, 4 and 8, resamples both Macs after old-owner
+release, and requires the new placement to fit current admissible memory and
+GPU working set. It never credits old weights back into a stale free-memory
+snapshot. A family without a positive conservative batch quote is excluded.
+See `ClusterPlacementBatchScope` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchScope.swift`
+and [automatic local cluster batching](inference.md#automatic-local-cluster-batching).
+
+The Bonsai 9B cluster row owns a 3,475,181,460-byte manifest refusal bound and
+2,545,600,512 canonical text tensor bytes. Its 202 transform-sign tensors
+(4,358,144 bytes) are verified separately; vision tensors remain outside the
+text stages. Its F32 state estimate is 754,188,320 bytes at the retained
+8,320-token check vector, with the live ceiling derived from admitted context.
+These accounting values are not measured process residency or a pair-serving
+grant; existing load, request and device reserves still apply. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenResidentResourceCeilings.swift`
+(`QwenResidentResourceCeilings`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift`
+(`QwenDenseRegisteredSpecification`).
+
+GPT-OSS cluster KV pages grow with forwarded tokens, while request admission
+still charges its whole declared scope. Per-page allocator overhead, gathered
+attention views and sliding repack transients are explicit; demand growth does
+not waive LOAD or live-memory checks. See
+[GPT-OSS cluster paged KV](inference.md#gpt-oss-cluster-paged-kv) and
+`GPTOSSRequestStateBudget.estimate` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift`.
+
+Optional Qwen plain-pipeline batch cancellation retains a lane's memory charge
+until all its active and tentatively restored native sessions close. It then
+releases only that lane, without changing other lanes' reservations or the
+existing per-request live-memory checks. Failed native cleanup still fails the
+pair. See `QwenBatchCancellation.retire` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchCancellation.swift`
+and the [batch lifecycle](inference.md#context). CPU lifecycle checks do not
+establish hardware memory recovery or multi-lane output equivalence.
+
+A cluster request for a feature its selected runtime does not implement is a
+client error, not evidence of insufficient memory. Unsupported token logprobs
+return HTTP 400 before reservation; see [cluster logprob admission](inference.md)
+and `DistributedResidentExecutionProfile.refusal` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift`.
+
+A cluster layout's planning reference is separate from the worker's actual
+request limits. Extending either reference axis requires the family's exact
+request-state charge; the stored discount slope is never extrapolated upward.
+The existing load and live-memory gates remain authoritative. See
+[cluster request scope accounting](inference.md#two-mac-cluster-stages-experimental)
+and `ClusterPlacementRequestScope.apply` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementRequestScope.swift`.
+
+The registered Qwen3.5 and Qwen3.6 35B A3B text targets admit two equal tensor-parallel
+shares through the same verified source and per-tensor load gate as dense
+Qwen. A shard retains replicated routing and shared request allowances; its
+budget is not half of the single-Mac process footprint. Qwen3.6 retains its
+replicated affine8 routing gates; divided projections remain affine4. Unequal
+routed shares remain refused. See the
+[routed-expert TP mechanism](inference.md#qwen35-routed-expert-tensor-parallel)
+for the exact geometry and arithmetic, and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`
+(`requireSupportedProduct`, `shareBound`).
 
 The unregistered Super builder requires a live pending LOAD lease and preserves
 the ordinary fixed-workspace concurrency floor. Synthetic bridge tests must
@@ -664,6 +729,15 @@ Cluster members use process-owned macOS power assertions while serving. The
 [lifetime and retry rules](inference.md#cluster-serving-and-idle-sleep) apply
 on every supported chip; explicit sleep and lid closure remain OS decisions.
 
+Optional Qwen 3.5 pipeline batches bind their decode arithmetic in the load
+agreement. The supported affine projection uses stock singleton matmul
+arithmetic on each row, with original per-row fallbacks for unqualified module
+contracts. Synthetic M3/M5 projection parity is distinct from full-model and
+paired throughput qualification; installed lane defaults and memory admission
+remain unchanged. See [cluster inference](inference.md#cluster-serving-and-idle-sleep)
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchSettings.swift`
+(`loadAgreementFields`).
+
 ## Finite GLM control evidence
 
 The [finite paired-control retirement](inference.md#finite-glm-paired-control-retirement)
@@ -698,3 +772,119 @@ These bounds are not measured image qualification or a new hardware minimum.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextStageLoadResources.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextImageBudget.swift`, and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`.
+
+### Gemma batch arithmetic evidence boundary
+
+The ordinary Gemma stage decode scope preserves per-request projection, value
+normalization and expert shapes for widths 2–8. CPU tests cover reduced Gemma
+MoE fixtures with the registered affine group-64 formats (default 4-bit with
+shared MLP/router 8-bit, and all 8-bit), BF16 state, sliding rings and full KV.
+They establish no full-artifact GPU or two-Mac speed claim. The deployed model
+still needs that hardware qualification with its exact artifact and loaded
+build. See [inference](inference.md#gemma-ordinary-batch-decode-arithmetic) and
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/Gemma4BatchDecodeTests.swift`.
+
+
+GPT-OSS plain-pipeline lanes retain separate demand-grown histories and ordinary
+per-request attention. Every live lane keeps its whole request and selected
+prefill-schedule allowance; additional batch workspace is charged on top, with
+no reduction to the full LOAD floor. The default remains one lane. An explicitly
+selected width 2...8 enables the native owner loop, whose full-artifact device
+arithmetic and useful throughput require qualification on the exact pair; see
+[the owner contract](inference.md#gpt-oss-pipeline-lane-owner).
+Nemotron Lightning's experimental native stage batch bounds request count
+and keeps each request's recurrent buffers in compact owned storage. It does
+not reduce any load or per-request reservation, widen installed admission,
+or supply a device qualification. See the [stage mechanism and qualification
+boundary](inference.md#context) and `CBv2StageKVHost.supports` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2StageKVHost.swift`.
+
+### Divergent tensor-parallel rank shapes
+
+Installed startup checks tensor-parallel rank shapes with the same empty layer-cut
+list as planning and genuine qualification records. Capability partition cuts
+remain metadata; they cannot hide a failed tensor-parallel orientation. Pipeline
+and hybrid prefill cuts retain their existing meaning. See [failed tensor-parallel
+qualification shapes](inference.md#failed-tensor-parallel-qualification-shapes).
+
+
+### Automatic batch replacement ownership
+
+A wider local cluster mode must fit both ranks at the listener's full existing prompt/output/context bounds. The host's replacement callback observes actual queued demand before tokenization and makes no shorter-context or raw-byte assumption. It may select two or four lanes if eight do not fit, or keep the current mode. Pending HTTP work stays on the same listener while old native owners fully release; candidate startup must report the requested capacity. This ownership mechanism grants no new model/mode capability or hardware qualification and does not change GLM dispatch.
+
+### Observed native width and paged backing
+
+For shared-stage plain-pipeline batching, acceptance compares both ranks'
+`darkbloom-stage-batch-decode-v1` events from the same batch scope and worker
+generation. A native width event follows completed evaluated decode; neither
+a configured capacity nor concurrent HTTP admission proves it. Bounded
+`darkbloom-stage-batch-memory-v1` snapshots distinguish backend capacity,
+request reservations, live bytes and actual committed paged slab backing.
+A clean retirement requires observed reserved/in_use/bound_rows to be zero;
+materialized reports backing still committed independently of that drain test.
+Measurements must retain any nonzero retirement or failed cleanup, without
+relabeling it as idle release. These counters do not include model weights,
+recurrent state or allocator caches and are not total process memory.
+
+MiMo plain-pipeline requests, including a single lane, retain their full contiguous-state
+allowance and add rounded page allocations, copy-on-write versions, gathered
+attention views and sliding repack storage. Keys and values are priced with
+their distinct registered widths. Host prompt/selected-token histories and
+shared native decode workspace remain additional. This does not change the
+speculative, phase-handoff or image cache contracts. See
+[MiMo independent histories](inference.md#mimo-plain-pipeline-independent-histories),
+`MiMoPagedKVAllowance.pages` and `MiMoBatchMemory.workspace` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Metadata/`.
+
+### Native family batch quotation
+
+GPT-OSS and MiMo automatic plain-pipeline proposals use a separate complete
+batch quote tied to width and original chunk. Both ranks reserve the largest
+per-stage lane charge across admitted cuts, at least the full-model layer-state
+floor, multiplied by the number of histories, plus one shared native/host
+workspace maximum. This retains paged COW/gather, prompt/history and original
+request allowances, as applicable. It can conservatively refuse a width even
+when smaller actual requests might fit; queued raw body bytes are not a safe
+substitute for the listener's token envelope. No single-request layout or LOAD
+allowance is reduced and no width-times-speed estimate is inferred. See
+[automatic batching](inference.md#automatic-local-cluster-batching) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementBatchBudget.swift`.
+
+### Gemma paged cluster lanes
+
+`DistributedInstalledPlan.nativeEnvironment` keeps the native paged default
+for Gemma plain pipelines at widths 1, 2, 4 and 8. The explicit local
+`DARKBLOOM_CLUSTER_KV_BACKEND=contiguous` diagnostic remains available.
+Neither lane eligibility nor a successful tiny cache test establishes
+full-artifact memory fit, numerical parity or throughput; those require
+paired hardware qualification. The restore mechanism is described in
+[inference](inference.md#gemma-paged-prefix-restoration).
+
+## Bonsai packed projection arithmetic
+
+Bonsai 27B uses the [packed FP32 row path](inference.md#bonsai-27b-packed-fp32-rows)
+for its eligible Hadamard projections. Existing LOAD allowances retain their
+constant-cache and activation charges; the layout change introduces no
+persistent weight copy. Its arithmetic receipt changes independently of the
+Bonsai 9B row. This implementation establishes no new tensor-parallel
+capability, qualified hardware orientation, context ceiling or throughput claim;
+those remain properties of the recorded full-artifact runs.
+
+## Nemotron prefix frame preservation
+
+The [registered Nemotron prefix plan](inference.md#nemotron-prefix-chunk-arithmetic)
+preserves complete prefill chunks and existing request bounds. Its existing
+prefix capture allowance remains conservative: capture uses fewer original
+frame boundaries and introduces no additional state type or weight allocation.
+Source and CPU frame checks do not clear earlier full-artifact negative
+qualifications; rerun each affected rank orientation and schedule with the
+unchanged numerical comparator.
+
+## Gemma prefix frame preservation
+
+The [registered Gemma prefix plan](inference.md#gemma-prefix-chunk-arithmetic)
+shares the original-chunk grid rule with Nemotron. It retains the existing
+KV/capture allowances and does not add persistent storage. A partial or whole
+final prompt chunk is recomputed on a repeat. This framing correction adds no
+qualified hardware shape or performance claim; separately observed cross-chip
+numerical failures remain failed until the unchanged qualification gate passes.

@@ -543,7 +543,7 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
-                        "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
+                        "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_9b", "registered_nemotron35_lightning",
                         "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
                         "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
                         "registered_glm53_flash"])
@@ -629,6 +629,16 @@ final class QualificationRequestTests: XCTestCase {
         let packed = try make("registered_ternary_bonsai_2_27b")
         XCTAssertEqual(packed.profileID, "registered_ternary_bonsai_2_27b_greedy_generation_v1")
         XCTAssertEqual(packed.supportedCuts, large.supportedCuts)
+        let packed9 = try make("registered_ternary_bonsai_2_9b")
+        XCTAssertEqual(packed9.profileID, "registered_ternary_bonsai_2_9b_greedy_generation_v1")
+        XCTAssertEqual(packed9.supportedCuts, Array(stride(from: 4, through: 28, by: 4)))
+        XCTAssertEqual(packed9.arithmeticEnvironment.map { "\($0.0)=\($0.1)" },
+                       packed.arithmeticEnvironment.map { "\($0.0)=\($0.1)" })
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try packed9.encoded()), packed9)
+        for cut in packed9.supportedCuts { XCTAssertNoThrow(try pair(packed9, cut: cut)) }
+        for cut in [0, 2, 30, 32, 60] { XCTAssertThrowsError(try pair(packed9, cut: cut)) }
+        var crossedBonsai = packed9; crossedBonsai.profileID = packed.profileID
+        XCTAssertThrowsError(try crossedBonsai.validate())
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try packed.encoded()), packed)
         crossed = packed; crossed.profileID = large.profileID
         XCTAssertThrowsError(try crossed.validate())
@@ -728,8 +738,9 @@ final class QualificationLongContextTests: XCTestCase {
     func testLimitsAreDerivedFromTheDeclaredContextAndTheProtocol() {
         let dense = QualificationLimits.forModel("registered_qwen38_27b")
         XCTAssertEqual(dense, QualificationLimits.forModel("registered_qwen35_9b"))
-        XCTAssertEqual(dense.maximumContextTokens, 32_768); XCTAssertEqual(dense.maximumPromptTokens, 32_767)
-        XCTAssertEqual(dense.maximumOutputTokens, 4096); XCTAssertEqual(dense.maximumChunkTokens, 512)
+        XCTAssertEqual(dense, QualificationLimits.forModel("registered_ternary_bonsai_2_9b"))
+        XCTAssertEqual(dense.maximumContextTokens, 65_536); XCTAssertEqual(dense.maximumPromptTokens, 32_768)
+        XCTAssertEqual(dense.maximumOutputTokens, 32_768); XCTAssertEqual(dense.maximumChunkTokens, 512)
         // A smaller declared context binds before the protocol does.
         let small = QualificationLimits.derived(declaredContextTokens: 4096)
         XCTAssertEqual(small.maximumContextTokens, 4096); XCTAssertEqual(small.maximumPromptTokens, 4095)
@@ -737,8 +748,14 @@ final class QualificationLongContextTests: XCTestCase {
         // A model without a declared context here keeps the earlier reservation.
         XCTAssertEqual(QualificationLimits.forModel("registered_some_other_model"), .reservation)
         XCTAssertNil(dense.refusal(promptTokens: 30_720, outputTokens: 128, chunkTokens: 512))
-        XCTAssertEqual(dense.refusal(promptTokens: 30_720, outputTokens: 2049, chunkTokens: 512),
-                       "prompt plus output exceeds 32768 tokens")
+        XCTAssertNil(dense.refusal(promptTokens: 32_768, outputTokens: 32_768, chunkTokens: 512))
+        XCTAssertEqual(dense.refusal(promptTokens: 32_769, outputTokens: 1, chunkTokens: 512),
+                       "prompt must have 1...32768 tokens")
+        XCTAssertEqual(dense.refusal(promptTokens: 1, outputTokens: 32_769, chunkTokens: 512),
+                       "output count must be 1...32768")
+        XCTAssertNil(small.refusal(promptTokens: 2048, outputTokens: 2048, chunkTokens: 512))
+        XCTAssertEqual(small.refusal(promptTokens: 2048, outputTokens: 2049, chunkTokens: 512),
+                       "prompt plus output exceeds 4096 tokens")
         XCTAssertNotNil(QualificationLimits.reservation.refusal(promptTokens: 8193, outputTokens: 1, chunkTokens: 512))
     }
 
@@ -765,6 +782,11 @@ final class QualificationLongContextTests: XCTestCase {
                        150 + 4 * large.requestSeconds(promptTokens: 30_720, outputTokens: 128) + 30)
         XCTAssertEqual(large.lifetimeSeconds(promptTokens: 32_000, outputTokens: 4096, repetitions: 8, startupSeconds: 150), 3600)
         XCTAssertNil(QualificationTimeBudget.forModel("registered_some_other_model"))
+        let bonsai9 = try XCTUnwrap(QualificationTimeBudget.forModel("registered_ternary_bonsai_2_9b"))
+        XCTAssertGreaterThan(bonsai9.firstTokenSeconds(promptTokens: 32_768),
+                             bonsai9.firstTokenSeconds(promptTokens: 8192))
+        XCTAssertLessThanOrEqual(bonsai9.lifetimeSeconds(promptTokens: 32_768, outputTokens: 32_768,
+                                                       repetitions: 8, startupSeconds: 150), 3600)
     }
 
     func testDriverBudgetsDefaultToTheScaledValuesAndKeepTheEarlierFloors() throws {

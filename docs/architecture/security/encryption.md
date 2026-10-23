@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -192,6 +192,30 @@ across the Thunderbolt cable:
   authenticated with rekeying, and tampered records are refused. The control
   lease runs on a listener and epoch label of its own; no key material crosses
   Macs when control fails over.
+  Every installed paired-link text session requires the same keyed worker build
+  on both Macs; unsupported or different builds are refused before launch.
+  The leader issues fresh session credentials, sends each rank only its own
+  credential over its authenticated owner route, and the follower checks the
+  epoch and rank before opening its local owner. The native worker verifies
+  the certificate and pinned peer. Serving begins only after both workers
+  report one matching encrypted, peer-verified data plane. Authenticated
+  control/bootstrap status alone cannot satisfy that condition
+  (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift`,
+  `keysDataPlane`, `followerDataPlaneTrust`;
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+  `launch`; `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDataPlaneLaunch.swift`).
+- **Qwen batch records.** Both ranks derive one batch identity from their
+  pinned membership epoch, execution plan, lane count and increasing batch
+  ordinal. Control records bind the phase, direction and step. Residual records
+  also bind the ordered local request identities, fingerprints and frontiers;
+  prefill binds its frame bounds. The producer captures these facts before
+  forward computation advances its state, and the consumer before receiving.
+  The array codec additionally binds shape, dtype, chunk index and byte length.
+  Directional record sequences continue across batches and rekeys: replay,
+  wrong scope or authentication failure fences the session without a plaintext
+  retry (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchRecordBinding.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Transport/CollectiveAuthenticatedRecords.swift`).
 - **Model copies.** A Mac accepts a model from its paired Mac only when this
   build's qualification records pin the manifest's aggregate digest, verifies
   every file as it arrives, has its own worker check the staged files before
@@ -223,3 +247,16 @@ across the Thunderbolt cable:
 - [Cache format](../../reference/ssd-kv-cache.md)
 - [Attestation](attestation.md)
 - [Identity binding](identity-binding.md)
+
+### Drained batch setup adoption
+
+The private `batchSetup` command uses the existing authenticated pair-control
+channel. The receiver authorizes its saved serving rank 0 and checks unchanged
+model, capability, peers, trust, ranks and request limits before publishing a
+new setup under the ordinary empty-device lease gate. A compare-and-swap on
+the previous full digest refuses an unrelated later choice; retrying the exact
+already-selected target is idempotent. The running follower's full setup digest
+fences a stale control client before a new native epoch opens. These checks
+grant neither coordinator membership nor worker ownership. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetupTransaction.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`.

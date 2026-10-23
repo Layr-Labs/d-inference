@@ -210,6 +210,7 @@ enum LongContextFixture {
         case .qwen35ThirtyFiveBA3B: "qwen35-35b-a3b"
         case .qwen36ThirtyFiveBA3B: "qwen36-35b-a3b"
         case .ternaryBonsai2TwentySevenB: "ternary-bonsai-2-27b"
+        case .ternaryBonsai2NineB: "ternary-bonsai-2-9b"
         case .nemotron35Lightning: "nemotron35-lightning"
         }
         let libraries = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

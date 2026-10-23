@@ -7,8 +7,9 @@ import MLXLMCommon
 import MLXNN
 
 /// The worker's resident owner for `tensor_parallel_v1` on the dense Qwen
-/// rows (9B, 27B): both ranks hold a share of every layer (heads, key/value
-/// heads, MLP channels and vocabulary rows, `QwenTensorParallelPlan`), run
+/// rows (9B, 27B) and equal shares of Qwen3.5 35B A3B: both ranks hold a
+/// share of every layer (heads, key/value heads, MLP channels and vocabulary
+/// rows, `QwenTensorParallelPlan`), run
 /// every prefill chunk and decode step together, and sum each row-parallel
 /// projection's partials with the sealed all-sum inside the lazy graph: every
 /// partial crosses the cable as an AES-256-GCM frame under direction keys the
@@ -88,6 +89,7 @@ public final class QwenTensorParallelResidentRuntime {
               admission.supportedGenerationModes.contains(.tensorParallel) else {
             throw ProbeError("Generation mode tensor_parallel_v1 is not in the resident row of \(any.runtimeModelID)")
         }
+        try QwenTensorParallelVerifiedLoad.requireSupportedProduct(admission.definition, shares: shares)
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loadedModel: QwenTensorParallelModel?
@@ -113,6 +115,7 @@ public final class QwenTensorParallelResidentRuntime {
             // Paged attention KV (`QwenTensorParallelPagedKV.swift`), bound into the agreement.
             let pagedKV = try Self.pagedKV(environment)
             let fields = mode.loadAgreementFields + loadAgreementFields(shares: shares)
+                + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint()] + fields))

@@ -79,7 +79,7 @@ struct ResidentAdmissionQwen36A3BTests {
     @Test func definitionAndCeilingsAreItsOwnRow() throws {
         let row = try QwenResidentModelDefinition(model: .qwen36ThirtyFiveBA3B)
         #expect(row.profileID == Self.profileID && row.specification.layers == 40 && row.supportedCuts == Self.cuts)
-        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
+        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP])
         #expect(row.adapter == .qwen35RoutedExperts && row.arithmetic == .routedExperts)
         // Only this artifact's headers are read under the scope that describes
         // unsigned bytes; every other registered model keeps the dense scope.

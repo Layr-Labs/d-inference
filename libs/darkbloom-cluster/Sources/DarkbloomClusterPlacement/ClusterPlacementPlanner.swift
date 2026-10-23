@@ -323,9 +323,11 @@ public enum ClusterPlacementPlanner {
         if let largest = policy.largestContextTokens {
             // A requested context beyond the layout's planned request, within
             // the family's own largest; the family's charge at it comes with it.
-            guard policy.requestChargeEveryRankBytes != nil, largest <= ClusterWorkerLimits.contextTokens,
-                  prompt >= 1, outputs >= 1, prompt + outputs <= largest,
-                  prompt <= ClusterWorkerLimits.promptTokens, outputs <= ClusterWorkerLimits.outputTokens else {
+            guard let charge = policy.requestChargeEveryRankBytes,
+                  (0...ClusterWorkerLimits.capacityBytes).contains(charge),
+                  (1...ClusterWorkerLimits.contextTokens).contains(largest),
+                  (1...ClusterWorkerLimits.promptTokens).contains(prompt),
+                  (1...ClusterWorkerLimits.outputTokens).contains(outputs), prompt <= largest - outputs else {
                 throw ClusterPlacementError("The requested context is outside the model's largest context")
             }
         } else {

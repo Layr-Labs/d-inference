@@ -142,6 +142,10 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
               supportedCuts: Array(stride(from: 4, through: 60, by: 4)),
               additionalArithmeticEnvironment: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1",
                                                 "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
+        .init(modelID: "registered_ternary_bonsai_2_9b", profileID: "registered_ternary_bonsai_2_9b_greedy_generation_v1",
+              supportedCuts: Array(stride(from: 4, through: 28, by: 4)),
+              additionalArithmeticEnvironment: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1",
+                                                "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
         .init(modelID: "registered_nemotron35_lightning",
               profileID: "registered_nemotron35_lightning_greedy_generation_v1",
               // Every structural cut of its block list (the runtime derives the same 32).

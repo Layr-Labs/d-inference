@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -498,6 +498,19 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`).
+
+### Cluster placement request metadata
+
+The native helper accepts
+`darkbloom-cluster-plan request-scope --model-dir DIR --prompt-tokens N --output-tokens N`
+and prints JSON with the registered family limits and conservative charge for
+that request. It reads metadata only. `plan --model-dir` and the provider's
+placement flow obtain this quote automatically when either requested axis
+exceeds the layout reference. A saved `--layout` without an exact quote retains
+its original limits. Sources: `ClusterPlacementTool.run` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`
+and `ClusterPlacementFlow.run` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow+Run.swift`.
 
 ### `darkbloom cluster local`
 
@@ -1575,6 +1588,22 @@ line before anything is uploaded.
 Internal command used by the launchd crash-recovery watchdog. Not intended for
 manual use.
 
+## Native pair batch diagnostics
+
+The developer helper `darkbloom-cluster-pair-check run` accepts
+`--batch-trace yes|no` (default `no`) and `--batch-logit-directory <absolute-path>`
+(default unset). Both require an eligible Qwen plain-pipeline batch with 2...8
+lanes and `--evidence none`. The trace writes one content-free geometry summary
+on rank 0. The directory belongs to rank 1's Mac, regardless of `--local-rank`;
+its parent must exist, and the helper creates a private final directory if needed.
+It holds raw native logit rows and private request/frontier metadata at fixed
+output ordinals 0, 1, 30, 37, 78 and 88. Capture is bounded and never overwrites.
+These diagnostics neither change token selection nor establish normal final-row
+qualification or performance. Sources:
+`libs/darkbloom-cluster-worker/Sources/PairCheck/PairCheck.swift` (`PairCheck.run`),
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
+(`validate`, `launchScript`), and [test boundaries](../developer/test.md#two-mac-cluster-checks).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -1872,3 +1901,26 @@ Local Network identity. A signed app keeps serving after the setup terminal
 closes. A development fallback names its session lifetime limitation on screen;
 keep that Terminal or SSH session open. See [cluster service
 permissions](cluster-always-on.md#permissions-asked-once).
+
+## GPT-OSS native pair batch qualification
+
+For the registered GPT-OSS text row, `darkbloom-cluster-pair-check --batch-lanes N`
+accepts 2...8 in plain pipeline with `--evidence none`. Use the existing
+`--batch-request`, `--batch-wave`, `--batch-solo` and `--batch-cancel-after`
+options to compare requests alone and together and exercise lane retirement.
+Qwen's `--batch-trace` and `--batch-logit-directory` diagnostics remain refused
+for GPT-OSS. The default is one lane; an accepted configuration is not measured
+correctness or throughput evidence. See [owner checks](../developer/test.md#gpt-oss-batch-owner-checks)
+and [configuration](../reference/configuration.md#gpt-oss-cluster-batch-lanes).
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
+and `PairBatchCancellation.swift`.
+
+### Automatic cluster batch selection
+
+A managed `start --local --distributed` API can widen supported text pipeline
+execution from queued demand without a batch environment setting. Explicit
+`DARKBLOOM_CLUSTER_BATCH_LANES`, `DARKBLOOM_CLUSTER_FORCE_MODE` or
+`DARKBLOOM_CLUSTER_HANDOFF_MODES` retains the selected diagnostic behavior.
+See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
+for memory bounds, lifecycle and exclusions. Source:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchFactory.swift`.

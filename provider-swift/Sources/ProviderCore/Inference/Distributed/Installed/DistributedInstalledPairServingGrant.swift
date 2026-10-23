@@ -492,7 +492,12 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
     static func withholding(_ runs: [(ClusterPairQualificationRecord, [ClusterChipClass])]) -> String {
         let ordered = runs.sorted { order($0.0.cuts, $0.0.generationMode, $0.1) < order($1.0.cuts, $1.0.generationMode, $1.1) }
         let cuts = Array(Set(ordered.flatMap { $0.0.cuts })).sorted().map(String.init)
-        let cutWords = cuts.count == 1 ? "cut \(cuts[0])" : "cuts " + cuts.dropLast().joined(separator: ", ") + " and " + cuts.last!
+        let cutWords: String
+        switch cuts.count {
+        case 0: cutWords = "no layer cuts"
+        case 1: cutWords = "cut \(cuts[0])"
+        default: cutWords = "cuts " + cuts.dropLast().joined(separator: ", ") + " and " + cuts[cuts.count - 1]
+        }
         guard let (record, classes) = ordered.first, let failure = record.firstFailure else {
             return "its cross-cable check diverged at \(cutWords) and no passing check of it stands"
         }

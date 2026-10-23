@@ -16,6 +16,7 @@ public struct PromptTokenizer: Sendable {
         ("db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff", "registered_qwen35_35b_a3b"),
         ("54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc", "registered_qwen36_35b_a3b"),
         ("e6871c8df1f9d30895ff5caf84a40fe902cf8771cda56a2b9f087991ca34c1e4", "registered_ternary_bonsai_2_27b"),
+        ("c226d5cf4ecea1c6f299c2a8ebaa8686a89be12750b45fa6fc910cb078b19c13", "registered_ternary_bonsai_2_9b"),
         ("7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a", "registered_nemotron35_lightning"),
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
         ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
@@ -52,7 +53,7 @@ public struct PromptTokenizer: Sendable {
             return ("[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>", "<|assistant|><think>")
         }
         if modelID.hasPrefix("registered_gemma4_") {
-            return ("<bos><|turn>user\n", "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+            return ("<bos>\n<|turn>user\n", "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
         }
         return (userPrefix, assistantSuffixes[modelID] ?? assistantSuffix)
     }

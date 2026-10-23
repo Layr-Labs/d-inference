@@ -114,12 +114,19 @@ final class CBv2OwnedRequestState {
                 backend.release(rows)
                 throw ProbeError("CBv2 adopted sliding state lacks a row per layer")
             }
-            for (row, pair) in zip(rows, prefix) {
-                guard let row, let pair else { continue }
-                let first = committed - pair.keys.dim(2)
-                if first > 0 { row.fastForward(to: first) }
-                _ = row.update(keys: pair.keys, values: pair.values)
-            }
+            do {
+                for (row, pair) in zip(rows, prefix) {
+                    guard let row, let pair else { continue }
+                    let first = committed - pair.keys.dim(2)
+                    if first > 0 { row.fastForward(to: first) }
+                    if let paged = backend as? PagedKVBackend {
+                        try CBv2PagedPrefixRestore.write(row: row, keys: pair.keys, values: pair.values,
+                            maximumChunkTokens: paged.pool.config.maxPrefillChunk)
+                    } else {
+                        _ = row.update(keys: pair.keys, values: pair.values)
+                    }
+                }
+            } catch { backend.release(rows); throw error }
         }
         let recurrent: CBv2RecurrentRequestState
         do { recurrent = try CBv2RecurrentRequestState(spec: geometry.recurrent, adoptedCommitted: layers) }

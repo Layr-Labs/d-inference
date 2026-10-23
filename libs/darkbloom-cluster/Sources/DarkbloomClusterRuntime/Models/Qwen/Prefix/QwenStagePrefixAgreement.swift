@@ -53,10 +53,13 @@ struct QwenStagePrefixChoice: Equatable {
     let reusedPrefix: Int
     let splitFinalToken: Bool
 
-    static func choose(local: QwenStagePrefixOffer, peer: QwenStagePrefixOffer, promptCount: Int) -> Self {
+    static func choose(local: QwenStagePrefixOffer, peer: QwenStagePrefixOffer, promptCount: Int,
+                       request: QwenLayerStageGenerationRequest? = nil) -> Self {
         guard local.enabled, peer.enabled, promptCount >= 2 else { return .init(reusedPrefix: 0, splitFinalToken: false) }
         let common = Set(local.frontiers).intersection(peer.frontiers).filter { (1..<promptCount).contains($0) }
-        return .init(reusedPrefix: common.max() ?? 0, splitFinalToken: true)
+        let admissible = request.map { $0.admittedPrefixFrontiers(Array(common)) } ?? Array(common)
+        return .init(reusedPrefix: admissible.max() ?? 0,
+            splitFinalToken: !(request?.preservesPrefixChunkGrid ?? false))
     }
 }
 

@@ -50,6 +50,8 @@ public enum ClusterPlacementFlow {
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
+                              requestScope: ClusterPlacementRequestScope? = nil,
+                              batchScope: ClusterPlacementBatchScope? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
@@ -130,6 +132,17 @@ public enum ClusterPlacementFlow {
         if promptTokens == nil, outputTokens == nil, let mix = ClusterRequestMix.reference(ours.map(\.sample), layout: layout) {
             policy.promptTokens = mix.promptTokens; policy.outputTokens = mix.outputTokens
         }
+        if let requestScope = batchScope?.request ?? requestScope {
+            guard requestScope.maximumPromptTokens == capability.profile.maximumPromptTokens,
+                  requestScope.maximumOutputTokens == capability.profile.maximumOutputTokens,
+                  requestScope.maximumContextTokens == capability.profile.maximumContextTokens else {
+                throw ClusterConfigurationError.invalid("The request scope and worker capability have different profile limits")
+            }
+            try requestScope.apply(to: &policy, layout: layout)
+        }
+        if let batchScope, let requestScope, batchScope.request != requestScope {
+            throw ClusterConfigurationError.invalid("Batch placement carries two different request scopes")
+        }
         var servedLines: [String] = []
         if !ours.isEmpty {
             // With the measured link, so that requests served in tensor parallel correct each rank's share.
@@ -161,6 +174,15 @@ public enum ClusterPlacementFlow {
         }
         // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
         // unmeasured, no tensor-parallel mode is chosen.
+        if let batchScope {
+            try batchScope.requireChunk(description.chunkTokens, derived: description.derivesRequestLimits)
+            guard capability.supportedGenerationModes.contains(.pipeline),
+                  !capability.hasPrivateImages else {
+                throw ClusterConfigurationError.invalid("Batch placement requires a supported text pipeline")
+            }
+            policy.modes = [.pipeline]; policy.schedules = [.serial]
+            try batchScope.apply(to: &policy, layout: layout)
+        }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
@@ -174,13 +196,16 @@ public enum ClusterPlacementFlow {
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
             lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
         }
-        if let recordedRounds, capability.supportedGenerationModes.contains(.pipelineMTP) {
+        if let recordedRounds, batchScope == nil, capability.supportedGenerationModes.contains(.pipelineMTP) {
             lines.append("Speculative rounds")
             lines.append("  " + String(format: "Pipeline speculative rounds are credited %.2fx", recordedRounds)
                 + " over the plain pipeline: the decode speed-up this model's passing qualification records measured. "
                 + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
+        if let batchScope {
+            lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+        }
         if records.restrictsShapes {
             lines.append("Diverged placements")
             lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placements "
@@ -205,7 +230,8 @@ public enum ClusterPlacementFlow {
                 lines.append("  Prefill chunk " + chunk.basis + ".")
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
-            let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability, chosen: chosen)
+            let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
+                chosen: chosen, batchLanes: batchScope?.lanes)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

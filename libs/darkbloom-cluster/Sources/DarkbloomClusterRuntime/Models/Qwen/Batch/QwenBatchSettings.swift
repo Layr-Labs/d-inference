@@ -9,8 +9,8 @@ import Foundation
 /// stage is read (the owner's oMLX rule: identical graph-shaping settings on
 /// both ranks). Prefill frames always end on each request's own chunk grid,
 /// one frame per step, so every prefill frame's arithmetic is the unbatched
-/// one; batched decode rows round like an MTP verify window's rows (near-tie
-/// lossless, see `QwenResidentRuntime+Batch.swift`).
+/// one. Qwen 3.5 decode projections preserve singleton matmul arithmetic;
+/// full-model batch equality still requires hardware qualification.
 public struct QwenBatchSettings: Equatable, Sendable {
     /// Requests served together, 1...8. One is the earlier one-request-at-a-time
     /// owner, unchanged.
@@ -33,5 +33,12 @@ public struct QwenBatchSettings: Equatable, Sendable {
     }
 
     /// One lane keeps the agreement bytes it always had.
-    var loadAgreementFields: [String] { lanes == 1 ? [] : ["qwen-batch-v1", "lanes=\(lanes)"] }
+    var loadAgreementFields: [String] { lanes == 1 ? [] : ["qwen-batch-v3", "lanes=\(lanes)", "qwen35-row-m1"] }
+
+    /// The new Nemotron path also binds its own projection and compact
+    /// recurrent-row contract. Every existing model and singleton is unchanged.
+    func loadAgreementFields(runtimeModelID: String) -> [String] {
+        guard batching, runtimeModelID == "registered_nemotron35_lightning" else { return loadAgreementFields }
+        return loadAgreementFields + ["nemotron35-batch-v1", "row-m1", "owned-recurrent-rows"]
+    }
 }

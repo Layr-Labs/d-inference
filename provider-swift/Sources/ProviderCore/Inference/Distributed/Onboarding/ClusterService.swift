@@ -674,6 +674,16 @@ public final class ClusterService: @unchecked Sendable {
             return try encoder.encode(executeControl(request, pairing: pairing, say: say))
         case .teardown:
             return try encoder.encode(Self.teardownLines())
+        case .batchSetup:
+            guard let change = command.batchSetup, let held = ClusterControlCommandLock.acquire(seconds: 5) else {
+                throw ClusterSetupFailure("a batch replacement is missing or another cluster command is active")
+            }
+            defer { held.release() }
+            let reference = try change.apply(paths: context.paths,
+                providerConfigurations: [settings.wizard.providerConfiguration, try ConfigManager.defaultConfigPath()],
+                directory: store.paths.directory, senderMemberID: pairing.peerMemberID)
+            say("saved the serving leader's compatible batch setup after native release")
+            return try encoder.encode(reference)
         case .lease:
             throw ClusterSetupFailure("leases go to the control listener")
         }
@@ -811,7 +821,9 @@ public final class ClusterService: @unchecked Sendable {
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
-                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil),
+                        : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog) : nil,
+                    configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
+                        ? String(childSetup!.dropFirst("cluster:".count).prefix(64)) : nil),
                 session: session,
                 // What this Mac applied from the Mac it follows (by control, not by who drove the onboarding):
                 // keyed by onboarding role, a Mac that drove it and then followed reported nothing, and the
@@ -1027,6 +1039,18 @@ public final class ClusterService: @unchecked Sendable {
             return
         }
         if let running, key == nil || setup != key {
+            if leadsSession {
+                switch ClusterAutomaticSetupHandoff.disposition(directory: store.paths.directory, paths: context.paths,
+                    processID: running.processIdentifier, startedAt: lock.withLock({ childStartedAt }),
+                    previousKey: setup, replacementKey: key, scope: scope) {
+                case .adopted:
+                    lock.withLock { childSetup = key }
+                    say("kept this Mac's API listener while adopting its drained batch setup")
+                    return
+                case .pending: return
+                case .reject: break
+                }
+            }
             let solo = setup?.hasPrefix("solo:") == true
             say(key == nil ? (solo ? "stopping the solo server" : "the leader stopped serving: stopping this Mac's part")
                 : key!.hasPrefix("solo:") ? "serving alone: stopping this Mac's part first"

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-23
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -138,6 +138,10 @@ reads Darkbloom's catalog when the network is up (to download a model neither
 Mac has); with no network, it lists the models already on the Macs. Only
 catalog models are served. Qualification records never gate local-only
 serving.
+
+If startup reports that both ranks need the same keyed native worker, install
+one Darkbloom build on both Macs and retry. Paired-link startup refuses a
+plaintext fallback; see the [cluster encryption contract](../architecture/security/encryption.md#two-mac-cluster-experimental).
 
 ## Models
 

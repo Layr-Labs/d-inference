@@ -54,8 +54,8 @@ import Foundation
         }
         let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
             runtimeModelID: "registered_qwen35_9b", artifactSHA256: hash("b"), configurationSHA256: hash("c"), manifestSHA256: hash("d"),
-            profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 8192,
-                maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320),
+            profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 32768,
+                maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536),
             profileFingerprint: hash("e"), partitions: [partition(4, "6"), partition(8, "7"), partition(12, "8"), partition(16, "9")],
             arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"))
         let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
@@ -64,11 +64,19 @@ import Foundation
         // The stand-in for the installed tool prints this Mac's profile and the layout, as the real one does.
         _ = try write("local-profile.json", try profile(physicalGiB: 256, freeGiB: 200).encoded())
         _ = try write("layout.json", try layout.encoded())
+        for (prompt, output) in [(1024, 2048), (16384, 128)] {
+            let scope = try ClusterPlacementRequestScope(runtimeModelID: layout.runtimeModelID,
+                artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+                promptTokens: prompt, outputTokens: output, maximumPromptTokens: 32768,
+                maximumOutputTokens: 32768, maximumContextTokens: 65536, requestChargeEveryRankBytes: 900_000_000)
+            _ = try write("scope-\(prompt)-\(output).json", JSONEncoder().encode(scope))
+        }
         let tool = """
             #!/bin/sh
             case "$1" in
               device) exec /bin/cat "\(root.path)/local-profile.json" ;;
               layout) [ "$3" = /Users/fixture/model ] && exec /bin/cat "\(root.path)/layout.json" ;;
+              request-scope) [ "$3" = /Users/fixture/model ] && [ "$4" = --prompt-tokens ] && [ "$6" = --output-tokens ] && exec /bin/cat "\(root.path)/scope-$5-$7.json" ;;
             esac
             exit 9
 
@@ -111,6 +119,46 @@ import Foundation
             do { try body(); failures.append("accepted: " + name) } catch {
                 if String(describing: error).contains(reason) { passed += 1 } else { failures.append("\(name): \(error)") }
             }
+        }
+        let pairValue = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description))
+        for (prompt, generated) in [(1024, 2048), (16384, 128)] {
+            var inputs = ClusterPlacementFlow.Inputs(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+                localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent("extended-\(prompt)-\(generated)"))
+            inputs.promptTokens = prompt; inputs.outputTokens = generated
+            let extended = try ClusterPlacementFlow.run(inputs, deadline: deadline())
+            require("run requests and applies exact family quote for \(prompt)/\(generated)", extended.setup != nil
+                && extended.result.chosen?.ranks.allSatisfy { $0.requestNeedBytes >= 900_000_000 } == true)
+            let quoteURL = root.appendingPathComponent("scope-\(prompt)-\(generated).json")
+            let quote = try ClusterPlacementRequestScope.decode(Data(contentsOf: quoteURL))
+            let local = try profile(physicalGiB: 256, freeGiB: 200), peer = try profile(physicalGiB: 16, freeGiB: 9)
+            refused("pure decision cannot extend an unquoted layout", because: "profile's limits") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated)
+            }
+            let direct = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated, requestScope: quote)
+            require("pure decision and installed helper flow agree on the quote", direct.result.chosen?.cuts == extended.result.chosen?.cuts
+                && direct.result.chosen?.ranks.map(\.requestNeedBytes) == extended.result.chosen?.ranks.map(\.requestNeedBytes))
+            refused("quote for another output shape is refused before writing setup", because: "another model or request") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated + 1, requestScope: quote)
+            }
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(quote)) as! [String: Any]
+            object["maximumOutputTokens"] = 16384
+            let mismatched = try ClusterPlacementRequestScope.decode(JSONSerialization.data(withJSONObject: object))
+            refused("helper quote must match pinned worker family bounds", because: "different profile limits") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated, requestScope: mismatched)
+            }
+            // Prove the whole child-process route also refuses mismatched metadata
+            // before creating output, rather than trusting a helper's bounds.
+            try JSONEncoder().encode(mismatched).write(to: quoteURL)
+            inputs.output = root.appendingPathComponent("mismatched-\(prompt)")
+            refused("run rejects a mismatched quote", because: "different profile limits") {
+                _ = try ClusterPlacementFlow.run(inputs, deadline: deadline())
+            }
+            require("refused quote produces no output directory", !FileManager.default.fileExists(atPath: inputs.output.path))
+            try JSONEncoder().encode(quote).write(to: quoteURL)
         }
         refused("an output directory that exists is not written into", because: "must not exist yet") {
             _ = try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,

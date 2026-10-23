@@ -61,7 +61,15 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSBatchWorkspace.swift" \
+  "$R/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift" \
+  "$R/Models/Qwen/Batch/QwenBatchWire.swift" \
+  "$R/Models/Qwen/Generation/QwenLayerStageGenerationSchedule.swift" \
+  "$R/Models/MiMo/Metadata/MiMoPagedKVAllowance.swift" \
+  "$R/Models/MiMo/Metadata/MiMoBatchMemory.swift" \
+  "$R/Models/Placement/ClusterPlacementBatchBudget.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
   "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
   "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \

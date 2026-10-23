@@ -34,3 +34,10 @@ Seven actual local owner/stand-in lifecycle scenarios follow:
 - Fixed lifetime expiry removes readiness and refuses admission; elapsed time never replaces cleanup proof.
 
 The command protocol, filesystem gates and subprocess supervision are real; the metadata producer and model workers are fabricated CPU children. Fixtures contain no weights or usable credentials. The absent fake payload confirms that metadata preflight does not read weights. These checks do not qualify native inference, real SSH authentication, a two-host deployment, the HTTP server, or the full Provider/CLI build. The test executable has an outer alarm to bound a broken regression.
+
+`InstalledBatchLanesCheck.swift` verifies the fixed owner child receives only its
+locally resolved optional lane count (1...8), using an actual spawned environment
+probe. Provider admission, owner lease and native-worker settings agree; nil,
+unsupported modes, image gates and unchanged defaults stay covered. Both rank
+constructors in coordinator-member installation use the same launch boundary.
+This remains CPU control-path evidence, separate from native batch qualification.

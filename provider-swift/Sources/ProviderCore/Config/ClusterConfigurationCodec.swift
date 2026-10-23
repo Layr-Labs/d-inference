@@ -58,6 +58,12 @@ public enum ClusterConfigurationCodec {
             }
             expected.insert("tensorShares")
         }
+        if let lanes = object["batchLanes"] {
+            guard let value = lanes as? Int, [2, 4, 8].contains(value) else {
+                throw ClusterConfigurationError.invalid("A planned batch width must be 2, 4 or 8")
+            }
+            expected.insert("batchLanes")
+        }
         if let attachment = object["nativeMember"] {
             guard let fields = attachment as? [String: Any] else {
                 throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")

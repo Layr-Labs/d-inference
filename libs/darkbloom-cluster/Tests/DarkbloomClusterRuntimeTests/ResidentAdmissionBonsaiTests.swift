@@ -46,7 +46,7 @@ struct ResidentAdmissionBonsaiTests {
         #expect(packed.specification.layers == 64 && packed.supportedCuts == F.cuts)
         #expect(packed.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
         #expect(packed.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
-        #expect(packed.adapter == .qwen35PrismHadamard && packed.arithmetic == .prismHadamard)
+        #expect(packed.adapter == .qwen35PrismHadamard && packed.arithmetic == .prismHadamardRows)
         #expect(try QwenResidentModelDefinition(runtimeModelID: F.modelID).specification.model == .ternaryBonsai2TwentySevenB)
         #expect(try QwenResidentModelDefinition(configuration: F.data("configuration")).specification.model == .ternaryBonsai2TwentySevenB)
         for unknown in ["ternary-bonsai-2-27b", F.modelID + " ", "registered_ternary_bonsai_2_27b_v2", "registered_bonsai"] {
@@ -226,6 +226,7 @@ struct ResidentAdmissionBonsaiTests {
         #expect(dense == (try QwenLongPrefillArithmeticEnvironment.admit(F.environment())))
         #expect(dense.requiredValues.count == 3 && dense.defaultBindings.count == 5 && receipt.defaultBindings.count == 9)
     }
+
 
     @Test func aStageConfigurationNamesTheDenseConstructorAndCarriesItsOwnPackedModules() throws {
         let root = try #require(try JSONSerialization.jsonObject(with: F.data("configuration")) as? [String: Any])

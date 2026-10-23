@@ -11,6 +11,12 @@ trap 'rm -rf "$task_build"' EXIT
 target="$(uname -m)-apple-macos14.0"
 R="$task_root/Sources/DarkbloomClusterRuntime"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
+  -emit-library -emit-module -module-name DarkbloomClusterProtocol \
+  -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+  "$task_root"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol \
+  -Xlinker -rpath -Xlinker "$task_build" \
   -enable-testing -emit-library -emit-module -module-name DarkbloomClusterRuntimeChecks \
   -emit-module-path "$task_build/DarkbloomClusterRuntimeChecks.swiftmodule" \
   "$R/Support/WorkerJSONScanner.swift" \
@@ -42,7 +48,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$target" \
   "$R/Models/Qwen/Loading/QwenCheckpointManifestPin.swift" \
   -o "$task_build/libDarkbloomClusterRuntimeChecks.dylib"
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$target" \
-  -I "$task_build" -L "$task_build" -lDarkbloomClusterRuntimeChecks \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterRuntimeChecks -lDarkbloomClusterProtocol \
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/CheckpointChecks/main.swift" -o "$task_build/check"
 "$task_build/check"

@@ -19,24 +19,26 @@ private final class MiMoLinkPolicyCapture: ClusterLinkWorkerTransport, @unchecke
 
 @Suite("Private MiMo installed paired-link keyed route (CPU)")
 struct MiMoInstalledEncryptedLinkPolicyTests {
-    @Test func candidateSelectsKeyedLinkButTextSelectionStaysLegacy() throws {
+    @Test func everyInstalledPairedLinkSelectsKeyedAndRefusesDowngrade() throws {
         let fixture = MiMoInstalledImagePolicyTests()
         let image = try fixture.capability(image:true), text = try fixture.capability(image:false)
         #expect(try ClusterMiMoPrivateImagePolicy.keysDataPlane(image,supported:true,sameBuild:true,hasLink:true))
         #expect(try ClusterMiMoPrivateImagePolicy.keysDataPlane(image,supported:true,sameBuild:true,hasLink:false))
-        #expect(try ClusterMiMoPrivateImagePolicy.keysDataPlane(text,supported:true,sameBuild:true,hasLink:true) == false)
+        #expect(try ClusterMiMoPrivateImagePolicy.keysDataPlane(text,supported:true,sameBuild:true,hasLink:true))
         #expect(try ClusterMiMoPrivateImagePolicy.keysDataPlane(text,supported:true,sameBuild:true,hasLink:false))
-        for pair in [(false,false),(false,true),(true,false)] {
-            #expect(throws:(any Error).self) {
-                try ClusterMiMoPrivateImagePolicy.keysDataPlane(image,supported:pair.0,sameBuild:pair.1,hasLink:true)
+        for capability in [image,text] {
+            for pair in [(false,false),(false,true),(true,false)] {
+                #expect(throws:(any Error).self) {
+                    try ClusterMiMoPrivateImagePolicy.keysDataPlane(capability,supported:pair.0,sameBuild:pair.1,hasLink:true)
+                }
             }
-        }
-        #expect(throws:(any Error).self) {
-            try ClusterMiMoPrivateImagePolicy.keysDataPlane(image,supported:true,sameBuild:true,hasLink:true,selectionOverride:false)
+            #expect(throws:(any Error).self) {
+                try ClusterMiMoPrivateImagePolicy.keysDataPlane(capability,supported:true,sameBuild:true,hasLink:true,selectionOverride:false)
+            }
         }
     }
 
-    @Test func openCarriesOnlyItsOwnEpochRankCredentialAndNilTextBytesStayAbsent() throws {
+    @Test func openCarriesOnlyItsOwnEpochRankCredentialAndOmittedWireFieldStaysAbsent() throws {
         let fixture = MiMoInstalledImagePolicyTests()
         let image = try fixture.capability(image:true), text = try fixture.capability(image:false)
         let epoch = UUID(), lines = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch:epoch)
@@ -56,12 +58,12 @@ struct MiMoInstalledEncryptedLinkPolicyTests {
         let forwarded = try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(image,line:keyed.dataPlaneTrust,
             epoch:epoch,rank:1) == lines[1]
         #expect(retained && roundTrip && forwarded)
-        #expect(try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(text,line:nil,epoch:epoch,rank:1) == nil)
+        #expect(try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(text,line:lines[1],epoch:epoch,rank:1) == lines[1])
         #expect(throws:(any Error).self) {
             try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(image,line:nil,epoch:epoch,rank:1)
         }
         #expect(throws:(any Error).self) {
-            try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(text,line:lines[1],epoch:epoch,rank:1)
+            try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(text,line:nil,epoch:epoch,rank:1)
         }
         for bad in [lines[0],Data(repeating:0,count:4097),Data("invalid\n".utf8)] {
             object["dataPlaneTrust"] = bad.base64EncodedString()

@@ -152,7 +152,8 @@ public final class QwenTensorParallelModel {
         // fused gate_up the SDK constructs (per rank, after the cut).
         if plan.routedExperts { weights = model.sanitize(weights: weights) }
         quantize(model: model) { path, _ in
-            weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits, .affine) : nil
+            let packing = plan.affineQuantization(forModule: path)
+            return weights[path + ".scales"] != nil ? (packing.groupSize, packing.bits, .affine) : nil
         }
         if case .shard = role {
             // The constructed head has the whole vocabulary; this rank's has its rows.

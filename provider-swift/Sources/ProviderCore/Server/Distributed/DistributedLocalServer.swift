@@ -2,9 +2,9 @@ import Foundation
 import Hummingbird
 import MLXLMCommon
 
-/// One listener and retained generation ownership. The session has no fixed
-/// lifetime and no request count, so there is no rotation: the loaded model
-/// stays resident and serving until the server is stopped or the session fails.
+/// One listener retains HTTP ownership across an optional demand-driven mode
+/// change. Native generations never overlap: pending work has no native owner,
+/// and a replacement loads only after the prior owners prove release.
 public actor DistributedLocalServer {
     var generation: DistributedLocalServerGeneration
     let binding: DistributedLocalSessionBinding
@@ -24,6 +24,12 @@ public actor DistributedLocalServer {
     var serviceTask: Task<Void, Never>?
     var monitorTask: Task<Void, Never>?
     var teardownTask: Task<Void, Never>?
+    var replacementTask: Task<Void, Never>?
+    var replacementAttemptedDemand = 0
+    var replacementRetryAt: ContinuousClock.Instant?
+    let replacementRetryDelay: Duration
+    let replacementPlanner: (@Sendable (DistributedLocalBatchDemand) async throws -> DistributedLocalBatchReplacement?)?
+    var stableTokenizer: MultiModelBatchSchedulerEngine.TokenizerResolution?
     var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
     /// Requests waiting for the pipeline, oldest first (`DistributedRequestQueue`).
     var waiting: [UUID] = []
@@ -38,7 +44,8 @@ public actor DistributedLocalServer {
 
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-                publishDiscovery: Bool = true, observability: ClusterObservability? = .current()) {
+                publishDiscovery: Bool = true, observability: ClusterObservability? = .current(),
+                batchReplacement: (@Sendable (DistributedLocalBatchDemand) async throws -> DistributedLocalBatchReplacement?)? = nil) {
         // The waiting depth from the owner's environment (`DARKBLOOM_CLUSTER_QUEUE_WAITING`).
         let queue = DistributedRequestQueue.Limits.fromEnvironment()
         generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
@@ -49,13 +56,17 @@ public actor DistributedLocalServer {
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
         self.observability = observability
+        replacementPlanner = batchReplacement
+        replacementRetryDelay = .seconds(30)
     }
 
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
          discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil,
-         queue: DistributedRequestQueue.Limits = .standard) {
+         queue: DistributedRequestQueue.Limits = .standard,
+         batchReplacement: (@Sendable (DistributedLocalBatchDemand) async throws -> DistributedLocalBatchReplacement?)? = nil,
+         replacementRetryDelay: Duration = .seconds(30)) {
         generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
         self.queue = queue
         self.config = config
@@ -63,6 +74,8 @@ public actor DistributedLocalServer {
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
         self.observability = observability
+        replacementPlanner = batchReplacement
+        self.replacementRetryDelay = max(.milliseconds(1), replacementRetryDelay)
     }
 
     public var status: DistributedLocalServerStatus {

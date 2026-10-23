@@ -19,6 +19,8 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
          evidenceDirectory: String?, generationMode: ClusterGenerationMode = .pipeline,
          qualification: QwenResidentQualificationSwitches = .refused,
          dataPlane: ClusterDataPlaneCredential? = nil) throws {
+        _ = try Self.batchLaunchLanes(environment: ProcessInfo.processInfo.environment,
+            mode: generationMode, recording: evidenceDirectory != nil)
         self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try evidenceDirectory.map { try WorkerEvidenceSink(path: $0) }
@@ -61,6 +63,34 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         try sink.publish(result.encodedEvidence, requestID: id, deadline: reservation.deadline)
         active = nil
         return result.completion.finishReason
+    }
+
+    /// Recording has a per-request capture contract and stays single-lane.
+    /// Refuse this combination before opening an evidence sink or loading.
+    static func batchLaunchLanes(environment: [String: String], mode: ClusterGenerationMode,
+                                 recording: Bool) throws -> Int {
+        let settings = try GPTOSSBatchSettings.fromEnvironment(environment, mode: mode)
+        guard !recording || settings.lanes == 1 else {
+            throw WorkerFailure.invalid("GPT-OSS recording requires one batch lane")
+        }
+        return settings.lanes
+    }
+
+    var batchLanes: Int { owner.batchLanes }
+    var retiresCancelledLanes: Bool {
+        sink == nil && owner.generationMode == .pipeline && (2...8).contains(owner.batchLanes)
+    }
+    func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+        guard sink == nil else { throw WorkerFailure.invalid("GPT-OSS recording cannot reserve batch lanes") }
+        return try owner.reserveLane(requestID: id, request: value)
+    }
+    func startLane(_ id: UUID) throws { try owner.startLane(requestID: id) }
+    func cancelLane(_ id: UUID) { owner.cancelLane(requestID: id) }
+    func withdrawLane(_ id: UUID) -> Bool { owner.withdrawLane(requestID: id) }
+    var hasStartedLanes: Bool { owner.hasStartedLanes }
+    func serveBatch(host: QwenBatchServingHost) throws {
+        guard sink == nil else { throw WorkerFailure.invalid("GPT-OSS recording cannot serve batch lanes") }
+        try owner.serveBatch(host: host)
     }
 
     func releaseReservation(_ id: UUID) throws {

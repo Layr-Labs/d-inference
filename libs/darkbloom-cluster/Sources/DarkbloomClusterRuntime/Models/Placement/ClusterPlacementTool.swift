@@ -1,6 +1,9 @@
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
+#if canImport(MLX)
+import MLX
+#endif
 
 /// The `darkbloom-cluster-plan` command without its process: arguments in,
 /// text out. The command supplies the sampler that reads this Mac; a check
@@ -19,6 +22,10 @@ public enum ClusterPlacementTool {
               An experiment; see the design. Needs the Metal library beside the binary.
           darkbloom-cluster-plan layout --model-dir DIR [--json] [--runtime-profile PROFILE]
               What an artifact is made of, from its tensor headers and config.json.
+          darkbloom-cluster-plan batch-scope --model-dir DIR --prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N
+              Complete native batch state and shared workspace, bound to width and original chunk.
+          darkbloom-cluster-plan request-scope --model-dir DIR --prompt-tokens N --output-tokens N
+              Registered request bounds and conservative memory charge as JSON; metadata only.
           darkbloom-cluster-plan plan (--model-dir DIR | --layout FILE)
                                       [--local LABEL] --peer LABEL=PROFILE.json [--peer LABEL=PROFILE.json ...]
                                       [--speed MEASUREMENT.json ...] [--index INDEX.json ...] [--link LINK.json]
@@ -110,6 +117,29 @@ public enum ClusterPlacementTool {
                 runtimeProfile: parsed.one("--runtime-profile"))
             if parsed.flags.contains("--json") { return String(decoding: try layout.encoded(), as: UTF8.self) }
             return ClusterPlacementExplanation.layout(layout).joined(separator: "\n")
+        case "batch-scope":
+            let parsed = try Arguments(rest, flags: [], options: ["--model-dir", "--prompt-tokens", "--output-tokens", "--batch-lanes", "--chunk-size"])
+            guard let directory = try parsed.one("--model-dir"), let prompt = try parsed.integer("--prompt-tokens"),
+                  let output = try parsed.integer("--output-tokens"), let lanes = try parsed.integer("--batch-lanes"),
+                  let chunk = try parsed.integer("--chunk-size") else {
+                throw ProbeError("batch-scope needs model directory, prompt/output, batch lanes and chunk size")
+            }
+            #if canImport(MLX)
+            return try json(ClusterPlacementArtifact.requestedBatchQuote(directory: URL(fileURLWithPath: directory, isDirectory: true),
+                promptTokens: prompt, outputTokens: output, chunkTokens: chunk, lanes: lanes,
+                allocationBound: { try Memory.allocationFootprintUpperBound(byteCount: $0) }))
+            #else
+            _ = (directory, prompt, output, lanes, chunk)
+            throw ProbeError("Native batch quotation requires the native allocator metadata helper")
+            #endif
+        case "request-scope":
+            let parsed = try Arguments(rest, flags: [], options: ["--model-dir", "--prompt-tokens", "--output-tokens"])
+            guard let directory = try parsed.one("--model-dir"), let prompt = try parsed.integer("--prompt-tokens"),
+                  let output = try parsed.integer("--output-tokens") else {
+                throw ProbeError("request-scope needs --model-dir, --prompt-tokens and --output-tokens")
+            }
+            return try json(ClusterPlacementArtifact.requestedScope(directory: URL(fileURLWithPath: directory, isDirectory: true),
+                promptTokens: prompt, outputTokens: output))
         case "plan":
             return try plan(rest, sampleDevice: sampleDevice)
         case "route":
@@ -152,14 +182,15 @@ public enum ClusterPlacementTool {
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = try parsed.integer("--prompt-tokens")
         policy.outputTokens = try parsed.integer("--output-tokens")
-        // A requested context beyond the layout's planned request: plan it at
-        // that context (the family's charge there).
-        let requested = (policy.promptTokens ?? layout.maximumPromptTokens) + (policy.outputTokens ?? layout.maximumOutputTokens)
-        if requested > layout.maximumContextTokens, let directory = try parsed.one("--model-dir"),
-           let answer = try ClusterPlacementArtifact.requestedContext(directory: URL(fileURLWithPath: directory, isDirectory: true),
-               contextTokens: requested) {
-            policy.largestContextTokens = answer.largest
-            policy.requestChargeEveryRankBytes = answer.charge
+        let prompt = policy.promptTokens ?? layout.maximumPromptTokens
+        let output = policy.outputTokens ?? layout.maximumOutputTokens
+        // Each axis matters: a longer completion may fit inside the old
+        // combined reservation and still require the registered family scope.
+        if prompt > layout.maximumPromptTokens || output > layout.maximumOutputTokens,
+           let directory = try parsed.one("--model-dir") {
+            let scope = try ClusterPlacementArtifact.requestedScope(directory: URL(fileURLWithPath: directory, isDirectory: true),
+                promptTokens: prompt, outputTokens: output)
+            try scope.apply(to: &policy, layout: layout)
         }
         if let alternatives = try parsed.integer("--alternatives") { policy.alternatives = min(alternatives, 256) }
         policy.leader = try parsed.one("--leader")

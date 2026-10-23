@@ -31,8 +31,9 @@ struct GPTOSSPlacementFamily: ClusterPlacementFamily {
     var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
     var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
     var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
-    /// The residual crosses a cut in float32 (`GPTOSSRegisteredSpecification.residualDType`).
-    var boundaryBytesPerToken: Int { specification.hidden * GPTOSSRequestStateBudget.activationBytes }
+    /// Actual wire bytes of the native BF16 residual. Memory admission below
+    /// retains its separate, conservative four-byte element allowance.
+    var boundaryBytesPerToken: Int { specification.hidden * GPTOSSRegisteredSpecification.residualElementBytes }
 
     func stage(ofStoredTensor name: String, cut: Int) throws -> Int? {
         guard let plan = plans[cut] else { throw ProbeError("Not a cut of the GPT-OSS stage plan: \(cut)") }
@@ -50,7 +51,7 @@ struct GPTOSSPlacementFamily: ClusterPlacementFamily {
 
     private func isFull(_ layer: Int) -> Bool { layerTypes[layer] == GPTOSSRegisteredSpecification.fullAttention }
 
-    /// Keys and values in float32: per token on a full-attention layer, a
+    /// Keys and values charged at four bytes per element: per full-layer token, a
     /// window of `slidingWindow` positions plus one frame on a sliding one
     /// (`GPTOSSRequestStateBudget`).
     func requestState(layer: Int) throws -> ClusterPlacementLayerState {

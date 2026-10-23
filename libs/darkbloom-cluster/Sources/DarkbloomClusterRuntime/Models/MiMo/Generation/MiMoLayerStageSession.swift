@@ -23,6 +23,9 @@ final class MiMoLayerStageSession {
     private let hiddenSize: Int
     private let producerStageFingerprint: String
     private var caches: [KVCache]?
+    private let independentHistory: Bool
+    private var batchMemoryScope: UUID?
+    private var nextBatchMemoryObservation = 1
     private var schedule: QwenLayerStageGenerationSchedule
     private(set) var isClosed = false
     private(set) var isFailed = false
@@ -51,6 +54,32 @@ final class MiMoLayerStageSession {
     private var handedOff = false
 
     var committedTokens: Int { schedule.committedTokens }
+    var nextFrame: QwenLayerStageFrame? {
+        guard !schedule.complete, schedule.nextSequence < request.forwardCount else { return nil }
+        return try? request.frame(sequence: schedule.nextSequence)
+    }
+
+    /// Size-only page ownership observations, never allocator residency. Each
+    /// request emits initial zero, logarithmically spaced completed frontiers,
+    /// and zero only after synchronized retirement succeeds.
+    func bindBatchMemoryObservation(scope: UUID) {
+        guard independentHistory else { return }
+        batchMemoryScope = scope
+        recordBatchMemory(force: true)
+    }
+
+    private func recordBatchMemory(force: Bool = false) {
+        guard let scope = batchMemoryScope,
+              force || committedTokens >= nextBatchMemoryObservation else { return }
+        let pages = (caches as? [MiMoV26IndependentHistoryCache]) ?? []
+        log("darkbloom-mimo-batch-memory-v1 rank=\(stage.stageIndex) scope=\(scope.uuidString)"
+            + " request=\(request.requestID.uuidString) phase=\(isClosed ? "retired" : "live")"
+            + " committed_tokens=\(committedTokens) page_count=\(pages.reduce(0) { $0 + $1.pageCount })"
+            + " page_bytes=\(pages.reduce(0) { $0 + $1.allocatedBytes })")
+        while nextBatchMemoryObservation <= committedTokens {
+            nextBatchMemoryObservation *= 2 // Request profiles bound context to at most 1,048,576.
+        }
+    }
 
     /// `restoring` starts the stage from its own cached state at the agreed
     /// reused prefix (`request.reusedPrefixTokens`) instead of empty caches.
@@ -60,7 +89,8 @@ final class MiMoLayerStageSession {
     init(stage: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
          generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false,
          restoring: QwenStagePrefixState? = nil,
-         adopting: QwenLayerStageAdoptedState? = nil, split: QwenPhaseSplitPlan? = nil) throws {
+         adopting: QwenLayerStageAdoptedState? = nil, split: QwenPhaseSplitPlan? = nil,
+         independentHistory: Bool = false) throws {
         guard plan.stages.count == 2, plan.stages.indices.contains(stage.stageIndex),
               stage.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("MiMo stage session received a different source plan")
@@ -93,7 +123,13 @@ final class MiMoLayerStageSession {
             throw ProbeError("MiMo stage plan layers differ from the loaded stage")
         }
         globalLayers = layers.map(\.globalIndex)
-        let fresh = stage.model.newCache()
+        guard !independentHistory || (restoring == nil && adopting == nil && split == nil
+            && request.reusedPrefixTokens == 0 && request.mimoImages == nil) else {
+            throw ProbeError("MiMo independent histories require plain text without prefix or phase state")
+        }
+        self.independentHistory = independentHistory
+        let fresh: [any KVCache] = independentHistory
+            ? try stage.model.makeIndependentHistoryCaches() : stage.model.newCache()
         if let restoring {
             guard adopting == nil, split == nil, request.reusedPrefixTokens > 0,
                   restoring.committedTokens == request.reusedPrefixTokens else {
@@ -179,7 +215,14 @@ final class MiMoLayerStageSession {
                         let embeddings = try imageFeatures!.embeddings(tokens:tokens,offset:frame.tokenOffset,model:stage.model)
                         output = try stage.model.forward(embeddings:embeddings,cache:caches,captureLayers:[last])
                     } else {
-                        output = try stage.model.forward(inputIDs:input,cache:caches,captureLayers:[last])
+                        if independentHistory {
+                            guard let pages = caches as? [MiMoV26IndependentHistoryCache] else {
+                                throw ProbeError("MiMo independent history storage changed")
+                            }
+                            output = try stage.model.forwardIndependentHistory(inputIDs: input, caches: pages, captureLayers: [last])
+                        } else {
+                            output = try stage.model.forward(inputIDs:input,cache:caches,captureLayers:[last])
+                        }
                     }
                     guard let value = output.layerFeatures[last] else {
                         throw ProbeError("MiMo stage 0 produced no residual after its last layer")
@@ -192,6 +235,7 @@ final class MiMoLayerStageSession {
                     throw ProbeError("MiMo stage output differs from the native residual contract")
                 }
                 try schedule.commit(frame)
+                recordBatchMemory()
                 try capturePrefix(after: frame)
                 // eval returns at the output event, which can precede the Metal
                 // completion handlers that still hold this buffer; the sender
@@ -208,7 +252,16 @@ final class MiMoLayerStageSession {
                     payloadSHA256: digest, array: residual))
             }
             let wantsLogits = frame.phase == .decode || frame.finalPromptChunk
-            let result = try stage.model.forward(embeddings: incoming!.array, cache: caches, logitsStart: count - 1)
+            let result: MiMoV26TextOutput
+            if independentHistory {
+                guard let pages = caches as? [MiMoV26IndependentHistoryCache] else {
+                    throw ProbeError("MiMo independent history storage changed")
+                }
+                result = try stage.model.forwardIndependentHistory(embeddings: incoming!.array,
+                    caches: pages, logitsStart: count - 1)
+            } else {
+                result = try stage.model.forward(embeddings: incoming!.array, cache: caches, logitsStart: count - 1)
+            }
             // An intermediate prompt chunk projects no vocabulary row: a
             // reduction over the whole normalized trunk proves every row ran.
             let output = wantsLogits ? result.logits[0..., -1, 0...]
@@ -220,6 +273,7 @@ final class MiMoLayerStageSession {
                 throw ProbeError("MiMo stage output differs from the native logit contract")
             }
             try schedule.commit(frame)
+            recordBatchMemory()
             try capturePrefix(after: frame)
             chain(incoming!.payloadSHA256)
             if frame.phase == .prefill, let promptObserver {
@@ -364,7 +418,7 @@ final class MiMoLayerStageSession {
 
     private func requireWindowable(_ tokens: [Int], offset: Int, producer: Bool) throws {
         try requireOpen()
-        guard windowRows == nil, producer == (stage.stageIndex == 0), (1...4).contains(tokens.count),
+        guard !independentHistory, windowRows == nil, producer == (stage.stageIndex == 0), (1...4).contains(tokens.count),
               tokens.allSatisfy({ (0..<stage.vocabularySize).contains($0) }),
               offset == schedule.committedTokens, schedule.committedPromptTokens == request.promptCount,
               offset + tokens.count <= request.maximumTokens,
@@ -425,7 +479,7 @@ final class MiMoLayerStageSession {
                            check: () throws -> Void) throws -> [QwenPhaseSplitHandoffSender.Component] {
         do {
             try requireOpen()
-            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+            guard !independentHistory, stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
                   schedule.decodeForwardCount == 0, !handedOff, let caches,
                   split.shapes.count == 2 * caches.count else {
                 throw ProbeError("Only the producer stage hands over, once, after its last prompt frame")
@@ -452,7 +506,7 @@ final class MiMoLayerStageSession {
     func retireAfterHandoff() throws {
         do {
             try requireOpen()
-            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+            guard !independentHistory, stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
                   schedule.decodeForwardCount == 0, !handedOff else {
                 throw ProbeError("Hand-off retirement differs from the producer's committed prompt frontier")
             }
@@ -487,6 +541,7 @@ final class MiMoLayerStageSession {
             try error.check()
         }
         isClosed = true
+        recordBatchMemory(force: true)
     }
 
     private func fail(_ primary: Error) throws -> Never {
@@ -496,4 +551,85 @@ final class MiMoLayerStageSession {
     }
 
     deinit { caches = nil }
+}
+
+
+extension MiMoLayerStageSession: IndependentHistoryBatchSession {
+    func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason,
+                          selectedTokenCount: Int, lastTokenID: Int) throws {
+        try finishGeneration(reason, selectedTokenCount: selectedTokenCount,
+            lastTokenID: lastTokenID, discardedDecodeForwards: 0)
+    }
+
+    /// One token per distinct request of the same loaded plain pipeline stage.
+    /// Schedules commit only after every row and page root finishes successfully.
+    static func decodeBatch(_ sessions: [MiMoLayerStageSession], tokens: [Int], residual: MLXArray?,
+                            check: () throws -> Void) throws -> MLXArray {
+        guard let first = sessions.first, (1...8).contains(sessions.count), sessions.count == tokens.count,
+              Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
+              sessions.allSatisfy({ $0.independentHistory && $0.stage.model === first.stage.model
+                  && $0.stage.stageIndex == first.stage.stageIndex
+                  && $0.identity.planFingerprint == first.identity.planFingerprint
+                  && $0.prefixCapture == nil && $0.promptObserver == nil && !$0.recordsSteps }) else {
+            throw ProbeError("MiMo batch decode requires distinct plain sessions of one loaded stage")
+        }
+        do {
+            guard tokens.allSatisfy({ (0..<first.stage.vocabularySize).contains($0) }) else {
+                throw ProbeError("MiMo batch token is outside the vocabulary")
+            }
+            let rank = first.stage.stageIndex
+            if rank == 0 {
+                guard residual == nil else { throw ProbeError("MiMo producer batch rejects incoming residuals") }
+            } else {
+                guard let residual, residual.shape == [sessions.count, 1, first.hiddenSize],
+                      residual.dtype == first.stage.activationDType else {
+                    throw ProbeError("MiMo consumer batch requires native BF16 residual rows")
+                }
+            }
+            var frames: [QwenLayerStageFrame] = []
+            var histories: [[MiMoV26IndependentHistoryCache]] = []
+            for session in sessions {
+                try session.requireOpen()
+                guard let pages = session.caches as? [MiMoV26IndependentHistoryCache],
+                      pages.allSatisfy({ $0.offset == session.committedTokens }) else {
+                    throw ProbeError("MiMo batch history frontier or storage differs")
+                }
+                frames.append(try session.schedule.admitDecode(offset: session.committedTokens))
+                histories.append(pages)
+            }
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                try checked()
+                let last = first.stage.layerCount - 1
+                let outputs = try first.stage.model.decodeIndependentHistories(
+                    inputIDs: rank == 0 ? MLXArray(tokens.map(Int32.init)).reshaped(sessions.count, 1) : nil,
+                    embeddings: residual, caches: histories, captureLayers: rank == 0 ? [last] : [])
+                let rows: [MLXArray] = try outputs.map {
+                    if rank == 1 { return $0.logits[0..., -1, 0...] }
+                    guard let value = $0.layerFeatures[last] else { throw ProbeError("MiMo batch lacks captured residual") }
+                    return value
+                }
+                let output = concatenated(rows, axis: 0)
+                eval([output] + histories.flatMap { $0 }.flatMap { $0.innerState() }); try checked()
+                let shape = rank == 0 ? [sessions.count, 1, first.hiddenSize] : [sessions.count, first.stage.vocabularySize]
+                guard output.shape == shape, output.dtype == first.stage.activationDType else {
+                    throw ProbeError("MiMo batch output differs from native shape or dtype")
+                }
+                for session in sessions { try session.requireFrontier(after: session.committedTokens + 1) }
+                for (session, frame) in zip(sessions, frames) {
+                    try session.schedule.commit(frame)
+                    session.recordBatchMemory()
+                }
+                if rank == 0 { Stream.gpu.synchronize(); try checked() }
+                return output
+            }
+        } catch {
+            var failure: Error = error
+            for session in sessions {
+                do { try session.retire(failed: true) }
+                catch { failure = ProbeError("\(failure); MiMo batch cleanup failed (\(error))") }
+            }
+            throw failure
+        }
+    }
 }

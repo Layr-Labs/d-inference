@@ -1,11 +1,18 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
 lint, test and hosting configuration remain here; new console development belongs
 to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+
+
+For the Bonsai 9B request-generation regression, build the control-only
+`darkbloom-cluster-pair-check` product in `libs/darkbloom-cluster-worker` and run
+[the tokenizer metadata check](test.md) with the exact model metadata directory.
+This executable links the prompt tokenizer and qualification driver, without
+loading the native model runtime or requiring a Metal library.
 
 ## Prerequisites
 
@@ -24,7 +31,27 @@ an arbitrary prebuilt metallib or infer GPU qualification from compilation.
 Keep separate worktrees/output directories for independent native builds;
 never share an active Swift scratch path or another suite's GPU reservation.
 
+## Cluster metadata check builds
+
+The worker capability and worker startup-argument checks link the actual
+`DarkbloomClusterRuntime` through `libs/darkbloom-cluster/Tests/Support/native-metadata.sh`.
+GLM catalog metadata uses MLXLLM types, so these checks need the pinned native
+dependencies and Xcode toolchain even though they execute only metadata and
+argument admission. They do not construct a model, initialize a GPU group or
+prove native inference.
+
+Their default build directory is a canonical temporary directory outside the
+checkout. To reuse this build between the two serial checks, set
+`DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT` to a dedicated scratch directory outside
+file-sync folders. Never reuse an active provider or worker build directory.
+See [Two-Mac Cluster Checks](test.md#two-mac-cluster-checks) for execution scope.
+
 ## Build
+
+The Bonsai 9B cluster tests link the same pinned Runtime and MLX libraries as
+the worker. Use an isolated scratch directory and source-matched MLX resources
+even for CPU lazy-shell tests; compilation is not pair qualification. The
+focused suites and their scope are listed in [the test guide](test.md#prerequisites).
 
 ```bash
 make provider-build
@@ -92,6 +119,11 @@ JACCL backend by `libs/darkbloom-cluster-worker/build-native-worker.sh`, or for
 a release by `scripts/build-cluster-helpers.sh`
 ([cluster helpers](../operations/provider-release.md#cluster-helpers)). Build
 the worker with the same source-matched metallib as the provider.
+
+The Qwen3.5/3.6 MoE tensor-parallel path uses these same native targets and pinned
+SDK; it introduces no alternate build flags. Run its
+[focused metadata and tensor checks](test.md#focused-qwen35-moe-tensor-parallel-checks)
+before installing a worker for paired hardware qualification.
 
 ## SDK 27 Release Builds And Caches
 
@@ -340,3 +372,69 @@ SSH access does not establish background Local Network permission. Keep the
 bundle identifier and signing team consistent; record post-signing hashes.
 Development signing is separate from the Developer ID and notarization gates
 in [provider releases](../operations/provider-release.md).
+
+### Gemma batch arithmetic dependency
+
+Build the cluster runtime together with the matching MLXLLM Gemma decode-scope
+implementation; the stage calls `Gemma4BatchDecodeScope` directly. Both ranks
+include its arithmetic marker in their batch load agreement. Build and test
+against the pinned working SDK sources rather than an independently fetched
+SDK revision. See [Gemma checks](test.md#gemma-per-request-decode-equality)
+before running GPU and full-artifact qualification.
+
+### Bundle Gemma catalog alias qualifications
+
+Pass the original `darkbloom-cluster-pair-check record` JSONL files to
+`scripts/cluster-bundle-pair-qualifications.sh`. The registered plain and 8-bit
+Gemma 26B aliases may share their exact artifact digest; keep their separate
+runtime IDs and original record lines. Do not relabel an 8-bit run as a plain
+run. The script deduplicates identical lines and refuses unrelated identities
+sharing one aggregate. See [inference](../architecture/inference.md#qualification-records-for-identical-catalog-files)
+for the artifact and grant boundary.
+
+
+The GPT-OSS independent-history batch primitive requires the matching
+MLX-Swift-LM change that exports `GPTOSSPerRowAttentionCache`. Build both from a
+reviewed source snapshot; the ordinary pinned SDK does not expose that API.
+A concurrent GPT-OSS candidate must include the matching resident driver,
+worker facade and installed lane policy as well as the SDK hook. The default
+remains single-lane. Run the [native checks](test.md#gpt-oss-native-batch-prerequisite-checks)
+and [owner checks](test.md#gpt-oss-batch-owner-checks) before preparing that candidate.
+
+### Tensor-parallel qualification refusal regression
+
+After changing installed generation-mode or qualification handling, run
+`bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` before building
+a candidate. It includes actual negative no-cut TP metadata and both installed
+rank checks, without loading weights or using a GPU. See [failed-shape tests](test.md#tensor-parallel-failed-shape-checks).
+
+
+### Building the demand-driven local generation host
+
+The optional `DistributedLocalBatchReplacement` factories live in ProviderCore and return fresh `DistributedInstalledSession` values; they must not start owners themselves. Rebuild both ProviderCore and the CLI wiring when integrating a planner/factory. Default construction supplies no replacement callback. Validate the host's lifecycle tests, then the separate planner/configuration/supervisor adoption path, before treating same-listener automatic mode switching as installed behavior. Keep previous-generation release proof and failed-candidate cleanup as hard barriers before every load.
+
+### Automatic cluster placement checks
+
+The automatic placement and setup transaction fixtures compile their actual
+Swift source closure with `swiftc`; they do not require native model resources
+or an installed provider. Run the [automatic batching CPU checks](test.md)
+before the full provider/helper build. Provider and helper builds must still
+use matching sources when verifying persisted lane activation on hardware.
+
+### Native batch quote helper matching
+
+Build the provider and placement helper from the same batch-quote sources.
+The helper obtains the native allocator's scalar upper bound without allocating
+model state or running a stream. Pure metadata checks inject an explicit bound
+and keep MLX/device execution absent. MiMo page/history helpers and the native
+owner must be integrated together; a zero or omitted page/workspace quote
+cannot enable automatic widening. See [native quote checks](test.md#native-family-batch-quote-checks).
+
+### Gemma request and paged restore checks
+
+Rebuild `darkbloom-cluster-pair-check` after changing
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterPrompt/PromptTokenizer.swift`
+before generating qualification requests. The
+[Gemma prompt and prefix checks](test.md#gemma-paged-prefix-and-prompt-checks)
+require the current control binary and source-matched native metallib. Keep
+previous generated requests and their numerical evidence unchanged.

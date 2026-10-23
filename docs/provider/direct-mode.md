@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -271,3 +271,10 @@ with a structured capacity response (`invalid_request_error`) from `LocalDisconn
 CORS headers remain present. Health checks and preflight requests still work,
 and already admitted responses retain their existing owner. Retry a rejected
 request after the provider is serving again.
+
+
+### Queued cluster requests during a mode change
+
+A cluster host configured for automatic batch replacement keeps the same authenticated local endpoint while changing native modes for queued demand. Running requests finish on their existing workers. Requests still waiting keep their place, cancellation state and original queue wait limit while the old workers release and the replacement loads. A disconnected or expired request is not admitted after loading finishes. Diagnostics report the temporary reconfiguration as not ready; the bounded request queue remains available.
+
+The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.

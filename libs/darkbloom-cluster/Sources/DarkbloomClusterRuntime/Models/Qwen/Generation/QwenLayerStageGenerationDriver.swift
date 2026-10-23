@@ -647,13 +647,14 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
         onDisk = cache.disk?.frontiers(scope: scope, tokens: request.promptTokenIDs,
             maximumFrontier: request.promptCount - 1) ?? []
     }
-    let offered = Array(Set(resident).union(onDisk).sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
+    let offered = Array(request.admittedPrefixFrontiers(Array(Set(resident).union(onDisk)))
+        .sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
     let local = QwenStagePrefixOffer(enabled: enabled, frontiers: offered, onDisk: Set(onDisk).subtracting(resident))
     let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,
         agreementFingerprint: agreement.fingerprint, "prefix")
     let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
         words: local.words, scope: record.part("offer"), check: check), promptCount: request.promptCount)
-    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
+    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount, request: request)
     var restoredSession: QwenLayerStageSession?
     var key: String?
     var tier: String?
@@ -712,7 +713,7 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     let plannedAgreement = try agreement.planned(plannedRequest)
     let session = try restoredSession
         ?? QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: plannedRequest, hiddenTap: hiddenTap)
-    if enabled, let cache, settled.splitFinalToken {
+    if enabled, peer.enabled, let cache, settled.splitFinalToken || request.preservesPrefixChunkGrid {
         session.prefixCaptureFrontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
     }
     if settled.reusedPrefix > 0 || choice.reusedPrefix > 0 {

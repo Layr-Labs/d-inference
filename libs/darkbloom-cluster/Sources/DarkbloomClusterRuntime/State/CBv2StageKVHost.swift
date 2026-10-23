@@ -259,6 +259,15 @@ final class CBv2StageKVHost {
         })
     }
 
+    /// Counter reads only, on the owner executor. The materialized pool metric
+    /// is actual committed backing, not its physical grant or reservation.
+    var batchMemory: StageBatchObservation.Memory {
+        .init(backend: kind.rawValue, capacity: backend.bytesCapacity,
+              reserved: backend.bytesReserved, inUse: backend.bytesInUse,
+              materialized: (backend as? PagedKVBackend)?.pool.bytesMaterialized,
+              boundRows: caches.reduce(0) { $0 + $1.rows.count }, drained: isDrained)
+    }
+
     /// One line for whoever launched the worker: sizes only.
     func report(_ purpose: String) {
         log("darkbloom-stage-kv-v1 backend=\(kind.rawValue) purpose=\(purpose) lanes=\(lanes)"
@@ -284,11 +293,12 @@ extension CBv2StageKVHost {
 
     /// True for the stage models whose request geometry takes a host (so
     /// their KV is paged unless the diagnosis switch names contiguous): the
-    /// Qwen 3.5 and Gemma 4 stages, and a one-lane Nemotron 3.5 stage (its
-    /// batch lanes are not built: `decodeBatch` has no Nemotron forward).
+    /// Qwen 3.5, Gemma 4 and Nemotron 3.5 stages. Each lane owns its
+    /// attention rows and recurrent transaction; the stage decoder dispatches
+    /// the model's native batch entry point.
     static func supports(_ model: any LanguageModel, lanes: Int) -> Bool {
         if model is Gemma4LayerStageModel { return true }
-        if model is NemotronH35Model { return lanes == 1 }
+        if model is NemotronH35Model { return (1...8).contains(lanes) }
         return (model is Qwen35TextModel || model is Qwen35Model) && !(model is any LayerStageFrameForwarding)
             && !(model is NemotronHModel)
     }

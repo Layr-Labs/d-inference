@@ -55,6 +55,13 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public var routedExperts: Bool { expertCount > 0 }
     public let groupSize: Int
     public let bits: Int
+    /// The mixed Qwen3.6 pack widens only replicated routing gates. Every
+    /// divided projection retains the default packing and cut arithmetic.
+    private let eightBitRoutingModules: Set<String>
+
+    func affineQuantization(forModule path: String) -> (groupSize: Int, bits: Int) {
+        (groupSize, eightBitRoutingModules.contains(path) ? 8 : bits)
+    }
     /// Each rank's weight (all ones: equal shards).
     public let shares: [Int]
     /// Per rank: KV heads of the full attention, key heads of the linear
@@ -80,6 +87,9 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         case inputColumns(Range<Int>)
         /// Every routed expert's rows (axis 1 of `[experts, out, in]`).
         case expertRows(Range<Int>)
+        /// Every expert's gate rows followed by its up rows in a canonical
+        /// fused bank. The two ranges retain that order after slicing.
+        case expertRowRanges([Range<Int>])
         /// Every routed expert's logical input columns (axis 2, quantized).
         case expertInputColumns(Range<Int>)
     }
@@ -97,6 +107,13 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     /// quarter to three quarters; a model whose parts cannot divide so is
     /// refused per option by the plan itself.
     public static let candidateShares: [[Int]] = [[1, 3], [1, 2], [2, 3], [3, 2], [2, 1], [3, 1]]
+
+    /// A routed block rounds its local expert/shared output in the activation
+    /// type before widening and summing, unlike a dense row projection. Bind
+    /// that distinction before loading; existing dense agreements stay exact.
+    static func arithmeticAgreementFields(routedExperts: Bool) -> [String] {
+        routedExperts ? ["qwen-moe-block-activation-partials-f32-sum-v1"] : []
+    }
 
     /// `text` is the checkpoint's `text_config` object; `quantization` the
     /// checkpoint's top-level `quantization` object; `shares` each rank's
@@ -136,10 +153,6 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
               (quantization["mode"] as? String ?? "affine") == "affine", [4, 8].contains(bits), groupSize > 0 else {
             throw ProbeError("Tensor parallel plan: requires an affine 4- or 8-bit quantized checkpoint")
         }
-        // Per-module overrides would change a cut's group arithmetic; refuse them.
-        guard !quantization.values.contains(where: { $0 is [String: Any] }) else {
-            throw ProbeError("Tensor parallel plan: per-module quantization overrides are not covered")
-        }
         guard size >= 2 else { throw ProbeError("Tensor parallel plan: needs at least two ranks") }
         let shares = shares ?? Array(repeating: 1, count: size)
         guard shares.count == size, shares.allSatisfy({ (1...1_000).contains($0) }) else {
@@ -163,6 +176,30 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         intermediateSize = try integer(experts > 0 ? "moe_intermediate_size" : "intermediate_size")
         sharedExpertIntermediateSize = experts > 0 ? try integer("shared_expert_intermediate_size") : 0
         vocabularySize = try integer("vocab_size")
+
+        let overrides = quantization.filter { $0.value is [String: Any] || $0.key.hasPrefix("language_model.") }
+        if overrides.isEmpty {
+            eightBitRoutingModules = []
+        } else {
+            // Complete router/shared-gate pairs only, on the registered mixed
+            // affine layout. None of these modules is sliced or fused.
+            let expected = Set((0..<layerCount).flatMap { layer in
+                ["language_model.model.layers.\(layer).mlp.gate",
+                 "language_model.model.layers.\(layer).mlp.shared_expert_gate"]
+            })
+            guard experts > 0, groupSize == 64, bits == 4,
+                  Set(quantization.keys).subtracting(["group_size", "bits", "mode"]) == expected,
+                  Set(overrides.keys) == expected,
+                  overrides.values.allSatisfy({ value in
+                      guard let q = value as? [String: Any] else { return false }
+                      return Set(q.keys).isSubset(of: ["group_size", "bits", "mode"])
+                          && q["group_size"] as? Int == 64 && q["bits"] as? Int == 8
+                          && (q["mode"] == nil || q["mode"] as? String == "affine")
+                  }) else {
+                throw ProbeError("Tensor parallel plan: only complete affine8/group64 replicated routing-gate overrides over affine4/group64 are covered")
+            }
+            eightBitRoutingModules = expected
+        }
 
         guard attentionHeads % kvHeads == 0, linearValueHeads % linearKeyHeads == 0 else {
             throw ProbeError("Tensor parallel plan: head groups are uneven")
@@ -369,6 +406,9 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         case "mlp.switch_mlp.gate_proj" where quantizedLeaf && routedExperts,
              "mlp.switch_mlp.up_proj" where quantizedLeaf && routedExperts:
             return .load(.expertRows(block(intermediatePerRank, rank: rank)))
+        case "mlp.switch_mlp.gate_up_proj" where quantizedLeaf && routedExperts:
+            return .load(.expertRowRanges([block(intermediatePerRank, rank: rank),
+                block(intermediatePerRank, rank: rank, offset: intermediateSize)]))
         case "mlp.switch_mlp.down_proj" where quantizedLeaf && routedExperts:
             return .load(.expertInputColumns(block(intermediatePerRank, rank: rank)))
         case "mlp.shared_expert.gate_proj" where quantizedLeaf && routedExperts,

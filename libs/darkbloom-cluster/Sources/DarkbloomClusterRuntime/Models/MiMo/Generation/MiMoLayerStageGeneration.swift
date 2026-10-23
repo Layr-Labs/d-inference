@@ -43,11 +43,17 @@ struct MiMoSpeculativeDecode {
 /// both ranks retired cleanly (`storeClusterStagePrefix`).
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
     agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
-    prefixCache requestedPrefixCache: QwenStagePrefixCache? = nil, speculative: MiMoSpeculativeDecode? = nil,
+    prefixCache requestedPrefixCache: QwenStagePrefixCache? = nil, independentHistory: Bool = false, speculative: MiMoSpeculativeDecode? = nil,
     producerStage: LoadedMiMoLayerStage? = nil, handoffFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
-    try MLX.withError { nativeError in
+    guard !independentHistory || (speculative == nil && producerStage == nil
+        && unplannedAgreement.phaseSplit == nil && !unplannedAgreement.compactDecode
+        && !unplannedAgreement.request.decodingRankAlone && unplannedAgreement.request.mimoImages == nil
+        && requestedPrefixCache?.enabled != true) else {
+        throw ProbeError("Paged MiMo serving requires the common plain text pipeline")
+    }
+    return try MLX.withError { nativeError in
         func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
         do {
             try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement,
@@ -66,9 +72,11 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
             let prefixCache = unplannedAgreement.phaseSplit == nil && !unplannedAgreement.request.decodingRankAlone
                 ? requestedPrefixCache : nil
             let planned = try agreeMiMoStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
-                agreement: unplannedAgreement, collective: collective, recordsSteps: recordsSteps, check: checked)
+                agreement: unplannedAgreement, collective: collective, recordsSteps: recordsSteps,
+                independentHistory: independentHistory, check: checked)
             let agreement = planned.agreement
             let session: MiMoLayerStageSession? = planned.session
+            if independentHistory { planned.session.bindBatchMemoryObservation(scope: agreement.request.requestID) }
             let captureLimit = beginClusterStagePrefixCapture(cache: prefixCache, capture: planned.session.prefixCapture)
             defer { prefixCache?.endCapture() }
             let control = QwenLayerStageGenerationControl(agreement: agreement)

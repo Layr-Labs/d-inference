@@ -17,6 +17,7 @@ extension DistributedLocalServer {
         }
         if phase != .quarantined { phase = drainUntil == nil ? .stopping : .draining }
         startupTask?.cancel()
+        replacementTask?.cancel()
         if drainUntil == nil {
             target.responses.beginDeliveryGrace()
             Task { _ = await target.session.stop(until: DispatchTime.now().uptimeNanoseconds) }
@@ -28,6 +29,8 @@ extension DistributedLocalServer {
         // Join preparation before capturing the retained session: a factory may
         // return a replacement after stop and it must still be cleaned up here.
         _ = await startupTask?.result
+        _ = await replacementTask?.result
+        replacementTask = nil
         let target = generation
         target.responses.closeAdmissions()
         if let drainUntil { _ = await target.session.drain(until: drainUntil) }
@@ -50,7 +53,7 @@ extension DistributedLocalServer {
         removeDiscovery()
         boundPort = nil; serviceTask = nil; startupTask = nil
         if target.session.httpCanRotate && target.session.status == .released {
-            target.entry = nil; phase = .stopped
+            target.entry = nil; stableTokenizer = nil; phase = .stopped
         } else {
             phase = .quarantined
             recordCleanupUnresolved(target)

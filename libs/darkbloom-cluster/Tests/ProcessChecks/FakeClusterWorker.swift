@@ -86,9 +86,15 @@ import DarkbloomClusterSecurity
             try session.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
             try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(frame)); sequence += 1
         }
+        #if INSTALLED_FIXTURE_DATA_PLANE
+        // CPU installed-session checks inject reports, never a native handshake.
+        let reportedDataPlane = fixtureReady.dataPlane
+        #else
+        let reportedDataPlane: ClusterWorkerDataPlane? = nil
+        #endif
         try emit(.ready(.init(identity: fixtureIdentity, rank: rank, profile: fixtureProfile,
             executionPlanSHA256: fixturePlan, requestCapacityBytes: behavior == "larger" ? 2048 : 1024,
-            servingContextTokens: contexts.first)))
+            dataPlane: reportedDataPlane, servingContextTokens: contexts.first)))
         // Neither reads its command stream again; "deaf" also ignores SIGTERM.
         if behavior == "deaf" { signal(SIGTERM, SIG_IGN) }
         if behavior == "deaf" || behavior == "deaf-term" { while true { pause() } }

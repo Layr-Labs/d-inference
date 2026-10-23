@@ -30,7 +30,7 @@ struct QwenTensorParallelShardReceipt: Equatable {
 /// pinned descriptor, checked against its inventory entry, asked of the host
 /// memory gate first (`QwenTensorParallelLoadGate`), cut to this rank's share
 /// and materialized at once; the whole tensor is released before the next is
-/// read. A tensor no rank keeps (none in a registered dense text checkpoint)
+/// read. A tensor no rank keeps (none in a registered text checkpoint)
 /// is not read.
 enum QwenTensorParallelVerifiedLoad {
     static func load(_ admission: QwenResidentAdmission, rank: Int, shares: [Int],
@@ -39,9 +39,7 @@ enum QwenTensorParallelVerifiedLoad {
         -> (model: QwenTensorParallelModel, receipt: QwenTensorParallelShardReceipt, profile: QwenRegisteredDenseModelProfile) {
         let started = DispatchTime.now().uptimeNanoseconds
         try admission.definition.arithmetic.requireNativeRoute()
-        guard admission.definition.arithmetic == .dense, admission.specification.routedExperts == nil else {
-            throw ProbeError("Tensor parallel serves the dense Qwen rows only")
-        }
+        try requireSupportedProduct(admission.definition, shares: shares)
         let local = try prepareQwenResidentSource(admission, check: check)
         let source = local.metadata.source, plan = admission.plan
         // Both stages' inventories, validated as the pipeline validates them.
@@ -97,6 +95,18 @@ enum QwenTensorParallelVerifiedLoad {
             storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)), planName: receiptPlanName, shares: shares,
             rank: rank, sourceTensors: entries.count, sourceBytes: source.sourceBytes, shardBytes: shardBytes,
             loadNanoseconds: DispatchTime.now().uptimeNanoseconds - started), local.metadata.profile)
+    }
+
+    /// Product coverage is deliberately narrower than the diagnostic plan:
+    /// dense rows keep their existing path; the registered Qwen3.5/3.6 MoE
+    /// rows use equal shares only, including Qwen3.6's replicated affine8 gates.
+    static func requireSupportedProduct(_ definition: QwenResidentModelDefinition, shares: [Int]) throws {
+        if definition.arithmetic == .dense, definition.specification.routedExperts == nil { return }
+        guard [.qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(definition.specification.model),
+              definition.arithmetic == .routedExperts, shares.count == 2,
+              shares.allSatisfy({ (1...64).contains($0) }), shares[0] == shares[1] else {
+            throw ProbeError("Tensor parallel serves dense Qwen rows and equal shares of registered Qwen3.5/3.6 35B A3B")
+        }
     }
 
     /// An upper bound of what `cut` keeps of a tensor of `bytes`: the whole

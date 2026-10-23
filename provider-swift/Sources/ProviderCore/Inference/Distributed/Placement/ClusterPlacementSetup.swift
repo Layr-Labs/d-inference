@@ -117,7 +117,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
     public let planSHA256: String
 
     public static func synthesize(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
-                                  chosen: ClusterPlacementCandidate) throws -> ClusterPlacementSetup {
+                                  chosen: ClusterPlacementCandidate, batchLanes: Int? = nil) throws -> ClusterPlacementSetup {
         // A tensor-parallel placement cuts no layer range (every rank holds its share of every layer); any other
         // placement of a pair cuts once.
         let tensorParallel = chosen.mode.usesTensorParallelDecode
@@ -176,6 +176,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
             if chosen.mode != .pipeline { object["generationMode"] = chosen.mode.rawValue }
             // Unequal tensor-parallel shares, as the planner chose them; equal shares are the omitted spelling.
             if chosen.mode == .tensorParallel, let shares = chosen.tensorShares { object["tensorShares"] = shares }
+            if let batchLanes { object["batchLanes"] = batchLanes }
             let input = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
             let configuration = try ClusterConfigurationCodec.decode(input, capability: capability,
                                                                      capabilitySHA256: description.capabilitySHA256)

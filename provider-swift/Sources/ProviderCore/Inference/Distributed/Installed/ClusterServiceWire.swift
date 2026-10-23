@@ -24,6 +24,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// While it runs: `ClusterLocalServing.notice` when this part (rank 0) serves on its local API only because the
         /// coordinator cannot take the cluster member role; nil when it serves publicly or is not rank 0.
         public var notice: String? = nil
+        /// Exact immutable setup this running child was launched for. Unlike
+        /// the service's selected setup, it changes only after restart or an
+        /// acknowledged same-listener handoff. Used to fence automatic replans.
+        public var configurationSHA256: String? = nil
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool
@@ -89,7 +93,7 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// this Mac's verify-teardown summary. A member whose build predates an
     /// operation refuses the command (it cannot decode it).
     public enum Operation: String, Codable, Sendable {
-        case serve, stop, status, prompt, cacheSettings, unpair, sendModel, lease, control, teardown
+        case serve, stop, status, prompt, cacheSettings, unpair, sendModel, lease, control, teardown, batchSetup
     }
     public var op: Operation
     public var model: String?
@@ -117,6 +121,9 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// `serve`, local only: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
     /// so the key stays the same whichever Mac runs the API. Only inside the keyed link control session; never logged.
     public var localToken: String?
+    /// A drained same-model replacement from the currently saved rank-0
+    /// member. Validated independently of control-leadership preference.
+    public var batchSetup: ClusterAutomaticBatchSetup? = nil
     public init(op: Operation, model: String? = nil, text: String? = nil, cache: ClusterCacheSettingsSync? = nil,
                 clusterID: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
                 facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil,

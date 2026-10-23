@@ -55,6 +55,9 @@ public final class QwenResidentRuntime {
     /// True while the batch loop runs on the executor: lane reservations and
     /// starts it applies between steps then run inside its exclusive hold.
     var batchServing = false
+    /// Both ranks enter batch loops in the same order. Never reset while the
+    /// keyed collective is alive; the record binding separates each batch.
+    var batchRecordOrdinal: UInt64 = 0
     /// The KV storage the stage's requests use, for whoever launched the worker.
     public var kvBackend: String { stage?.loaded.kvHost.host?.kind.rawValue ?? "contiguous" }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Model-free checks of `QwenTensorParallelPlan`: for every tensor of a dense
@@ -83,6 +84,10 @@ func cutShape(_ tensor: Tensor, _ cut: QwenTensorParallelPlan.Cut, _ plan: QwenT
         guard shape.count == 3, range.upperBound <= shape[1] else { return nil }
         shape[1] = range.count
         return shape
+    case .expertRowRanges(let ranges):
+        guard shape.count == 3, ranges.allSatisfy({ $0.lowerBound >= 0 && $0.upperBound <= shape[1] }) else { return nil }
+        shape[1] = ranges.reduce(0) { $0 + $1.count }
+        return shape
     case .expertInputColumns(let logical):
         let leaf = tensor.name.split(separator: ".").last!
         let divisor = leaf == "weight" ? 32 / plan.bits : plan.groupSize
@@ -109,6 +114,14 @@ func coverage(_ tensor: Tensor, _ cuts: [QwenTensorParallelPlan.Cut], _ plan: Qw
         for cut in cuts {
             guard case .expertRows(let range) = cut else { return false }
             for row in range where row < seen.count { seen[row] += 1 }
+        }
+        return seen.allSatisfy { $0 == 1 }
+    }
+    if case .expertRowRanges = cuts[0] {
+        var seen = [Int](repeating: 0, count: tensor.shape[1])
+        for cut in cuts {
+            guard case .expertRowRanges(let ranges) = cut else { return false }
+            for range in ranges { for row in range where row >= 0 && row < seen.count { seen[row] += 1 } }
         }
         return seen.allSatisfy { $0 == 1 }
     }
@@ -150,6 +163,7 @@ func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], 
     }
     func e(_ out: Int, _ input: Int) -> [Int]? { q(out, input).map { [experts] + $0 } }
     let table: [(String, () -> [Int]?)] = [
+        (".mlp.switch_mlp.gate_up_proj.", { e(2 * inter, h) }),
         (".mlp.switch_mlp.gate_proj.", { e(inter, h) }), (".mlp.switch_mlp.up_proj.", { e(inter, h) }),
         (".mlp.switch_mlp.down_proj.", { e(h, inter) }),
         (".mlp.shared_expert.gate_proj.", { q(shared, h) }), (".mlp.shared_expert.up_proj.", { q(shared, h) }),
@@ -259,6 +273,100 @@ func checkRoutedExperts(quantization: [String: Any]) {
     expectThrows("routed experts with dense-MLP layers") { var m = c; m["mlp_only_layers"] = [0]
         _ = try QwenTensorParallelPlan(textConfiguration: m, quantization: quantization, size: 2) }
     print("routed experts: plan covered (equal), dispositions and refusals checked")
+}
+
+/// The verified loader consumes canonical fused banks; the diagnostic reads
+/// stored split banks. Both representations must construct identical shards.
+func checkRegisteredRoutedExperts() throws {
+    let libraries = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let fixtures = libraries.appendingPathComponent("darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures")
+    let data = try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen35-35b-a3b.configuration.json"))
+    check(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        == "58a2b700bbe36066bc3e8bac65341a7f886c8dbe4db510553150004cfb0294f7", "registered A3B config pin")
+    let root = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let text = root["text_config"] as! [String: Any], quantization = root["quantization"] as! [String: Any]
+    let stored = syntheticMoETensors(text)
+    checkPlan("registered A3B stored split banks", configuration: text, tensors: stored, quantization: quantization)
+    var canonical: [Tensor] = []
+    for tensor in stored {
+        if tensor.name.contains(".switch_mlp.up_proj.") { continue }
+        if tensor.name.contains(".switch_mlp.gate_proj.") {
+            var shape = tensor.shape; shape[1] *= 2
+            canonical.append(Tensor(name: tensor.name.replacingOccurrences(of: ".gate_proj.", with: ".gate_up_proj."),
+                shape: shape, dtype: tensor.dtype))
+        } else { canonical.append(tensor) }
+    }
+    checkPlan("registered A3B canonical fused banks", configuration: text, tensors: canonical, quantization: quantization)
+    let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2)
+    check(plan.kvHeadsPerRank == [1, 1] && plan.linearKeyHeadsPerRank == [8, 8]
+        && plan.intermediatePerRank == [256, 256] && plan.vocabularyPerRank == [124_160, 124_160], "registered A3B equal geometry")
+    for (rank, ranges) in [[0..<256, 512..<768], [256..<512, 768..<1024]].enumerated() {
+        for leaf in ["weight", "scales", "biases"] {
+            let cut = try plan.disposition(key: "language_model.model.layers.0.mlp.switch_mlp.gate_up_proj." + leaf, rank: rank)
+            check(cut == .load(.expertRowRanges(ranges)), "canonical gate/up order rank \(rank) \(leaf)")
+        }
+    }
+    for shares in QwenTensorParallelPlan.candidateShares {
+        expectThrows("registered A3B unequal \(shares)") {
+            _ = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)
+        }
+    }
+    let mixedData = try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen36-35b-a3b.configuration.json"))
+    check(SHA256.hash(data: mixedData).map { String(format: "%02x", $0) }.joined()
+        == "b852ada32203b112e217e5cb48afeadaf16594c0f5d3f5f7a380897e5e8732c2", "registered Qwen3.6 configuration pin")
+    let other = try JSONSerialization.jsonObject(with: mixedData) as! [String: Any]
+    let mixedText = other["text_config"] as! [String: Any], mixedQuantization = other["quantization"] as! [String: Any]
+    let mixedPlan = try QwenTensorParallelPlan(textConfiguration: mixedText, quantization: mixedQuantization, size: 2)
+    let mixedTensors = syntheticMoETensors(mixedText).map { tensor -> Tensor in
+        guard tensor.name.hasSuffix(".weight"), tensor.name.contains(".mlp.gate.")
+            || tensor.name.contains(".mlp.shared_expert_gate.") else { return tensor }
+        var shape = tensor.shape; shape[shape.count - 1] *= 2
+        return Tensor(name: tensor.name, shape: shape, dtype: tensor.dtype)
+    }
+    checkPlan("registered Qwen3.6 mixed affine routing gates", configuration: mixedText,
+        tensors: mixedTensors, quantization: mixedQuantization)
+    for layer in 0..<40 {
+        for module in ["gate", "shared_expert_gate"] {
+            let path = "language_model.model.layers.\(layer).mlp." + module
+            let packing = mixedPlan.affineQuantization(forModule: path)
+            check(packing.groupSize == 64 && packing.bits == 8, "mixed routing gate packing \(path)")
+            for rank in 0..<2 { for leaf in ["weight", "scales", "biases"] {
+                check((try? mixedPlan.disposition(key: path + "." + leaf, rank: rank)) == .load(.replicate),
+                    "mixed routing gate wholly replicated on rank \(rank)")
+            } }
+        }
+    }
+    check(mixedPlan.affineQuantization(forModule: "language_model.model.layers.0.mlp.switch_mlp.gate_up_proj").bits == 4,
+        "fused experts retain affine4 cut arithmetic")
+    for shares in QwenTensorParallelPlan.candidateShares {
+        expectThrows("Qwen3.6 unequal shares \(shares)") {
+            _ = try QwenTensorParallelPlan(textConfiguration: mixedText, quantization: mixedQuantization, size: 2, shares: shares)
+        }
+    }
+    let gate = "language_model.model.layers.0.mlp.gate"
+    var badPolicies: [[String: Any]] = []
+    var changed = mixedQuantization; changed.removeValue(forKey: gate); badPolicies.append(changed)
+    for value: Any in [false, ["group_size": 128, "bits": 8], ["group_size": 64, "bits": 4],
+        ["group_size": 64, "bits": 8, "mode": "mxfp8"], ["group_size": 64, "bits": 8, "mode": 7],
+        ["group_size": 64, "bits": 8, "extra": true]] {
+        changed = mixedQuantization; changed[gate] = value; badPolicies.append(changed)
+    }
+    for path in ["language_model.model.layers.0.mlp.switch_mlp.down_proj", "vision.fake", "unknown"] {
+        changed = mixedQuantization; changed[path] = ["group_size": 64, "bits": 8]; badPolicies.append(changed)
+    }
+    for policy in badPolicies {
+        expectThrows("malformed, incomplete or divided mixed override") {
+            _ = try QwenTensorParallelPlan(textConfiguration: mixedText, quantization: policy, size: 2)
+        }
+    }
+    var dense = mixedText; dense["model_type"] = "qwen3_5_text"; dense["num_experts"] = 0; dense["intermediate_size"] = 512
+    expectThrows("mixed overrides on dense model") {
+        _ = try QwenTensorParallelPlan(textConfiguration: dense, quantization: mixedQuantization, size: 2)
+    }
+    check(QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: false).isEmpty, "dense arithmetic binding unchanged")
+    check(QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: true)
+        == ["qwen-moe-block-activation-partials-f32-sum-v1"], "MoE local rounding is bound")
 }
 
 /// Weighted shares for unequal Macs: every tensor still covered exactly once
@@ -599,6 +707,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         expectThrows("another model type") { var c = c27; c["model_type"] = "mimo_v2_flash"
             _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }
         checkRoutedExperts(quantization: quantization)
+        try checkRegisteredRoutedExperts()
         let plan = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2)
         expectThrows("unknown key") { _ = try plan.disposition(key: "language_model.model.layers.0.mlp.experts.weight", rank: 0) }
         expectThrows("attention key on a linear layer") { _ = try plan.disposition(key: "language_model.model.layers.0.self_attn.q_proj.weight", rank: 0) }

@@ -189,8 +189,15 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         let whole = 1 / rates.decodeTokensPerSecond
         var points = (rates.tensorShareRates ?? []).map {
             ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
+        // A measured half outside the floor/weight model is still an actual
+        // point. Kernel or host costs can make a shard slower than the whole.
+        if let shard = rates.tensorShardDecodeTokensPerSecond,
+           (1 / shard > whole || 1 / shard < whole / 2),
+           !points.contains(where: { $0.fraction == 0.5 }) {
+            points.append(.init(fraction: 0.5, seconds: 1 / shard))
+        }
         if !points.isEmpty {
-            if let shard = rates.tensorShardDecodeTokensPerSecond, !points.contains(where: { abs($0.fraction - 0.5) < 0.005 }) {
+            if let shard = rates.tensorShardDecodeTokensPerSecond, !points.contains(where: { $0.fraction == 0.5 }) {
                 points.append(.init(fraction: 0.5, seconds: 1 / shard))
             }
             points.append(.init(fraction: 1, seconds: whole))
@@ -198,7 +205,8 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         measuredSteps = points.isEmpty ? nil : points.sorted { $0.fraction < $1.fraction }
         wholeStepSeconds = whole
         if let shard = rates.tensorShardDecodeTokensPerSecond {
-            // A half cannot be faster than half the whole, nor slower than it.
+            // Keep a nonnegative floor/weight fallback for unmeasured shares;
+            // the measured point above takes precedence at its actual share.
             let half = min(whole, max(whole / 2, 1 / shard))
             floorSeconds = 2 * half - whole; weightSeconds = 2 * (whole - half); measured = true; fromHardware = nil
         } else if let prior = hardwareWeightSeconds, prior.isFinite, prior > 0, measuredSteps == nil {
@@ -209,7 +217,10 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         }
     }
 
-    public func shareStepSeconds(ranks: Int) -> Double { floorSeconds + weightSeconds / Double(max(1, ranks)) }
+    public func shareStepSeconds(ranks: Int) -> Double {
+        if measuredSteps != nil { return shareStepSeconds(fraction: 1 / Double(max(1, ranks))) }
+        return floorSeconds + weightSeconds / Double(max(1, ranks))
+    }
     /// A rank holding `fraction` of the weights: the floor whole, that part of the weights.
     /// With share probes: piecewise linear between the measured shares (below
     /// the smallest, the floor model, never above that share's own step).
@@ -218,6 +229,7 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         let f = max(0, min(1, fraction))
         let model = floorSeconds + weightSeconds * f
         guard let steps = measuredSteps, let lowest = steps.first else { return model }
+        if let point = steps.first(where: { $0.fraction == f }) { return point.seconds }
         if f <= lowest.fraction { return min(model, lowest.seconds) }
         for (a, b) in zip(steps, steps.dropFirst()) where f <= b.fraction {
             return a.seconds + (b.seconds - a.seconds) * (f - a.fraction) / max(1e-9, b.fraction - a.fraction)

@@ -382,7 +382,7 @@ struct MiMoResidentAdmissionTests {
     @Test func theCatalogListsEveryAdaptersModelsFromTheirOwnRows() throws {
         let all = ClusterResidentModelCatalog.all
         #expect(all.map(\.runtimeModelID) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
-            "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
+            "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_9b", "registered_nemotron35_lightning",
             "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
             "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
             "registered_glm53_flash"])

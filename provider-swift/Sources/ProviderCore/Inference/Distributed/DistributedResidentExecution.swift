@@ -55,10 +55,13 @@ public struct DistributedResidentExecutionProfile: Sendable {
     public let maxOutputTokens: Int
     public let maxContextTokens: Int
     public let requestTimeout: Duration
+    /// Whether the selected resident runtime emits committed-token logprobs.
+    /// Numeric sampling limits do not imply that the runtime captures them.
+    public let supportsLogprobs: Bool
 
     public init(
         id: String, vocabularySize: Int, maxPromptTokens: Int, maxOutputTokens: Int,
-        maxContextTokens: Int, requestTimeout: Duration
+        maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false
     ) throws {
         guard !id.isEmpty, vocabularySize > 0, maxPromptTokens > 0, maxOutputTokens > 0,
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
@@ -70,6 +73,20 @@ public struct DistributedResidentExecutionProfile: Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.maxContextTokens = maxContextTokens
         self.requestTimeout = requestTimeout
+        self.supportsLogprobs = supportsLogprobs
+    }
+
+    /// The installed-session and member-pair paths use the same selected-mode
+    /// capability. Keep this aligned with NativeWorkerRuntime.capturesLogprobs;
+    /// an unknown adapter fails closed before either worker reserves a request.
+    init(capability: ClusterRuntimeCapability, generationMode: ClusterGenerationMode,
+         requestTimeout: Duration) throws {
+        let wire = capability.profile
+        try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
+            maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
+            maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
+            supportsLogprobs: capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
+                && generationMode == .tensorParallel)
     }
 }
 
@@ -273,6 +290,7 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     case contextTooLong = "context_too_long"
     case tokenOutsideVocabulary = "token_outside_vocabulary"
     case logprobsUnsupported = "logprobs_unsupported"
+    case logprobCaptureUnsupported = "logprob_capture_unsupported"
     case constrainedDecodingUnsupported = "constrained_decoding_unsupported"
     case mediaUnsupported = "media_unsupported"
     case priorityUnsupported = "priority_unsupported"
@@ -301,6 +319,8 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
         case .logprobsUnsupported:
             return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
+        case .logprobCaptureUnsupported:
+            return "Token logprobs are not supported for this model in the selected cluster mode."
         case .constrainedDecodingUnsupported: return "Constrained decoding is not supported for this model on this cluster."
         case .mediaUnsupported: return "Media input is not supported on this cluster."
         case .priorityUnsupported: return "Request priority is not supported on this cluster."
@@ -338,9 +358,8 @@ extension DistributedResidentExecutionProfile {
                   (try? images.validate(prompt:request.promptTokens)) != nil else { return .mediaUnsupported }
         }
         if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
-        // The decoding rank gathers them as the product does; a runtime that
-        // cannot refuses the request alone (unsupported, retryable).
         if !(0...ClusterWorkerSampling.maximumTopLogprobs).contains(p.topLogprobs) { return .logprobsUnsupported }
+        if p.topLogprobs > 0, !supportsLogprobs { return .logprobCaptureUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
         if request.promptTokens.count > maxPromptTokens { return .promptTooLong }

@@ -189,9 +189,8 @@ struct Gemma4StagePagedSyntheticTests {
                 }, validateOutput: { #expect($0.shape == [lanes.count, Self.vocabulary]) })
             for (row, lane) in lanes.enumerated() {
                 let index = tokens[lane].count
-                // Rows: two or more rows round the shared quantized
-                // projections differently from one (`runBatch`), so a batched
-                // row is held to its solo token, and its bytes are counted.
+                // The explicit Gemma decode scope preserves singleton row
+                // arithmetic through projections, value norm and experts.
                 if Self.floats(rows[row]) == alone[lane].rows[index] { identicalRows += 1 } else { differentRows += 1 }
                 tokens[lane].append(Self.argmax(rows[row]))
                 if tokens[lane].count == Self.outputs {
@@ -203,6 +202,7 @@ struct Gemma4StagePagedSyntheticTests {
         }
         for lane in 0..<3 { #expect(tokens[lane] == alone[lane].tokens, "\(kind) lane \(lane) tokens differ") }
         print("gemma4-paged-batch kind=\(kind.rawValue) rows_identical=\(identicalRows) rows_different=\(differentRows)")
+        #expect(differentRows == 0, "each batched Gemma logit row must equal its solo row")
         #expect(hosts.allSatisfy { $0!.isDrained }, "every page and binding returned")
     }
 

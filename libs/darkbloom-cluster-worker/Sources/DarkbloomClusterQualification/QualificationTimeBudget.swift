@@ -63,6 +63,10 @@ public struct QualificationTimeBudget: Equatable, Sendable {
             attentionDoublingTokens: 32_768),
         "registered_ternary_bonsai_2_27b": .init(slowestPrefillTokensPerSecond: 270, slowestDecodeTokensPerSecond: 28,
             attentionDoublingTokens: 32_768),
+        // Bonsai 9B has no measured slow-rank row yet. Deliberately slow
+        // estimates provide bounded long-context timeouts until qualification.
+        "registered_ternary_bonsai_2_9b": .init(slowestPrefillTokensPerSecond: 100, slowestDecodeTokensPerSecond: 5,
+            attentionDoublingTokens: 32_768),
         "registered_nemotron35_lightning": .init(slowestPrefillTokensPerSecond: 1000, slowestDecodeTokensPerSecond: 45,
             attentionDoublingTokens: 32_768),
         "registered_gemma4_26b_qat_4bit": .init(slowestPrefillTokensPerSecond: 1500, slowestDecodeTokensPerSecond: 50,

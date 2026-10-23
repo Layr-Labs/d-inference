@@ -23,12 +23,14 @@ enum ClusterMiMoPrivateImagePolicy {
         capability.hasPrivateImages || capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
     }
 
-    /// Preserve plaintext paired-link text behavior for every other setup.
-    /// These alone require the already-supported native keyed path on both owner routes.
+    /// Every installed paired-link session requires the keyed native path on
+    /// both owner routes. A missing feature, different build or explicit
+    /// downgrade is refused before either rank starts. Developer SSH and
+    /// credential-free CPU factories retain their existing selection rules.
     static func keysDataPlane(_ capability: ClusterRuntimeCapability, supported: Bool,
                               sameBuild: Bool, hasLink: Bool, selectionOverride: Bool? = nil) throws -> Bool {
-        let required = requiresKeyedDataPlane(capability)
-        let selected = selectionOverride ?? (supported && sameBuild && (!hasLink || required))
+        let required = hasLink || requiresKeyedDataPlane(capability)
+        let selected = selectionOverride ?? (supported && sameBuild)
         guard !required || (selected && supported && sameBuild) else {
             throw ClusterConfigurationError.invalid(capability.hasPrivateImages
                 ? "Private image candidate requires the same keyed native worker on both ranks"
@@ -37,16 +39,11 @@ enum ClusterMiMoPrivateImagePolicy {
         return selected
     }
 
-    /// Only a setup that requires the keyed data plane (`requiresKeyedDataPlane`)
-    /// accepts a launcher-issued credential on the authenticated encrypted
-    /// paired-link route. Validate before the
+    /// Every installed follower requires its own launcher-issued credential
+    /// on the authenticated encrypted paired-link route. Validate before the
     /// follower starts its local owner; the native worker verifies certificates.
     static func followerDataPlaneTrust(_ capability: ClusterRuntimeCapability, line: Data?,
                                        epoch: UUID, rank: Int) throws -> Data? {
-        guard requiresKeyedDataPlane(capability) else {
-            guard line == nil else { throw ClusterConfigurationError.invalid("Text paired-link setup does not accept a launcher-issued data-plane credential") }
-            return nil
-        }
         guard let line, line.count <= 4096,
               let value = try? ClusterWorkerCodec.decodeDataPlaneTrust(line),
               value.membershipEpoch == epoch, value.rank == rank else {

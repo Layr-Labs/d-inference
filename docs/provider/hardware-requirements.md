@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -20,6 +20,13 @@ loads a narrower owner, down to one request from 85.6 GiB available. Only
 is in
 [hardware support](../architecture/hardware-support.md#context); the slot is
 described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+For a paired cluster, the registered Qwen3.5 and Qwen3.6 35B A3B text targets
+support two equal tensor-parallel shares. Both Macs still need to pass their independent
+verified-load and request-memory gates. A capability is not a throughput or
+two-Mac qualification result; placement compares measured tensor-parallel and
+pipeline estimates. Unequal routed shares are excluded from this path. See [routed-expert TP](../architecture/inference.md#qwen35-routed-expert-tensor-parallel)
+and the [cluster memory policy](../architecture/hardware-support.md#context).
 
 Native live inference is the default. Independent checkpoint compression can
 reduce encoded older-row storage, not the native serving allocation or measured
@@ -129,6 +136,12 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMo
 (`gpuStream`, `naxAvailable`).
 
 ## Bonsai 2 qualification scope
+
+The exact EigenLabs Bonsai 2 9B `2026-10-15-base-r2` artifact has a registered
+cluster pipeline implementation. Its implementation and accounting are
+[documented separately](../architecture/inference.md#two-mac-cluster-stages-experimental);
+this registration does not establish numerical or hardware qualification on a
+new Mac pair and does not advertise tensor parallelism.
 
 The unchanged Prism Bonsai 2 27B MLX 2-bit payload is 8,595,477,990 bytes,
 including its vision tensors. File size is not a RAM-tier qualification:
@@ -305,6 +318,12 @@ useful KV space rather than reserve every possible future workspace. See
 [per-slot memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#token-budget-admission-per-slot);
 the reduction does not lower the load, activation or operating-system reserves.
 
+Explicit multi-request Lightning widths are restricted to plain text pipeline;
+installed defaults and memory reserves are unchanged. See the [cluster lane
+selection boundary](../architecture/inference.md#context) and
+`DistributedInstalledPlan.laneAdapters` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+
 ## Disk for the SSD prefix cache
 
 | Rule | Where it is specified | Code |
@@ -388,3 +407,18 @@ new RAM tier or qualified catalog modality. Only bounded still PNG input is
 implemented; video remains unqualified and audio is refused. See
 [cluster image execution](../architecture/inference.md#bounded-glm-cluster-still-images)
 and [its memory quotation](../architecture/hardware-support.md#glm-cluster-image-accounting).
+
+## GPT-OSS cluster concurrency
+
+The GPT-OSS text pipeline can be explicitly configured for 2...8 native decode
+lanes, with separate demand-grown histories. Every lane needs its full admitted
+request allowance plus shared batch workspace; adding a lane is refused if
+host or allocator capacity cannot cover it. The default remains one lane.
+Device-specific full-artifact correctness and throughput qualify a wider setup;
+see [the accounting contract](../architecture/hardware-support.md#context) and
+[owner checks](../developer/test.md#gpt-oss-batch-owner-checks).
+Explicit Lightning stage-batch widths retain the single-request installed
+default. Full-artifact output, retirement and memory qualification are
+separate from the tiny model's raw output/state checks. See [cluster inference](../architecture/inference.md#context)
+and `NemotronH35Model.cbv2BatchedStageResidual` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Nemotron35BatchDecode.swift`.

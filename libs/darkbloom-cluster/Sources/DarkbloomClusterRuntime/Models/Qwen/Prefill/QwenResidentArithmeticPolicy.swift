@@ -18,6 +18,10 @@ enum QwenResidentArithmeticPolicy: Equatable {
     /// Prism Hadamard pack, each at the product's own serving default, and
     /// the process-wide constant-cache switch required absent.
     case prismHadamard
+    /// The registered block1024 pack's FP32 singleton reduction per row.
+    /// The block4096 pack retains its original receipt byte for byte.
+    case prismHadamardRows
+
     /// Nemotron-H: the dense contract's three values and absent names under
     /// its own name, so a capability or a load agreement of this family is
     /// never mistaken for a Qwen one. Nothing is added to it, for this reason:
@@ -34,6 +38,8 @@ enum QwenResidentArithmeticPolicy: Equatable {
     /// on the speculative head, which no stage constructs.
     case nemotronHybrid
 
+    private var isPrism: Bool { self == .prismHadamard || self == .prismHadamardRows }
+
     static let expertSlicesName = "MLX_GATHER_QMM_EXPERT_SLICES"
     static let expertSlicesValue = "trust"
     static let directReductionName = "MLX_QWEN_DIRECT_EXPERT_REDUCTION"
@@ -42,7 +48,7 @@ enum QwenResidentArithmeticPolicy: Equatable {
         switch self {
         case .dense: QwenLongPrefillArithmeticEnvironment.contract
         case .routedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
-        case .prismHadamard: QwenPrismArithmeticContract.contract
+        case .prismHadamard, .prismHadamardRows: QwenPrismArithmeticContract.contract
         case .nemotronHybrid: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
         }
     }
@@ -50,26 +56,29 @@ enum QwenResidentArithmeticPolicy: Equatable {
     var requiredValues: [String: String] {
         var values = QwenLongPrefillArithmeticEnvironment.requiredValues
         if self == .routedExperts { values[Self.expertSlicesName] = Self.expertSlicesValue }
-        if self == .prismHadamard { values.merge(QwenPrismArithmeticContract.values) { current, _ in current } }
+        if isPrism { values.merge(QwenPrismArithmeticContract.values) { current, _ in current } }
         return values
     }
 
     var requiredAbsentNames: [String] {
         QwenLongPrefillArithmeticEnvironment.requiredAbsentNames
             + (self == .routedExperts ? [Self.directReductionName] : [])
-            + (self == .prismHadamard ? QwenPrismArithmeticContract.absentNames : [])
+            + (isPrism ? QwenPrismArithmeticContract.absentNames : [])
     }
 
     func admit(_ environment: [String: String]) throws -> QwenLongPrefillArithmeticEnvironment.Receipt {
-        if self == .prismHadamard {
+        if isPrism {
             return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
                 additionalValues: QwenPrismArithmeticContract.values,
                 additionalAbsentNames: QwenPrismArithmeticContract.absentNames,
-                additionalBindings: QwenPrismArithmeticContract.bindings)
+                additionalBindings: self == .prismHadamardRows ? QwenPrismArithmeticContract.rowExactBindings
+                    : QwenPrismArithmeticContract.bindings)
         }
         if self == .nemotronHybrid {
             return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,
-                additionalValues: [:], additionalAbsentNames: [], additionalBindings: [:])
+                additionalValues: [:], additionalAbsentNames: [], additionalBindings: [
+                    "nemotron-prefix-chunk-grid-v1": "prefix reuse and capture use only original global chunk boundaries; the final prompt token is never split off; repeated prompts recompute the final chunk",
+                ])
         }
         guard self == .routedExperts else { return try QwenLongPrefillArithmeticEnvironment.admit(environment) }
         return try QwenLongPrefillArithmeticEnvironment.admit(environment, contract: contract,

@@ -1519,3 +1519,18 @@ its bytes and spans before execution.
 Each worker independently checks actual PNG metadata and SDK resize geometry.
 Video, animation, unknown fields, overlapping/unowned spans and foreign model
 admission refuse. Payloads and token IDs are not telemetry.
+
+## Private paired batch setup adoption
+
+This pair-control addition is separate from coordinator WebSocket contracts.
+The existing keyed pairing authenticates the sender; the receiver independently
+requires its saved serving rank 0, unchanged capability/model/peer/trust/request
+identity and an empty local native lease before replacing setup pointers.
+
+| Field | Contract | Source |
+|---|---|---|
+| `ClusterServiceCommand.op = batchSetup` | Carries `batchSetup.previousSHA256` and canonical configuration bytes. Exact current-target retry is idempotent; another selected digest refuses. No key or environment is carried. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetup.swift`, `ClusterServiceWire.swift` in the same directory |
+| `ClusterServiceStatus.child.configurationSHA256` | Optional full digest of the setup the running child actually launched for or the leader supervisor acknowledged. Selected-pointer changes alone never set it. The new leader waits for this exact follower digest before opening a new epoch. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift` (`status`) |
+
+An older receiver refuses the unknown operation. No fallback bypasses the
+saved setup checks or starts a worker alongside an unreleased owner.

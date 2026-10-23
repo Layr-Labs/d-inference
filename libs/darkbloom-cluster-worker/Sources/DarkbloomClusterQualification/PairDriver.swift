@@ -370,8 +370,7 @@ public struct PairDriver: Sendable {
             pair = try ClusterWorkerPair(workers: endpoints,
                 startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
                 keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck, lanes: c.batchLanes,
-                // GLM tensor parallel's lane loop retires a cancelled lane alone.
-                lanesRetireAlone: c.generationMode == PairConfiguration.tensorParallelMode)
+                lanesRetireAlone: c.lanesRetireAlone)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         timing.servingContextAtReady = endpoints.map { $0.readiness?.servingContextTokens }

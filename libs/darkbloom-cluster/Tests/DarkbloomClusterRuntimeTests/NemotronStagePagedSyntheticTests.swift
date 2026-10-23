@@ -121,14 +121,15 @@ struct NemotronStagePagedSyntheticTests {
         #expect((paged + contiguous).allSatisfy { $0!.isDrained }, "every page and binding returned")
     }
 
-    /// The host serves a Nemotron stage at one lane only (its batched decode
-    /// has no Nemotron forward), and a request longer than the host is refused.
-    @Test func aNemotronHostIsOneLaneAndBoundsItsRequests() throws {
+    /// Native Nemotron decode supports bounded lanes, while each request must
+    /// still fit the host's own context ceiling.
+    @Test func aNemotronHostHasBoundedLanesAndRequests() throws {
         let configuration = try Self.configuration()
         let plan = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<5, 5..<Fixture.pattern.count])
         let model = try NemotronStageConstruction.model(plan.stages[0].constructionConfiguration)
         #expect(CBv2StageKVHost.supports(model, lanes: 1))
-        #expect(!CBv2StageKVHost.supports(model, lanes: 2))
+        for lanes in [2, 4, 8] { #expect(CBv2StageKVHost.supports(model, lanes: lanes)) }
+        for lanes in [0, 9] { #expect(!CBv2StageKVHost.supports(model, lanes: lanes)) }
         let host = try CBv2StageKVHost(model: model, kind: .paged, lanes: 1, maximumTokensPerRequest: 32,
             maximumChunkTokens: Self.chunk)
         #expect(host.layerKinds == (model as! NemotronHModel).cbv2LayerKinds)

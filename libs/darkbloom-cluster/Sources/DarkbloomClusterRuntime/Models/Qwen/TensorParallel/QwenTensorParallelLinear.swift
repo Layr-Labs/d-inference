@@ -214,6 +214,14 @@ enum QwenTensorParallelSlicer {
                 throw ProbeError("Tensor parallel slice: expert rows \(range) do not fit \(value.shape)")
             }
             return take(value, MLXArray(range.map { Int32($0) }), axis: 1)
+        case .expertRowRanges(let ranges):
+            guard value.ndim == 3, ranges.count == 2,
+                  ranges.allSatisfy({ $0.lowerBound >= 0 && $0.upperBound <= value.dim(1) && !$0.isEmpty }),
+                  ranges[0].count == ranges[1].count,
+                  ranges[0].upperBound <= ranges[1].lowerBound else {
+                throw ProbeError("Tensor parallel slice: fused expert rows \(ranges) do not fit \(value.shape)")
+            }
+            return take(value, MLXArray(ranges.flatMap { $0.map { Int32($0) } }), axis: 1)
         case .expertInputColumns(let logical):
             guard value.ndim == 3 else { throw ProbeError("Tensor parallel slice: expert input columns of \(value.shape)") }
             let divisor: Int

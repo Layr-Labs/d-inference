@@ -92,7 +92,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         switch disposition {
         case .skip: return nil
         case .load(.replicate): return .replicated
-        case .load(.rows), .load(.inputColumns), .load(.expertRows), .load(.expertInputColumns): return .divided
+        case .load(.rows), .load(.inputColumns), .load(.expertRows), .load(.expertRowRanges), .load(.expertInputColumns): return .divided
         }
     }
 

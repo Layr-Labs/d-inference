@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -912,3 +912,45 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 (`agreeGLM5NextStagePrefixPlan`) and
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
 (`submitTokenized`).
+
+## Cluster sliding prefix adoption
+
+`CBv2OwnedRequestState.adopt` allocates fresh request rows for an agreed
+checkpoint. A sliding tail is positioned at `committed - retainedTokens` and
+restored in chronological writes no larger than
+`PagedKVBackend.pool.config.maxPrefillChunk` by `CBv2PagedPrefixRestore.write`
+in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift`.
+This permits a retained window larger than a legal individual write without
+changing its absolute position or dropping tail tokens. Adoption releases its
+new rows when restoration throws. Contiguous rows keep their existing update
+path. This is resident stage restoration; it adds no SSD format, persistent
+cache identity or cross-host KV-transfer contract.
+
+## Nemotron chunk-grid reuse
+
+Registered Nemotron retains states only at existing global chunk boundaries
+strictly before the prompt end. A repeated prompt recomputes its last complete
+or partial chunk; it does not create a new singleton final-token frame. A
+grid-aligned restore executes the same suffix chunk shapes as the cold request.
+Both resident and SSD offers are filtered before selection, and the request
+constructor refuses an off-grid restore. The batch lane path uses the same
+request policy and filter.
+
+`QwenStagePrefixChoice.choose` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixAgreement.swift`
+still requires both ranks to confirm the same frontier, key and successful
+restore. Failure falls back to cold original chunking. Capture remains subject
+to the existing byte allowance, pressure withdrawal and clean-retirement gate.
+The numerical-policy SHA changes the prefix namespace, excluding older
+final-token-split entries. Other registered families retain their existing
+final-token capture policy.
+
+## Gemma chunk-grid reuse
+
+All three registered Gemma 4 rows use the same
+[existing-chunk frontier rule](#nemotron-chunk-grid-reuse): capture and restore
+only original global chunk ends before the prompt end, and recompute the last
+chunk on repeat. The serial resident/SSD and batch paths apply the shared
+request policy, offer filtering and bilateral confirmation. Gemma's own
+`gemma4-original-chunk-grid-v1` receipt field changes its cache namespace;
+Qwen, Bonsai, MiMo and GLM retain their existing prefix framing.

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -714,6 +714,34 @@ and `clusterMember`); both are control-only and refuse solo serving options
 when parsed. No environment variable selects one, so ordinary
 solo serving is unchanged and the whole surface stays default-off.
 
+### Persisted native batch width
+
+| Field | Meaning and bounds | Source |
+|---|---|---|
+| `batchLanes` | Optional integer 2, 4 or 8; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`) |
+| `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
+
+The normal cluster API can persist a wider setup after queued demand, conservative
+memory planning and full release. No environment setting is needed for that
+path. See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
+for exclusions, rollback and the unchanged singleton preference at initial setup.
+
+### Private batch qualification diagnostics
+
+`DARKBLOOM_CLUSTER_BATCH_TRACE=1` and
+`DARKBLOOM_CLUSTER_BATCH_LOGIT_DIRECTORY=<absolute-path>` are disabled unless
+explicitly supplied. The runtime and worker refuse either without
+`--qualification-switches yes`. The pair-check helper supplies that permission
+only when its explicit diagnostic options are selected; the installed owner
+does not forward them. Trace contains aggregate scheduling counts only. The
+logit directory is rank 1's private qualification output, never normal telemetry:
+mode 0700, owned by the current user, exclusively locked, with newly created
+0600 files and a cap of 256 native rows of at most 1 MiB each. Existing raw rows
+count toward the cap across batches. Bad permissions, collisions, concurrent
+writers or exhausted capacity fail the diagnostic run. See
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDiagnostics.swift`
+(`QwenBatchRowCapture`) and the [pair helper options](../provider/cli-reference.md#native-pair-batch-diagnostics).
+
 ### Experimental cluster pairs
 
 The coordinator side of two-Mac cluster pairs, including the settings that
@@ -776,6 +804,13 @@ and it is predicted at least 5 % faster than every pipeline.
 |---|---|---|
 | `DARKBLOOM_CLUSTER_HANDOFF_MODES` | unset (off) | `1` (or `on`) is the one explicit opt-in for the hand-off modes kept in the code: phase split, phase split + MTP, the pipeline-prefill/tensor-decode hybrid, and the per-request "alone" route. Read by the process that plans (`darkbloom cluster`, `darkbloom cluster plan`) and by each Mac's serving owner: a setup saved with a hand-off mode (for example by an earlier release, whose default was phase split + MTP) is refused at start without it, with the way back (`darkbloom cluster`, select the model again), and the alone route is taken only by a leader that has it. `0`, `off` or unset plan sharded deployments only; any other value is refused. Never offered in the onboarding. (`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift`) |
 | `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB` | unset | Developer bench only, debug builds only (a release build refuses to plan while it is set): caps what the planner believes each Mac can give a model, in whole GiB, so a pair of large bench Macs is planned as smaller Macs would be. The load gates never see it. (`ClusterPlannerBenchCap.swift`) |
+
+Explicit `--prompt-tokens` and `--output-tokens` select the planning request,
+not new runtime limits. Either axis exceeding the layout reference requires a
+family quote matching the pinned capability; see
+[placement request metadata](../provider/cli-reference.md#cluster-placement-request-metadata)
+and `ClusterPlacementFlow.decide` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`.
 
 The developer plan tool takes `--hand-off-modes` for the same opt-in.
 
@@ -1231,3 +1266,29 @@ enclosing app's `CFBundleIdentifier` and matching `CFBundleExecutable` in
 borrow an app identity. See
 `provider-swift/Sources/ProviderCore/Service/ClusterServiceAgent.swift`
 (`ClusterServiceAgent.job`) and [background cluster setup](../provider/cluster-always-on.md).
+
+## GPT-OSS cluster batch lanes
+
+`DARKBLOOM_CLUSTER_BATCH_LANES` selects 1...8 for the GPT-OSS plain-pipeline
+owner; without a persisted automatic width or explicit override it defaults to
+one. Other generation modes retain one lane, and the
+recording worker rejects widths above one before model load. Both ranks bind
+the effective width into LOAD agreement. Installed launch carries only the
+locally resolved typed width, not arbitrary caller environment. A malformed
+installed override resolves conservatively to one; a direct native worker
+rejects malformed input. Source: `GPTOSSBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Batch/GPTOSSBatchSettings.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+See [lane ownership and accounting](../architecture/inference.md#gpt-oss-pipeline-lane-owner).
+
+### Native automatic batch quote
+
+The private placement helper's `batch-scope` command requires `--model-dir`,
+`--prompt-tokens`, `--output-tokens`, `--batch-lanes` and `--chunk-size`.
+Its `darkbloom_cluster_placement_batch_quote_v1` response contains the registered
+request scope, lanes (2, 4 or 8), original chunk, and a positive shared workspace
+charge for each rank. GPT-OSS and MiMo text are the supported quote families.
+The provider rejects a response for another width/chunk and binds the request
+to the same model, artifact and configuration before planning. This metadata
+neither grants native capacity nor admits images, speculative modes or GLM.
+See `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchQuote.swift`.

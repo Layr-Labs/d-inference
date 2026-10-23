@@ -42,12 +42,12 @@ public enum ModelLoadAdmission {
     /// GlobalKVCacheBudget. Discounting here too is the double-count that kept
     /// capable machines idle.
     /// - Parameters:
-    ///   - systemAvailableBytes: real OS-reported available memory (free pages
-    ///     plus reclaimable page cache, `SystemMemory.availableBytes`). Pass
-    ///     `.max` when unavailable to fall back to the
-    ///     MLX-only view. The result is clamped to this so the gate can never
-    ///     count memory the OS or other processes have already taken — the fix
-    ///     for the OOM hole where `total − MLX.active − MLX.cache` over-reports.
+    ///   - systemAvailableBytes: real OS-reported available memory under the
+    ///     process-start policy (`SystemMemory.availableBytes`). Pass `.max`
+    ///     when unavailable to fall back to the MLX-only view. The result is
+    ///     clamped to this so the gate can never count memory the OS or other
+    ///     processes have already taken — the fix for the OOM hole where
+    ///     `total − MLX.active − MLX.cache` over-reports.
     ///   - outstandingReservationBytes: outstanding unmaterialized commitments
     ///     (C-M) from one coherent process-ledger snapshot. Do not pass total C:
     ///     already materialized backing is included in the GPU usage above.

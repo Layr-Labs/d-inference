@@ -35,12 +35,12 @@ private func pages(gb: Double) -> UInt64 { UInt64(gb * 1e9 / Double(machPageSize
 /// inactive 208.7 GB, wired 6.6 GB. `purge` left active 5.6 GB and inactive
 /// 6.6 GB, so at most 12.2 GB was anonymous; everything else was page cache
 /// from staging, verifying and hashing the downloaded weights.
-private func hostOneSample(anonymousFileCache: Bool = false) -> vm_statistics64 {
+private func hostOneSample(asAnonymousMemory: Bool = false) -> vm_statistics64 {
     let active = pages(gb: 55.7), inactive = pages(gb: 208.7)
     return machVMStatistics(
         freePages: pages(gb: 2.4), activePages: active, inactivePages: inactive,
         wiredPages: pages(gb: 6.6),
-        fileBackedPages: anonymousFileCache ? 0 : active + inactive - pages(gb: 12.2))
+        fileBackedPages: asAnonymousMemory ? 0 : active + inactive - pages(gb: 12.2))
 }
 
 /// An M3 Ultra 256 GB shared with other agents' builds: much inactive
@@ -110,7 +110,7 @@ private func reclaimableAvailablePages(_ stats: vm_statistics64) throws -> UInt6
     // reclaiming it means compression or swap, so the page-cache measure gives
     // it no credit. Its inactive part still counts through the former measure,
     // exactly as before, and the load stays refused.
-    let sample = hostOneSample(anonymousFileCache: true)
+    let sample = hostOneSample(asAnonymousMemory: true)
     #expect(SystemMemory.freeAndPageCachePages(sample) == pages(gb: 2.4))
     let available = try reclaimableAvailablePages(sample)
     #expect(available == SystemMemory.freeAndInactivePages(sample))
@@ -134,7 +134,7 @@ private func reclaimableAvailablePages(_ stats: vm_statistics64) throws -> UInt6
 
 @Test func reclaimableIsTheLargerMeasureAndNeverMore() throws {
     let samples = [
-        hostOneSample(), hostOneSample(anonymousFileCache: true), busySharedMacSample(),
+        hostOneSample(), hostOneSample(asAnonymousMemory: true), busySharedMacSample(),
         machVMStatistics(freePages: 900, fileBackedPages: 0),
         machVMStatistics(freePages: 0, activePages: 700, inactivePages: 300, fileBackedPages: 0),
         machVMStatistics(freePages: 0, activePages: 700, inactivePages: 300, fileBackedPages: 1_000),
@@ -236,16 +236,9 @@ private func reclaimableAvailablePages(_ stats: vm_statistics64) throws -> UInt6
     #expect(bytes <= ProcessInfo.processInfo.physicalMemory)
 }
 
-@Test func livePageCountsKeepTheMachPartition() {
+@Test func livePageCountsKeepTheMachPartition() throws {
     // The sampler's double-count guard relies on this kernel invariant.
-    var stats = vm_statistics64()
-    var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-    let result = withUnsafeMutablePointer(to: &stats) { ptr in
-        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-            host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
-        }
-    }
-    #expect(result == KERN_SUCCESS)
+    let stats = try #require(SystemMemory.vmStatistics())
     #expect(stats.free_count >= stats.speculative_count)
     let pageable = Int64(stats.active_count) + Int64(stats.inactive_count)
         + Int64(stats.speculative_count) + Int64(stats.throttled_count)

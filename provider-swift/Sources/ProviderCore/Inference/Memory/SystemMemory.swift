@@ -22,16 +22,22 @@ public enum SystemMemory {
         ProcessInfo.processInfo.environment[availabilityEnvironmentKey])
 
     /// Every live admission consumer uses the same policy. The default
-    /// `reclaimable` policy counts the larger of two page measures, so it is
-    /// never stricter than the former free + inactive measure: that measure
-    /// itself, and free pages plus the file-backed page cache and volatile
-    /// purgeable pages (`freeAndPageCachePages`). The kernel drops clean cache,
-    /// and writes back dirty cache, without compressing or swapping any process
+    /// `reclaimable` policy counts the larger of free + inactive pages
+    /// (`freeAndInactivePages`) and free pages plus the file-backed page cache
+    /// and volatile purgeable pages (`freeAndPageCachePages`), so it never
+    /// reports less than free + inactive. The kernel drops clean cache, and
+    /// writes back dirty cache, without compressing or swapping any process
     /// memory, so cached model files never block a load even when they are
-    /// active pages, which the former measure counted as used. It returns nil
-    /// on sampling failure. `free-only` counts only free pages and returns zero
-    /// on failure, so callers' `?? .max` fallback cannot bypass the stricter gate.
+    /// active pages, which free + inactive counts as used. It returns nil on
+    /// sampling failure. `free-only` counts only free pages and returns zero on
+    /// failure, so callers' `?? .max` fallback cannot bypass the stricter gate.
     public static func availableBytes() -> UInt64? {
+        availableBytes(
+            stats: vmStatistics(), pageSize: UInt64(getpagesize()), policy: availabilityPolicy)
+    }
+
+    /// The live Mach `HOST_VM_INFO64` sample, or nil when sampling fails.
+    static func vmStatistics() -> vm_statistics64? {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &stats) { ptr in
@@ -39,12 +45,12 @@ public enum SystemMemory {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
             }
         }
-        return availableBytes(
-            stats: result == KERN_SUCCESS ? stats : nil,
-            pageSize: UInt64(getpagesize()), policy: availabilityPolicy)
+        return result == KERN_SUCCESS ? stats : nil
     }
 
-    /// Pure conversion shared by the live sampler and regression tests.
+    /// Pure conversion shared by the live sampler and regression tests. Sums of
+    /// the 32-bit Mach page counters cannot overflow; only the byte conversion
+    /// can.
     static func availableBytes(
         stats: vm_statistics64?, pageSize: UInt64, policy: AvailabilityPolicy
     ) -> UInt64? {
@@ -59,10 +65,10 @@ public enum SystemMemory {
         return overflow ? (policy == .freeOnly ? 0 : UInt64.max) : bytes
     }
 
-    /// The former measure. Its inactive pages include anonymous pages, which
+    /// Free plus inactive pages. Inactive pages include anonymous pages, which
     /// macOS can reclaim only by compressing or swapping them.
     static func freeAndInactivePages(_ stats: vm_statistics64) -> UInt64 {
-        saturatingSum([UInt64(stats.free_count), UInt64(stats.inactive_count)])
+        UInt64(stats.free_count) + UInt64(stats.inactive_count)
     }
 
     /// Free pages plus reclaimable page cache, with no anonymous or compressed
@@ -76,18 +82,7 @@ public enum SystemMemory {
     /// `purgeable_count` is unwired volatile purgeable pages.
     static func freeAndPageCachePages(_ stats: vm_statistics64) -> UInt64 {
         let free = UInt64(stats.free_count)
-        return saturatingSum([
-            free - min(free, UInt64(stats.speculative_count)),
-            UInt64(stats.external_page_count), UInt64(stats.purgeable_count),
-        ])
-    }
-
-    private static func saturatingSum(_ values: [UInt64]) -> UInt64 {
-        var total: UInt64 = 0
-        for v in values {
-            let (sum, overflow) = total.addingReportingOverflow(v)
-            total = overflow ? UInt64.max : sum
-        }
-        return total
+        return free - min(free, UInt64(stats.speculative_count))
+            + UInt64(stats.external_page_count) + UInt64(stats.purgeable_count)
     }
 }

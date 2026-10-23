@@ -574,6 +574,7 @@ extension ProviderLoop {
             profile.mark(.loadWaitEnd)
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
+            GLM5NextWiredLimitNotice.report(error, modelID: modelId)
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
@@ -1019,6 +1020,7 @@ extension ProviderLoop {
                 InferenceFailureLogger(logger: log).record(
                     requestId: requestId,
                     failure: failure)
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
                 // TemplateException `error.localizedDescription` collapses to the
@@ -1142,8 +1144,9 @@ extension ProviderLoop {
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
                     // reasoning, or tool delta has been observed. Withheld
-                    // reasoning is generated output too, though never framed.
-                    if contentFrameCount == 0, v2UsageSignal.firstWithheldReasoningAt == nil,
+                    // reasoning or answer text is generated output too, though
+                    // not framed (yet).
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldOutputAt == nil,
                         rejectExpiredDeadline()
                     {
                         return
@@ -1212,8 +1215,8 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                // Withheld reasoning was the first generated output.
-                                let firstOutputAt = v2UsageSignal.firstWithheldReasoningAt ?? .now
+                                // Withheld output was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
                                 let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0
@@ -1319,6 +1322,7 @@ extension ProviderLoop {
                     InferenceFailureLogger(logger: log).record(
                         requestId: requestId,
                         failure: failure)
+                    GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
@@ -1490,6 +1494,7 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            providerStats.addPromptTokensProcessed(UInt64(max(promptTokens, 0)))
 
             // Commit the TTFT sample (routing v2): completed real requests
             // only — a cancelled stream's first-token timing is still real,
@@ -1527,6 +1532,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            let localCachedTokens = min(usageInfo.promptTokens, usageInfo.cachedTokens ?? UInt64(max(0, v2UsageSignal.prefixCacheHitTokens ?? 0)))
+            providerStats.addCachedInputTokens(localCachedTokens)
+            providerStats.addReasoningTokens(min(usageInfo.reasoningTokens, usageInfo.completionTokens))
+            await me.recordLocalUsage(ProviderUsageRecord(
+                id: requestId, sessionStartedAt: me.startedAtEpoch, model: modelId,
+                inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
+                cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
+                exact: !usageRecovered))
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

@@ -67,6 +67,14 @@ private enum GLM5NextProviderLoopHost {
     }
 }
 
+/// Counts full weight reads behind load-time hash captures.
+private final class LoadHashReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads = 0
+    var count: Int { lock.withLock { reads } }
+    func record() { lock.withLock { reads += 1 } }
+}
+
 /// Parks one pre-submit host consumer until released.
 private actor PreSubmitGate {
     private var parked: CheckedContinuation<Void, Never>?
@@ -179,6 +187,33 @@ struct GLM5NextProviderLoopTests {
             #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
             try await GLM5NextProviderLoopHost.load(loop, fixture)
             #expect(await loop.modelLoadingResidentIDs() == [id])
+            #expect(await loop.unloadModel(id))
+        }
+    }
+
+    /// The load publishes its own SHA-256 verification: no `WeightHasher` pass
+    /// brackets it, the live (registration) hash is the manifest aggregate,
+    /// and the next start's record matches the unchanged files.
+    @Test func loadPublishesItsVerifiedDigestWithoutBracketingReads() async throws {
+        try await GLM5NextProviderLoopHost.with { loop, fixture in
+            let id = GLM5NextProviderLoopHost.modelID
+            let reads = LoadHashReads()
+            await loop.setLoadWeightHasherForTesting { directory, model in
+                reads.record()
+                return WeightHasher.computeHash(snapshotDir: directory, modelID: model)
+            }
+            let records = FileManager.default.temporaryDirectory
+                .appendingPathComponent("verified-weights-\(UUID()).json")
+            defer { try? FileManager.default.removeItem(at: records) }
+            await loop.setVerifiedWeightHashesFileForTesting(records)
+
+            try await GLM5NextProviderLoopHost.load(loop, fixture)
+            let aggregate = fixture.plan.weights.manifest.aggregateSHA256
+            #expect(reads.count == 0)
+            #expect(await loop.liveModelHashForTesting(id) == aggregate)
+            #expect(VerifiedWeightHashStore.verifiedHash(
+                modelID: id, identities: VerifiedWeightHashStore.fileIdentities(snapshotDir: fixture.directory),
+                at: records) == aggregate)
             #expect(await loop.unloadModel(id))
         }
     }

@@ -224,6 +224,7 @@ public actor ProviderLoop {
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
     internal let stats: AtomicProviderStats
+    internal let usageHistory = ProviderUsageHistory()
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
@@ -477,6 +478,8 @@ public actor ProviderLoop {
     /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
     internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
     internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// The full weight read behind load-time hash captures (`captureWeightHash`).
+    internal var loadWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
     /// Invalidates prefetch work begun before an operator replaced the set.
     internal var modelSelectionRevision: UInt64 = 0
     internal var modelAdvertisementsInFlight = 0
@@ -648,6 +651,7 @@ public actor ProviderLoop {
     /// choke point every material slot-state change already flows through.
     /// Loop-actor state; the pure policy lives in `CapacityEventHeartbeats`.
     internal var capacityHeartbeatThrottle = CapacityHeartbeatThrottle()
+    internal var desktopActivityObservedAt: Double?
 
     /// The one in-flight trailing-edge timer servicing a
     /// `CapacityHeartbeatThrottle.Verdict.scheduled` verdict. Cancelled on
@@ -715,6 +719,11 @@ public actor ProviderLoop {
     /// — that file is the next boot's preload plan. The test seam
     /// `setLoadedModelsFileForTesting` enables it together with a temp path.
     internal var loadedModelsPersistenceEnabled = false
+
+    /// Where a verified managed-load hash is recorded for the next start's
+    /// registration (`VerifiedWeightHashStore`). nil — no writes — until
+    /// `run()` serves with host services, so tests never touch the real file.
+    internal var verifiedWeightHashesFile: URL?
 
     /// Test seams for the startup preload driver: replace the real
     /// `ensureModelLoaded` / self-test decode / free-memory probe with

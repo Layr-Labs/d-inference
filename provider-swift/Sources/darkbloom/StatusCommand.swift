@@ -61,7 +61,7 @@ struct Status: AsyncParsableCommand {
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
-        printDaemonStatus(config: config, models: snapshot.models)
+        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -99,7 +99,7 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo]) {
+    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
             print("Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)")
@@ -169,6 +169,10 @@ struct Status: AsyncParsableCommand {
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
+            if let notice = GLMWiredLimitAdvice.statusNotice(
+                loadError: err, hardware: hardware, limits: .live()) {
+                print("  → fix: \(notice)")
+            }
         }
 
         // Which KV backend is this box actually serving on, and is MTP

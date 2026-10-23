@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -47,7 +47,10 @@ Requests never leave the machine and are never billed.
    drops the MLX buffer cache once, then evicts the least recently used idle
    slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
-   model, which still loads on request. Standalone preload does not run the
+   model, which still loads on request. A local GLM qualification load reads its
+   weights for its own per-file SHA-256 verification and the tensor reads only;
+   that verification is the artifact hash, with no separate weight-hash passes
+   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Standalone preload does not run the
    coordinator-serving one-token startup self-test. Each preloaded model does run
    the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
    before the listener opens: a short shader-cache probe, plus the shape cells
@@ -253,12 +256,13 @@ frame-timestamp label.
 | `enable_thinking: false` | All output is `content`, including literal markers |
 | `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
 | `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
-| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event |
+| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
 | Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
 | A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
 
 Image and video requests still refuse `tools` and `response_format`; formats outside the

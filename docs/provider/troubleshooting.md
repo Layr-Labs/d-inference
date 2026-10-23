@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-23
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -83,10 +83,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
+| `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
 | `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
-`darkbloom verify` runs the same set and exits 1 on any ⚠.
+`darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
+and exits 1 on any ⚠.
 
 The process-table, local-port and sleep probes have a five-second execution
 deadline, followed by bounded child termination. Large output is captured in
@@ -166,6 +168,34 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
 | Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
+| GLM-5.3-Flash requests or loads fail and the log mentions Metal `Insufficient Memory` | The macOS GPU wired-memory limit is below what GLM plans at full KV | [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
+
+## GLM-5.3-Flash GPU wired-memory limit
+
+The [requirement and values](./hardware-requirements.md) apply to a 256 GB M5
+Mac serving GLM-5.3-Flash. The commands need an administrator; the provider
+never runs `sudo` itself.
+
+1. Run `darkbloom doctor`. A `glm wired limit` ⚠ prints the current limits and
+   these commands.
+2. Apply the limits until the next reboot:
+
+   ```bash
+   sudo sysctl -w iogpu.wired_limit_mb=245760 vm.global_user_wire_limit=261134011596 vm.user_wire_limit=261134011596
+   ```
+
+3. Restart the provider so MLX reads the new limit: `darkbloom restart`.
+4. To reapply them at every boot, paste the LaunchDaemon block that `doctor`
+   prints after its detailed checks. It writes
+   `/Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`, which runs
+   `/usr/sbin/sysctl -w` with the three values at load, and bootstraps it with
+   `sudo launchctl bootstrap system /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`.
+
+Verify: `sysctl iogpu.wired_limit_mb vm.global_user_wire_limit vm.user_wire_limit`
+prints the three values, and `darkbloom doctor` shows `glm wired limit` ✓ with
+them. To roll back, run
+`sudo launchctl bootout system/com.layrlabs.glm53-wired-limits`, delete the
+plist and reboot.
 
 ## KV-backend crash-loop guard
 

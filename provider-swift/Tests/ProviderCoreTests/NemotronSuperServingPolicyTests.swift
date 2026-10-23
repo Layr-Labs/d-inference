@@ -294,15 +294,15 @@ struct NemotronSuperServingPolicyTests {
         // The production default (eight speculating requests at 576 MiB and
         // the owner's 9.87 GB round at the served 262,144 tokens, 15.69 GiB of
         // admission) on a 256 GiB machine: half of what the grant leaves
-        // beside the admission, the 8.5 GiB lane and an image (3 GiB at
-        // 34 GiB, 8.5 GiB at 45), then a quarter of the grant (15 GiB at 60),
+        // beside the admission, the 8.5 GiB lane and an image (2.5 GiB at
+        // 34 GiB, 8 GiB at 45), then a quarter of the grant (15 GiB at 60),
         // the 16 GiB cap from 64 GiB.
         let sizes = [34, 45, 60, 100, 155].map { (grantGiB: Int) -> Int in
             let grant: Int = grantGiB * gib
             return Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [:], physicalBytes: Self.machine)
         }
-        let expected: [Int] = [12 << 28, 34 << 28, 15 << 30, 16 << 30, 16 << 30]
+        let expected: [Int] = [10 << 28, 32 << 28, 15 << 30, 16 << 30, 16 << 30]
         #expect(sizes == expected, "\(sizes)")
     }
 
@@ -321,7 +321,7 @@ struct NemotronSuperServingPolicyTests {
             environment: [:], physicalBytes: Self.machine)
         let wide = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [chunk: "4096"], physicalBytes: Self.machine)
-        #expect(narrowChunk == 22 << 29 && wide == 29 << 28, "\(narrowChunk) \(wide)")
+        #expect(narrowChunk == 21 << 29 && wide == 27 << 28, "\(narrowChunk) \(wide)")
         for invalid in ["0", "-1", "abc", "262145"] {
             #expect(Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [chunk: invalid], physicalBytes: Self.machine) == 0, "\(invalid)")

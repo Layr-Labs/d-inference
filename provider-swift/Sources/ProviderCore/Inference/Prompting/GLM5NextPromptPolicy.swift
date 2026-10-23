@@ -18,6 +18,13 @@ enum GLM5NextPromptPolicy {
         modelType == "glm5_next" || modelType == "glm5_next_text" || modelType == "glm5_next_mtp"
     }
 
+    /// A JSON answer (`GLM5NextResponseFormat`) or a required/named call is
+    /// withheld until it validates. Only the text path withholds, so media
+    /// refuses these requests and text splits reasoning on its typed channel.
+    static func withholdsOutput(_ prepared: ToolChoicePromptPolicy.Prepared, modelType: String?) -> Bool {
+        prepared.glmResponseFormat != nil || (applies(modelType: modelType) && prepared.requiresToolCall)
+    }
+
     /// Fixed client text for every reasoning-exclusion request. It never
     /// echoes request content.
     static let reasoningExclusionUnsupportedMessage =
@@ -75,6 +82,10 @@ enum GLM5NextPromptPolicy {
         var clearThinking: Bool?
         var hasOriginalTools = false
         var originalTools: [OpenAITool]?
+        /// Reasoning returned on assistant turns as OpenRouter's `reasoning`
+        /// or `reasoning_details`, which the SDK message drops; indexed like
+        /// `messages`, nil when no message returned any.
+        var returnedReasoning: [String?]?
 
         private struct Key: CodingKey {
             let stringValue: String
@@ -83,6 +94,9 @@ enum GLM5NextPromptPolicy {
             var intValue: Int? { nil }
             init?(intValue: Int) { return nil }
         }
+
+        /// Responses summary levels. The full reasoning is returned for each.
+        private static let summaryLevels: Set<String> = ["auto", "concise", "detailed"]
 
         init() {}
         init(from decoder: any Decoder) throws { self = Self.capture(from: decoder) }
@@ -98,8 +112,24 @@ enum GLM5NextPromptPolicy {
                 result.originalTools = try root.decodeIfPresent([OpenAITool].self, forKey: Key("tools"))
                 try ToolConstraintValidation.rejectReservedSchemaMetadata(
                     result.originalTools, allowInternalSchemaMetadata: false)
-                func effort(_ values: KeyedDecodingContainer<Key>, _ key: String) throws -> Effort? {
-                    guard values.contains(Key(key)) else { return nil }
+                // History is not a control: an unreadable message is the SDK
+                // decoder's to refuse, never this capture's.
+                let returned = try? root.decodeIfPresent([ReturnedReasoning].self, forKey: Key("messages"))
+                result.returnedReasoning = returned.flatMap { messages in
+                    messages.contains { $0.text != nil } ? messages.map(\.text) : nil
+                }
+                // OpenRouter's own fields (`reasoning`, its members,
+                // `include_reasoning`, `thinking`) may carry null for unset.
+                func present(
+                    _ values: KeyedDecodingContainer<Key>, _ key: String, nullable: Bool = false
+                ) throws -> Bool {
+                    guard values.contains(Key(key)) else { return false }
+                    return try !(nullable && values.decodeNil(forKey: Key(key)))
+                }
+                func effort(
+                    _ values: KeyedDecodingContainer<Key>, _ key: String, nullable: Bool = false
+                ) throws -> Effort? {
+                    guard try present(values, key, nullable: nullable) else { return nil }
                     let requested = try values.decode(String.self, forKey: Key(key))
                     if Effort.disablingRequests.contains(requested) {
                         result.disablesThinking = true
@@ -116,8 +146,10 @@ enum GLM5NextPromptPolicy {
                     return try values.decode(Bool.self, forKey: Key("clear_thinking"))
                 }
                 // OpenRouter and template-kwargs thinking switches.
-                func thinkingSwitch(_ values: KeyedDecodingContainer<Key>, _ key: String) throws {
-                    guard values.contains(Key(key)) else { return }
+                func thinkingSwitch(
+                    _ values: KeyedDecodingContainer<Key>, _ key: String, nullable: Bool = false
+                ) throws {
+                    guard try present(values, key, nullable: nullable) else { return }
                     if try values.decode(Bool.self, forKey: Key(key)) {
                         result.requestsThinking = true
                     } else {
@@ -126,31 +158,59 @@ enum GLM5NextPromptPolicy {
                 }
                 // Hidden reasoning: the value that returns reasoning is a no-op.
                 func exclusionSwitch(
-                    _ values: KeyedDecodingContainer<Key>, _ key: String, excludingValue: Bool
+                    _ values: KeyedDecodingContainer<Key>, _ key: String, excludingValue: Bool,
+                    nullable: Bool = false
                 ) throws {
-                    guard values.contains(Key(key)) else { return }
+                    guard try present(values, key, nullable: nullable) else { return }
                     if try values.decode(Bool.self, forKey: Key(key)) == excludingValue {
                         result.excludesReasoning = true
                     }
                 }
-                if ["preserve_thinking", "thinking"].contains(where: { root.contains(Key($0)) }) {
-                    result.invalid = true
-                }
+                if root.contains(Key("preserve_thinking")) { result.invalid = true }
                 try thinkingSwitch(root, "enable_thinking")
-                try exclusionSwitch(root, "include_reasoning", excludingValue: false)
+                try exclusionSwitch(root, "include_reasoning", excludingValue: false, nullable: true)
                 let topEffort = try effort(root, "reasoning_effort")
                 let topClear = try clear(root)
+                // GLM's own API spelling, `{"type": "enabled"|"disabled",
+                // "clear_thinking": Bool}`; a Boolean is the kwargs alias.
+                var thinkingClear: Bool?
+                if try present(root, "thinking", nullable: true) {
+                    if (try? root.decode(Bool.self, forKey: Key("thinking"))) != nil {
+                        try thinkingSwitch(root, "thinking")
+                    } else {
+                        let thinking = try root.nestedContainer(keyedBy: Key.self, forKey: Key("thinking"))
+                        if thinking.allKeys.contains(where: { !["type", "clear_thinking"].contains($0.stringValue) }) {
+                            result.invalid = true
+                        }
+                        if try present(thinking, "type") {
+                            switch try thinking.decode(String.self, forKey: Key("type")) {
+                            case "enabled": result.requestsThinking = true
+                            case "disabled": result.disablesThinking = true
+                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking type")
+                            }
+                        }
+                        thinkingClear = try clear(thinking)
+                    }
+                }
                 var nestedEffort: Effort?
                 var budgetEffort: Effort?
-                if root.contains(Key("reasoning")) {
+                if try present(root, "reasoning", nullable: true) {
                     let reasoning = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
-                    if reasoning.allKeys.contains(where: {
-                        !["effort", "enabled", "exclude", "max_tokens"].contains($0.stringValue)
-                    }) { result.invalid = true }
-                    nestedEffort = try effort(reasoning, "effort")
-                    try thinkingSwitch(reasoning, "enabled")
-                    try exclusionSwitch(reasoning, "exclude", excludingValue: true)
-                    if reasoning.contains(Key("max_tokens")) {
+                    for key in reasoning.allKeys
+                    where !["effort", "enabled", "exclude", "max_tokens"].contains(key.stringValue) {
+                        // An unset member or a summary level changes nothing.
+                        guard try !reasoning.decodeNil(forKey: key) else { continue }
+                        guard ["summary", "generate_summary"].contains(key.stringValue),
+                            try summaryLevels.contains(reasoning.decode(String.self, forKey: key))
+                        else {
+                            result.invalid = true
+                            break
+                        }
+                    }
+                    nestedEffort = try effort(reasoning, "effort", nullable: true)
+                    try thinkingSwitch(reasoning, "enabled", nullable: true)
+                    try exclusionSwitch(reasoning, "exclude", excludingValue: true, nullable: true)
+                    if try present(reasoning, "max_tokens", nullable: true) {
                         let budget = try reasoning.decode(Int.self, forKey: Key("max_tokens"))
                         guard budget > 0 else {
                             throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive")
@@ -174,7 +234,7 @@ enum GLM5NextPromptPolicy {
                 }
                 // An explicit effort, under any alias, wins over a budget.
                 result.effort = nestedEffort ?? topEffort ?? kwargsEffort ?? budgetEffort
-                result.clearThinking = topClear ?? kwargsClear
+                result.clearThinking = topClear ?? kwargsClear ?? thinkingClear
             } catch {
                 result.invalid = true
             }
@@ -192,6 +252,34 @@ enum GLM5NextPromptPolicy {
             // Contradictory spellings are refused, never reconciled.
             guard !(disablesThinking && requestsThinking) else {
                 throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
+            }
+        }
+
+        /// The returned text of one message: its `reasoning` string, else its
+        /// `reasoning_details` text entries in order. Summary and encrypted
+        /// entries carry no text the template can replay.
+        private struct ReturnedReasoning: Decodable {
+            let text: String?
+
+            init(from decoder: any Decoder) {
+                let values = try? decoder.container(keyedBy: Key.self)
+                if let reasoning = try? values?.decode(String.self, forKey: Key("reasoning")), !reasoning.isEmpty {
+                    text = reasoning
+                    return
+                }
+                let details = (try? values?.decode([Detail].self, forKey: Key("reasoning_details"))) ?? []
+                let joined = details.compactMap(\.text).joined()
+                text = joined.isEmpty ? nil : joined
+            }
+
+            private struct Detail: Decodable {
+                let text: String?
+
+                init(from decoder: any Decoder) {
+                    let values = try? decoder.container(keyedBy: Key.self)
+                    let type = try? values?.decode(String.self, forKey: Key("type"))
+                    text = type == "reasoning.text" ? try? values?.decode(String.self, forKey: Key("text")) : nil
+                }
             }
         }
     }
@@ -242,11 +330,13 @@ enum GLM5NextPromptPolicy {
         controls: ChatTemplateControls
     ) throws -> ProviderPromptContractPipeline.NormalizedInput {
         let context = try additionalContext(request: request, controls: controls)
-        guard !prepared.requiresToolCall else {
-            throw invalid("required/named tool_choice is not qualified by the native prompt format")
-        }
-        guard request.responseFormat?.requiresJSONOutput != true else {
-            throw invalid("JSON output mode and constrained JSON schemas are not qualified")
+        // Neither mode is constrained here. Required/named choice renders the
+        // forcing instruction already in `prepared.messages`, and a JSON
+        // response_format the service's instruction message; the call or
+        // answer is withheld and validated after generation
+        // (`ToolConstraintValidation`, `GLM5NextResponseFormat`).
+        guard request.responseFormat?.requiresJSONOutput != true || prepared.glmResponseFormat != nil else {
+            throw invalid("JSON response_format requires its output validator")
         }
         guard !MediaIngest.hasMedia(request) else { throw invalid("native media is not qualified") }
         for message in request.messages {
@@ -263,16 +353,22 @@ enum GLM5NextPromptPolicy {
         guard (originalTools ?? []).allSatisfy({ $0.type == "function" }) else {
             throw invalid("only function tool declarations are supported")
         }
-        guard !(originalTools ?? []).contains(where: { $0.function.strict == true }) else {
-            throw invalid("strict tool decoding is not qualified")
-        }
+        // `strict` is not constrained decoding here: the template omits it and
+        // every `auto` call is checked against its declared schema before it
+        // is exposed (`ToolConstraintValidation.validate`), so a call that
+        // breaks the schema fails the request instead of reaching the client.
         try validateHistory(request.messages)
+        let returned = returnedReasoning(controls.rawGLM5Controls.returnedReasoning,
+            request: request, prepared: prepared)
 
         // Unlike the generic sanitizer, this bridge keeps null object members
         // and array positions. The official template performs result ordering;
         // preserving the original messages also preserves their correlation IDs.
-        let messages: [[String: any Sendable]] = try prepared.messages.map { message in
+        let messages: [[String: any Sendable]] = try prepared.messages.enumerated().map { index, message in
             var value = message.templateMessageDict()
+            if message.role == .assistant, message.reasoningContent == nil, let text = returned[index] {
+                value["reasoning_content"] = text
+            }
             if let calls = message.toolCalls {
                 value["tool_calls"] = try calls.map { call -> [String: any Sendable] in
                     let arguments = try decodeHistoryArguments(call.function.arguments)
@@ -297,11 +393,41 @@ enum GLM5NextPromptPolicy {
             }
             return try value.mapValues { try templateValue($0) as any Sendable }
         }
-        let visibleTools = prepared.mode == .none ? nil : originalTools
+        // A named choice offers only its function, as every other family's
+        // prepared tools do.
+        let visibleTools: [OpenAITool]?
+        switch prepared.mode {
+        case .none: visibleTools = nil
+        case .named(let name): visibleTools = originalTools?.filter { $0.function.name == name }
+        case .auto, .required: visibleTools = originalTools
+        }
         let tools: [[String: any Sendable]]? = try visibleTools?.map {
             try $0.toolSpec().mapValues { try templateValue($0) as any Sendable }
         }
         return .init(messages: messages, tools: tools, additionalContext: context)
+    }
+
+    /// Captured returned reasoning aligned with `prepared.messages`. A JSON
+    /// response_format adds the service's instruction turn after the leading
+    /// system turns (`OpenAIResponseFormatSupport.preparedRequest`), and tool
+    /// choice may prepend its own. A capture that does not align with the
+    /// decoded messages is not applied.
+    private static func returnedReasoning(
+        _ captured: [String?]?, request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared
+    ) -> [String?] {
+        guard var captured else { return Array(repeating: nil, count: prepared.messages.count) }
+        // The inserted turn is the last of the leading system turns.
+        let instructionIndex = (request.messages.firstIndex { $0.role != .system } ?? request.messages.endIndex) - 1
+        if request.responseFormat?.requiresJSONOutput == true, captured.count + 1 == request.messages.count,
+            instructionIndex >= 0 {
+            captured.insert(nil, at: instructionIndex)
+        }
+        let offset = prepared.messages.count - request.messages.count
+        guard captured.count == request.messages.count, (0...1).contains(offset) else {
+            return Array(repeating: nil, count: prepared.messages.count)
+        }
+        return Array(repeating: nil, count: offset) + captured
     }
 
     private static func validateHistory(_ messages: [OpenAIChatMessage]) throws {
@@ -338,6 +464,8 @@ enum GLM5NextPromptPolicy {
     /// a second parser with different duplicate-key or numeric-rounding rules.
     /// The fixed outer frame is internal data plumbing, never a model prompt.
     private static func decodeHistoryArguments(_ raw: String) throws -> [String: MLXLMCommon.JSONValue] {
+        // A call without arguments, as vLLM and the other native families read it.
+        guard !raw.isEmpty else { return [:] }
         let frame = "<tool_call>_glm5_history<arg_key>arguments</arg_key><arg_value>"
             + raw + "</arg_value></tool_call>"
         let argumentSchema: [String: any Sendable] = ["type": "object"]

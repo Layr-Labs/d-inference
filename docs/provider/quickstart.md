@@ -4,8 +4,10 @@
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
-log in, pick models, start, then confirm serving authorization. macOS 27 or later
-uses App Attest without new Darkbloom MDM enrollment. Darkbloom MDM will be
+log in, pick models, start, then confirm serving authorization. New providers
+need macOS 27 or later: the installer refuses a fresh install on older macOS and
+asks you to update first. macOS 27 or later uses App Attest without new
+Darkbloom MDM enrollment. Darkbloom MDM will be
 deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
 
 ## Prerequisites

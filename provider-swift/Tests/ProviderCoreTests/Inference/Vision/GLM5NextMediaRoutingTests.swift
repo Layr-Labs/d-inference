@@ -5,6 +5,7 @@
 // preparer. No model weights. The native builder itself is exercised by
 // `GLM5NextManagedLoadTests` on synthetic GLM weights.
 
+import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
@@ -90,11 +91,63 @@ private struct GLMStubProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw Unused() }
 }
 
+/// Media-token identities the GLM processor requires; renders symbolic media
+/// parts as the shipped template does and text as one token per scalar.
+private struct GLMMediaMarkerTokenizer: MLXLMCommon.Tokenizer {
+    private static let specials = [
+        "<|image|>": 154854, "<|video|>": 154855,
+        "<|begin_of_image|>": 154830, "<|end_of_image|>": 154831,
+        "<|begin_of_video|>": 154832, "<|end_of_video|>": 154833,
+    ]
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func convertTokenToId(_ token: String) -> Int? { Self.specials[token] }
+    func convertIdToToken(_ id: Int) -> String? { Self.specials.first { $0.value == id }?.key }
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { text.unicodeScalars.map { Int($0.value) } }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        messages.flatMap { message -> [Int] in
+            guard let parts = message["content"] as? [[String: String]] else {
+                return encode(text: message["content"] as? String ?? "", addSpecialTokens: false)
+            }
+            return parts.flatMap { part -> [Int] in
+                switch part["type"] {
+                case "image": [154830, 154854, 154831]
+                case "video": [154832, 154855, 154833]
+                default: encode(text: part["text"] ?? "", addSpecialTokens: false)
+                }
+            }
+        }
+    }
+}
+
+/// OpenRouter's provider-readiness clips, kept as SDK test resources.
+private func openRouterVideo(_ name: String, sha256: String) throws -> Data {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0..<6 { root.deleteLastPathComponent() }
+    let data = try Data(contentsOf: root.appendingPathComponent(
+        "libs/mlx-swift-lm/Tests/MLXLMTests/Resources/MiMoOpenRouter/\(name)"))
+    #expect(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == sha256)
+    return data
+}
+
 private final class RequestCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [OpenAIChatCompletionRequest] = []
     var requests: [OpenAIChatCompletionRequest] { lock.withLock { values } }
     func record(_ request: OpenAIChatCompletionRequest) { lock.withLock { values.append(request) } }
+}
+
+/// Each prepared video's grid rows followed by its placement span lengths.
+private final class PreparedCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[Int]] = []
+    var values: [[Int]] { lock.withLock { recorded } }
+    func record(_ values: [[Int]]) { lock.withLock { recorded = values } }
 }
 
 private func stubContainer() -> ModelContainer {
@@ -181,6 +234,37 @@ struct GLM5NextMediaRoutingTests {
         #expect(capture.requests.isEmpty)
     }
 
+    /// Only the GLM text path withholds and validates a JSON answer or a forced
+    /// call, so media with either is refused before any media work.
+    @Test(arguments: ["json", "required", "named"])
+    func withheldOutputModesWithMediaAreRefusedBeforePreparation(mode: String) async throws {
+        let engine = GLMScriptedEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
+            eosTokenIds: [2], kvBytesPerToken: 0)
+        let capture = RequestCapture()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, request, _ in
+                capture.record(request)
+                return preparedSubmission()
+            }, emitTelemetry: { _ in })
+        var request = imageRequest()
+        if mode == "json" {
+            request.responseFormat = .jsonObject()
+        } else {
+            request.tools = [OpenAITool(function: .init(name: "ping", parameters: .object([
+                "type": .string("object"), "properties": .object([:]),
+            ])))]
+            request.toolChoice = mode == "required" ? .mode(.required) : .function(name: "ping")
+        }
+        let refused = mode == "json" ? "JSON response_format" : "required/named tool_choice"
+        await #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "GLM5: \(refused) is not supported with image or video input")) {
+            _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
+        }
+        #expect(capture.requests.isEmpty && engine.submitted.isEmpty)
+    }
+
     @Test func videoIsDecodedAndHandedToTheProcessorRatherThanRefused() async throws {
         // A decodable clip passes bounded ingest; only the stub's processor
         // identity stops it, after decode and before any tower work.
@@ -200,6 +284,60 @@ struct GLM5NextMediaRoutingTests {
                 container: stubContainer(),
                 request: imageRequest([.text("x"), .videoURL("data:video/mp4;base64,AAAA")]),
                 templateControls: .init())
+        }
+    }
+
+    /// The readiness requests through the scheduler with GLM's actual request
+    /// normalization, shared ingest and processor at the published budgets.
+    /// The variable-frame-rate QuickTime clip was refused as `invalid_media`.
+    @Test func openRouterReadinessVideosReachTheEngineInsteadOfInvalidMedia() async throws {
+        let mov = try openRouterVideo(
+            "input-video-base64.mov",
+            sha256: "0a53a3aa1da409c54b57b6955139525f77c421893aaa172ebc1f86ba3a7323f4")
+        let mp4 = try openRouterVideo(
+            "input-video-url.mp4",
+            sha256: "dc11648bd3546cd0a37ecc1077ccc426d42c409fe4822ece0354eb250804431e")
+        // The URL test arrives as the coordinator's sniffed data:video/mp4 URI.
+        for (label, data, grid) in [
+            ("video/quicktime", mov, [11, 40, 108]),
+            ("video/mp4", mp4, [5, 52, 92]),
+        ] {
+            let engine = GLMScriptedEngine()
+            let bridge = EngineV2Bridge(
+                engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
+                eosTokenIds: [2], kvBytesPerToken: 0)
+            let prepared = PreparedCapture()
+            let plumbing = EngineV2VisionPlumbing(
+                prepare: { _, request, controls in
+                    let input = try await EngineV2VisionPrefill.glm5NextUserInput(
+                        request: request, controls: controls)
+                    let processor = try GLM5NextProcessor(
+                        configuration: .init(), tokenizer: GLMMediaMarkerTokenizer())
+                    do {
+                        let output = try await processor.prepareDetailed(input: input)
+                        prepared.record(
+                            (output.input.video?.frames ?? []).map { [$0.t, $0.h, $0.w] }
+                                + [output.placements.map(\.tokenRange.count)])
+                    } catch let error as GLM5NextVisionError {
+                        throw EngineV2VisionPrefill.glm5NextInputError(error)
+                    }
+                    return preparedSubmission()
+                }, emitTelemetry: { _ in })
+            let request = imageRequest([
+                .text("What's in this video?"),
+                .videoURL("data:\(label);base64," + data.base64EncodedString()),
+            ])
+            do {
+                for try await _ in try await router(bridge: bridge, plumbing: plumbing)
+                    .streamChatCompletion(request: request) {}
+            } catch {
+                let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+                Issue.record("\(label) refused as \(failure.code.rawValue): \(error)")
+                continue
+            }
+            #expect(engine.submitted.count == 1, "\(label)")
+            let spans = Array(repeating: grid[1] * grid[2] / 4, count: grid[0])
+            #expect(prepared.values == [grid, spans], "\(label)")
         }
     }
 

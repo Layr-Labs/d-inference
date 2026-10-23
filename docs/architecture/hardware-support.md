@@ -51,11 +51,12 @@ cold-load routing, which compare it and the 3 GiB load headroom with
 GiB available on 128 GB until the platform adopts a Super-specific rule. The
 footprint holds no media, and an image request is
 charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
-3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
-copies, a 13,312-patch image's tokens and its tower and projector bound; a
-video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
-owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
-request (24.5 GiB of media) does not fit beside it. A resident slot's media
+4.67 GiB for one image: the ingress quote of a 40 MiB body, a 64 Mi-pixel
+decode workspace, the encoded body copies, a 13,312-patch image's tokens and
+its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
+4.54 GiB). On 128 GB the default owner's claim and activation reserve leave
+13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
+beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
@@ -223,6 +224,15 @@ GLM publication or clean retirement until restart. Pending operations are joined
 before settlement; no timeout or cancellation is restoration proof
 (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
 
+GLM's KV grant fills the cap, so at full KV its GPU use is the whole cap, about
+247 GB on a 256 GB M5 Ultra. The macOS default GPU wired-memory limit there is
+smaller, and Metal command buffers past it fail with "Insufficient Memory".
+The provider neither lowers the cap nor changes admission for this; `doctor`,
+`start` and failure logs give the operator the
+[sysctl values](../provider/hardware-requirements.md) instead
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit`).
+
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the
 packed bank's checked evaluation, then retains completed modules instead of a
@@ -244,6 +254,13 @@ the actual managed-load reservation and post-load guards.
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
     -- defaultActivationReserveBytes + minimumLoadKVBytes by default;
     -- measuredActivationFloorsBytes["gpt-oss-20b"] + minimumLoadKVBytes for a gpt-oss-20b-only serving set
+
+systemAvailable (SystemMemory.availableBytes, default `reclaimable` policy; pages × page size)
+    = max(free_count + inactive_count,
+          (free_count − speculative_count) + external_page_count + purgeable_count)
+    -- never below free + inactive; the second measure counts page cache (speculative
+    -- read-ahead once) and volatile purgeable pages, never anonymous or compressor
+    -- pages; `free-only` = free_count
 
 freeForLoadGb(total, systemAvailable, gpuActive, gpuCache, reserve, outstanding)
     mlxUsed   = gpuActive + gpuCache

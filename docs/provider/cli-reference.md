@@ -49,7 +49,7 @@ Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP
-speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL) is sampled at 2 FPS and decoded target-only.
+speculation, no prefix reuse). Video input (`video_url` with an inline `data:video/mp4` or `data:video/quicktime` URL, constant or variable frame rate) is sampled at 2 FPS and decoded target-only.
 This variable never advertises the local identity to the coordinator
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift`,
 `GLM5NextLocalQualification`). Coordinator-connected `darkbloom start` serves
@@ -83,6 +83,28 @@ into launchd. When no daily choice is saved, the environment/default rules in
 Invalid, missing or changed selected storage disables SSD caching; inference can
 continue cold. See [selecting cache storage](cache-storage.md) for disk preparation,
 limits and verification. These checks do not certify disk firmware.
+
+## Desktop frontend control
+
+`darkbloom desktop serve --config <path>` runs the authenticated loopback API.
+`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent,
+reinstalling it when the plist changed and restarting it once when the running
+API reports a different version than the invoking CLI.
+The desktop frontend sends validated actions to existing CLI operations and
+keeps the provider independent of its window lifetime. Internal
+`desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
+(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
+`desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
+to request macOS administrator authorization for the existing signed helper.
+`darkbloom desktop login [--config <path>]` signs into the account
+workspace through browser approval; `darkbloom desktop logout [--config <path>]`
+signs out without changing provider linkage or serving state. Both use the same
+CLI and native account store as Electron (`Desktop.Login`, `Desktop.Logout`).
+It prefers a scoped account session and supports existing coordinator device-code
+grants when the desktop scope is not reported. Dashboard credentials stay separate
+from the running provider (`DeviceLoginScope`, `DesktopAccountCredential`).
+See [desktop control](../reference/desktop-control.md) for the exact routes,
+credentials, outcomes, and limits (`Desktop`, `DesktopBackend`).
 
 ## Global options
 
@@ -128,7 +150,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -175,6 +197,9 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+A selection that would serve GLM-5.3-Flash below the macOS GPU wired-memory
+limits prints a `warning:` with the fix and continues
+([GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit)).
 
 The ordinary catalog picker uses the selected models' shared activation reserve
 when checking each model's load estimate. Adding an unmeasured model can raise
@@ -433,6 +458,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
+| `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
 Clearing restores model-aware `auto` on the next model load, not guaranteed
 paged service. It preserves explicit settings, the kill switch and capability
@@ -881,7 +907,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
@@ -946,7 +972,10 @@ Output includes:
 - Detected hardware (chip, RAM, GPU cores).
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
-- Live daemon PID, uptime, trust verdict, and last model-load error.
+- Live daemon PID, uptime, trust verdict, and last model-load error. A
+  GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
+  the `→ fix:` line from
+  [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it
@@ -1009,7 +1038,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard] [--hardware]
 ```
 
 | Flag | Description |
@@ -1018,6 +1047,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
 | `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
+| `--hardware` | Print one whole-machine load sample and which counters this Mac exposes, as JSON ([format](../reference/desktop-control.md#hardware-load)), and exit |
 
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
@@ -1093,6 +1123,37 @@ off, or every slot idle-unloaded — WARNs rather than passes: nothing on the
 box has loaded, let alone proved, the backend it was configured for. Under
 `--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
 which is the point: an unproven paged rollout must not certify.
+
+### GLM-5.3-Flash GPU wired-memory limit
+
+On a 256 GB M5 Mac where GLM-5.3-Flash is downloaded, named in `[backend]`
+`model`, `enabled_models` or `preload_models`, or served by the daemon, `doctor`
+adds the `glm wired limit` detailed check. It compares `iogpu.wired_limit_mb`
+(Metal's recommended working set while it is `0`, the macOS default),
+`vm.global_user_wire_limit` and `vm.user_wire_limit` with the
+[production values](./hardware-requirements.md). Below them it is ⚠, never ✗:
+the detail gives the planned full-KV GPU memory and the
+`sudo sysctl -w …` fix, and a `GLM-5.3-FLASH GPU WIRED-MEMORY LIMIT — ACTION
+RECOMMENDED` block after the detailed checks prints the current values, the
+fix, `darkbloom restart` and the copy-paste LaunchDaemon install (`sudo tee`
+heredoc, then `sudo launchctl bootstrap system …`). At or above them it is ✓
+with the current values. Other Macs, sizes and model sets show no line, and
+`darkbloom verify` does not run the check
+(`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`,
+`GLMWiredLimitAdvice.doctorCheck`).
+
+The same one-line fix also appears:
+
+| Where | When | Source |
+|---|---|---|
+| `darkbloom start` stderr, as `warning: …` | The selection would serve GLM-5.3-Flash below the values; start continues | `GLMWiredLimitAdvice.startNotice` |
+| `darkbloom status`, as `→ fix: …` under `Last model-load error` | The recorded GLM-5.3-Flash load error reports a Metal command buffer out of memory and the values are still low | `GLMWiredLimitAdvice.statusNotice` |
+| Daemon stderr (`~/.darkbloom/provider.log`; the terminal of `start --local` or `--foreground`), plus the fixed `darkbloom logs` line `GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run darkbloom doctor for the fix.` | Once per process, when a GLM-5.3-Flash load, startup preload, self-test or coordinator request fails with that error and the values are still low | `provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimitNotice.swift` (`GLM5NextWiredLimitNotice`) |
+
+The error text is only matched, never logged. Failures the native engine
+reports without the MLX error text cannot be matched; `doctor` and `start`
+still flag the limit. None of these change admission, KV grants or capacity.
+Steps: [troubleshooting](./troubleshooting.md#glm-53-flash-gpu-wired-memory-limit).
 
 ## `darkbloom verify`
 
@@ -1578,6 +1639,7 @@ manual use.
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
+| Verified weight hashes | `~/.darkbloom/verified-weights.json` (`DARKBLOOM_VERIFIED_WEIGHTS_FILE`), `0600`; managed GLM load hashes bound to file identities, reused for startup registration | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
@@ -1603,7 +1665,7 @@ override `provider.toml` for one process, are in
 
 | Key | Default | Effect |
 |---|---|---|
-| `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
+| `[provider] memory_reserve_gb | 4 | GiB withheld from the selected OS-available/MLX load budget; the larger unified-cap reserve still applies. By default OS availability includes inactive pages or, when larger, the reclaimable file page cache, so this is not a free-page floor. Set process-start DARKBLOOM_MEMORY_AVAILABILITY=free-only for shared hosts; see [memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |

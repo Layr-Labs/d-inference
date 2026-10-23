@@ -1,6 +1,6 @@
 # Nemotron Super image formats
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Reference for the inline image encodings that the unregistered Nemotron Super
 image owner decodes, how each becomes RGB8, and how that compares with the
@@ -91,7 +91,7 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 
 | Limit | Value | Source |
 |---|---|---|
-| Encoded bytes | `min(MediaIngest.maxMediaDecodedBytes, 64 MiB)`; the owner's whole request body is at most 8 MiB | `NemotronSuperImageDecode.swift` (`parse`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`encodedHeaderQuote`) |
+| Encoded bytes | `min(MediaIngest.maxMediaDecodedBytes, 64 MiB)`; the owner's whole request body is at most `NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB), and a larger one is refused as `media_too_large` | `NemotronSuperImageDecode.swift` (`parse`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`encodedHeaderQuote`) |
 | Declared pixels | `min(MediaIngest.maxImagePixels, 64 Mi)`, each axis at most 131072, JPEG axes at most 65500. Checked from the container before any raster buffer exists | `NemotronSuperImageDecode.swift` (`parse`) |
 | Resize workspace | SDK limit of 256 MiB for the oriented source and its grid, checked as each image is planned: before the media reservation and before any raster buffer exists. The largest admitted square is 5751x5751; 5752x5752, 8064x6048 and 8192x8192 are refused | `NemotronSuperImageDecode.swift` (`plan`); `NemotronSuperImagePreprocessing.validateWorkspace` |
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -114,9 +114,33 @@ that suite to exercise actual bridge MTP submission, checked partial-load
 cleanup, expert-source retirement, and the resolved-tokenizer preallocation
 probe. These use tiny local fixtures, not the full downloaded model. With the
 same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
-opt-in refuses target-only GLM before any load state exists. The pure
+opt-in refuses target-only GLM before any load state exists, and
+`GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
+from the same fixture: the relay channel must receive one entry per generated
+token with the requested alternatives, the row must not draft, and a later
+plain request must still speculate. In the SDK,
+`GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
+`protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
+values with the target's own log-softmax for serial and rectangular
+verification. `NativeOutputControlRefusalTests` keeps the typed 400 for
+native engines that do not capture logprobs (MiMo). The pure
 `GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
 the KV rate derived from the pinned architecture evidence.
+
+The same flag runs `verifiedDigestExistsOnlyAfterEveryManifestFileVerified`:
+the load reports the manifest aggregate only after every file verified, equal to
+a `WeightHasher` pass, and a same-size corrupted shard leaves it unset. With
+`DARKBLOOM_TEST_GLM5_PROTECTED_FACTORY=1`, `GLM5NextProviderLoopTests` loads
+through `ProviderLoop.ensureModelLoaded` and checks that no load-time
+`WeightHasher` pass runs, the live hash is the aggregate, and the
+`VerifiedWeightHashStore` record matches the files. `VerifiedWeightHashStoreTests`
+and `RegistrationWeightHashTests` need no flag. `scripts/run-provider-tests.sh`
+points `DARKBLOOM_VERIFIED_WEIGHTS_FILE` at its isolated state directory.
+
+`scripts/benchmarks/glm_load_timeline.py` turns a provider log into a phase
+timeline (weight-hash passes, the GLM load's verification and tensor phases,
+shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
+test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
 
 The retained-fault tests deliberately poison their process and must run **one
 selector per fresh process**, never as flags on the full suite:
@@ -170,6 +194,34 @@ unpatched pinned Swift-Jinja. It must match every official-template golden byte
 for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
 only the shipped template is recognized and passes the load-time render check.
+`returnedAssistantReasoningRendersLikeReasoningContent` and
+`openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
+returned-reasoning tool turn through the coordinator and local HTTP paths to the
+rendered prompt, with each of its reasoning spellings and controls.
+`capturedOpenRouterToolRequestIsServed` and
+`capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
+`strict` weather-tool requests, held byte for byte and hash-checked, with tool
+choice omitted, `auto` and `none`, and a five-step tool conversation built from
+them.
+
+`GLM5NextOpenRouterCapabilityTests` serves OpenRouter's capability request
+shapes through `MultiModelBatchSchedulerEngine` and `MLXOpenAIService`, with
+the shipped template rendered by Swift-Jinja, the serving
+`GLM5NextThinkingTokenizer` and a scripted CBv2 engine standing in for the
+model. JSON `response_format` requests must render the service instruction,
+stream reasoning, expose one validated answer, and fail with a content-free 422
+for prose, schema violations or truncation. OpenRouter's captured `strict`
+weather tool with `tool_choice` `required` or named must render the forcing
+instruction, expose exactly one validated call, and fail with a 422 and nothing
+exposed for prose, a wrong function, a schema violation or a truncated frame;
+the models update must list the GLM serving identity under tool-constraint
+protocol v1. Each served JSON or forced submission must carry no token
+constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
+evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
+a logprobs row that the same check refuses for a native engine without logprobs
+capture. The scripted completions prove the
+provider's withholding and validation, not the model's compliance; that needs
+the real-model run in `GLM5NextRealArtifactQualificationTests`.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
@@ -343,6 +395,29 @@ first, and a request for the loading model when a second copy would not fit.
 `darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
+
+## Desktop Control And Frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+Run `npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency
+while compiling Swift. `desktop-app/tests/previewRuntime.test.ts` exercises
+local-preview process startup, duplicate-start suppression, shutdown, persistent
+state, startup failure, and signature rejection using isolated executable
+fixtures; `desktop-app/tests/previewSigning.test.ts` covers propagation of the
+exact certificate fingerprint when electron-builder supplies its display name.
+Check the signed packaged app separately using the
+[desktop preview procedure](desktop-app.md#signed-local-preview).
+
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog
+(`scripts/test-desktop-api.py`). It checks that release reads share the existing
+latest-release API, earnings use the existing ledger window parameter, a
+credential change rejects an in-flight private response, authenticated insights
+are relayed, decimal strings are preserved, and account-session revisions change.
+The fixture never starts a serving provider or changes its credentials.
+`DesktopControlTests` and the `DeviceCodeLogin` suite cover native authentication
+and account separation. Activity and earnings checks are described in the
+[desktop verification guide](desktop-app.md#verify).
 
 ## Startup Performance Recovery
 
@@ -834,6 +909,12 @@ checks reject unsafe members, changed inventories, wrong source and entitlements
 and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
 Apple runtime behavior.
 
+`scripts/test-provider-release-publication.py` creates isolated local Git tags
+with verbatim annotations, including multiline opening paragraphs, extra blank
+lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
+text and payload/provenance digest guards without invoking signing or live
+publication.
+
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical
 links need exact provenance. Final full-tree lint needs intended additions/removals
@@ -1070,7 +1151,11 @@ end on the tiny installed fixture, checking its prompt length and one span per
 tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
 selects over the whole video, that cancelling or draining a decoding video
 returns its charge and that a malformed pruning rate fails the load
-before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
+before installing. `NemotronSuperOpenRouterVideoTests` runs OpenRouter's two
+readiness clips (the SDK's `MiMoOpenRouter` resources, read through the source
+tree) through the body bound, request parsing, inspection, the pinned
+template's prompt, the media plan and every sampled frame's decode, then
+serves both on the tiny installed fixture. `NemotronSuperVideoDecodeTests` covers the decoder's
 refusals on synthesized clips (decoded-pixel budget, codec, second track,
 zero-duration frame), per-frame validation, the decode allowance, reader
 cancellation and the container type hint.
@@ -1089,6 +1174,14 @@ shard (hashes about 75 GB, loads no weights); adding
 the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request. Run them only with
 exclusive GPU access.
+
+`NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
+shapes, built from the captured tool request the platform's conformance fixture
+pins, with reasoning enabled and disabled: tool-call steps 1 and 5, every
+`tool_choice`, `json_object`, strict `json_schema` and JSON formats with tools.
+Each passes the relay's inbound decode, the request plan, the pinned template
+and the output parser, and a compliant response validates streamed and
+complete. CPU only; it does not load a model or measure answer quality.
 
 ## Related
 

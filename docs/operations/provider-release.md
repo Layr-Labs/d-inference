@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -146,6 +146,9 @@ The pipeline takes its registered `changelog` from the annotated tag message,
 not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
 it to a short summary: the release API refuses registration bodies above
 64 KiB, and that refusal comes only after signing and notarization.
+`release_changelog` in `scripts/provider-release-publication.py` removes only
+Git's identified signature suffix and trims outer whitespace. Internal line
+breaks and paragraph spacing remain unchanged.
 
 ### 3. Merge And Verify Release Preparation
 
@@ -462,7 +465,7 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, annotated-tag notes and source/run provenance |
+| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
 | 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update

@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-23
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -61,6 +61,15 @@ Process ownership uses optional
 The Swift producer, Go consumer and TypeScript mirror share the canonical
 [process_memory_wire.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/process_memory_wire.json) fixture. These scalar
 observations add no event fields.
+
+Autopilot busy and stall diagnostics use the optional
+[`model_autopilot` state](protocol-messages.md#model_autopilot-state) on
+registration, every heartbeat and each `model_autopilot_status`:
+`busy_reasons`, `busy_reason`, `busy_since_ms` and `transition_stalls`. The
+provider (`ProviderLoop.publishModelAutopilotSnapshot`) reports them only with
+saved Autopilot consent, rebuilt for every heartbeat and on each capacity tick
+(`superviseTransitions`). Their closed vocabularies are listed with the state.
+They add no event fields or kinds.
 
 ## Autopilot tick diagnostics
 

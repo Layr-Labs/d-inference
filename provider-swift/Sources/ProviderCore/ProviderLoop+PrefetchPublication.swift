@@ -22,7 +22,7 @@ extension ProviderLoop {
     /// `applyVerifiedPrefetch`, not just the first: a retirement completing
     /// entirely inside any of the suspensions sets the record after an
     /// earlier check already passed.
-    private func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
+    func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
         guard let failed = failedSelfTestHashes[modelId] else { return false }
         return failed.isEmpty || failed == hash
     }
@@ -45,6 +45,7 @@ extension ProviderLoop {
         // A revision drain cannot pass an older advertisement suspended in
         // hashing, memory re-slicing or the coordinator client. Once the drain
         // begins, this entry guard prevents any new ID-only publication.
+        beginModelAdvertisementOccurrence(modelId)
         prefetchPublicationCounts[modelId, default: 0] += 1
         defer {
             prefetchPublicationCounts[modelId, default: 1] -= 1
@@ -257,7 +258,11 @@ extension ProviderLoop {
         // clear deliberately does NOT happen at the check, see there).
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
-        if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = info }
+        // With saved consent, every verified catalog build this machine can
+        // run is in the Autopilot set; `models_update` carries this one.
+        if autopilotInventoryModels[modelId] != nil || joinsAutopilotSetWhenVerified(info) {
+            autopilotInventoryModels[modelId] = info
+        }
         pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
         reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash

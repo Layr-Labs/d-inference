@@ -11,10 +11,12 @@ extension ProviderLoop {
 
     /// Keep exact cached consent separate from ordinary selected-model updates.
     /// Older coordinators inspect enabled/selected_models even when they do not
-    /// understand protocol 3, so suspend wire participation until refresh.
+    /// understand protocol 3, so suspend wire participation until the
+    /// successor joins the Autopilot set: an operator refresh, or its own
+    /// verified prefetch.
     var autopilotNeedsInventoryRefresh: Bool {
         autopilotConsented && autopilotSuccessorNeedsInventoryRefresh
-            && !ordinaryServingModelIDs.isSubset(of: Set(autopilotSettings.selectedModels))
+            && !ordinaryServingModelIDs.isSubset(of: Set(autopilotModelSet))
     }
 
     var autopilotManagesResidency: Bool {
@@ -28,7 +30,7 @@ extension ProviderLoop {
     }
 
     var autopilotOperationView: DaemonState.AutopilotOperation? {
-        let last = autopilotLastCommandId.flatMap { autopilotHistory[$0]?.0 }
+        let last = autopilotLastCommandId.flatMap { autopilotHistory[$0]?.command }
         guard let command = autopilotCommand ?? last else { return nil }
         return .init(reason: command.reason ?? "coordinator placement", target: command.loadModelId,
             releasing: command.unloadModelIds, elapsedMs: autopilotCommand == nil ? autopilotLastElapsedMs : nil)
@@ -50,7 +52,7 @@ extension ProviderLoop {
         }
         // Inventory is observational until a valid live lease. Never let
         // waiting, shadow, paused, expired or disconnected control widen it.
-        return modelAutopilotEnabled && autopilotSettings.allows(id)
+        return modelAutopilotEnabled && autopilotSetAllows(id)
             && autopilotInventoryModels[id] != nil
     }
 
@@ -71,16 +73,25 @@ extension ProviderLoop {
     func refreshAutopilotSettings() {
         guard let path = loopConfig.configPath,
               let config = try? ConfigManager.load(from: path) else { return }
+        // Download settings are provider configuration, never consent: they
+        // change no control, lease or revision.
+        let downloads = config.backend.autopilotDownloads ?? .init()
+        if downloads != autopilotDownloadSettings {
+            autopilotDownloadSettingsOverride = downloads
+            refreshAutopilotDownloadStorage(force: true)
+            publishModelAutopilotSnapshot()
+        }
         let settings = config.backend.modelAutopilot
         guard settings != autopilotSettings else { return }
         let previouslyManaged = autopilotManagesResidency
         let hadControl = autopilotControl != nil
         autopilotSettingsOverride = settings
-        if ordinaryServingModelIDs.isSubset(of: Set(settings.selectedModels)) {
+        if ordinaryServingModelIDs.isSubset(of: Set(autopilotModelSet)) {
             autopilotSuccessorNeedsInventoryRefresh = false
         }
         autopilotControl = nil
         withdrawInactiveAutopilotModels()
+        dropAutopilotCachedBuildsWithoutConsent()
         autopilotGeneration &+= 1
         // Disabling / pausing does not cancel an accepted mutation. Its owner
         // finishes and publishes actual capacity before ordinary changes resume.

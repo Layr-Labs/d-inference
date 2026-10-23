@@ -302,6 +302,7 @@ extension ProviderLoop {
             }
         }
         isReslicing = true
+        resliceGateGeneration &+= 1
     }
 
     internal func releaseResliceGate() {

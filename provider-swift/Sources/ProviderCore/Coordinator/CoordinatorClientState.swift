@@ -202,6 +202,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _backendCapacity: BackendCapacity? = nil
     private var _modelAutopilot: ModelAutopilotSnapshot? = nil
     private var _autopilotInventory: [ModelInfo]? = nil
+    private var _registeredAutopilotInventoryIDs: Set<String>? = nil
     private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
@@ -241,9 +242,25 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _currentModelHash = newValue } }
     }
 
-    var autopilotInventory: [ModelInfo]? {
-        get { lock.withLock { _autopilotInventory } }
-        set { lock.withLock { _autopilotInventory = newValue } }
+    /// One Autopilot state and the inventory built with it. A registration
+    /// reads both at once, so its inventory always matches the
+    /// `selected_models` it is filtered by.
+    func publishModelAutopilot(_ snapshot: ModelAutopilotSnapshot, inventory: [ModelInfo]) {
+        lock.withLock {
+            _modelAutopilot = snapshot
+            _autopilotInventory = inventory
+        }
+    }
+
+    var modelAutopilotRegistration: (snapshot: ModelAutopilotSnapshot?, inventory: [ModelInfo]?) {
+        lock.withLock { (_modelAutopilot, _autopilotInventory) }
+    }
+
+    /// Autopilot inventory IDs the last registration actually carried; nil
+    /// before the first.
+    var registeredAutopilotInventoryIDs: Set<String>? {
+        get { lock.withLock { _registeredAutopilotInventoryIDs } }
+        set { lock.withLock { _registeredAutopilotInventoryIDs = newValue } }
     }
 
     public var modelAutopilot: ModelAutopilotSnapshot? {

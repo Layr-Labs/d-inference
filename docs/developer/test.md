@@ -232,12 +232,14 @@ checkpoint through the production bundle and the `EngineV2Bridge` relay channel
 `DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
 `DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
 32-token `top_logprobs: 5` request must return one entry per token, never
-draft, match the MTP greedy tokens of the same prompt without logprobs, and
-match a teacher-forced dense-cache log-softmax within
-`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`, above the
-bf16 rounding floor of the different kernels). Batched with a plain row, both
-rows keep their solo greedy output and the plain row drafts again after the
-logprobs row finishes. The engine must end without a native fault or retained
+draft, equal the same row submitted to the raw engine, and match a
+teacher-forced dense-cache log-softmax along its own tokens within the larger
+of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
+bf16 spacings of the step's largest logit. A logprob row decodes one-token
+target steps, so the MTP greedy stream may leave it only at a reference
+near-tie. Batched with a plain row on another prompt, the logprob row keeps
+those values and every plain token is the reference argmax up to a near-tie;
+the plain row drafts again after the logprobs row finishes. The engine must end without a native fault or retained
 load. Results go to `logprobs-qualification.json` in the results directory.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the

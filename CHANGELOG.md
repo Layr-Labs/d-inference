@@ -20,6 +20,7 @@ Prepared on 2026-10-23; tagging and publication are separate steps.
 - `libs/mlx-swift-lm` moves from `7bed8216` to `6148b6da` for GLM variable-frame-rate video and the GLM logprob groundwork. Only Swift sources change; `libs/mlx` and `libs/mlx-swift` are unchanged, so no Metal kernel source changes.
 - Page-cache accounting applies to every model. Load admission, KV budgets, cold-load capacity, `darkbloom status` and `darkbloom doctor` can count more memory as available than 0.10.0 did on a Mac that holds file cache, and never less.
 - New provider installations require macOS 27 or later. An existing installation can still reinstall or repair on an older macOS, with an upgrade notice.
+- The provider CLI adds the desktop control API (`darkbloom desktop serve`, `ensure`, `login` and `logout`, run as the user LaunchAgent `io.darkbloom.desktop-api`) and `darkbloom doctor --hardware`. This release does not publish the Electron desktop app: CI builds only an unsigned review package, and public distribution still needs a Developer ID signed, notarized build and an update feed.
 
 ### GLM-5.3-Flash serves OpenRouter's returned-reasoning tool requests
 
@@ -82,6 +83,43 @@ Prepared on 2026-10-23; tagging and publication are separate steps.
 ### Installer requires macOS 27 for new providers
 
 - The provider installer now stops a new install on macOS 26 or earlier before downloading anything, with a prompt to update macOS in System Settings › General › Software Update. A Mac that already has the CLI or a provider config can still reinstall or repair, with a notice to upgrade.
+
+### Desktop control API in the provider CLI
+
+- Add `darkbloom desktop serve` and `darkbloom desktop ensure`, an authenticated loopback control API run as a user LaunchAgent (`io.darkbloom.desktop-api`). `ensure` replaces a stale or version-mismatched service, the service restarts itself after its binary is replaced, and `darkbloom stop --uninstall` removes it.
+- Add `darkbloom desktop login` and `darkbloom desktop logout` for a separate, read-only dashboard session with bounded expiry. Sign-in prefers the scoped `desktop_account` device-code purpose and accepts an existing coordinator's standard grant; provider credentials, linkage and serving are never changed.
+- Reject incompatible runtimes and streamed snapshots by protocol version, and refuse actions that need desktop commands an older installed runtime does not have.
+
+### Desktop hardware load
+
+- Serve whole-machine load to the desktop app over the authenticated control API: per-core CPU load with tier and cluster layout, GPU utilization and memory, ANE activity, memory pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.
+- Add best-effort GPU power and frequency plus estimated DRAM and ANE bandwidth; values stay unknown (`null`) until a counter has been seen moving. `darkbloom doctor --hardware` prints the same report.
+
+### macOS desktop app
+
+- Add a fresh Electron frontend (`desktop-app/`) using the landing brand: onboarding, Home, My Macs (Overview, Models, Cooling, Stats, Settings), Studio, Earnings, Leaderboard, Updates and Help. Closing the window keeps menu-bar access and provider activity; at login it starts hidden. GUI updates use only a feed configured at build time (`DARKBLOOM_DESKTOP_UPDATE_URL`), never provider releases.
+- Keep Electron on the same `darkbloom` CLI backend. Swift owns coordinator requests, shared caches, browser account sign-in and sign-out, catalog refresh, Autopilot enrollment, pinning and model operations; the renderer only sends validated actions over the authenticated loopback API.
+- Make Models Autopilot-first with manual selection on runtimes without Autopilot, keep-in-memory controls, download progress and bounded pin capacity. Recommendations rank compatible models by seven-day network inference earnings; personal earnings stay separate.
+- Show account earnings (daily charts, model and Mac breakdowns, exact CSV copying, separate inference and base-reward income), live per-model request activity, settled-token milestones, and a This Mac chip view lit by measured load. Unavailable values are shown as unavailable rather than zero.
+- Add isolated control-API tests, frontend journey tests, desktop packaging and CI. Public distribution remains subject to signed-runtime, update-feed and notarization qualification.
+
+### Desktop onboarding and CLI install
+
+- Make **Install the Darkbloom CLI** the first onboarding step, starting only on click with plain-language progress, Cancel and Retry; then check the Mac, link the account and start serving. Ineligible Macs stop at the check with reasons and a waitlist.
+- Require macOS 27 for new installs; a Mac already running the CLI on an older macOS keeps serving with an **Update macOS** next step.
+- Open the link page only on request, show returning users "Connecting to this Mac…" instead of first-run onboarding, and confirm eligible Macs on fresh installs by catalog size when nothing is downloaded yet.
+
+### Desktop accessibility, layout and copy fixes
+
+- Keep keyboard focus in place across navigation and inside dialogs, announce Home status changes once instead of every refresh, and make light and dark themes readable with visible focus rings.
+- Fix layouts at narrow widths, singular counts, page scroll position, plain-language copy, a single "Start serving" vocabulary, and dialogs that could not be dismissed over window-drag areas.
+- Guard model, Autopilot, link and Settings actions against double submission or invalid input; ask before unlinking; show stale cooling and fan readings as unavailable; and ask signed-out linked Macs to sign in instead of loading earnings indefinitely.
+- Fix Leaderboard loading and refresh, Earnings labels, Studio endpoint model and key handling, Stats completed-request traffic, release notes that showed tag signatures, update status from release history, and the menu bar icon size.
+
+### Desktop signed preview build
+
+- Add an opt-in, Developer ID signed Darkbloom Preview DMG with a bundled desktop API, separate application state, and managed API startup and shutdown. Provider operations stay on the verified installed runtime; normal release signing requirements are unchanged.
+- Recover after a crash or force quit by stopping the leftover bundled API (verified by recorded pid and exact command) before starting a new one, and report the installed runtime's version rather than the bundled API's build version.
 
 ### Console desktop sign-in approval
 

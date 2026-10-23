@@ -31,7 +31,9 @@ startup and explains its GPU wired-memory limit. Nemotron 3.5 Super accepts
 media bodies up to 40 MiB and JSON formats with tools. Every model counts page
 cache as available memory. Unsupported logprob requests on native engines get a
 typed 400 instead of a 500 that cooled every provider of the model; logprobs
-themselves are deferred to a later release. See the
+themselves are deferred to a later release. The provider CLI also gains the
+desktop control API from #1518; the provider release does not build, sign or
+publish the Electron desktop app. See the
 [`v0.10.1` changelog entry](../../CHANGELOG.md) for the full scope.
 
 Before tagging `v0.10.1`:

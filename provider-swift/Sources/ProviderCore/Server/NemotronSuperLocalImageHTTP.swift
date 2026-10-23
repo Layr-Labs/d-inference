@@ -175,6 +175,8 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
+            case .bodyTooLarge:
+                return MediaIngest.MediaError.mediaTooLarge("the inline media request exceeds the Super body bound")
             case .invalidFeatures:
                 return MultiModelBatchSchedulerEngineError.generationFailed("native media features were not finite")
             case .inconsistentVideoFeatures:

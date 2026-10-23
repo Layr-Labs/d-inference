@@ -213,15 +213,16 @@ func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor],
         loaded += 1
     }
     check(rowParallel == Set(plan.inputColumnModulePaths()), "\(label): input-column modules differ from the plan's list")
-    check(plan.rowParallelModulePaths().count == 2 * plan.layerCount, "\(label): two reductions per layer")
-    check(plan.reductionsPerForward == 2 * plan.layerCount, "\(label): reductions per forward")
+    let reductions = (plan.routedExperts ? 3 : 2) * plan.layerCount
+    check(plan.rowParallelModulePaths().count == reductions, "\(label): every partial projection has a reduction")
+    check(plan.reductionsPerForward == reductions, "\(label): reductions per forward")
     print("\(label): \(loaded) tensors cut or replicated, \(skipped) skipped, \(rowParallel.count) row-parallel projections")
 }
 
 /// A 35B-A3B-shaped routed-expert model: every expert divided by its
 /// intermediate channels, the shared expert like a dense MLP, the router and
-/// the shared expert's gate replicated; two reductions per layer (the mixer
-/// and the whole MLP block).
+/// the shared expert's gate replicated; three reductions per layer (the
+/// mixer, routed down projection and shared down projection).
 func syntheticMoEConfiguration() -> [String: Any] {
     var c = syntheticConfiguration(hidden: 2048, layers: 8, heads: 16, kv: 2, linearK: 16, linearV: 32, intermediate: 1)
     c.removeValue(forKey: "intermediate_size")
@@ -266,7 +267,18 @@ func checkRoutedExperts(quantization: [String: Any]) {
           "routed experts: the router is replicated")
     check((try? plan.disposition(key: "language_model.model.layers.0.mlp.switch_mlp.up_proj.weight", rank: 1)) == .load(.expertRows(256..<512)),
           "routed experts: rank 1 holds every expert's channels 256..<512")
-    check(plan.rowParallelModulePaths().contains("language_model.model.layers.0.mlp"), "routed experts: the MLP block is reduced once")
+    check(!plan.rowParallelModulePaths().contains("language_model.model.layers.0.mlp")
+          && plan.rowParallelModulePaths().contains("language_model.model.layers.0.mlp.switch_mlp.down_proj")
+          && plan.rowParallelModulePaths().contains("language_model.model.layers.0.mlp.shared_expert.down_proj"),
+          "routed experts: both down projections reduce before weighting and combination")
+    check(plan.expertsPerToken == 4 && plan.maximumPartialBytesPerToken == 4 * 2048 * 4,
+          "routed experts: largest collective retains every top-K hidden vector")
+    for invalidTopK in [0, 17] {
+        expectThrows("routed experts invalid top-K \(invalidTopK)") {
+            var bad = c; bad["num_experts_per_tok"] = invalidTopK
+            _ = try QwenTensorParallelPlan(textConfiguration: bad, quantization: quantization, size: 2)
+        }
+    }
     let s1 = plan.shardTextConfiguration(c, rank: 1)
     check(s1["moe_intermediate_size"] as? Int == 256 && s1["shared_expert_intermediate_size"] as? Int == 256
           && s1["num_key_value_heads"] as? Int == 1 && s1["intermediate_size"] == nil, "routed experts: rank 1 configuration")
@@ -366,7 +378,7 @@ func checkRegisteredRoutedExperts() throws {
     }
     check(QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: false).isEmpty, "dense arithmetic binding unchanged")
     check(QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: true)
-        == ["qwen-moe-block-activation-partials-f32-sum-v1"], "MoE local rounding is bound")
+        == ["qwen-moe-down-projections-f32-sum-before-weighting-v2"], "MoE projection rounding is bound")
 }
 
 /// Weighted shares for unequal Macs: every tensor still covered exactly once

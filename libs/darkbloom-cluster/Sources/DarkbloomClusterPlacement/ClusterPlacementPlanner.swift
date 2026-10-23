@@ -559,6 +559,9 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
+        if mode.usesTensorParallelDecode, !context.placeable(mode, ranges: devices.count) {
+            throw ClusterPlacementError("Tensor-parallel request allowance does not cover the requested context and chunk")
+        }
         if let tensorShares {
             guard mode == .tensorParallel, tensorShares.count == devices.count,
                   Set(tensorShares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(tensorShares) else {
@@ -607,6 +610,8 @@ public enum ClusterPlacementPlanner {
         func placeable(_ mode: ClusterGenerationMode, ranges: Int) -> Bool {
             guard mode.usesTensorParallelDecode else { return true }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(ranges), let reduction = link.reduction else { return false }
+            if let allowance = tp.family.requestAllowance,
+               !allowance.covers(context: memoryContext, chunk: min(layout.maximumChunkTokens, memoryPrompt)) { return false }
             return reduction.keyed || tensorParallelForAssessment
         }
 
@@ -822,14 +827,19 @@ public enum ClusterPlacementPlanner {
                     extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
                 }
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
+            // The native quote already includes its full state, workspace and
+            // collective buffers. Keep the larger complete reservation, then
+            // add loading headroom once; adding both quotes double counts KV.
+            let nativeFloor = tp.family.requestAllowance?.reservedBytes ?? 0
+            let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
+            let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             let need = max(load.need, load.held + requestNeed)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: load.need, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest),
-                withinGPUWorkingSet: load.held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                withinGPUWorkingSet: load.held + max(state + work + extra + transient, nativeFloor) <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
                 hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: load.held,
                     largestTensorBytes: load.largest))

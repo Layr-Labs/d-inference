@@ -230,12 +230,26 @@ public final class QwenTensorParallelResidentRuntime {
             maximumTokens: maximumTokens, chunkSize: chunkSize, bound: bound)
         let second = try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan, rank: 1,
             maximumTokens: maximumTokens, chunkSize: chunkSize, bound: bound)
-        let reserved = try QwenLongPrefillCheckedBytes.sum([first.reservedBytes, second.fusionBytes])
-        let frames = try QwenLongPrefillCheckedBytes.product([6, chunkSize, admission.profile.hiddenSize, 4])
-        let logits = try QwenLongPrefillCheckedBytes.product([3, admission.profile.vocabularySize, 4])
-        return (.init(stateBytes: first.stateBytes, fusionBytes: first.fusionBytes + second.fusionBytes,
-                      reservedBytes: reserved, transientBytes: first.transientBytes, contextTokens: maximumTokens),
-                try QwenLongPrefillCheckedBytes.sum([frames, logits]))
+        guard let root = try JSONSerialization.jsonObject(with: admission.configBytes) as? [String: Any],
+              let text = root["text_config"] as? [String: Any],
+              let quantization = (root["quantization"] ?? root["quantization_config"]) as? [String: Any] else {
+            throw ProbeError("Tensor-parallel request configuration is incomplete")
+        }
+        let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2)
+        let budget = try QwenTensorParallelRequestBudget.derive(geometry: profile.geometry, plan: plan,
+            tensors: profile.canonicalTensors, maximumTokens: maximumTokens, chunkSize: chunkSize,
+            allocationBound: bound)
+        let fusion = try QwenLongPrefillCheckedBytes.sum([first.fusionBytes, second.fusionBytes])
+        guard budget.stateBytes == first.stateBytes, budget.stateBytes == second.stateBytes,
+              budget.fusionBytes == fusion,
+              budget.transientBytes == max(first.transientBytes, second.transientBytes) else {
+            throw ProbeError("Tensor-parallel request ledger differs from the admitted stage inventories")
+        }
+        let reserved = try QwenLongPrefillCheckedBytes.sum([budget.stateBytes, fusion, budget.transientBytes])
+        return (.init(stateBytes: budget.stateBytes, fusionBytes: fusion,
+                      reservedBytes: reserved, transientBytes: budget.transientBytes, contextTokens: maximumTokens),
+                try QwenLongPrefillCheckedBytes.sum([budget.allowance.collectiveScratchBytes,
+                    budget.logitsBytes, budget.projectionConstantBytes]))
     }
 
     public var readiness: ClusterWorkerReady? {

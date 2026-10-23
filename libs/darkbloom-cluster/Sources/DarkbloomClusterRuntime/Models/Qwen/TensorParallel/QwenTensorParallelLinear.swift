@@ -59,35 +59,6 @@ final class QwenTensorParallelRowLinear: QuantizedLinear {
     }
 }
 
-/// A routed-expert block on one rank: its experts' and shared expert's
-/// combined output is this rank's partial (every expert divided by channels,
-/// the router replicated), widened to float32, all-summed, rounded once.
-final class QwenTensorParallelBlockReduction: Module, UnaryLayer {
-    @ModuleInfo(key: "inner") var inner: Module
-    private let reduction: QwenTensorParallelRowLinear.Box
-    private let timing: QwenTensorParallelReductionTiming
-    private let partialDType: DType
-
-    init(_ inner: Module, reduction: QwenTensorParallelReduction, timing: QwenTensorParallelReductionTiming,
-         partialDType: DType) {
-        self.reduction = QwenTensorParallelRowLinear.Box(reduction)
-        self.timing = timing
-        self.partialDType = partialDType
-        self._inner.wrappedValue = inner
-        super.init()
-        freeze()
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let partial = (inner as! UnaryLayer)(x).asType(partialDType)
-        if timing == .explicit {
-            eval(partial)
-            Stream.gpu.synchronize()
-        }
-        return reduction.value.allSum(partial).asType(x.dtype)
-    }
-}
-
 /// Diagnostic only: a rank's shard with no peer. `allSum` returns this rank's
 /// partial unchanged, so outputs are wrong by construction; it measures one
 /// chip's share of the compute without any collective. Never a TP result.

@@ -114,6 +114,9 @@ public final class QwenTensorParallelModel {
             guard let reduction, reduction.size == size, reduction.rank == rank else {
                 throw ProbeError("Tensor parallel load: a shard needs the reduction of its own rank and group size")
             }
+            guard !plan.routedExperts || partialDType == .float32 else {
+                throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+            }
         } else if reduction != nil {
             throw ProbeError("Tensor parallel load: only a shard takes a reduction")
         }
@@ -168,18 +171,31 @@ public final class QwenTensorParallelModel {
 
         // Row-parallel projections.
         let leaves = Dictionary(uniqueKeysWithValues: model.leafModules().flattened())
-        let blocks = Dictionary(model.namedModules(), uniquingKeysWith: { first, _ in first })
         var replacements: [(String, Module)] = []
         var extra: [MLXArray] = []
         for path in plan.rowParallelModulePaths() {
-            if plan.routedExperts, path.hasSuffix(".mlp") {
-                // The whole routed-expert block's output is this rank's partial.
-                guard case .shard = role, let block = blocks[path], block is UnaryLayer else {
-                    if case .full = role { continue }
-                    throw ProbeError("Tensor parallel load: \(path) is not a routed-expert block")
+            if plan.routedExperts, path.hasSuffix(".mlp.switch_mlp.down_proj") {
+                guard let source = leaves[path] as? QuantizedSwitchLinear else {
+                    throw ProbeError("Tensor parallel load: \(path) is not a quantized expert projection")
                 }
-                replacements.append((path, QwenTensorParallelBlockReduction(block, reduction: reduction!, timing: timing,
-                                                                            partialDType: partialDType)))
+                switch role {
+                case .full:
+                    break
+                case .simulated:
+                    throw ProbeError("Tensor parallel load: routed-expert split-sum oracle is not implemented")
+                case .shard:
+                    guard partialDType == .float32, let reduction else {
+                        throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+                    }
+                    let projection = try Qwen35TensorParallelSwitchLinear(source) { partial in
+                        if timing == .explicit {
+                            eval(partial)
+                            Stream.gpu.synchronize()
+                        }
+                        return reduction.allSum(partial)
+                    }
+                    replacements.append((path, projection))
+                }
                 continue
             }
             guard let source = leaves[path] as? QuantizedLinear else {

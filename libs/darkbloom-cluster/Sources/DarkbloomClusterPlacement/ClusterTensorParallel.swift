@@ -38,15 +38,18 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// more of every layer: shares are then whole groups out of this many.
     /// Nil, the default, means only `shareOptions` (or equal shares).
     public let shareUnits: Int?
+    /// Optional complete native request reservation; nil preserves existing families.
+    public let requestAllowance: ClusterTensorParallelRequestAllowance?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil,
-                shareUnits: Int? = nil) {
+                shareUnits: Int? = nil, requestAllowance: ClusterTensorParallelRequestAllowance? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.stateDividesByHeads = stateDividesByHeads
         self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
         self.shareUnits = shareUnits
+        self.requestAllowance = requestAllowance
     }
 
     /// Each share option as fractions of the model (equal first).
@@ -117,6 +120,7 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
               egressDividedBytes + egressReplicatedBytes == layout.egress.loadedBytes else {
             throw ClusterPlacementError("Model layout's tensor-parallel facts are malformed")
         }
+        try f.requestAllowance?.validate(layout: layout, partialBytesPerToken: f.partialBytesPerToken)
     }
 }
 

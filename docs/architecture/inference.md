@@ -2579,12 +2579,24 @@ whole tensor; stored separate-bank diagnostic checkpoints retain their existing
 cuts. The registered geometry gives each rank eight query heads, one KV head,
 eight GDN key heads, sixteen GDN value heads and 256 shared/expert channels.
 
-`QwenTensorParallelBlockReduction` computes the local routed/shared block in the
-activation type, widens that combined output to float32, sums it and rounds to
-the activation type. The pre-load agreement binds
-`qwen-moe-block-activation-partials-f32-sum-v1` for routed rows. Dense projections
+The expert down projection uses `Qwen35TensorParallelSwitchLinear` to compute
+float32 partials and sum them before rounding, route restoration and router
+weighting. The shared expert down projection separately sums float32 partials
+before its sigmoid gate and the routed/shared combination. The pre-load
+agreement binds `qwen-moe-down-projections-f32-sum-before-weighting-v2`, so peers
+using the earlier combined-block reduction refuse to load together. Routed rows
+require float32 partials and have three reductions per layer. Dense projections
 keep their existing arithmetic and agreement fields. The routed path retains
 existing kernel eligibility; a half-width projection can use a general kernel.
+The expert collective retains selected-expert vectors until weighting, so its
+largest payload is chunk tokens times top-K times hidden width times four bytes.
+The Qwen placement and native LOAD paths share `QwenTensorParallelRequestBudget`:
+full-model conservative state, canonical fused projections, retained float32
+projection scales and offsets, attention workspace, three logits arrays, and
+eight individually allocator-bounded authenticated
+frames. The native path also checks its state, fusion and transient totals
+against both admitted pipeline stage ledgers. This quote is a conservative
+reservation floor, not a measured whole-process peak.
 These structural cuts do not establish numerical acceptance or a speedup:
 qualification must retain the existing comparator and near-tie rules. Placement
 uses measured keyed link costs and native rates and may select pipeline.
@@ -3145,3 +3157,26 @@ The SDK helper is
 stage activation and receipt binding are in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4LayerStageModel.swift`
 and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Model/Gemma4ArithmeticEnvironment.swift`.
+
+### Complete tensor-parallel request allowances
+
+A tensor-parallel family can attach a complete native request allowance to
+its placement plan. The allowance includes the full request state and workspace,
+projection transients, and eight independently allocator-bounded copies of the
+largest encoded collective frame, including authentication overhead before
+allocator rounding. Routed expert payloads include the selected expert
+count; a residual-width frame alone is too small before expert weighting.
+
+The planner takes the maximum of this complete allowance and its existing
+request estimate, then adds loading headroom once. The same allowance is a floor
+for the resident working-set check. Quotes must cover the full layout envelope;
+a larger explicit request cannot reuse a shorter quote. Families without an
+allowance preserve their existing estimates and serialized form. This pricing
+interface alone enables no model, mode or hardware qualification.
+
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallelRequestAllowance.swift`
+(`ClusterTensorParallelRequestAllowance`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallel.swift`
+(`ClusterTensorParallelFamilyPlan`), and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
+(`tensorRequirement`).

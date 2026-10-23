@@ -238,10 +238,11 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
 
     func testPlanRefusesUnsupportedControlsAndFormatsOnce() throws {
         for extra in [#""logprobs":true"#, #""top_logprobs":2"#, #""prompt_cache_key":"k""#, #""n":2"#,
-                      #""min_p":0.1"#, #""tool_call_parser":"json""#, #""reasoning_parser":"qwen3""#,
-                      #""response_format":{"type":"json_object"},"# + Self.weather] {
+                      #""min_p":0.1"#, #""tool_call_parser":"json""#, #""reasoning_parser":"qwen3""#] {
             XCTAssertThrowsError(try plan(extra), extra)
         }
+        // A JSON response format with tools is served: calls, or a validated JSON answer.
+        XCTAssertNoThrow(try plan(#""response_format":{"type":"json_object"},"# + Self.weather))
         let body = Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
             + #"","messages":[{"role":"user","content":"q"}],"response_format":{"type":"json_object"}}"#).utf8)
         let direct = try NemotronSuperRequestPlan(body: body)

@@ -107,8 +107,23 @@ extension NemotronSuperLocalHTTPTests {
             #expect(SuperSSE(failedJSON).content.isEmpty)
             _ = try await send(body(["</think>", "Sure."], stream: false,
                 ["tools": [weather()], "tool_choice": "required"]), status: .unprocessableContent)
+            // A JSON format with tools: a call is returned as a call, an answer must be JSON.
+            for stream in [true, false] {
+                let jsonTools: [String: Any] = ["tools": [weather()], "response_format": ["type": "json_object"]]
+                let called = try await send(body(call, stream: stream, jsonTools))
+                let calls = stream ? SuperSSE(called).toolCalls : try SuperJSON(called).toolCalls
+                #expect(calls.map(\.name) == ["get_weather"])
+                #expect(script.prompt.contains("<name>get_weather</name>")
+                    && script.prompt.contains("You must respond with a single valid JSON object."))
+                let answered = try await send(body(["Use tool?", "</think>", "{\"city\"", ": \"Paris\"}"],
+                                                   stream: stream, jsonTools))
+                let content = stream ? SuperSSE(answered).content : try SuperJSON(answered).content
+                #expect(content == #"{"city": "Paris"}"#)
+            }
+            _ = try await send(body(["</think>", "Sunny."], stream: false,
+                ["tools": [weather()], "response_format": ["type": "json_object"]]), status: .unprocessableContent)
             for invalid in [["enable_thinking": false, "chat_template_kwargs": ["enable_thinking": true]],
-                            ["logprobs": true], ["tools": [weather()], "response_format": ["type": "json_object"]],
+                            ["logprobs": true],
                             ["messages": [["role": "user", "content": "a <image> tag"]]]] as [[String: Any]] {
                 let text = try await send(body(["x"], stream: true, invalid), status: .badRequest)
                 #expect(text.contains("error"))

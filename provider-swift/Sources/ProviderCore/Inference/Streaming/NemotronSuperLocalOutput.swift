@@ -90,8 +90,11 @@ struct NemotronSuperLocalOutput {
         guard !unterminated, !forced || ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)
         else { throw Failure.malformedToolFrame }
         try ToolConstraintValidation.validate(calls, prepared: plan.toolPolicy)
-        let validatedContent = try OpenAIResponseFormatSupport.normalizedContent(
-            forced ? "" : content + residual, for: plan.request.responseFormat)
+        // A response format shapes the final answer; a turn that calls tools
+        // is not one, so its text (none for a forced choice) passes unchanged.
+        let answer = forced ? "" : content + residual
+        let validatedContent = calls.isEmpty
+            ? try OpenAIResponseFormatSupport.normalizedContent(answer, for: plan.request.responseFormat) : answer
         let validatedReasoning = reasoning.isEmpty ? nil : reasoning
         // Streamed reasoning and plain streamed content (never JSON-normalized)
         // already left through route; only the parser's residual text remains.

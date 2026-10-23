@@ -165,7 +165,7 @@ struct NemotronSuperVideoBindingTests {
         // activation, a five-tubelet scoring window at 73,728 bytes a row,
         // the 4K decoder working set and two encoded copies.
         #expect(Policy.videoScoringBytesPerRow == 73_728)
-        #expect(video == 3_751_221_756)
+        #expect(video == 4_875_295_228)
         let colors = try Binding.videoChargeBytes(encodedBytes: 19_714, codedPixels: 640 * 360,
                                                   patchRows: 24, patchColumns: 42, tubelets: 6)
         #expect(colors < maxima)
@@ -228,6 +228,17 @@ struct NemotronSuperVideoBindingTests {
                 continue
             }
         }
+    }
+
+    /// A body above the ingress bound leaves as `media_too_large` (413 at the
+    /// coordinator); the binding's other refusals stay `invalid_media`.
+    @Test func oversizeBodyIsMediaTooLarge() {
+        let tooLarge = ProviderLoop.sanitizedInferenceFailure(
+            from: SuperHTTPErrors.map(Binding.Failure.bodyTooLarge, media: true), phase: .request)
+        #expect(tooLarge.code == .mediaTooLarge && tooLarge.statusCode == 400, "\(tooLarge)")
+        let invalid = ProviderLoop.sanitizedInferenceFailure(
+            from: SuperHTTPErrors.map(Binding.Failure.invalidInput, media: true), phase: .request)
+        #expect(invalid.code == .invalidMedia && invalid.statusCode == 400, "\(invalid)")
     }
 
     /// Native feature failures name what went wrong, for video as for images.

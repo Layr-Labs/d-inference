@@ -14,6 +14,8 @@ import MLXVLM
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, unsupportedCapability, invalidInput, capacity, retainedFault
+        /// The encoded body exceeds `NemotronSuperServingPolicy.maximumEncodedBodyBytes`.
+        case bodyTooLarge
         /// The tower and projector produced a non-finite feature.
         case invalidFeatures
         /// The video tower returned rows of another shape, or EVS pruning
@@ -214,12 +216,14 @@ actor NemotronSuperLocalImageBinding {
         let featureBytes: Int
         var grids: [NemotronSuperImagePreprocessing.Grid] { images.map(\.grid) }
     }
-    /// Small local ingress ceiling, separate from per-raster decode admission.
+    /// Local ingress ceiling, separate from per-raster decode admission.
     /// Includes concurrent JSON/template/base64 copies and bounded metadata scratch.
-    /// A body or template outside the bounds is refused as invalid: no retry fits it.
+    /// No retry fits a body or template outside the bounds: a body above
+    /// `NemotronSuperServingPolicy.maximumEncodedBodyBytes` is refused as too
+    /// large, any other as invalid.
     static func encodedHeaderQuote(bodyBytes: Int, templateBytes: Int) throws -> UInt64 {
-        guard bodyBytes > 0, bodyBytes <= 8 * 1024 * 1024,
-              templateBytes > 0, templateBytes <= 1024 * 1024 else { throw Failure.invalidInput }
+        guard bodyBytes > 0, templateBytes > 0, templateBytes <= 1024 * 1024 else { throw Failure.invalidInput }
+        guard bodyBytes <= NemotronSuperServingPolicy.maximumEncodedBodyBytes else { throw Failure.bodyTooLarge }
         return UInt64(bodyBytes) * 32 + UInt64(templateBytes) * 4 + 16 * 1024 * 1024
     }
 

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1070,7 +1070,11 @@ end on the tiny installed fixture, checking its prompt length and one span per
 tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
 selects over the whole video, that cancelling or draining a decoding video
 returns its charge and that a malformed pruning rate fails the load
-before installing. `NemotronSuperVideoDecodeTests` covers the decoder's
+before installing. `NemotronSuperOpenRouterVideoTests` runs OpenRouter's two
+readiness clips (the SDK's `MiMoOpenRouter` resources, read through the source
+tree) through the body bound, request parsing, inspection, the pinned
+template's prompt, the media plan and every sampled frame's decode, then
+serves both on the tiny installed fixture. `NemotronSuperVideoDecodeTests` covers the decoder's
 refusals on synthesized clips (decoded-pixel budget, codec, second track,
 zero-duration frame), per-frame validation, the decode allowance, reader
 cancellation and the container type hint.

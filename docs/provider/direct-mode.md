@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -258,7 +258,8 @@ frame-timestamp label.
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
 | A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
 
 Image and video requests still refuse `tools` and `response_format`; formats outside the

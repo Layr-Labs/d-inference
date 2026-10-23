@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -125,9 +125,11 @@ frames and tower activation, its five-tubelet EVS scoring window at
 of every projected row) is then reserved; its maximum,
 `NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
 image's charge. As for images, a body over
-`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) returns the
-invalid-media 400, as does a video prompt over the context, and a charge the
-shared budget cannot hold returns the media-memory 503. The owner lock covers
+`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB, which holds one
+part at the shared 25 MiB inline-media cap as base64 and every body the
+provider's transports deliver) returns `media_too_large`, a video prompt over
+the context returns the invalid-media 400, and a charge the shared budget
+cannot hold returns the media-memory 503. The owner lock covers
 only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
@@ -537,8 +539,9 @@ keep speculating in the same steps. The image's media reservation (decode,
 normalization, features and the largest image's tower and projector bound) is
 taken from the shared budget before decoding and held until the request
 retires; one that does not fit is refused with 503 before anything is
-allocated. A body over 8 MiB, visual tokens beyond the context or a prompt
-that overflows it is the request's own fault: 400, never a retryable 503.
+allocated. A body over 40 MiB (`media_too_large`), visual tokens beyond the
+context or a prompt that overflows it is the request's own fault: 400, never a
+retryable 503.
 One image request runs at a time per owner, beside text requests; a
 second concurrent one gets 429 before any response starts. The Super model
 quantizes activations with deployment (SATFINITE) overflow semantics: an image

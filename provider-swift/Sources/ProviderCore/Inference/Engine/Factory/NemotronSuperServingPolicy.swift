@@ -361,7 +361,12 @@ enum NemotronSuperServingPolicy {
     /// Request limits of `NemotronSuperLocalImageBinding`: the encoded body
     /// its ingress quote admits, the images one body may carry, and the size
     /// of the only template the owner renders (`NemotronSuperPromptContract`).
-    static let maximumEncodedBodyBytes = 8 << 20
+    /// The body bound holds one part at the shared inline-media default
+    /// (`MediaIngest.maxMediaDecodedBytes`, 25 MiB decoded, 33.3 MiB as
+    /// base64) with the rest of its request, and any body the provider's
+    /// transports deliver (`localInferenceMaxUploadBytes`,
+    /// `CoordinatorClient.maxInboundMessageBytes`, both 32 MiB).
+    static let maximumEncodedBodyBytes = 40 << 20
     static let maximumImages = 16
     static let pinnedTemplateBytes = 12_927
 

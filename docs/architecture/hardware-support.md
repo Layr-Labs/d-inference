@@ -245,6 +245,12 @@ defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
     -- defaultActivationReserveBytes + minimumLoadKVBytes by default;
     -- measuredActivationFloorsBytes["gpt-oss-20b"] + minimumLoadKVBytes for a gpt-oss-20b-only serving set
 
+systemAvailable (SystemMemory.availableBytes, default `reclaimable` policy; pages × page size)
+    = max(free_count + inactive_count,                                            -- never stricter than before
+          (free_count − speculative_count) + external_page_count + purgeable_count)
+    -- the second measure counts page cache (speculative read-ahead once) and volatile
+    -- purgeable pages, never anonymous or compressor pages; `free-only` = free_count
+
 freeForLoadGb(total, systemAvailable, gpuActive, gpuCache, reserve, outstanding)
     mlxUsed   = gpuActive + gpuCache
     realFree  = min(total − mlxUsed, systemAvailable)

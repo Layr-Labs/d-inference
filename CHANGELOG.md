@@ -8,9 +8,96 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.0 — candidate (unpublished)
+## v0.10.1 — candidate (unpublished)
 
-Prepared on 2026-10-22; tagging and publication are separate steps.
+Prepared on 2026-10-23; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Run this release behind a coordinator that includes [darkbloom-platform#411](https://github.com/Layr-Labs/darkbloom-platform/pull/411). That coordinator refuses `logprobs` on GLM-5.3-Flash, MiMo V2.6 and Nemotron 3.5 Super with 400 before reservation unless the model's catalog row lists `logprobs`, and plans the GLM requests this release starts serving. Without it, a logprob request can reach a 0.10.0 GLM provider, which fails it with a 500 `generation_failure` that cools every provider of the model.
+- Do not add `logprobs` to the GLM-5.3-Flash, MiMo V2.6 or Nemotron 3.5 Super catalog rows for this release. Logprobs on these models are deferred, and the GLM-5.3-Flash groundwork in this release stays disabled.
+- A provider keeps its 0.10.0 behaviour until it updates. GLM-5.3-Flash refuses `strict` tools, JSON modes, forced tool choice, variable-frame-rate video and the newly accepted reasoning controls with 400, and drops returned `reasoning` text from history. Nemotron 3.5 Super refuses JSON formats with tools and media bodies above 8 MiB. Coordinators send forced tool choice only to providers that advertise it.
+- `libs/mlx-swift-lm` moves from `7bed8216` to `6148b6da` for GLM variable-frame-rate video and the GLM logprob groundwork. Only Swift sources change; `libs/mlx` and `libs/mlx-swift` are unchanged, so no Metal kernel source changes.
+- Page-cache accounting applies to every model. Load admission, KV budgets, cold-load capacity, `darkbloom status` and `darkbloom doctor` can count more memory as available than 0.10.0 did on a Mac that holds file cache, and never less.
+- New provider installations require macOS 27 or later. An existing installation can still reinstall or repair on an older macOS, with an upgrade notice.
+
+### GLM-5.3-Flash serves OpenRouter's returned-reasoning tool requests
+
+- Accept `strict` tool declarations on GLM-5.3-Flash instead of refusing the request with 400 `invalid_request`. GLM does not constrain decoding; every tool call is still validated against its declared schema before it is returned, so a non-conforming call fails the request.
+- Render reasoning returned on earlier assistant turns as OpenRouter's `reasoning` string or `reasoning_details` text entries in the template's history, exactly like `reasoning_content`; summary and encrypted entries are skipped. Previously those turns rendered an empty thinking block.
+- Read a returned tool call with empty-string `arguments` as a call without arguments (`{}`), as the other native families do.
+- Treat `reasoning: null`, null `reasoning` members, `include_reasoning: null` and `thinking: null` as unset, accept `reasoning.summary` levels (the full reasoning is returned), and accept the top-level `thinking` switch as a Boolean or as GLM's own `{"type": "enabled"|"disabled", "clear_thinking": …}` object.
+- Contradictory thinking switches, unknown `reasoning` members, `preserve_thinking` and hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`) are still refused.
+
+### GLM-5.3-Flash serves JSON mode, structured outputs and forced tool choice
+
+- Serve `response_format` `json_object` and `json_schema` on GLM-5.3-Flash text requests instead of refusing them with 400 `invalid_request`. GLM's native engine has no constrained decoding, so the format's instruction steers the model, reasoning streams as usual, and the answer is withheld until generation ends. Only a valid JSON value that satisfies the schema is returned, without markdown fences; anything else fails the request with 422 and no content.
+- Serve `tool_choice` `required` and a named function on GLM-5.3-Flash text requests, the way Qwen 3.5/3.8 and Nemotron do: the request's forcing instruction is rendered, the call is withheld until it parses and matches the declared schema, and anything else fails with 422 and nothing returned. Providers now advertise this for `glm-5.3-flash`, so the coordinator no longer refuses these requests with 400.
+- A JSON format combined with tools, a schema outside the supported subset, and image or video input with either mode are refused with 400.
+
+### GLM-5.3-Flash variable-frame-rate video
+
+- Serve GLM-5.3-Flash `video_url` clips with a variable frame rate instead of refusing them with 400 `invalid_media`. OpenRouter's `input-video-base64` readiness clip (QuickTime, 211 frames in 10.8 s) was refused this way. Like the reference loader, the processor now indexes frames in presentation order and times frame i at i / the track's average frame rate, then applies the unchanged 2 FPS sampler; constant-frame-rate clips sample exactly as before.
+
+### Faster GLM-5.3-Flash starts
+
+- The managed GLM load's own SHA-256 check of every manifest file is now the published weight hash. Coordinator and local loads no longer read all 182 GB again in a separate weight-hash pass before and after loading, saving about 50 s per start on an M5 Ultra. Every file is still verified against the catalog manifest before the model serves, and a changed file identity during the load still fails it.
+- A coordinator-mode start registers GLM's last fully verified hash while every weight file keeps its device, inode, size and modification and status-change times, instead of hashing 182 GB before the load reads them again, saving about 25 s more per restart. Any changed file is hashed in full. The record is `~/.darkbloom/verified-weights.json`, owner-only.
+- The load logs its phases: `GLM load glm-5.3-flash: all 42 manifest files SHA-256 verified before serving; auxiliary verification …, core verification …, tensors and construction …, total …`.
+
+### GLM-5.3-Flash GPU wired-memory limit guidance
+
+- `darkbloom doctor` adds a `glm wired limit` check when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac. It warns while macOS's GPU wired-memory limits are below the values the production hosts use, prints the exact `sudo sysctl -w iogpu.wired_limit_mb=245760 vm.global_user_wire_limit=261134011596 vm.user_wire_limit=261134011596` fix and a LaunchDaemon that reapplies it at boot, and passes with the current values once they are set. GLM plans about 247 GB of GPU memory at full KV there, while the macOS default allows about 222 GiB, so Metal command buffers can fail with "Insufficient Memory".
+- `darkbloom start` prints the same one-line fix when it would serve GLM below those limits. When a GLM load, preload, self-test or coordinator request fails with a Metal out-of-memory error, the provider logs the fix once per process and `darkbloom status` repeats it under a matching load error.
+- Advice only: the notice does not change memory admission, KV grants or capacity, and no command runs `sudo` for you.
+
+### Nemotron Super inline video body bound
+
+- Nemotron 3.5 Super now accepts media request bodies up to 40 MiB, enough for one part at the shared 25 MiB inline-media cap as base64 and every body the provider's transports deliver. The former 8 MiB bound refused linked videos larger than about 6 MB as invalid media once the coordinator inlined them, including OpenRouter's 6.9 MB readiness video.
+- A Super media body above the bound now fails as `media_too_large` instead of `invalid_media`.
+- Super's worst-case media charge for capacity quotes grows with the bound: 4.67 GiB for one image (was 3.62), 4.54 GiB for one video (was 3.49) and 25.6 GiB for sixteen images (was 24.5). On small KV grants the default prefix bank keeps that larger charge free and can be 512 MiB smaller.
+
+### Nemotron Super JSON response formats with tools
+
+- Nemotron 3.5 Super now serves a `json_object` or `json_schema` response format in a request that also declares tools, instead of refusing it with 400. Tool calls are returned as `tool_calls`; an answer without calls must be valid JSON for the format, or the request fails with 422. A required or named `tool_choice` still needs its call.
+
+### Typed refusals for unsupported logprobs on native engines
+
+- Refuse `logprobs` on MiMo V2.6, and token constraints on either native engine, with 400 `invalid_request` before any reservation. The engine's own refusal reached the coordinator as a 500 `generation_failure`, which counts as provider sickness: two such requests cooled every provider of the model and its requests without tools were shed as 429 "no provider … is available right now" for five minutes.
+- Add groundwork for GLM-5.3-Flash logprobs in its native engine. It is not enabled: a coordinator that includes darkbloom-platform#411 refuses `logprobs` on GLM-5.3-Flash with 400 until the model's catalog row lists the capability, and this release does not add it.
+
+### Page cache no longer blocks model loads
+
+- Count the file-backed page cache and volatile purgeable pages as available memory in load admission, KV budgets, cold-load capacity, `darkbloom status` and `darkbloom doctor`. Cached files left by `darkbloom models download` or weight hashing are dropped by macOS without compressing or swapping any process memory; they previously counted as used whenever they were active pages, so a 256 GB Mac reported 170.8 GB usable with about 250 GB of page cache and refused GLM-5.3-Flash's 185.4 GB cold load until `sudo purge`.
+- The available figure is the larger of the former free + inactive measure and free pages plus page cache, so it is never stricter than before. The page-cache measure counts no anonymous or compressed memory. `DARKBLOOM_MEMORY_AVAILABILITY=free-only` still counts free pages only.
+- Weight hashing and verification (startup registration, download and prefetch verification, revision publication) and the managed GLM load drop the files' cached pages after reading them. Their uncached reads never added pages, but pages already cached by the download's own writes stayed resident: about 250 GB after downloading GLM-5.3-Flash.
+
+### Many-file model download progress
+
+- Redraw the foreground model download display (`darkbloom models download` and the `darkbloom start` picker) in place as a compact block: one bar per file being transferred and a total row with files completed, bytes, rate and ETA. A model with more files than the terminal has rows, such as an 88-shard checkpoint, previously redrew below itself several times a second and scrolled without end.
+- Fit every row to the terminal width with aligned columns. Narrow windows shorten file names (keeping shard numbers), then drop the per-file rate, before dropping the bar; rows wider than an 80-column terminal previously wrapped and caused the same endless scrolling with only a few files.
+- Print each finished file once, as it completes, in aligned columns instead of listing every file again at the end. Output without a terminal no longer prints each file twice.
+- Time each file from when its transfer starts, and again after a fallback restart, so shards that waited in the queue no longer report a low rate and an inflated ETA.
+
+### Installer requires macOS 27 for new providers
+
+- The provider installer now stops a new install on macOS 26 or earlier before downloading anything, with a prompt to update macOS in System Settings › General › Software Update. A Mac that already has the CLI or a provider config can still reinstall or repair, with a notice to upgrade.
+
+### Console desktop sign-in approval
+
+- Approve Darkbloom Desktop sign-in codes on `console.darkbloom.dev/link?purpose=desktop_account`: the link page now sends the code's purpose (`desktop_account` or `provider`) with the approval, so desktop sign-in no longer fails with "authorization purpose does not match this code". Provider linking is unchanged. This ports the link page from darkbloom-platform#23 into the console that still serves `console.darkbloom.dev`.
+
+### Release notes without tag signatures
+
+- Publish provider release notes from the original tag annotation without its
+  SSH or PGP signature, preserving multiline paragraphs and blank lines. A signed
+  tag's signature block was included in the published notes (provider 0.9.20
+  shows it as encoded bullet points); it stays available from git as verification
+  data.
+
+## v0.10.0
+
+Published 2026-10-23 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)).
 
 ### Upgrade and rollout notes
 

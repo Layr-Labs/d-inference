@@ -174,6 +174,10 @@ only the shipped template is recognized and passes the load-time render check.
 `openRouterReasoningContentReturnRequestsAreServed` push OpenRouter's
 returned-reasoning tool turn through the coordinator and local HTTP paths to the
 rendered prompt, with each of its reasoning spellings and controls.
+`capturedOpenRouterToolRequestIsServed` and
+`capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
+`strict` weather-tool requests byte for byte (tool choice omitted, `auto` and
+`none`) and a five-step tool conversation built from them.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.

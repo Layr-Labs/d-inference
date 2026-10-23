@@ -805,6 +805,97 @@ struct GLM5NextPromptPolicyTests {
             == false)
     }
 
+    /// OpenRouter's captured tool-test requests, byte for byte as the platform
+    /// conformance fixtures hold them (`orIncidentOmitted` and `orIncidentAuto`
+    /// in `coordinator/tests/internal/conformance/incident_fixtures.go`).
+    private static let capturedOpenRouterToolOmitted = #"{"messages":[{"content":"What is the weather like in Boston, MA in fahrenheit?","role":"user"}],"reasoning":{"enabled":false},"stream":true,"tools":[{"function":{"description":"Get the current weather in a given location","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"},"strict":true},"type":"function"}]}"#
+    private static let capturedOpenRouterToolAuto = #"{"messages":[{"content":"What is the weather like in Boston, MA in fahrenheit?","role":"user"}],"reasoning":{"enabled":false},"stream":true,"tool_choice":"auto","tools":[{"function":{"description":"Get the current weather in a given location","name":"get_current_weather","parameters":{"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"},"strict":true},"type":"function"}]}"#
+
+    /// A captured body plus the routed `model` it lacks, as the platform
+    /// fixture adds it; `fields` replace top-level members.
+    private func capturedOpenRouterRequest(_ captured: String, replacing fields: [String: Any] = [:]) throws -> Data {
+        var body = try #require(JSONSerialization.jsonObject(with: Data(captured.utf8)) as? [String: Any])
+        body["model"] = "glm-5.3-flash"
+        body.merge(fields) { _, replacement in replacement }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Both paths, including the serving tool-stream handler, to the shipped
+    /// template. The captured requests turn thinking off.
+    private func renderedThinkingOffToolRequest(_ body: Data) throws -> [String] {
+        let (request, controls) = try requestAndControls(body)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        _ = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "glm5_next")
+        let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+        #expect(!evidence.invalid && evidence.disablesThinking && !evidence.requestsThinking)
+        let template = try shippedTemplate()
+        return try remoteAndLocalInputs(body).map { input in
+            #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+            return try render(input, with: template)
+        }
+    }
+
+    /// OpenRouter's `tool-choice-auto`, `tool-call-step-1` and `tool-choice-none`
+    /// shapes: its captured `strict` weather tool with `tool_choice` omitted,
+    /// `auto` and `none`. GLM refused each with `invalid_request`.
+    @Test(arguments: ["omitted", "auto", "none"])
+    func capturedOpenRouterToolRequestIsServed(toolChoice: String) throws {
+        #expect(sha(Data(Self.capturedOpenRouterToolOmitted.utf8))
+            == "f0f8f60c48d944fb9270c6facfd5cc0c5543fc37b48cce6ef847abe3be8f2150")
+        #expect(sha(Data(Self.capturedOpenRouterToolAuto.utf8))
+            == "d63598aad05a4e1dda12a82c119616c490de714f1a51328b39eb598b6229844b")
+        let body = try toolChoice == "omitted"
+            ? capturedOpenRouterRequest(Self.capturedOpenRouterToolOmitted)
+            : capturedOpenRouterRequest(Self.capturedOpenRouterToolAuto,
+                replacing: toolChoice == "none" ? ["tool_choice": "none"] : [:])
+        for rendered in try renderedThinkingOffToolRequest(body) {
+            #expect(rendered.hasSuffix("<|user|>What is the weather like in Boston, MA in fahrenheit?<|assistant|><think>"))
+            #expect(!rendered.contains("strict"))
+            if toolChoice == "none" {
+                #expect(!rendered.contains("get_current_weather"))
+                #expect(rendered.contains("Do not call any tool."))
+            } else {
+                // The declaration renders unchanged, closed schema included.
+                #expect(rendered.contains(#"""
+                    <tools>
+                    {"description": "Get the current weather in a given location", "name": "get_current_weather", "parameters": {"additionalProperties":false,"properties":{"location":{"description":"The city and state, e.g. San Francisco, CA","type":"string"},"unit":{"enum":["celsius","fahrenheit"],"type":"string"}},"required":["location","unit"],"type":"object"}}
+                    </tools>
+                    """#))
+            }
+        }
+    }
+
+    /// OpenRouter's `tool-call-step-5` shape: the captured `strict` tool after
+    /// five completed calls, two of which return their reasoning.
+    @Test func capturedOpenRouterToolServesAFiveStepConversation() throws {
+        var body = try #require(JSONSerialization.jsonObject(
+            with: capturedOpenRouterRequest(Self.capturedOpenRouterToolAuto)) as? [String: Any])
+        var messages = try #require(body["messages"] as? [[String: Any]])
+        let cities = ["Boston, MA", "Cambridge, MA", "Providence, RI", "Hartford, CT", "Portland, ME"]
+        for (step, city) in cities.enumerated() {
+            let id = "call_step_\(step + 1)"
+            var call: [String: Any] = [
+                "role": "assistant", "content": NSNull(),
+                "tool_calls": [["id": id, "type": "function", "function": [
+                    "name": "get_current_weather",
+                    "arguments": #"{"location":"\#(city)","unit":"fahrenheit"}"#,
+                ]]],
+            ]
+            if !step.isMultiple(of: 2) { call["reasoning"] = "Next: \(cities[step])." }
+            messages.append(call)
+            messages.append(["role": "tool", "tool_call_id": id,
+                             "content": #"{"temperature":\#(60 + step),"unit":"fahrenheit"}"#])
+        }
+        body["messages"] = messages
+        for rendered in try renderedThinkingOffToolRequest(JSONSerialization.data(withJSONObject: body)) {
+            #expect(rendered.components(separatedBy: "<tool_call>get_current_weather").count == 6)
+            #expect(rendered.components(separatedBy: "<|observation|><tool_response>").count == 6)
+            #expect(rendered.contains("<|assistant|><think>Next: Cambridge, MA.</think><tool_call>"))
+            #expect(rendered.contains("<|assistant|><think>Next: Hartford, CT.</think><tool_call>"))
+            #expect(rendered.hasSuffix(#"<tool_response>{"temperature":64,"unit":"fahrenheit"}</tool_response><|assistant|><think>"#))
+        }
+    }
+
     @Test func exactLargeSchemaNumbersArePreservedOrRejectedBeforeRounding() throws {
         let exact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[9223372036854775807]}}}}}]}"#.utf8)
         let input = try normalized(exact)

@@ -17,9 +17,9 @@ import Foundation
 /// any request whose KV would push past the 90% unified-memory cap — net of the
 /// activation reserve and clamped to the selected OS memory-availability policy.
 /// This is admission accounting, not a guarantee against OS memory pressure:
-/// foreign allocations can race the sample, and page cache credited by the
-/// default policy may hold files other processes still read. Shared hosts can
-/// select free-only sampling through `SystemMemory`.
+/// foreign allocations can race the sample, and inactive pages credited by the
+/// default policy may require compression. Shared hosts can select free-only
+/// sampling through `SystemMemory`.
 public enum ModelLoadAdmission {
     /// Default headroom (GB) reserved above the weights at load time. Derived
     /// from `UnifiedMemoryCap.loadHeadroomBytes()` (activation reserve + minimum

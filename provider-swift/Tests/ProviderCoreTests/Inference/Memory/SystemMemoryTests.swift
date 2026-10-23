@@ -43,52 +43,78 @@ private func hostOneSample(anonymousFileCache: Bool = false) -> vm_statistics64 
         fileBackedPages: anonymousFileCache ? 0 : active + inactive - pages(gb: 12.2))
 }
 
+/// An M3 Ultra 256 GB shared with other agents' builds: much inactive
+/// anonymous memory and little page cache. `darkbloom doctor` reported 93.0 GB
+/// usable from the former measure and 77.6 GB from the page-cache measure
+/// alone; these are the probe's counters at the former measure's sample.
+private func busySharedMacSample() -> vm_statistics64 {
+    machVMStatistics(
+        freePages: 4_355_202 - 979_511, activePages: 3_998_965, inactivePages: 3_417_777,
+        speculativePages: 979_511, wiredPages: 5_045_847, fileBackedPages: 3_171_130,
+        purgeablePages: 215_327, compressorPages: 61_142)
+}
+
 /// `darkbloom status`: "178.9 GB model + 6.5 GB serving reserve = 185.4 GB
 /// needed". The load reserve is the 256 GiB machine's 90 % cap hold-back.
-private func hostOneLoadUsableGb(systemAvailableBytes: UInt64) -> Double {
+private func usableGbOn256GiBMac(availablePages: UInt64) -> Double {
     let total = 256 * cohostGiB
     return ModelLoadAdmission.freeForLoadGb(
-        totalBytes: total, systemAvailableBytes: systemAvailableBytes,
+        totalBytes: total, systemAvailableBytes: availablePages * machPageSize,
         gpuActiveBytes: 0, gpuCacheBytes: 0,
         reserveBytes: UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: 4 * cohostGiB))
 }
 
+private func admitsGLMColdLoad(availableBytes: UInt64) -> Bool {
+    ModelLoadAdmission.canLoad(
+        weightsGb: 178.9, headroomGb: 6.5, totalBytes: 256 * cohostGiB,
+        systemAvailableBytes: availableBytes, gpuActiveBytes: 0, gpuCacheBytes: 0,
+        reserveBytes: UnifiedMemoryCap.loadReserveBytes(
+            physicalBytes: 256 * cohostGiB, configReserveBytes: 4 * cohostGiB))
+}
+
+private func reclaimableAvailablePages(_ stats: vm_statistics64) throws -> UInt64 {
+    try #require(SystemMemory.availableBytes(
+        stats: stats, pageSize: machPageSize, policy: .reclaimable)) / machPageSize
+}
+
 @Test func hostOnePageCacheNoLongerBlocksTheGLMColdLoad() throws {
     let sample = hostOneSample()
-    // The former policy counted free + inactive pages only: 170.8 GB was
-    // reported usable now against 185.4 GB needed.
-    let freeAndInactive = (UInt64(sample.free_count) + UInt64(sample.inactive_count)) * machPageSize
-    let formerUsable = hostOneLoadUsableGb(systemAvailableBytes: freeAndInactive)
+    // The former free + inactive measure reported 170.8 GB usable now against
+    // 185.4 GB needed.
+    let formerUsable = usableGbOn256GiBMac(availablePages: SystemMemory.freeAndInactivePages(sample))
     #expect(formerUsable > 170 && formerUsable < 172)
     #expect(formerUsable < 178.9 + 6.5)
 
-    let available = try #require(SystemMemory.availableBytes(
-        stats: sample, pageSize: machPageSize, policy: .reclaimable))
-    #expect(available == (pages(gb: 2.4) + pages(gb: 55.7) + pages(gb: 208.7) - pages(gb: 12.2))
-        * machPageSize)
-    let usable = hostOneLoadUsableGb(systemAvailableBytes: available)
-    #expect(usable >= 178.9 + 6.5)
-    #expect(ModelLoadAdmission.canLoad(
-        weightsGb: 178.9, headroomGb: 6.5, totalBytes: 256 * cohostGiB,
-        systemAvailableBytes: available, gpuActiveBytes: 0, gpuCacheBytes: 0,
-        reserveBytes: UnifiedMemoryCap.loadReserveBytes(
-            physicalBytes: 256 * cohostGiB, configReserveBytes: 4 * cohostGiB)))
+    let pageCache = SystemMemory.freeAndPageCachePages(sample)
+    #expect(pageCache == pages(gb: 2.4) + pages(gb: 55.7) + pages(gb: 208.7) - pages(gb: 12.2))
+    let available = try reclaimableAvailablePages(sample)
+    #expect(available == pageCache)
+    #expect(usableGbOn256GiBMac(availablePages: available) >= 178.9 + 6.5)
+    #expect(admitsGLMColdLoad(availableBytes: available * machPageSize))
+}
+
+@Test func busySharedMacIsNeverStricterThanBefore() throws {
+    let sample = busySharedMacSample()
+    let formerUsable = usableGbOn256GiBMac(availablePages: SystemMemory.freeAndInactivePages(sample))
+    let pageCacheUsable = usableGbOn256GiBMac(
+        availablePages: SystemMemory.freeAndPageCachePages(sample))
+    #expect(abs(formerUsable - 93.0) < 0.05)
+    #expect(abs(pageCacheUsable - 77.6) < 0.05)
+    let available = try reclaimableAvailablePages(sample)
+    #expect(usableGbOn256GiBMac(availablePages: available) == formerUsable)
 }
 
 @Test func anonymousMemoryStillRefusesTheGLMColdLoad() throws {
     // The same page counts held by process memory instead of page cache:
-    // reclaiming it means compression or swap, so it earns no credit even
-    // though most of it is inactive.
+    // reclaiming it means compression or swap, so the page-cache measure gives
+    // it no credit. Its inactive part still counts through the former measure,
+    // exactly as before, and the load stays refused.
     let sample = hostOneSample(anonymousFileCache: true)
-    let available = try #require(SystemMemory.availableBytes(
-        stats: sample, pageSize: machPageSize, policy: .reclaimable))
-    #expect(available == pages(gb: 2.4) * machPageSize)
-    #expect(!ModelLoadAdmission.canLoad(
-        weightsGb: 178.9, headroomGb: 6.5, totalBytes: 256 * cohostGiB,
-        systemAvailableBytes: available, gpuActiveBytes: 0, gpuCacheBytes: 0,
-        reserveBytes: UnifiedMemoryCap.loadReserveBytes(
-            physicalBytes: 256 * cohostGiB, configReserveBytes: 4 * cohostGiB)))
+    #expect(SystemMemory.freeAndPageCachePages(sample) == pages(gb: 2.4))
+    let available = try reclaimableAvailablePages(sample)
+    #expect(available == SystemMemory.freeAndInactivePages(sample))
+    #expect(!admitsGLMColdLoad(availableBytes: available * machPageSize))
 }
 
 @Test func compressedAndWiredMemoryEarnNoCredit() throws {
@@ -98,20 +124,42 @@ private func hostOneLoadUsableGb(systemAvailableBytes: UInt64) -> Double {
     pressured.compressor_page_count = 400_000
     pressured.wire_count = 900_000
     pressured.total_uncompressed_pages_in_compressor = 1_200_000
-    let expected = (1_000 + 5_000) * machPageSize
-    #expect(SystemMemory.availableBytes(stats: base, pageSize: machPageSize, policy: .reclaimable)
-        == expected)
-    #expect(SystemMemory.availableBytes(stats: pressured, pageSize: machPageSize, policy: .reclaimable)
-        == expected)
+    for stats in [base, pressured] {
+        #expect(SystemMemory.freeAndPageCachePages(stats) == 1_000 + 5_000)
+        #expect(SystemMemory.freeAndInactivePages(stats) == 1_000 + 6_000)
+        let available = try reclaimableAvailablePages(stats)
+        #expect(available == 1_000 + 6_000)
+    }
 }
 
-@Test func reclaimableCountsPageCacheAndPurgeablePagesOnce() {
+@Test func reclaimableIsTheLargerMeasureAndNeverMore() throws {
+    let samples = [
+        hostOneSample(), hostOneSample(anonymousFileCache: true), busySharedMacSample(),
+        machVMStatistics(freePages: 900, fileBackedPages: 0),
+        machVMStatistics(freePages: 0, activePages: 700, inactivePages: 300, fileBackedPages: 0),
+        machVMStatistics(freePages: 0, activePages: 700, inactivePages: 300, fileBackedPages: 1_000),
+        machVMStatistics(
+            freePages: 5, activePages: 20, inactivePages: 30, speculativePages: 9,
+            fileBackedPages: 40, purgeablePages: 3, compressorPages: 70),
+    ]
+    for sample in samples {
+        let former = SystemMemory.freeAndInactivePages(sample)
+        let pageCache = SystemMemory.freeAndPageCachePages(sample)
+        let available = try reclaimableAvailablePages(sample)
+        #expect(available >= former && available >= pageCache)
+        #expect(available == max(former, pageCache))
+    }
+}
+
+@Test func reclaimableCountsPageCacheAndPurgeablePagesOnce() throws {
     // Speculative read-ahead pages are inside both free_count and the
     // file-backed count; they are counted once. Volatile purgeable pages are
     // anonymous but discarded without compression.
     let stats = machVMStatistics(
         freePages: 10, activePages: 40, inactivePages: 50, speculativePages: 7,
         fileBackedPages: 60, purgeablePages: 5)
+    #expect(SystemMemory.freeAndPageCachePages(stats) == 10 + 60 + 5)
+    #expect(SystemMemory.freeAndInactivePages(stats) == 10 + 7 + 50)
     for pageSize: UInt64 in [4096, 16384] {
         #expect(SystemMemory.availableBytes(stats: stats, pageSize: pageSize, policy: .reclaimable)
             == (10 + 60 + 5) * pageSize)

@@ -171,13 +171,14 @@ for byte, including list-shaped tool results that reach each rewritten `[0]`
 access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
 only the shipped template is recognized and passes the load-time render check.
 `returnedAssistantReasoningRendersLikeReasoningContent` and
-`openRouterReasoningContentReturnRequestsAreServed` push OpenRouter's
+`openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
 returned-reasoning tool turn through the coordinator and local HTTP paths to the
 rendered prompt, with each of its reasoning spellings and controls.
 `capturedOpenRouterToolRequestIsServed` and
 `capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
-`strict` weather-tool requests byte for byte (tool choice omitted, `auto` and
-`none`) and a five-step tool conversation built from them.
+`strict` weather-tool requests, held byte for byte and hash-checked, with tool
+choice omitted, `auto` and `none`, and a five-step tool conversation built from
+them.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.

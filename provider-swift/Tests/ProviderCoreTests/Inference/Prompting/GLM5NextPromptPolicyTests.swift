@@ -645,11 +645,11 @@ struct GLM5NextPromptPolicyTests {
     private static let returnedThought = "Boston needs the weather tool; call it in fahrenheit."
 
     /// OpenRouter's returned-reasoning turn: the weather tool its tests
-    /// declare (closed schema, `strict` when asked), an assistant call carrying
-    /// its reasoning, and the tool result. `controls` is a JSON object merged
-    /// into the request.
+    /// declare (closed schema, `strict` when asked), an assistant call with
+    /// the `assistant` fields (its reasoning) merged in, and the tool result.
+    /// `controls` is a JSON object merged into the request.
     private func returnedReasoningConversation(
-        assistant reasoning: [String: Any], controls: String = "{}", strict: Bool = false
+        assistant fields: [String: Any], controls: String = "{}", strict: Bool = false
     ) throws -> Data {
         var assistant: [String: Any] = [
             "role": "assistant", "content": "",
@@ -659,7 +659,7 @@ struct GLM5NextPromptPolicyTests {
                              "arguments": #"{"location":"Boston, MA","unit":"fahrenheit"}"#],
             ]],
         ]
-        assistant.merge(reasoning) { _, added in added }
+        assistant.merge(fields) { _, added in added }
         var function: [String: Any] = [
             "name": "get_current_weather", "description": "Get the current weather in a given location",
             "parameters": [
@@ -764,7 +764,6 @@ struct GLM5NextPromptPolicyTests {
             assistant: ["reasoning_content": Self.returnedThought], controls: controls, strict: strict)
         let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
         #expect(!evidence.invalid && !evidence.disablesThinking && !evidence.excludesReasoning)
-        _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
         for input in try remoteAndLocalInputs(body) {
             #expect(input.additionalContext?["enable_thinking"] == nil)
             #expect(input.additionalContext?["clear_thinking"] as? Bool == false)
@@ -823,7 +822,7 @@ struct GLM5NextPromptPolicyTests {
     /// Both paths, including the serving tool-stream handler, to the shipped
     /// template. The captured requests turn thinking off.
     private func renderedThinkingOffToolRequest(_ body: Data) throws -> [String] {
-        let (request, controls) = try requestAndControls(body)
+        let (request, _) = try requestAndControls(body)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
         _ = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "glm5_next")
         let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)

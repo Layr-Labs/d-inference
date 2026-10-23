@@ -875,7 +875,7 @@ The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-na
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
 (`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
-(`GLM5NextPromptPolicy.RawControls`, `returnedReasoning`), and serves `strict`
+(`GLM5NextPromptPolicy.RawControls.returnedReasoning`), and serves `strict`
 tools by validating each `auto` call against its schema before exposure
 (`ToolConstraintValidation.validate`), not by constraining decoding.
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in

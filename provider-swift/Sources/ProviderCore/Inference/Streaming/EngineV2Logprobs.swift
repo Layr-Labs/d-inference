@@ -24,10 +24,10 @@
 // before encryption. Ordering is safe because the pump appends BEFORE
 // yielding the text chunk that produced the entries.
 //
-// Scope: the coordinator serving path only. The standalone `--local` HTTP
-// path serves frames inside the upstream Hummingbird router (no provider
-// seam after SSE encoding), so it does not emit logprobs — same visible
-// behavior remains no logprobs there.
+// Scope: the coordinator serving path, and local chat requests to a raw-body
+// owner (Nemotron Super), whose frames and JSON pass through the provider's
+// `LocalChatUploadResponder`. Other local models are served by the upstream
+// service with no provider seam after SSE encoding, so they emit none.
 //
 // KNOWN DEVIATIONS from OpenAI semantics: entries are emitted for EVERY
 // sampled token, so when a

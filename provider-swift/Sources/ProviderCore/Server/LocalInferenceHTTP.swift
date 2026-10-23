@@ -74,7 +74,8 @@ func makeLocalInferenceApplication(
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
     modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
     nemotronSuperImageHTTP: NemotronSuperLocalImageHTTP? = nil,
-    managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest) -> (any MLXServerEngine)?)? = nil
+    managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
+        -> (any MLXServerEngine)?)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -123,10 +124,10 @@ func makeLocalInferenceApplication(
         serviceForTemplateControls: serviceForTemplateControls,
         reasoningParserFor: reasoningParserFor,
         responseConversations: LocalResponseConversationStore(),
-        serviceForRawChat: { body, request in
+        serviceForRawChat: { body, request, logprobs in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
-                responseStore: responseStore, metrics: metrics) { return service }
-            return managedSuperEngine?(body, request).map {
+                responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }
+            return managedSuperEngine?(body, request, logprobs).map {
                 MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
             }
         })

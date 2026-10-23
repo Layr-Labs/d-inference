@@ -877,10 +877,11 @@ extension ProviderLoop {
                 // Text prefix reuse is partitioned by the authenticated scope
                 // and off without one; it emits no cache receipts or usage.
                 // Schema metadata passed the protocol check above, so it is
-                // trusted as on the generic engine.
+                // trusted as on the generic engine. Logprobs leave on the
+                // same channel the frames loop splices.
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
-                    trustsSchemaMetadata: true)
+                    trustsSchemaMetadata: true, logprobs: logprobsChannel)
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in

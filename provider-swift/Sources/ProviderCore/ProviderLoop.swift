@@ -362,7 +362,9 @@ public actor ProviderLoop {
     /// continuously observed.
     internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()
     internal var transitionWatchdog = TransitionWatchdog()
-    /// The operation the watchdog cancelled; it fails as `transition_stalled`.
+    /// The operation the watchdog cancelled. It fails as `transition_stalled`
+    /// even when an unload or load it was awaiting completes afterwards: it
+    /// then records no lease or placement, and completed steps stay done.
     internal var autopilotStalledCommandId: String?
     /// The watchdog asked the startup preload to stop before its next model.
     internal var startupPreloadStopRequested = false

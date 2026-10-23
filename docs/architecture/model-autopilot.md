@@ -67,7 +67,7 @@ each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`):
 
 | Transition | Bound | On stall |
 |---|---|---|
-| `autopilot_operation` | 600 s | Cancel the operation; it fails as `transition_stalled` |
+| `autopilot_operation` | 600 s | Cancel the operation; it fails as `transition_stalled`, records no lease or placement, and keeps any unload or load that completed after the cancellation |
 | `startup_preload` (per candidate) | 600 s | Stop the driver before its next candidate |
 | `preload` (per coordinator `load_model`) | 600 s | Answer `failed` with `transition_stalled` and stop tracking the task |
 | `model_loading`, `model_advertisement`, `model_switch` | 600 s | Report only |

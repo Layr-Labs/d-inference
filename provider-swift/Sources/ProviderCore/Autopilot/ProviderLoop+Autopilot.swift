@@ -210,13 +210,18 @@ extension ProviderLoop {
                     }
                 }
             }
+            // Cancellation is cooperative: an unload or a load past its slot
+            // install completes even after the watchdog cancelled the
+            // operation. Recheck before reporting success or recording a
+            // lease or placement, so a cancelled operation never succeeds.
+            try Task.checkCancellation()
             if let target = command.loadModelId {
                 let loadStart = ContinuousClock.now
                 defer { autopilotLastLoadMs = (ContinuousClock.now - loadStart).autopilotMilliseconds }
-                try Task.checkCancellation()
                 try await prepareAutopilotTarget(command)
                 try await ensureModelLoaded(modelId: target, allowEviction: false,
                     autopilotCommandId: command.commandId)
+                try Task.checkCancellation()
                 guard modelSlots[target] != nil, !modelsUnloading.contains(target),
                       advertisedModels[target] != nil else { throw AutopilotFailure("load_did_not_settle") }
                 autopilotLeaseUntil[target] = .now.advanced(by: .seconds(command.leaseSeconds))

@@ -396,6 +396,29 @@ first, and a request for the loading model when a second copy would not fit.
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
 
+## Desktop Control And Frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+Run `npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency
+while compiling Swift. `desktop-app/tests/previewRuntime.test.ts` exercises
+local-preview process startup, duplicate-start suppression, shutdown, persistent
+state, startup failure, and signature rejection using isolated executable
+fixtures; `desktop-app/tests/previewSigning.test.ts` covers propagation of the
+exact certificate fingerprint when electron-builder supplies its display name.
+Check the signed packaged app separately using the
+[desktop preview procedure](desktop-app.md#signed-local-preview).
+
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog
+(`scripts/test-desktop-api.py`). It checks that release reads share the existing
+latest-release API, earnings use the existing ledger window parameter, a
+credential change rejects an in-flight private response, authenticated insights
+are relayed, decimal strings are preserved, and account-session revisions change.
+The fixture never starts a serving provider or changes its credentials.
+`DesktopControlTests` and the `DeviceCodeLogin` suite cover native authentication
+and account separation. Activity and earnings checks are described in the
+[desktop verification guide](desktop-app.md#verify).
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and

@@ -44,6 +44,7 @@ extension ProviderLoop {
         }
         let priorFingerprint = modelHashFingerprints[modelId]
         let priorHash = SSDPrefixCacheFactory.verifiedWeightHash(liveModelHashes[modelId])
+        let hasher = loadWeightHasher
         let refresh = await Task.detached(priority: .utility) {
             () -> WeightHashSnapshot in
             let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
@@ -56,8 +57,7 @@ extension ProviderLoop {
             }
             return WeightHashSnapshot(
                 fingerprint: fingerprint,
-                hash: SSDPrefixCacheFactory.verifiedWeightHash(
-                    WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)),
+                hash: SSDPrefixCacheFactory.verifiedWeightHash(hasher(modelPath, modelId)),
                 recomputed: true)
         }.value
         try Task.checkCancellation()
@@ -73,9 +73,9 @@ extension ProviderLoop {
         modelPath: URL,
         fingerprint: String? = nil
     ) async throws -> WeightHashSnapshot {
+        let hasher = loadWeightHasher
         let hash = await Task.detached(priority: .utility) {
-            SSDPrefixCacheFactory.verifiedWeightHash(
-                WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId))
+            SSDPrefixCacheFactory.verifiedWeightHash(hasher(modelPath, modelId))
         }.value
         try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
@@ -539,21 +539,28 @@ extension ProviderLoop {
             // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
-            // start. (See `captureWeightHash` for the full rationale.)
+            // start. (See `captureWeightHash` for the full rationale.) The
+            // managed GLM load instead SHA-256-verifies every manifest file
+            // itself before serving; its verified digest replaces both
+            // bracketing passes (`verifiedGLM5NextWeightHash`).
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
             let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
-            let preLoadHash = try await captureWeightHash(
-                modelId: modelId,
-                modelPath: modelPath,
-                requireFreshCryptographicHash: artifactIdentityRequired)
-            if !artifactIdentityRequired {
-                await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
-            }
+            var preLoadHash: WeightHashSnapshot?
+            var glmIdentitiesBeforeLoad: [VerifiedWeightHashStore.FileIdentity]?
             if let glmPlan {
-                try Self.requireGLM5NextLoadedArtifact(hash: preLoadHash.hash, plan: glmPlan)
+                glmIdentitiesBeforeLoad = VerifiedWeightHashStore.fileIdentities(snapshotDir: modelPath)
                 try glmPlan.weights.recheck()
+            } else {
+                let observed = try await captureWeightHash(
+                    modelId: modelId,
+                    modelPath: modelPath,
+                    requireFreshCryptographicHash: artifactIdentityRequired)
+                if !artifactIdentityRequired {
+                    await publishWeightHash(modelId: modelId, snapshot: observed)
+                }
+                preLoadHash = observed
             }
 
             if let beforeModelLoad {
@@ -581,11 +588,13 @@ extension ProviderLoop {
             // weights alive past `release()`.
             try checkAutopilotLoadOwnership(autopilotCommandId)
             let newcomer: EngineV2NewcomerBox
+            var glmLoad: GLM5NextManagedLoad?
             if let glmPlan, let pendingLoad {
-                let glmLoad = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
+                let load = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
                     permit: pendingLoad, artifactOwnership: glmOwnership)
+                glmLoad = load
                 newcomer = EngineV2NewcomerBox(try await ModelContainerLoading.loadServingContainer(
-                    from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
+                    from: modelPath, modelID: modelId, nativeGLM5Load: load))
                 glmNewcomer = newcomer
             } else {
                 newcomer = EngineV2NewcomerBox(try await loadModelContainer(
@@ -603,14 +612,20 @@ extension ProviderLoop {
             // slot installation.
             let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
-            if artifactIdentityRequired {
+            if let glmPlan, let glmLoad {
+                let verified = try await verifiedGLM5NextWeightHash(load: glmLoad, plan: glmPlan, modelPath: modelPath)
+                let verifiedArtifact = try await finalizeReusableSSDLoad(
+                    modelId: modelId, preLoad: verified, postLoad: verified, newcomer: newcomer)
+                recordVerifiedGLM5NextWeightHash(
+                    modelId: modelId, modelPath: modelPath, verified: verified,
+                    identitiesBeforeLoad: glmIdentitiesBeforeLoad)
+                modelArtifactSHA256 = verifiedArtifact
+                cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
+            } else if artifactIdentityRequired, let preLoadHash {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                if let glmPlan {
-                    try Self.requireGLM5NextLoadedArtifact(hash: postLoadHash.hash, plan: glmPlan)
-                }
                 let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
@@ -618,7 +633,7 @@ extension ProviderLoop {
                     newcomer: newcomer)
                 modelArtifactSHA256 = verifiedArtifact
                 cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
-            } else {
+            } else if let preLoadHash {
                 var loadedArtifactHash = preLoadHash.hash
                 let postLoadFingerprint = await Task.detached(priority: .utility) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
@@ -638,6 +653,9 @@ extension ProviderLoop {
                 }
                 modelArtifactSHA256 = loadedArtifactHash
                 cacheEligibleWeightHash = nil
+            } else {
+                // A GLM plan always runs the managed load above.
+                throw GLM5NextManagedLoadError.managedLoadRequired
             }
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no

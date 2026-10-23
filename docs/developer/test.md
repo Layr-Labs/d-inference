@@ -127,6 +127,21 @@ native engines that do not capture logprobs (MiMo). The pure
 `GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
 the KV rate derived from the pinned architecture evidence.
 
+The same flag runs `verifiedDigestExistsOnlyAfterEveryManifestFileVerified`:
+the load reports the manifest aggregate only after every file verified, equal to
+a `WeightHasher` pass, and a same-size corrupted shard leaves it unset. With
+`DARKBLOOM_TEST_GLM5_PROTECTED_FACTORY=1`, `GLM5NextProviderLoopTests` loads
+through `ProviderLoop.ensureModelLoaded` and checks that no load-time
+`WeightHasher` pass runs, the live hash is the aggregate, and the
+`VerifiedWeightHashStore` record matches the files. `VerifiedWeightHashStoreTests`
+and `RegistrationWeightHashTests` need no flag. `scripts/run-provider-tests.sh`
+points `DARKBLOOM_VERIFIED_WEIGHTS_FILE` at its isolated state directory.
+
+`scripts/benchmarks/glm_load_timeline.py` turns a provider log into a phase
+timeline (weight-hash passes, the GLM load's verification and tensor phases,
+shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
+test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
+
 The retained-fault tests deliberately poison their process and must run **one
 selector per fresh process**, never as flags on the full suite:
 

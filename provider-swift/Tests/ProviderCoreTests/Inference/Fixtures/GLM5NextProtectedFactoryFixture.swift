@@ -108,6 +108,8 @@ final class GLM5NextProtectedFactoryFixture: @unchecked Sendable {
             "<unk>": 0, "<s>": 1, "</s>": 2, "x": 3,
             "<|image|>": 154854, "<|video|>": 154855, "<|begin_of_image|>": 154830,
             "<|end_of_image|>": 154831, "<|begin_of_video|>": 154832, "<|end_of_video|>": 154833,
+            // The serving tokenizer requires both atomic thinking tokens.
+            "<think>": 154841, "</think>": 154842,
         ]
         let template = chatTemplate
             ?? "{% for message in messages %}{{ message['content'] }}{% endfor %}x"

@@ -63,7 +63,13 @@ status carries the first reason as `detail`, and consented snapshots report the
 reasons and their age ([protocol](../reference/protocol-messages.md#model_autopilot-state)).
 
 `superviseTransitions` runs on the capacity tick while consent is saved. It ages
-each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`):
+each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`).
+Each load, startup candidate, advertisement and model switch is its own
+occurrence (`TransitionGenerations`), so a retry that starts between two ticks
+does not inherit the previous age. The capacity monitor starts only after the
+startup preload gate, but a startup candidate is aged from when it began
+(`markStartupPreloadReached`): one that has already outlived its bound stalls at
+the first observation. The watchdog never runs during the gate itself.
 
 | Transition | Bound | On stall |
 |---|---|---|

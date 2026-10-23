@@ -304,6 +304,7 @@ extension ProviderLoop {
         }
         startupPreloadTask = nil
         startupPreloadStopRequested = false
+        startupPreloadCandidate = nil
         writeDaemonState()
     }
 
@@ -317,6 +318,8 @@ extension ProviderLoop {
         if let index = startupPreloadPendingModels.firstIndex(of: modelID), index > 0 {
             startupPreloadPendingModels.removeFirst(index)
         }
+        startupPreloadCandidate = (modelID, .now)
+        transitionGenerations.begin(.startupPreload, subject: modelID)
         writeDaemonState()
     }
 

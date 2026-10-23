@@ -66,6 +66,7 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed("autopilot_activation_reserve")
         }
         try checkAutopilotLoadOwnership(command.commandId)
+        beginModelAdvertisementOccurrence(target)
         pendingAdvertise.insert(target)
         await pushActivationReserve(reserve)
         do {

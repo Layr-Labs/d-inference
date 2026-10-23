@@ -17,7 +17,8 @@ struct AutopilotPlacementFixture {
 
     static func make(consent: Bool = true, resident: [String] = all, maxModelSlots: UInt64 = 4,
                      weightsBytes: Int = 1 << 30, kvBudget: GlobalKVCacheBudget? = nil,
-                     configure: (inout BackendSettings) -> Void = { _ in }) async throws -> AutopilotPlacementFixture {
+                     configure: (inout BackendSettings) -> Void = { _ in },
+                     beforeModelLoad: (@Sendable (String) async -> Void)? = nil) async throws -> AutopilotPlacementFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("autopilot-placement-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -35,7 +36,7 @@ struct AutopilotPlacementFixture {
                     backend: backend,
                     coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
                 autopilotInventory: [model(inventory), model(spare)]),
-            attestationSigner: nil,
+            attestationSigner: nil, beforeModelLoad: beforeModelLoad,
             kvBudgetForTesting: kvBudget ?? ScriptedProviderMemory.budget(modelIDs: all))
         await loop.setDaemonStateFileForTesting(root.appendingPathComponent("daemon-state.json"))
         await loop.setLoadedModelsPersistenceEnabledForTesting(false)

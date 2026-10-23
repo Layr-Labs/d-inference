@@ -394,6 +394,7 @@ extension ProviderLoop {
         // Super's own slot state refuses its load before either eviction below.
         if managedSuper { try refuseNemotronSuperReload(modelId) }
         isLoadingAny = true
+        transitionGenerations.begin(.modelLoading)
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         var retainGLMActivity = false
         defer { if !retainGLMActivity { deviceActivity.finish() } }
@@ -430,6 +431,7 @@ extension ProviderLoop {
         // The generation handle survives every load phase and catch cleanup.
         let pendingLoadID = "pending-load:\(modelId)"
         var pendingLoad: PendingModelLoadLease?
+        transitionGenerations.begin(.modelLoading, subject: modelId)
         modelsLoading.insert(modelId)
         // The insert happens AFTER the specDecPreparation suspension above —
         // a hard swap during that await can have dropped this model from

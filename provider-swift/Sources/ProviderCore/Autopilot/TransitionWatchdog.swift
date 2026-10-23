@@ -5,10 +5,12 @@ import Foundation
 struct ContinuityClock<Key: Hashable & Sendable, Stamp: Sendable>: Sendable {
     private var firstSeen: [Key: Stamp] = [:]
 
-    mutating func observe(_ keys: some Sequence<Key>, at stamp: Stamp) {
+    /// `began` dates a key first seen now from when its owner recorded that
+    /// it started, rather than from this observation.
+    mutating func observe(_ keys: some Sequence<Key>, at stamp: Stamp, began: [Key: Stamp] = [:]) {
         let present = Set(keys)
         firstSeen = firstSeen.filter { present.contains($0.key) }
-        for key in present where firstSeen[key] == nil { firstSeen[key] = stamp }
+        for key in present where firstSeen[key] == nil { firstSeen[key] = began[key] ?? stamp }
     }
 
     func since(_ key: Key) -> Stamp? { firstSeen[key] }
@@ -25,6 +27,29 @@ extension ModelAutopilotTransition {
         case .reslice, .reconnectAfterRetirement:
             return .seconds(300)
         }
+    }
+}
+
+/// Monotonic generations stamped when a supervised transition begins for a
+/// subject. A retry of the same model that starts between two observations
+/// is then a new occurrence, never one that inherits the previous age.
+struct TransitionGenerations: Sendable {
+    private struct Key: Hashable, Sendable {
+        let transition: ModelAutopilotTransition
+        let subject: String
+    }
+
+    private var counter: UInt64 = 0
+    private var stamps: [Key: UInt64] = [:]
+
+    mutating func begin(_ transition: ModelAutopilotTransition, subject: String = "") {
+        counter &+= 1
+        stamps[Key(transition: transition, subject: subject)] = counter
+    }
+
+    /// "" before the first `begin`, as for a transition that has none.
+    func generation(of transition: ModelAutopilotTransition, subject: String = "") -> String {
+        stamps[Key(transition: transition, subject: subject)].map(String.init) ?? ""
     }
 }
 
@@ -56,9 +81,11 @@ struct TransitionWatchdog: Sendable {
     private var counts: [ModelAutopilotTransition: ModelAutopilotTransitionStall] = [:]
 
     /// Counts and returns the occurrences that exceed their bound for the
-    /// first time, in transition declaration order.
-    mutating func observe(_ active: Set<Occurrence>, now: ContinuousClock.Instant) -> [Stall] {
-        ages.observe(active, at: now)
+    /// first time, in transition declaration order. `began` holds the known
+    /// start of occurrences that may predate their first observation.
+    mutating func observe(_ active: Set<Occurrence>, now: ContinuousClock.Instant,
+                          began: [Occurrence: ContinuousClock.Instant] = [:]) -> [Stall] {
+        ages.observe(active, at: now, began: began.mapValues { min($0, now) })
         stalled.formIntersection(active)
         let order = ModelAutopilotTransition.allCases
         let newlyStalled = active.subtracting(stalled).compactMap { occurrence -> Stall? in

@@ -45,6 +45,7 @@ extension ProviderLoop {
         // A revision drain cannot pass an older advertisement suspended in
         // hashing, memory re-slicing or the coordinator client. Once the drain
         // begins, this entry guard prevents any new ID-only publication.
+        beginModelAdvertisementOccurrence(modelId)
         prefetchPublicationCounts[modelId, default: 0] += 1
         defer {
             prefetchPublicationCounts[modelId, default: 1] -= 1

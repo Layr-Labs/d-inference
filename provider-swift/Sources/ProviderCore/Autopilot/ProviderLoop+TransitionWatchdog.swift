@@ -17,35 +17,62 @@ extension ProviderLoop {
             transitionWatchdog.forgetOccurrences()
             return
         }
-        for stall in transitionWatchdog.observe(activeTransitions(), now: now) {
+        let (active, began) = activeTransitions()
+        for stall in transitionWatchdog.observe(active, now: now, began: began) {
             let action = resolveStalledTransition(stall.occurrence)
             logger.warning("transition_stalled transition=\(stall.occurrence.transition.rawValue) "
                 + "subject=\(stall.occurrence.subject) age_s=\(stall.age.components.seconds) action=\(action)")
         }
     }
 
-    private func activeTransitions() -> Set<TransitionWatchdog.Occurrence> {
+    /// The current occurrences, and the start of those that can begin before
+    /// supervision does: the capacity monitor starts after the startup
+    /// preload gate, so a candidate is aged from when it actually began.
+    private func activeTransitions()
+        -> (active: Set<TransitionWatchdog.Occurrence>, began: [TransitionWatchdog.Occurrence: ContinuousClock.Instant]) {
         var active = Set<TransitionWatchdog.Occurrence>()
+        var began: [TransitionWatchdog.Occurrence: ContinuousClock.Instant] = [:]
         if let command = autopilotCommand {
             active.insert(.init(.autopilotOperation, subject: command.commandId))
         }
         if startupPreloadTask != nil {
-            active.insert(.init(.startupPreload, subject: startupPreloadPendingModels.first ?? ""))
+            let model = startupPreloadCandidate?.model ?? startupPreloadPendingModels.first ?? ""
+            let occurrence = TransitionWatchdog.Occurrence(.startupPreload, subject: model,
+                generation: transitionGenerations.generation(of: .startupPreload, subject: model))
+            active.insert(occurrence)
+            if let candidate = startupPreloadCandidate, candidate.model == model {
+                began[occurrence] = candidate.startedAt
+            }
         }
         for (model, taskId) in preloadTaskIds where preloadTasks[model] != nil {
             active.insert(.init(.preload, subject: model, generation: taskId.uuidString))
         }
-        for model in modelsLoading { active.insert(.init(.modelLoading, subject: model)) }
-        if isLoadingAny && modelsLoading.isEmpty { active.insert(.init(.modelLoading)) }
-        for model in Set(prefetchPublicationCounts.keys).union(pendingAdvertise) {
-            active.insert(.init(.modelAdvertisement, subject: model))
+        for model in modelsLoading {
+            active.insert(.init(.modelLoading, subject: model,
+                generation: transitionGenerations.generation(of: .modelLoading, subject: model)))
         }
-        if modelSwitchTask != nil { active.insert(.init(.modelSwitch)) }
+        if isLoadingAny && modelsLoading.isEmpty {
+            active.insert(.init(.modelLoading, generation: transitionGenerations.generation(of: .modelLoading)))
+        }
+        for model in Set(prefetchPublicationCounts.keys).union(pendingAdvertise) {
+            active.insert(.init(.modelAdvertisement, subject: model,
+                generation: transitionGenerations.generation(of: .modelAdvertisement, subject: model)))
+        }
+        if modelSwitchTask != nil {
+            active.insert(.init(.modelSwitch, generation: transitionGenerations.generation(of: .modelSwitch)))
+        }
         if isReslicing { active.insert(.init(.reslice, generation: String(resliceGateGeneration))) }
         if isReconnectingAfterRetirement {
             active.insert(.init(.reconnectAfterRetirement, generation: String(plannedReconnectTaskGeneration)))
         }
-        return active
+        return (active, began)
+    }
+
+    /// A build entering publication (`prefetchPublicationCounts` or
+    /// `pendingAdvertise`) starts a new advertisement occurrence.
+    func beginModelAdvertisementOccurrence(_ model: String) {
+        guard prefetchPublicationCounts[model] == nil, !pendingAdvertise.contains(model) else { return }
+        transitionGenerations.begin(.modelAdvertisement, subject: model)
     }
 
     /// Returns the action taken, for the log.

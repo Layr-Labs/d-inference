@@ -43,6 +43,32 @@ struct TransitionWatchdogTests {
         #expect(watchdog.report == [.init(transition: "reslice", count: 2, lastAgeMs: 300_000)])
     }
 
+    @Test func aKnownStartDatesAnOccurrenceFirstObservedLater() {
+        var watchdog = TransitionWatchdog()
+        let candidate = Occurrence(.startupPreload, subject: "model", generation: "1")
+        #expect(watchdog.observe([candidate], now: start + .seconds(600), began: [candidate: start])
+            == [.init(occurrence: candidate, age: .seconds(600))])
+        // A start after the observation is clamped to it.
+        let next = Occurrence(.startupPreload, subject: "next", generation: "2")
+        #expect(watchdog.observe([next], now: start + .seconds(700), began: [next: start + .seconds(900)]).isEmpty)
+        #expect(watchdog.observe([next], now: start + .seconds(1_299)).isEmpty)
+        #expect(watchdog.observe([next], now: start + .seconds(1_300)).map(\.occurrence) == [next])
+    }
+
+    @Test func eachBeginStampsANewGenerationForItsSubjectOnly() {
+        var generations = TransitionGenerations()
+        #expect(generations.generation(of: .modelLoading, subject: "a") == "")
+        generations.begin(.modelLoading, subject: "a")
+        let first = generations.generation(of: .modelLoading, subject: "a")
+        #expect(!first.isEmpty)
+        generations.begin(.modelAdvertisement, subject: "a")
+        generations.begin(.modelLoading, subject: "b")
+        #expect(generations.generation(of: .modelLoading, subject: "a") == first)
+        generations.begin(.modelLoading, subject: "a")
+        #expect(generations.generation(of: .modelLoading, subject: "a") != first)
+        #expect(generations.generation(of: .modelLoading) == "")
+    }
+
     @Test func stallsArriveInTransitionOrderAndCountsSurviveForgetting() {
         var watchdog = TransitionWatchdog()
         let active: Set<Occurrence> = [Occurrence(.modelLoading, subject: "b"), Occurrence(.startupPreload, subject: "a"),
@@ -100,8 +126,9 @@ struct TransitionWatchdogSupervisionTests {
         #expect(await loop.runStartupPreloadGateForTesting() == .timedOut)
         #expect(await loop.autopilotBusyReasons() == [.startupPreload])
 
-        let start = ContinuousClock.now
-        await loop.superviseTransitions(now: start)
+        // Aged from when the candidate began, before supervision first ran.
+        let start = try #require(await loop.startupPreloadCandidate?.startedAt)
+        await loop.superviseTransitions(now: start + .seconds(1))
         await loop.superviseTransitions(now: start + .seconds(599))
         #expect(await loop.startupPreloadTaskRunningForTesting())
         await loop.superviseTransitions(now: start + .seconds(601))
@@ -113,6 +140,77 @@ struct TransitionWatchdogSupervisionTests {
         await loop.publishModelAutopilotSnapshot()
         #expect(await loop.state.modelAutopilot?.transitionStalls
             == [.init(transition: "startup_preload", count: 1, lastAgeMs: 601_000)])
+    }
+
+    @Test func aStartupCandidateIsAgedFromWhenItBeganAtItsFirstObservation() async throws {
+        let fixture = try await Fixture.make(resident: []) {
+            $0.preloadModels = [Fixture.ordinary, "second-ordinary"]
+            $0.startupPreloadTimeoutSecs = 1
+            $0.startupSelftest = false
+        }
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        await loop.advertiseOrdinaryForWatchdogTesting("second-ordinary")
+        await loop.setStartupPreloadFreeMemoryOverrideForTesting { 1_000 }
+        let loads = StartupLoadLog()
+        let (release, releaseNow) = AsyncStream<Void>.makeStream()
+        await loop.setStartupPreloadLoadOverrideForTesting { model in
+            loads.started(model)
+            if model == Fixture.ordinary { for await _ in release { break } }
+            loads.finished(cancelled: Task.isCancelled)
+        }
+        #expect(await loop.runStartupPreloadGateForTesting() == .timedOut)
+        let candidate = try #require(await loop.startupPreloadCandidate)
+        #expect(candidate.model == Fixture.ordinary)
+
+        // Supervision starts only after the registration gate. Its first
+        // observation already counts the time the candidate has been loading.
+        await loop.superviseTransitions(now: candidate.startedAt + .seconds(600))
+        #expect(await loop.startupPreloadStopRequested)
+        releaseNow.yield(())
+        #expect(await modelLoadingWaitUntil { await !loop.startupPreloadTaskRunningForTesting() })
+        #expect(loads.models == [Fixture.ordinary])
+        #expect(await loop.startupPreloadCandidate == nil)
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.state.modelAutopilot?.transitionStalls
+            == [.init(transition: "startup_preload", count: 1, lastAgeMs: 600_000)])
+    }
+
+    @Test func aLoadRetriedBetweenTwoObservationsIsANewOccurrence() async throws {
+        let parked = ParkedLoads()
+        let fixture = try await Fixture.make(resident: [], beforeModelLoad: { _ in await parked.park() })
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1_000)
+        let snapshot = try sandbox.makeSnapshot(Fixture.ordinary)
+        // The fake weights cannot be read: each released load fails.
+        let load: @Sendable () async -> Void = {
+            try? await loop.ensureModelLoaded(modelId: Fixture.ordinary, revisionDirectory: snapshot)
+        }
+        let first = Task { await load() }
+        #expect(await modelLoadingWaitUntil { parked.count == 1 })
+        let start = ContinuousClock.now
+        await loop.superviseTransitions(now: start)
+
+        // Between two observations the load fails and its retry begins.
+        parked.releaseOne()
+        await first.value
+        let retry = Task { await load() }
+        #expect(await modelLoadingWaitUntil { parked.count == 2 })
+        #expect(await loop.modelLoadingInFlightIDs() == [Fixture.ordinary])
+        await loop.superviseTransitions(now: start + .seconds(600))
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.state.modelAutopilot?.transitionStalls == nil)
+
+        // The retry is aged from its own first observation.
+        await loop.superviseTransitions(now: start + .seconds(1_200))
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.state.modelAutopilot?.transitionStalls?.map(\.transition) == ["model_loading"])
+        parked.releaseOne()
+        await retry.value
+        #expect(await loop.autopilotBusyReasons().isEmpty)
     }
 
     @Test func stalledPreloadIsAnsweredButNeverInterrupted() async throws {
@@ -184,6 +282,28 @@ struct TransitionWatchdogSupervisionTests {
         #expect(await loop.state.modelAutopilot?.transitionStalls == nil)
         driver.cancel()
         await loop.installStartupDriverForTesting(nil)
+    }
+}
+
+/// Loads parked inside their critical section until released one at a time.
+private final class ParkedLoads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parkedCount = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var count: Int { lock.withLock { parkedCount } }
+    func park() async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                parkedCount += 1
+                waiters.append(continuation)
+            }
+        }
+    }
+    func releaseOne() {
+        let next: CheckedContinuation<Void, Never>? = lock.withLock {
+            waiters.isEmpty ? nil : waiters.removeFirst()
+        }
+        next?.resume()
     }
 }
 

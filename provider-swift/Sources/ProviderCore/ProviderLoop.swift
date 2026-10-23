@@ -368,9 +368,16 @@ public actor ProviderLoop {
     internal var autopilotStalledCommandId: String?
     /// The watchdog asked the startup preload to stop before its next model.
     internal var startupPreloadStopRequested = false
+    /// The startup preload candidate in progress and when it began. The
+    /// watchdog ages it from that instant even though supervision starts
+    /// only after the registration gate.
+    internal var startupPreloadCandidate: (model: String, startedAt: ContinuousClock.Instant)?
     /// Advances on every reslice-gate acquisition, so the transition watchdog
     /// ages each acquisition separately.
     internal var resliceGateGeneration: UInt64 = 0
+    /// Stamped when a load, startup candidate, advertisement or model switch
+    /// begins, so a retry within one capacity tick is a new occurrence.
+    internal var transitionGenerations = TransitionGenerations()
 
 
     /// The running local OpenAI HTTP server task (unified mode), if any.

@@ -118,7 +118,9 @@ opt-in refuses target-only GLM before any load state exists, and
 `GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
 from the same fixture: the relay channel must receive one entry per generated
 token with the requested alternatives, the row must not draft, and a later
-plain request must still speculate. In the SDK,
+plain request must still speculate. Beside a concurrent plain row, a ten-step
+logprob row must carry the entries it carries alone and leave the plain row's
+text unchanged. In the SDK,
 `GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
 `protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
 values with the target's own log-softmax for serial and rectangular

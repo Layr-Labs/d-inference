@@ -86,15 +86,11 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
-        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message) {
-            // A capacity refusal already finalized its lookup; keep its
-            // content-free marker in-band for nonthrowing callers.
-            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
-            continuation.yield(.error(message))
-            continuation.finish()
-            return stream
-        } catch MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
-            // Same for a refused output control; the marker maps back to 400.
+        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
+            MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
+            // Capacity and output-control refusals already finalized their
+            // lookup; keep their content-free markers in-band for nonthrowing
+            // callers, which map them back to the same typed errors.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
             continuation.yield(.error(message))
             continuation.finish()

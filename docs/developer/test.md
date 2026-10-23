@@ -1767,3 +1767,13 @@ separate paired-hardware gates.
 ### Qwen27 feature-preserving placement
 
 Run `cd provider-swift && swift test --filter DistributedAutomaticBatchPlannerTests` for the actual provider mode-policy boundary. Constructed CPU profiles compare a cheaper pipeline against identical TP cost inputs, require explicit refusal on absent/unkeyed/stale/foreign link records, missing shard geometry or memory, and retain the other dense-model and GLM behavior. A real temporary configuration store loads an old pipeline record, refuses its startup/resave, then replans and saves TP without rewriting the old record. Actual bridge-factory tests reject missing/mismatched READY and absent logprob support before model-metadata reads. These tests run no models and establish no hardware speed or native TP concurrency result.
+
+### Metal cross-stream fence chains
+
+The pinned core's `metal_fence_chain` CTest target checks exact GPU-to-CPU-to-GPU
+chains and released request arrays at command-buffer limits 8, 50 and 1024.
+Each process has a 60-second timeout. Run the core's configured Metal tests
+with `ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure --no-tests=error`.
+This component check does not reproduce or qualify an installed RDMA model;
+repeat the installed provider's automatic cluster flow and concurrent API
+requests on both Macs after a native pin change.

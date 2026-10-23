@@ -70,6 +70,11 @@ make landing-install landing-build
 is a separate dependency pin. Native resources must match the compiled host
 library; a warm cache cannot waive that requirement.
 
+The pinned core orders fast Metal fence waits after earlier kernels in the
+current concurrent pass as well as prior passes. Rebuild the Cmlx host object
+when changing this pin. This fence change has no shader or C-header delta;
+continue checking resource identity against the actual nested core.
+
 The SDK has independent test products under `libs/mlx-swift-lm`; rebuild and
 stage their resources as well as the provider test product when validating a
 native runtime change. The SDK's `MiMoOpenRouter` media fixtures are test-only

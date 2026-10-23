@@ -25,6 +25,8 @@
 - Repair GPT-OSS, MiMo and Nemotron native independent-history batching, paging,
   cancellation and prefix behavior, including existing MiMo speculative/phase
   state accounting. Historical phase support is not TP release qualification.
+- Order fast Metal fence waits after current-pass GPU producers through the
+  matching native core pin; installed clustered-concurrency validation remains required.
 - Retain explicit full-model hardware gates. Component tests and source support
   do not establish universal TP, media parity or release readiness; Qwen27 TP
   text speculation remains unfinished; full-artifact prefix/media qualification

@@ -13,6 +13,10 @@ native capture capability. The [inference contract](inference.md) retains
 mode-specific capture refusal and parser classification limits; no hardware
 grant is widened by frame association.
 
+The native [cross-stream fence ordering](inference.md#cross-stream-fence-ordering)
+uses the same memory reservations and command-buffer limits. Its component
+tests do not change a model's hardware qualification or usable-memory grant.
+
 ## Context
 
 Automatic local cluster batching prices each lane's full registered request

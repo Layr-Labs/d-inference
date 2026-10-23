@@ -3372,3 +3372,14 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
+
+### Cross-stream fence ordering
+
+The native core's fast `Fence::wait` orders its spinning GPU wait after both
+previous command passes and earlier kernels in the current concurrent pass.
+CPU-stream work can depend on those earlier GPU producers before it signals
+the wait. The ordering dependency is in the host encoder and leaves arithmetic,
+collective order and command-buffer limits unchanged. Source:
+[the pinned core fence implementation](https://github.com/Layr-Labs/mlx/blob/4e2455b0093cb63454fdc9d74914ed03e3777acc/mlx/backend/metal/fence.cpp).
+The [component test](../developer/test.md#metal-cross-stream-fence-chains)
+does not establish an installed distributed-model pass.

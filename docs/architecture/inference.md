@@ -70,7 +70,10 @@ assistant media remain unsupported; legacy model ingestion is unchanged. Sources
 `DistributedAutomaticBatchFactory` keeps the initial singleton placement. A
 managed cluster API with queued demand may propose a wider plain pipeline for
 Qwen dense/routed experts, Bonsai, Nemotron Lightning, Gemma, GPT-OSS or the
-MiMo text plain-pipeline owner. It uses the full
+MiMo text plain-pipeline owner. Exact Qwen3.8 27B additionally compares its
+native TP batch owner against plain pipeline using ordinary measured rates,
+keyed-link evidence, qualification shape gates and the existing TP margin.
+It uses the full
 listener request envelope because acquisition precedes tokenization; raw body
 size never reduces the memory charge. `ClusterPlacementBatchScope` prices
 independent state on both ranks, trying widths 8, 4 and 2 in that order once
@@ -92,6 +95,22 @@ nonempty stage cuts and covers the whole-model layer-state floor; it never
 changes singleton layout/request-scope results or discounts LOAD/transient
 reserves. A changed or derived chunk cannot reuse it. Native arithmetic,
 paged-path qualification and useful throughput remain independent gates.
+
+Qwen27's `ClusterPlacementTensorBatchQuote` comes from `tensor-batch-scope`.
+`ClusterPlacementArtifact.requestedTensorBatchQuote` validates the canonical
+stored tensor headers and reuses `QwenTensorParallelBatchBudget.derive` at the
+full native LOAD context and maximum frame, even for a short reference request.
+The TP floor includes all lanes, retained and temporary projection constants,
+shared fusion/prefill/decode work, page-pool slack and eight separately bounded
+sealed collective frames. The planner takes the maximum of this complete
+reservation and its existing estimate, then adds loading headroom once. Vision
+residency stays additive; per-request media work retains its own native gates.
+Pipeline pricing stays independent. Missing or incompatible TP quotes never
+make TP eligible for batch placement, and no width multiplies a rate estimate.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTensorBatchBudget.swift`,
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchPlanner.swift`.
 
 Planning changes no setup. If the queue empties before a valid proposal returns,
 `DistributedLocalServer` keeps that metadata-only intent eligible for at most
@@ -3288,8 +3307,9 @@ worker's process fence. The exact27 singleton and batch owners publish raw
 selection logprobs through the committed-token channel.
 
 This initial batch path uses cold histories; shared prefix capture/restore and
-TP speculative rounds remain follow-ups. Provider width adoption and automatic
-placement are separate integration gates. Synthetic CPU and both-chip native
+TP speculative rounds remain follow-ups. Installed owners propagate a priced
+saved width or explicit diagnostic width for exact Qwen27; automatic placement
+uses the separate full native TP quote described above. Synthetic CPU and both-chip native
 fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
@@ -3298,3 +3318,35 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`serve`, `join`, `leave`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
 (`serveBatch`, `prepareBatch`).
+
+### Qwen27 cluster media ingress ownership
+
+The scheduler routes image/video requests through `DistributedQwenMediaIngress`
+only when the installed owner advertises the exact Qwen media contract and the
+registered 27B artifact, configuration and execution profile agree. The provider
+uses the actual Qwen processor and tokenizer to expand placeholders, hashes the
+prepared patches and three-axis positions, and forwards the original encoded
+inputs through the typed native carrier. It constructs no language model or
+vision tower in the provider process. Native workers independently revalidate
+those identities and enforce their complete request quotation.
+
+A process-wide host ledger admits encoded wire copies before decoding and admits
+source rasters, retained patches and position work before preprocessing. The
+preparation charge remains held until its owned producer task has actually
+returned, including cancellation. The wire charge separately waits for both the
+submission scope to end and definitive native retirement. Engine and Process
+owners drop their encoded aliases before publishing retirement; HTTP completion
+alone releases neither fence. Cleanup failure retains the outstanding charge.
+
+The bridge rejects foreign media identities and combinations with another media
+carrier. It disables prefix reuse for this ingress path. Nondefault image/video
+processing controls, forced media tool choices and JSON/schema constraints fail
+explicitly; the transport does not establish those capabilities. Logprobs still
+require the selected runtime's independent support. Plain text, GLM and MiMo
+retain their own routes. Full-artifact clustered image/video correctness and
+concurrent execution remain hardware qualification gates.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`, and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/DistributedEngineFactory.swift`.

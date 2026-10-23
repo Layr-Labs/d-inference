@@ -432,3 +432,14 @@ rows, while admission keeps the full request and transfer allowances. This
 does not reduce the model's RAM requirement or establish a new qualified
 hardware tier. See [MiMo history ownership](../architecture/inference.md#mimo-plain-pipeline-independent-histories)
 and [its admission bounds](../architecture/hardware-support.md#context).
+
+Qwen27 cluster media also reserves provider-host memory independently of each
+rank's native LOAD and request quotation. The shared host ledger charges bounded
+encoded wire copies before decoding, then source rasters, prepared patches and
+position arrays before preprocessing. Video uses the processor's conservative
+pre-decode patch ceiling rather than the final claimed prompt length. Cancellation
+waits for the producer to finish before refunding preprocessing; encoded memory
+remains charged until submission and native retirement both finish. A second
+listener generation cannot reuse a separate private ledger to bypass this cap.
+See `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaHostMemory.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaHostBudget.swift`.

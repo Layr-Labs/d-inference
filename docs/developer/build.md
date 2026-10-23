@@ -471,3 +471,8 @@ Build that closure together; a worker lane setting alone does not install a
 native batch owner. The standalone tiny probe also needs the source-matched
 `mlx.metallib` and `pagedattention.metal` beside its binary. Preserve exact source
 and resource hashes for both machines; see the [TP batch checks](test.md#qwen27-tensor-parallel-native-batch-checks).
+
+The automatic Qwen27 TP-width change builds the Placement and Runtime targets
+and the actual ProviderCore source closure. The installed-session contract
+checks use a real sanitized child process without native weights or network;
+see [the focused tests](test.md#automatic-qwen27-tp-width-checks).

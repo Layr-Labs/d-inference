@@ -123,6 +123,8 @@ extension EngineV2Bridge {
         mimoClusterImages: Data? = nil,
         clusterStillImages: Data? = nil,
         clusterGLMMedia: Data? = nil,
+        clusterQwenMedia: Data? = nil,
+        qwenMediaLifetime: DistributedQwenMediaLifetime? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -161,6 +163,22 @@ extension EngineV2Bridge {
             try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
                 startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
         }
+        if let clusterQwenMedia {
+            guard mimoClusterImages == nil, clusterStillImages == nil, clusterGLMMedia == nil,
+                multimodal == nil, positionState == nil, tokenConstraint == nil,
+                qwenMediaLifetime != nil, let ingress = clusterQwenMediaIngress else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            let media = try ClusterQwenMedia.decodeBounded(clusterQwenMedia), c = ingress.configuration
+            guard media.artifactSHA256 == ingress.artifactSHA256,
+                media.configurationSHA256 == ingress.configurationSHA256,
+                media.processorSHA256 == ingress.processorSHA256, media.carriesEncodedBytes else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenIndex,
+                videoToken: c.videoTokenIndex, startToken: c.visionStartTokenId,
+                endToken: c.visionEndTokenId, maximumPromptTokens: ingress.maximumPromptTokens)
+        } else if qwenMediaLifetime != nil { throw DistributedEngineError.refused(.mediaUnsupported) }
         let imageBoundCacheScope: String
         if let mimoClusterImages {
             let media = try ClusterMiMoImages.decodeBounded(mimoClusterImages)
@@ -168,7 +186,7 @@ extension EngineV2Bridge {
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
         // Never manufacture an authenticated scope from an image digest.
-        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil
+        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil && clusterQwenMedia == nil
             && (mimoClusterImages == nil || !cacheScope.isEmpty)
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
@@ -182,6 +200,9 @@ extension EngineV2Bridge {
         // a cancel reliably anyway, and an unbounded/control-char key is a
         // hardening risk). See `normalizedRequestId`.
         let id = Self.normalizedRequestId(requestId)
+        let qwenMediaKey = try qwenMediaLifetime.map {
+            try $0.submissionKey(requestID: id, matching: clusterQwenMedia!)
+        }
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
         guard canSubmitWithNativeOwner() else {
             usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
@@ -238,6 +259,10 @@ extension EngineV2Bridge {
                 releaseServiceAllowance(requestID: id)
             }
         }
+        if let lifetime = qwenMediaLifetime, let key = qwenMediaKey {
+            try lifetime.requireNativeRetirement(key)
+            qwenMediaHostResources[id] = (lifetime, key)
+        }
         pendingSubmissionIDs.insert(id)
         if let profile { pendingProfiles[id] = profile }
         // Profiler: this prompt is "queued for prefill" for exactly the span
@@ -289,6 +314,7 @@ extension EngineV2Bridge {
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
+        cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
         if let minP = request.min_p { cbv2Request.sampling.minP = minP }
@@ -896,7 +922,13 @@ extension EngineV2Bridge {
                     // Without a projected admission the engine still enforces
                     // the origin-anchored deadlines selected above. A bare
                     // submit would start a fresh budget with no first-token limit.
-                    events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
+                    if clusterQwenMedia != nil {
+                        let submitted = try distributed.submitWithRetirement(engineRequest, deadlineContext: selectedContext)
+                        events = submitted.events
+                        nativeRetirement = submitted.retirement
+                    } else {
+                        events = try distributed.submit(engineRequest, deadlineContext: selectedContext)
+                    }
                 } else {
                     events = try engine.submit(engineRequest)
                 }

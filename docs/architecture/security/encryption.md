@@ -288,3 +288,13 @@ clock translation. The pair sends encoded inputs to rank 0 only; rank 1 receives
 metadata and the same content-bound fingerprint. A caller cancellation or early
 resource-release attempt cannot release the owner's encoded alias before the
 request has retired. Other model media contracts retain their existing behavior.
+
+Provider Qwen media ingress binds encoded bytes to the loaded artifact, model
+configuration, resolved processor, expanded prompt, prepared patches and
+three-axis position digest. The bridge checks this binding before submission;
+local SDK engines refuse the opaque cluster carrier before allocating KV state.
+The process-wide host reservation follows an explicit generation/request owner
+through submission and definitive native retirement. Cancellation or HTTP stream
+termination is not an encoded-buffer release receipt. No media, token IDs or
+prompt content is added to telemetry by this path. The lifetime implementation is
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`.

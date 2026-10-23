@@ -95,11 +95,19 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             && pair.readiness?.media == ClusterGLMMedia.contract) else {
             throw DistributedEngineError.refused(.mediaUnsupported)
         }
+        let qwenMedia = try request.clusterQwenMedia.map { try ClusterQwenMedia.decodeBounded($0) }
+        guard qwenMedia == nil || (identity.modelID == "registered_qwen38_27b"
+            && qwenMedia?.artifactSHA256 == identity.artifactSHA256
+            && qwenMedia?.configurationSHA256 == identity.configurationSHA256
+            && qwenMedia?.carriesEncodedBytes == true && stillImages == nil && media == nil && glmMedia == nil
+            && pair.readiness?.media == ClusterQwenMedia.contract) else {
+            throw DistributedEngineError.refused(.mediaUnsupported)
+        }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
-            route: media == nil && stillImages == nil && glmMedia == nil ? decided?.workerRoute : nil,
-            mimoImages:media, stillImages:stillImages, glmMedia: glmMedia)
+            route: media == nil && stillImages == nil && glmMedia == nil && qwenMedia == nil ? decided?.workerRoute : nil,
+            mimoImages:media, stillImages:stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
         // Encode the COMPLETE bounded command before sending either rank.
         // Use largest legal sequence metadata so a later pipe header cannot
         // exceed the command bound (a GLM media reservation's own bound)

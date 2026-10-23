@@ -306,9 +306,10 @@ extension ClusterPlacementPlanner {
                 func part(_ bytes: Int) -> Int { k > 1 && tp.family.stateDividesByHeads ? (bytes + k - 1) / k : bytes }
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))
-                let request = max(memory.minimumAdmissibleBytes, state + part(range.requestWorkBytes)
+                let components = state + part(range.requestWorkBytes)
                     + part(range.transientBytes(chunk: memoryChunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
-                    + memory.loadingHeadroomBytes)
+                let batchFloor = k > 1 ? context.policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0 : 0
+                let request = max(memory.minimumAdmissibleBytes, max(components, batchFloor) + memory.loadingHeadroomBytes)
                 let need = max(load.need, load.held + request)
                 let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
                 tier = max(tier, fit.tier)

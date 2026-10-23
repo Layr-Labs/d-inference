@@ -173,7 +173,7 @@ struct DistributedInstalledPlan: Sendable {
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
-        // Continuous batching (the pipeline's lane adapters, and GLM tensor
+        // Continuous batching (the pipeline's lane adapters, Qwen27 and GLM tensor
         // parallel): both owners must give their workers the same lane count
         // (the workers' load agreement refuses a mismatch). A setup in any
         // other mode keeps one request at a time.
@@ -232,7 +232,7 @@ struct DistributedInstalledPlan: Sendable {
     func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
         guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
               let lanes = Self.defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
-                  hasPrivateImages: capability.hasPrivateImages) else {
+                  hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID) else {
             return nil
         }
         guard let raw = environment[Self.batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
@@ -242,19 +242,21 @@ struct DistributedInstalledPlan: Sendable {
 
     /// True when the pair's workers retire a cancelled started lane alone (a
     /// cancel or a deadline ends that request, not the pair): Qwen-family
-    /// text pipeline lanes and GLM tensor parallel. Bound to both owners' plan.
+    /// pipeline lanes and exact Qwen27/GLM tensor parallel. Bound to both owners' plan.
     func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let lanes = batchLanes(environment), lanes > 1,
               let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
         return Self.lanesRetireAlone(adapter: adapter, mode: configuration.selectedGenerationMode,
-            hasPrivateImages: capability.hasPrivateImages, lanes: lanes)
+            hasPrivateImages: capability.hasPrivateImages, lanes: lanes, runtimeModelID: capability.runtimeModelID)
     }
 
     static func lanesRetireAlone(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
-                                hasPrivateImages: Bool, lanes: Int) -> Bool {
+                                hasPrivateImages: Bool, lanes: Int, runtimeModelID: String? = nil) -> Bool {
         guard (2...8).contains(lanes) else { return false }
         switch mode {
-        case .tensorParallel: return tensorParallelLaneAdapters.contains(adapter)
+        case .tensorParallel:
+            return tensorParallelLaneAdapters.contains(adapter)
+                || (adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages)
         case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
         default: return false
         }
@@ -264,17 +266,21 @@ struct DistributedInstalledPlan: Sendable {
     /// its workers serve one request at a time there.
     /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
     ///   `defaultBatchLanes`.
-    /// - Tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
+    /// - Exact Qwen27 tensor parallel: one by default; a priced saved width
+    ///   or explicit local diagnostic may select its native 2...8 lane owner.
+    /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
     ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
     ///   own arithmetic, so a request's tokens are those it gets alone. A
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
     ///   capability's image candidate does not change the lanes.
     static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
-                                  hasPrivateImages: Bool) -> Int? {
+                                  hasPrivateImages: Bool, runtimeModelID: String? = nil) -> Int? {
         switch mode {
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
         case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
+        case .tensorParallel where adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages:
+            defaultBatchLanes
         default: nil
         }
     }

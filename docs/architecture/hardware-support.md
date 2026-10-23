@@ -952,3 +952,13 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Res
 (`derive`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`
 (`load`).
+
+### Automatic Qwen27 TP width quotation
+
+Exact Qwen27 automatic batching compares native TP and plain pipeline only after
+pricing both. TP uses the same canonical-inventory full LOAD allowance as its
+native owner at widths 2, 4 and 8; a narrower reference request or installed
+chunk does not shrink that floor. Both ranks must fit after previous ownership
+releases. Source-bound metadata and child-launch checks establish budget and
+width propagation, not full-artifact TP throughput, media parity or native
+concurrent execution. See [automatic batching](inference.md#automatic-local-cluster-batching).

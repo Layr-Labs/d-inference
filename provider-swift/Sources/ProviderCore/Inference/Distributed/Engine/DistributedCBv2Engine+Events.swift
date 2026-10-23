@@ -234,6 +234,10 @@ extension DistributedCBv2Engine {
             state.continuation.yield(.finished(reason: reason, usage: usage))
             state.continuation.finish()
         }
+        // Host media allowance waits for this acknowledgement. The lease has
+        // dropped its encoded reservation above; drop the engine's wire alias
+        // before waking any provider retirement owner.
+        state.request.clusterQwenMedia = nil
         state.retired.complete()
         observe(state, phase: .retired, reason: reason)
     }

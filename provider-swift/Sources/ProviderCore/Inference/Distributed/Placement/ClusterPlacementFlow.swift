@@ -176,11 +176,11 @@ public enum ClusterPlacementFlow {
         // unmeasured, no tensor-parallel mode is chosen.
         if let batchScope {
             try batchScope.requireChunk(description.chunkTokens, derived: description.derivesRequestLimits)
-            guard capability.supportedGenerationModes.contains(.pipeline),
-                  !capability.hasPrivateImages else {
-                throw ClusterConfigurationError.invalid("Batch placement requires a supported text pipeline")
+            let modes = batchScope.supportedModes.filter(capability.supportedGenerationModes.contains)
+            guard !modes.isEmpty, !capability.hasPrivateImages else {
+                throw ClusterConfigurationError.invalid("Batch placement requires a supported priced native mode")
             }
-            policy.modes = [.pipeline]; policy.schedules = [.serial]
+            policy.modes = modes; policy.schedules = [.serial]
             try batchScope.apply(to: &policy, layout: layout)
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)

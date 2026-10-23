@@ -1,4 +1,3 @@
-import DarkbloomClusterProtocol
 import Foundation
 import DarkbloomClusterProtocol
 import MLXLMCommon
@@ -85,8 +84,10 @@ public struct DistributedResidentExecutionProfile: Sendable {
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
-            supportsLogprobs: capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
-                && generationMode == .tensorParallel)
+            supportsLogprobs: generationMode == .tensorParallel && (
+                capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
+                || (capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
+                    && capability.runtimeModelID == "registered_qwen38_27b")))
     }
 }
 
@@ -356,6 +357,15 @@ extension DistributedResidentExecutionProfile {
             guard id == "registered_mimo_v26_flash_mopd_greedy_generation_v1" + ClusterMiMoImages.profileSuffix,
                   let images = try? ClusterMiMoImages.decodeBounded(wire),
                   (try? images.validate(prompt:request.promptTokens)) != nil else { return .mediaUnsupported }
+        }
+        if let wire = request.clusterQwenMedia {
+            guard id == "registered_qwen38_27b_greedy_generation_v1", request.clusterStillImages == nil, request.mimoClusterImages == nil,
+                  request.clusterGLMMedia == nil,
+                  let media = try? ClusterQwenMedia.decodeBounded(wire),
+                  media.promptLength == request.promptTokens.count,
+                  request.promptTokens.allSatisfy({ (0..<vocabularySize).contains($0) && Int32(exactly: $0) != nil }),
+                  ClusterQwenMedia.int32SHA256(request.promptTokens.map(Int32.init)) == media.promptSHA256
+            else { return .mediaUnsupported }
         }
         if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
         if !(0...ClusterWorkerSampling.maximumTopLogprobs).contains(p.topLogprobs) { return .logprobsUnsupported }

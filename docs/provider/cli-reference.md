@@ -1924,3 +1924,14 @@ execution from queued demand without a batch environment setting. Explicit
 See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
 for memory bounds, lifecycle and exclusions. Source:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/DistributedAutomaticBatchFactory.swift`.
+
+### Qwen27 tensor batch planning metadata
+
+The private `darkbloom-cluster-plan tensor-batch-scope --model-dir DIR
+--prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N` helper emits
+exact Qwen27's full native batch LOAD quotation; it never loads model tensors
+or selects a deployment. Automatic placement uses it before draining and
+again after old-owner release. The normal measured mode comparison remains
+authoritative. The [configuration reference](../reference/configuration.md#native-automatic-batch-quote)
+defines the response and supported saved widths. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`.

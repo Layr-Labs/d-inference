@@ -1697,3 +1697,40 @@ media positions/features. They do not exercise RDMA, the registered tower or
 actual artifact, installed owner capacity, warm prefixes or TP speculation.
 Full model/reference, media, concurrency, throughput and logical-retirement
 checks remain required.
+
+### Qwen cluster media provider ingress checks
+
+`DistributedQwenMediaIngressTests` runs the actual ImageIO/AVFoundation and Qwen
+processor path on deterministic red/blue PNG and short MP4 fixtures. It checks
+single/multiple images, video, repeat isolation, expanded prompt bounds, metadata
+identity and refusal before native reservation. It also drives the real scheduler,
+bridge and distributed engine with explicitly fabricated native leases, proving
+routing, usage and independent completion/cancellation cleanup without claiming
+physical peers or model answers. JSON requests must refuse before preprocessing
+rather than lose their constraint.
+
+`DistributedQwenMediaLifetimeTests` and `DistributedQwenMediaHostMemoryTests`
+cover the two ownership fences, stale generation/request identity, cancellation,
+failed cleanup retention, bounded arithmetic and process-ledger reservations.
+The SDK's `CBv2QwenClusterCarrierTests` proves an opaque cluster envelope cannot
+fall through to a local model or allocate KV state. Run the focused provider
+classes with the repository provider test runner, and the SDK integration class
+with `xcodebuild test -scheme mlx-swift-lm-Package -destination 'platform=macOS'`.
+Stage the matching Metal library even for MLX CPU-device execution. These checks
+load no language-model weights; full-artifact TP image/video and concurrent
+capability acceptance remain separate.
+
+### Automatic Qwen27 TP width checks
+
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` for exact-width ledger
+validation, unchanged measured mode ranking, keyed-link and failed-shape gates,
+and per-rank memory refusal. Run
+`provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for saved widths,
+actual sanitized child propagation, cancellation policy, raw-logprob support,
+other-model refusal and unchanged GLM defaults.
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenTensorParallelBatchQuoteTests.swift`
+uses actual registered headers with a sparse zero payload to compare the public
+metadata helper against native owner budgets at every admitted share and width.
+It proves metadata accounting without reading or qualifying weight payloads.
+Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
+separate hardware gates.

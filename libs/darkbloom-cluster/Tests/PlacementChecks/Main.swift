@@ -36,6 +36,7 @@ import Foundation
             try checkRequestedContext(layouts.twentySeven, checks)
             try checkRequestScopes(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkBatchScopes(inputs, checks)
+            try checkTensorBatchScopes(inputs, checks)
             try checkNativeBatchQuotes(golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkQualifiedShapes(layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)

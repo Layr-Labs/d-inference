@@ -47,6 +47,9 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
+    /// Only a validated batch scope sets this complete native TP LOAD floor.
+    /// Pipeline accounting and all singleton/default families remain unchanged.
+    public internal(set) var tensorParallelBatchQuote: ClusterPlacementTensorBatchQuote?
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -309,6 +312,7 @@ public enum ClusterPlacementPlanner {
                             policy: ClusterPlacementPolicy = .init(),
                             link: ClusterLinkCosts = .unmeasured) throws -> ClusterPlacementResult {
         try layout.validate()
+        try policy.tensorParallelBatchQuote?.validate(layout: layout)
         guard devices.count >= 2, Set(devices.map(\.label)).count == devices.count,
               devices.allSatisfy({ !$0.label.isEmpty && $0.label.utf8.count <= 64 }) else {
             throw ClusterPlacementError("Placement needs two or more devices with distinct labels")
@@ -610,7 +614,7 @@ public enum ClusterPlacementPlanner {
         func placeable(_ mode: ClusterGenerationMode, ranges: Int) -> Bool {
             guard mode.usesTensorParallelDecode else { return true }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(ranges), let reduction = link.reduction else { return false }
-            if let allowance = tp.family.requestAllowance,
+            if let allowance = policy.tensorParallelBatchQuote?.allowance ?? tp.family.requestAllowance,
                !allowance.covers(context: memoryContext, chunk: min(layout.maximumChunkTokens, memoryPrompt)) { return false }
             return reduction.keyed || tensorParallelForAssessment
         }
@@ -837,7 +841,7 @@ public enum ClusterPlacementPlanner {
             // The native quote already includes its full state, workspace and
             // collective buffers. Keep the larger complete reservation, then
             // add loading headroom once; adding both quotes double counts KV.
-            let nativeFloor = tp.family.requestAllowance?.reservedBytes ?? 0
+            let nativeFloor = (policy.tensorParallelBatchQuote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             let need = max(load.need, load.held + requestNeed)

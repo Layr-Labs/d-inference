@@ -585,6 +585,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
             } catch { await releaseBox.fire(); throw error }
         }
+        if MediaIngest.hasMedia(request), let bridge = engineV2Bridge,
+            bridge.clusterQwenMediaIngress != nil {
+            do {
+                return try await prepareClusterQwenMedia(request: request, templateControls: templateControls,
+                    requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
+            } catch { await releaseBox.fire(); throw error }
+        }
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
@@ -1218,6 +1225,93 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 reasoningPrefix: reasoningPrefix,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                     .init(modelId: request.model, modelType: modelType)))
+        } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
+    /// The loaded pair explicitly owns Qwen's actual vision tower and MRoPE.
+    /// Preprocessing stays in the admitted host scope; encoded inputs remain
+    /// charged through both submission completion and native retirement.
+    private func prepareClusterQwenMedia(request: OpenAIChatCompletionRequest,
+        templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
+        prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
+        acquired: consuming AcquiredModel
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try checkFirstContentDeadline()
+        guard let bridge = acquired.engineV2Bridge, let ingress = bridge.clusterQwenMediaIngress,
+            let hostBudget = bridge.clusterQwenMediaHostBudget else {
+            throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)
+        }
+        // Preserve the ordinary Qwen media policy. Prompt forcing or a JSON
+        // grammar cannot be inferred merely from this native transport seam.
+        guard request.responseFormat?.requiresJSONOutput != true else {
+            throw DistributedEngineError.refused(.constrainedDecodingUnsupported)
+        }
+        guard prepared.mode == .auto || prepared.mode == .none else {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "inference-enforced tool_choice is not supported for multimodal requests")
+        }
+        var visionRequest = request
+        visionRequest.tools = prepared.tools
+        visionRequest.messages = ChatTemplateFixes.normalizeMessages(prepared.messages,
+            context: ChatTemplateFixContext(modelId: request.model, modelType: acquired.modelType))
+        let host: DistributedQwenMediaIngress.Prepared
+        do {
+            profile?.mark(.promptPrepStart)
+            let started = SuspendingClock.now
+            host = try await ingress.prepare(request: visionRequest, controls: templateControls,
+                tokenizer: acquired.tokenizer.inner, hostBudget: hostBudget)
+            if let profile {
+                let micros = RequestProfileBuilder.microseconds(SuspendingClock.now - started)
+                let count = Int64(host.tokens.count)
+                profile.update { f, now in
+                    f.mark(.promptPrepEnd, offsetUs: now); f.set(.promptTokens, count); f.add(.visionPrep, us: micros)
+                }
+            }
+        } catch {
+            if let failure = error as? PreContentDeadlineFailure { throw failure }
+            if error is CancellationError { throw CancellationError() }
+            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
+            if let visionError = error as? EngineV2VisionPrefillError {
+                switch visionError {
+                case .noProcessedMedia:
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                        "multimodal_rejected: no consumable user media")
+                case .unsupportedMedia(let detail):
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("multimodal_rejected: \(detail)")
+                default: break
+                }
+            }
+            throw MultiModelBatchSchedulerEngineError.requestRejected(
+                "engine_v2 media prefill construction failed: "
+                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started")
+        }
+        defer { host.lifetime.releaseIfUnsubmitted() }
+        try checkFirstContentDeadline()
+        let id = "req-" + UUID().uuidString
+        let translated = Self.translate(openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
+            logprobs: engineV2Logprobs != nil ? true : nil, topLogprobs: engineV2Logprobs?.topLogprobs,
+            logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed)
+        let upstream = try await host.lifetime.withSubmission(requestID: id) { wire, _ in
+            try await bridge.submitTokenized(promptTokens: host.tokens, request: translated,
+                requestId: id, cacheScope: cacheScope, cacheEnabled: false,
+                usageSignal: requestUsage, clusterQwenMedia: wire, qwenMediaLifetime: host.lifetime,
+                mediaKind: host.mediaKind, firstContentDeadline: firstContentDeadline,
+                profile: profile, measurementPurpose: measurementPurpose)
+        }
+        do {
+            try checkFirstContentDeadline()
+            let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                reasoningParser: visionRequest.reasoningParser, stream: visionRequest.stream,
+                promptTokens: host.tokens,
+                decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+            ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            return try await makeDeadlineCheckedEventStream(
+                upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
+                toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
+                reasoningPrefix: reasoningPrefix,
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                    .init(modelId: request.model, modelType: acquired.modelType)))
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 

@@ -288,3 +288,28 @@ A cluster host configured for automatic batch replacement keeps the same authent
 If a short burst drains before planning finishes, the host may retain the metadata-only proposal for up to 30 seconds. It uses that proposal only when fresh requests wait in the same serving generation; an idle endpoint does not reload. The planner considers the largest independently priced capacity first, and the deferred load still checks current memory after both previous workers release. Request cancellation and the original queue wait limit remain unchanged.
 
 The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.
+
+### Qwen27 image and video requests on a pair
+
+An installed pair that explicitly reports the Qwen media contract accepts the
+existing OpenAI image/video content parts through the same local endpoint.
+The provider validates the exact registered 27B configuration and resolved
+processor before preparing media. A model name or vision configuration alone
+does not enable the route. The native pair must independently load and report
+the supported media path; selecting an unsupported mode is not repaired by
+silently discarding media.
+
+Use default processing controls. Nondefault resize/pixel settings, forced media
+tool choices and JSON/schema output constraints are refused on this route.
+Image/video preprocessing and transport tests do not establish full-model
+answers, native concurrency or automatic TP selection; retain those separate
+qualification records. The implementation is in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`.
+
+For exact Qwen3.8 27B, a queued-demand replacement can select a priced TP batch
+or plain pipeline. The chosen mode still follows measured stage/link rates,
+qualification shape gates and current memory on both Macs. The installed width
+default remains one; a wider saved plan propagates through both owners to the
+native ranks. This integration does not claim a full-artifact throughput result.
+See [automatic cluster batching](../architecture/inference.md#automatic-local-cluster-batching).

@@ -76,6 +76,35 @@ extension InstalledSessionCheck {
             try require(plan.batchLanes([key: "1"]) == 1, "Explicit diagnostic single lane was ignored")
             try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL)
         }
+        // Exact Qwen27 TP propagates the saved/explicit width through a real
+        // sanitized owner child. Its native budget is independently quoted.
+        for lanes in [1, 2, 4, 8] {
+            let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("qwen27-tp-lanes-\(lanes)"),
+                probe: f.probe, owner: probe, worker: f.worker,
+                generationMode: ClusterGenerationMode.tensorParallel.rawValue, advertisedModes: [.pipeline, .tensorParallel],
+                registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "fixture/qwen27"),
+                batchLanes: lanes == 1 ? nil : lanes)
+            let prepared = try fixture.prepare(), plan = prepared.plan
+            let child = try observed(plan.localOwnerConfiguration(ownerEnvironment: [:]))
+            let native = plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: child)
+            try require(plan.batchLanes([:]) == lanes && child[key] == String(lanes) && Int(native[key] ?? "1") == lanes,
+                "Qwen27 TP planned width was lost across the actual owner child")
+            try require(plan.lanesRetireAlone([:]) == (lanes > 1) && plan.lanesRetireAlone(child) == (lanes > 1),
+                "Qwen27 TP cancellation isolation differs from its native width")
+            let profile = try DistributedResidentExecutionProfile(capability: plan.capability, generationMode: .tensorParallel,
+                requestTimeout: .seconds(10))
+            try require(profile.supportsLogprobs, "Qwen27 TP width lost actual native raw-logprob capture")
+            try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL)
+        }
+        for model in ["registered_qwen35_9b", "registered_qwen35_35b_a3b", "unknown"] {
+            try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .qwen35Dense, mode: .tensorParallel,
+                hasPrivateImages: false, runtimeModelID: model) == nil, "Other model inherited Qwen27 TP lanes")
+        }
+        try rejected {
+            _ = try InstalledFixture.make(root: f.root.appendingPathComponent("qwen9-unpriced-tp-width"),
+                probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel], batchLanes: 2)
+        }
         // A default greater than one exposes the nil/absent mismatch which
         // the current Qwen singleton default would otherwise hide.
         let glm = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-default"),

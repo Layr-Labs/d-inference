@@ -1,18 +1,23 @@
 import DarkbloomClusterProtocol
 import Foundation
 
-/// A bounded set of independent histories for a plain pipeline. The quote is
-/// the registered family's whole-model state on every rank, not its READY
-/// capacity or a share of currently free memory. Shared weights, serial
-/// prefill workspace and load headroom keep the ordinary planner's accounting.
+/// A bounded set of independent histories. Pipeline quotes retain the
+/// registered family's whole-model state on every rank; exact Qwen27 may
+/// additionally supply its complete native TP ledger. Neither quote is READY
+/// capacity or free-memory credit. Shared weights and load headroom remain.
 public struct ClusterPlacementBatchScope: Equatable, Sendable {
     public let request: ClusterPlacementRequestScope
     public let lanes: Int
     public let requestChargeEveryRankBytes: Int
     public let chunkTokens: Int?
     public let sharedWorkspaceEveryRankBytes: Int
+    public let tensorParallelQuote: ClusterPlacementTensorBatchQuote?
+    public var supportedModes: [ClusterGenerationMode] {
+        tensorParallelQuote == nil ? [.pipeline] : [.pipeline, .tensorParallel]
+    }
 
-    public init(request: ClusterPlacementRequestScope, lanes: Int) throws {
+    public init(request: ClusterPlacementRequestScope, lanes: Int,
+                tensorParallelQuote: ClusterPlacementTensorBatchQuote? = nil) throws {
         try request.validate()
         guard [2, 4, 8].contains(lanes), request.requestChargeEveryRankBytes > 0,
               let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: request.runtimeModelID),
@@ -23,13 +28,21 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
         guard !charge.overflow, charge.partialValue <= ClusterWorkerLimits.capacityBytes else {
             throw ClusterPlacementError("The concurrent request state exceeds the placement byte bound")
         }
+        if let tensorParallelQuote {
+            try tensorParallelQuote.validate()
+            guard tensorParallelQuote.request == request, tensorParallelQuote.lanes == lanes else {
+                throw ClusterPlacementError("Tensor and pipeline batch quotes describe different requests or widths")
+            }
+        }
+        self.tensorParallelQuote = tensorParallelQuote
         self.request = request; self.lanes = lanes
-        chunkTokens = nil; sharedWorkspaceEveryRankBytes = 0
+        chunkTokens = tensorParallelQuote?.chunkTokens; sharedWorkspaceEveryRankBytes = 0
         requestChargeEveryRankBytes = charge.partialValue
     }
 
     public init(quote: ClusterPlacementBatchQuote) throws {
         try quote.validate()
+        tensorParallelQuote = nil
         request = quote.request; lanes = quote.lanes; chunkTokens = quote.chunkTokens
         sharedWorkspaceEveryRankBytes = quote.sharedWorkspaceEveryRankBytes
         requestChargeEveryRankBytes = try quote.totalEveryRankBytes()
@@ -60,8 +73,8 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
 
     public func apply(to policy: inout ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
         // Refuse explicit incompatible choices instead of changing what a
-        // caller asked to execute. An unspecified mode becomes plain pipeline.
-        guard policy.modes == nil || policy.modes == [.pipeline],
+        // caller asked to execute. TP is considered only with its native quote.
+        guard policy.modes.map({ !$0.isEmpty && $0.allSatisfy(supportedModes.contains) }) ?? true,
               policy.schedules == nil || policy.schedules == [.serial],
               policy.forcedMode == nil, !policy.handOffModes else {
             throw ClusterPlacementError("Concurrent placement requires a serial-prefill plain pipeline")
@@ -84,7 +97,9 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
         guard request.requestChargeEveryRankBytes >= layerState else {
             throw ClusterPlacementError("The batch scope does not cover every layer's request state")
         }
-        policy.modes = [.pipeline]; policy.schedules = [.serial]
+        if let tensorParallelQuote { try tensorParallelQuote.validate(layout: layout) }
+        policy.modes = policy.modes ?? supportedModes; policy.schedules = [.serial]
+        policy.tensorParallelBatchQuote = tensorParallelQuote
         policy.requestChargeEveryRankBytes = requestChargeEveryRankBytes
         // Singleton TP/MTP preference must not leak into this distinct batch
         // recommendation. Its predictions remain single-request stage rates;

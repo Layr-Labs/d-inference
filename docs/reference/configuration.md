@@ -1292,3 +1292,13 @@ The provider rejects a response for another width/chunk and binds the request
 to the same model, artifact and configuration before planning. This metadata
 neither grants native capacity nor admits images, speculative modes or GLM.
 See `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchQuote.swift`.
+
+The private `tensor-batch-scope` helper takes the same five arguments for exact
+Qwen3.8 27B. Its `darkbloom_cluster_placement_tensor_batch_quote_v1` response
+binds the original chunk and width to the complete native LOAD allowance,
+per-lane state and shared workspace. `ClusterPlacementTensorBatchQuote` rejects
+other models, shortened LOAD scope and inconsistent ledger totals. It reads
+registered headers and requires the native allocator metadata bound. Saved
+`batchLanes` may select 2, 4 or 8 in exact Qwen27 `tensor_parallel_v1`; omission
+keeps one. Other Qwen TP rows and GLM defaults remain unchanged.
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.

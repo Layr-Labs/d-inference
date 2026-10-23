@@ -115,7 +115,17 @@ struct DistributedAutomaticBatchPlanner {
                     outputTokens: demand.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
                 scope = try ClusterPlacementBatchScope(quote: quote)
             } else {
-                scope = try ClusterPlacementBatchScope(request: request!, lanes: lanes)
+                let tensorQuote: ClusterPlacementTensorBatchQuote?
+                if capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID {
+                    let quote = try ClusterPlacementTensorBatchQuote.decode(run(["tensor-batch-scope", "--model-dir", local.modelDirectory,
+                        "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens),
+                        "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)],
+                        maximum: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
+                    try quote.requireRequest(promptTokens: demand.maximumPromptTokens,
+                        outputTokens: demand.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
+                    tensorQuote = quote
+                } else { tensorQuote = nil }
+                scope = try ClusterPlacementBatchScope(request: request!, lanes: lanes, tensorParallelQuote: tensorQuote)
             }
             let request = scope.request
             let decision = try ClusterPlacementFlow.decide(description: description, capability: capability,

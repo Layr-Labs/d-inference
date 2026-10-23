@@ -22,6 +22,7 @@ public enum ClusterPlacementTool {
               An experiment; see the design. Needs the Metal library beside the binary.
           darkbloom-cluster-plan layout --model-dir DIR [--json] [--runtime-profile PROFILE]
               What an artifact is made of, from its tensor headers and config.json.
+          darkbloom-cluster-plan tensor-batch-scope --model-dir DIR --prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N
           darkbloom-cluster-plan batch-scope --model-dir DIR --prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N
               Complete native batch state and shared workspace, bound to width and original chunk.
           darkbloom-cluster-plan request-scope --model-dir DIR --prompt-tokens N --output-tokens N
@@ -117,6 +118,21 @@ public enum ClusterPlacementTool {
                 runtimeProfile: parsed.one("--runtime-profile"))
             if parsed.flags.contains("--json") { return String(decoding: try layout.encoded(), as: UTF8.self) }
             return ClusterPlacementExplanation.layout(layout).joined(separator: "\n")
+        case "tensor-batch-scope":
+            let parsed = try Arguments(rest, flags: [], options: ["--model-dir", "--prompt-tokens", "--output-tokens", "--batch-lanes", "--chunk-size"])
+            guard let directory = try parsed.one("--model-dir"), let prompt = try parsed.integer("--prompt-tokens"),
+                  let output = try parsed.integer("--output-tokens"), let lanes = try parsed.integer("--batch-lanes"),
+                  let chunk = try parsed.integer("--chunk-size") else {
+                throw ProbeError("tensor-batch-scope needs model directory, prompt/output, batch lanes and chunk size")
+            }
+            #if canImport(MLX)
+            return try json(ClusterPlacementArtifact.requestedTensorBatchQuote(directory: URL(fileURLWithPath: directory, isDirectory: true),
+                promptTokens: prompt, outputTokens: output, chunkTokens: chunk, lanes: lanes,
+                allocationBound: { try Memory.allocationFootprintUpperBound(byteCount: $0) }))
+            #else
+            _ = (directory, prompt, output, lanes, chunk)
+            throw ProbeError("Tensor batch quotation requires the native allocator metadata helper")
+            #endif
         case "batch-scope":
             let parsed = try Arguments(rest, flags: [], options: ["--model-dir", "--prompt-tokens", "--output-tokens", "--batch-lanes", "--chunk-size"])
             guard let directory = try parsed.one("--model-dir"), let prompt = try parsed.integer("--prompt-tokens"),

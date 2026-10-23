@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -42,6 +42,19 @@ running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
 refuses GLM loads and prefetches when MTP is disabled. The
 [native implementation](../design/glm53-flash-native.md) does not reduce these
 memory safeguards.
+
+At full KV, GLM plans the whole 90% memory cap as GPU memory: about 247 GB on
+a 256 GB Mac. The macOS default GPU wired-memory limit (`iogpu.wired_limit_mb=0`)
+is Metal's recommended working set, about 222 GiB there, and Metal command
+buffers past it fail with "Insufficient Memory". Set the values the production
+256 GB hosts use: `iogpu.wired_limit_mb=245760` (physical memory less 16 GiB)
+and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
+(95% of physical memory), then restart the provider. The
+[troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
+keep them after a reboot. Only the 256 GB values are defined
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit.recommendation`); they change no admission or capacity
+figure.
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).

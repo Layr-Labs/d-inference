@@ -179,6 +179,8 @@ public struct WeightHasher: Sendable {
         // Read around the file cache first: hashing touches every weight byte,
         // and cached pages would keep a second copy of the model resident
         // beside the loaded one until memory pressure compresses the weights.
+        // Pages cached before the read (a download, an earlier read) are then
+        // dropped too.
         if let digest = hashSingleFileUncached(at: url) {
             return digest
         }
@@ -240,11 +242,15 @@ public struct WeightHasher: Sendable {
 
     #if canImport(Darwin)
     /// One reusable page-aligned 1 MiB buffer and `F_NOCACHE`; nil on any
-    /// failure so the caller's existing readers run.
+    /// failure so the caller's existing readers run. The file's cached pages
+    /// are dropped afterwards (`PageCache`).
     static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
-        defer { close(descriptor) }
+        defer {
+            PageCache.drop(descriptor: descriptor)
+            close(descriptor)
+        }
         guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
         let capacity = 1 << 20
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: Int(getpagesize()))

@@ -87,6 +87,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
     case advertisedContextExceeded
+    /// The slot's engine cannot honor a requested output control (logprobs or
+    /// a token constraint on a native-tracked engine). Deterministic for the
+    /// request and slot, so 400 before any reservation; never the untyped 500
+    /// that would strike the coordinator's inference-error breaker.
+    case unsupportedOutputControl(String)
     /// The history has no user query its Qwen 3.5/3.6/3.8 or Bonsai 2 template
     /// accepts. Deterministic request error, before template rendering.
     case missingUserQuery
@@ -137,6 +142,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .advertisedContextExceeded:
             return Qwen4SupportPolicy.contextRejectionMessage
+        case .unsupportedOutputControl(let message):
+            return message
         case .missingUserQuery:
             return "This model requires at least one user message that is not only a tool response"
         case .platformTerminal(_, let message, _):
@@ -165,6 +172,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         }
         if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
             return .advertisedContextExceeded
+        }
+        if lowercased.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix) {
+            return .unsupportedOutputControl(message)
         }
         if lowercased == "tool_constraint_impossible_state" {
             return .toolChoiceViolation(

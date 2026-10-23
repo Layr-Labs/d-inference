@@ -1,0 +1,5 @@
+### GLM-5.3-Flash GPU wired-memory limit guidance
+
+- `darkbloom doctor` adds a `glm wired limit` check when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac. It warns while macOS's GPU wired-memory limits are below the values the production hosts use, prints the exact `sudo sysctl -w iogpu.wired_limit_mb=245760 vm.global_user_wire_limit=261134011596 vm.user_wire_limit=261134011596` fix and a LaunchDaemon that reapplies it at boot, and passes with the current values once they are set. GLM plans about 247 GB of GPU memory at full KV there, while the macOS default allows about 222 GiB, so Metal command buffers can fail with "Insufficient Memory".
+- `darkbloom start` prints the same one-line fix when it would serve GLM below those limits. When a GLM load, preload, self-test or coordinator request fails with a Metal out-of-memory error, the provider logs the fix once per process and `darkbloom status` repeats it under a matching load error.
+- Advice only: memory admission, KV grants and capacity are unchanged, and no command runs `sudo` for you.

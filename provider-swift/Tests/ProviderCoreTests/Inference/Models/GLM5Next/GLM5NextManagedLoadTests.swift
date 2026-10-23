@@ -117,6 +117,8 @@ final class GLM5NextManagedFixture {
             "<unk>": 0, "<s>": 1, "</s>": 2, "x": 3,
             "<|image|>": 154854, "<|video|>": 154855, "<|begin_of_image|>": 154830,
             "<|end_of_image|>": 154831, "<|begin_of_video|>": 154832, "<|end_of_video|>": 154833,
+            // The serving tokenizer requires both atomic thinking tokens.
+            "<think>": 154841, "</think>": 154842,
         ]
         let added: [[String: Any]] = vocabulary.sorted { $0.key < $1.key }.filter { $0.key != "x" }.map { token, id in
             [
@@ -702,6 +704,46 @@ private final class GLM5NextEvaluationProbe: @unchecked Sendable {
             throw error
         }
     }
+    /// The load's own SHA-256 verification is the weight hash callers
+    /// publish: it exists only after every manifest file verified, equals
+    /// what a separate `WeightHasher` pass reports, and a same-size corrupted
+    /// shard leaves it unset.
+    @Test(
+        .enabled(
+            if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC"] == "1")
+    )
+    func verifiedDigestExistsOnlyAfterEveryManifestFileVerified() async throws {
+        let fixture = try GLM5NextManagedFixture()
+        let oldCache = ModelScanner.configuredCacheDirectory
+        ModelScanner.configureCacheDirectory(
+            fixture.directory.appendingPathComponent("isolated-cache").path)
+        defer { ModelScanner.configureCacheDirectory(oldCache) }
+        let budget = GlobalKVCacheBudget(
+            activationReserveBytes: UnifiedMemoryCap.defaultActivationReserveBytes)
+        let plan = try fixture.plan()
+        let load = try await GLM5NextManagedLoad.claim(plan: plan, budget: budget)
+        #expect(await load.verifiedArtifactSHA256 == nil)
+        var container = try await ModelContainerLoading.loadServingContainer(
+            from: fixture.directory, modelID: fixture.catalog.id, nativeGLM5Load: load
+        ).autoregressive
+        #expect(await load.verifiedArtifactSHA256 == plan.weights.manifest.aggregateSHA256)
+        #expect(await load.verifiedArtifactSHA256 == WeightHasher.computeHash(snapshotDir: fixture.directory))
+        let phases = try #require(await load.phases)
+        #expect(phases.coreVerification > .zero && phases.construction > .zero)
+        #expect(phases.total >= phases.auxiliaryVerification + phases.coreVerification + phases.construction)
+        await ModelContainerLoading.releaseExternalResources(in: container)
+        container = nil
+
+        let shard = fixture.directory.appendingPathComponent("weights.safetensors")
+        var bytes = try Data(contentsOf: shard)
+        bytes[bytes.count - 1] ^= 0xFF
+        try bytes.write(to: shard)
+        let corrupted = try await GLM5NextManagedLoad.claim(plan: try fixture.plan(), budget: budget)
+        await #expect(throws: (any Error).self) { _ = try await corrupted.load() }
+        #expect(await corrupted.verifiedArtifactSHA256 == nil)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test(
         .enabled(
             if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC"] == "1")

@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -47,7 +47,10 @@ Requests never leave the machine and are never billed.
    drops the MLX buffer cache once, then evicts the least recently used idle
    slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
-   model, which still loads on request. Standalone preload does not run the
+   model, which still loads on request. A local GLM qualification load reads its
+   weights for its own per-file SHA-256 verification and the tensor reads only;
+   that verification is the artifact hash, with no separate weight-hash passes
+   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Standalone preload does not run the
    coordinator-serving one-token startup self-test. Each preloaded model does run
    the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
    before the listener opens: a short shader-cache probe, plus the shape cells

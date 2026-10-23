@@ -168,7 +168,14 @@ func advertisedModels(
     }
 }
 
-func attachWeightHashes(to models: [ModelInfo]) -> (
+private let weightHashLogger = Logger(label: "darkbloom.WeightHasher")
+
+/// Registration weight hashes for the startup model set. A model whose
+/// managed load SHA-256-verifies every file before serving reuses its
+/// `VerifiedWeightHashStore` record while every file identity still matches,
+/// instead of reading its weights before the load reads them again; other
+/// models, and every changed snapshot, are hashed in full.
+func attachWeightHashes(to models: [ModelInfo], verifiedWeightHashesFile: URL? = nil) -> (
     [ModelInfo], hashes: [String: String], fingerprints: [String: String]
 ) {
     var hashes: [String: String] = [:]
@@ -183,7 +190,9 @@ func attachWeightHashes(to models: [ModelInfo]) -> (
         // The reverse order could pair a fingerprint of newer bytes with a
         // hash of older ones and silently skip that re-hash.
         let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: snapshotDir)
-        if let hash = WeightHasher.computeHash(snapshotDir: snapshotDir, modelID: model.id) {
+        if let hash = registrationWeightHash(
+            for: model, snapshotDir: snapshotDir, verifiedWeightHashesFile: verifiedWeightHashesFile)
+        {
             updated.weightHash = hash
             hashes[model.id] = hash
             if let fingerprint {
@@ -193,6 +202,30 @@ func attachWeightHashes(to models: [ModelInfo]) -> (
         return updated
     }
     return (withHashes, hashes, fingerprints)
+}
+
+/// One model's registration hash: a matching verified record for a model the
+/// managed load verifies, otherwise a full hash (recorded for such models).
+/// Record identities are captured before hashing, like the fingerprint.
+func registrationWeightHash(
+    for model: ModelInfo, snapshotDir: URL, verifiedWeightHashesFile: URL?,
+    computeHash: (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+) -> String? {
+    let recordFile = model.weightsVerifiedByManagedLoad ? verifiedWeightHashesFile : nil
+    let identities = recordFile == nil ? nil : VerifiedWeightHashStore.fileIdentities(snapshotDir: snapshotDir)
+    if let recordFile, let recorded = VerifiedWeightHashStore.verifiedHash(
+        modelID: model.id, identities: identities, at: recordFile)
+    {
+        weightHashLogger.info(
+            "Weight hash for \(model.id): \(recorded.prefix(16)) (recorded by its last full verification; file identities unchanged, the load verifies again before serving)")
+        return recorded
+    }
+    let hash = computeHash(snapshotDir, model.id)
+    if let recordFile, let hash, let identities {
+        VerifiedWeightHashStore.record(
+            modelID: model.id, aggregateSHA256: hash, identities: identities, at: recordFile)
+    }
+    return hash
 }
 
 // MARK: - Output Helpers

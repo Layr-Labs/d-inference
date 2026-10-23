@@ -126,6 +126,7 @@ extension ProviderLoop {
     /// Records a model-load failure for the diagnostics state file so the
     /// operator sees the exact "Insufficient memory …" text in `doctor`.
     internal func recordModelLoadError(model: String, message: String) {
+        GLM5NextWiredLimitNotice.report(failureMessage: message, modelID: model)
         lastModelLoadError = DaemonState.ModelLoadError(
             model: model, message: message, at: Date().timeIntervalSince1970)
         writeDaemonState()

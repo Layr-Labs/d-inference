@@ -18,6 +18,9 @@ public enum ModelAutopilotPolicy {
               command.loadModelId?.isEmpty != true,
               command.loadModelId != nil || !command.unloadModelIds.isEmpty,
               command.leaseSeconds >= 0, command.leaseSeconds <= 86_400,
+              (0...86_400).contains(command.holdSeconds ?? 0),
+              // A hold protects only a loaded target.
+              (command.holdSeconds ?? 0) == 0 || command.loadModelId != nil,
               !command.unloadModelIds.contains(where: { $0.isEmpty }),
               !(command.loadModelId.map { command.unloadModelIds.contains($0) } ?? false)
         else { return "invalid_command" }

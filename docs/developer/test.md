@@ -614,6 +614,32 @@ and its `failure` records contract violations, thrown errors and teardown
 errors alike. The test qualifies provider-staged imports only, so it refuses
 MiMo specifications, which load through the native engine.
 
+`ModelCheckpointConversationLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointConversationLiveTests.swift`)
+is the opt-in real-model observation of one growing conversation. It reads the
+same standalone specification (only its model, precision and `outputTokens`)
+and an isolated ephemeral cache, requires native live and checkpoint precision,
+and refuses MiMo. Six turns grow from 30,000 tokens by 5,000 tokens each. Each
+turn is served with the prompt it shares with the previous turn as the
+repeated-prefix hint, as an agent loop's next turn would be. Per turn the
+report records TTFT, restored tokens, the gap from the last token to the
+terminal (which waits for checkpoint publication) and the files and bytes the
+complete-checkpoint store wrote. It fails only when a turn after the first
+restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
+compare against the large-memory complete-checkpoint default. The timings need
+exclusive GPU use:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointConversationLiveTests
+```
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:

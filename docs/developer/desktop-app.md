@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-18
+> Last updated: 2026-10-23
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -534,6 +534,9 @@ preview contains explicitly illustrative release notes and version cutoffs.
 
 ## Release qualification
 
+Signed, notarized releases are built and published by
+`.github/workflows/release-desktop.yml` (tag `desktop-vX.Y.Z`); see
+[Release the macOS desktop app](../operations/desktop-release.md).
 Before public distribution, verify all of the following against the final
 signed frontend and signed provider artifact:
 

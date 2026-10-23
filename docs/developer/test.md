@@ -208,6 +208,23 @@ capture. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
 
+`GLM5NextRealLogprobsQualificationTests` qualifies logprobs on the real GLM
+checkpoint through the production bundle and the `EngineV2Bridge` relay channel
+(the standalone `--local` HTTP server never emits logprobs). It needs the
+`GLM5NextRealModelHarness` variables (`DARKBLOOM_TEST_GLM5_REAL_MODEL_DIR`,
+`DARKBLOOM_TEST_GLM5_REAL_RESULTS_DIR`, `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REPO`,
+`DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
+`DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
+`DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
+32-token `top_logprobs: 5` request must return one entry per token, never
+draft, match the MTP greedy tokens of the same prompt without logprobs, and
+match a teacher-forced dense-cache log-softmax within
+`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`, above the
+bf16 rounding floor of the different kernels). Batched with a plain row, both
+rows keep their solo greedy output and the plain row drafts again after the
+logprobs row finishes. The engine must end without a native fault or retained
+load. Results go to `logprobs-qualification.json` in the results directory.
+
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
 `GLM5NextPromptPolicyTests` checks those fixed bytes through the shipped

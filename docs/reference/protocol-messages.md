@@ -883,12 +883,14 @@ reply; the others follow `started`:
 
 | `error` | Meaning |
 |---|---|
-| `model_not_selected` | No saved consent (or a `private_only` Mac), or consent was revoked before the build joined; unchanged from earlier providers |
+| `model_not_selected` | No saved consent (or a `private_only` Mac), downloads turned off by the operator, or consent was revoked before the build joined; unchanged from earlier providers |
 | `autopilot_paused` | Saved consent, Autopilot paused |
 | `model_not_supported` | Not an active catalog build with a manifest that this Mac can run: unknown or inactive, RAM floor, runtime capabilities, engine family, load budget, unreportable ID, a failed self-test, or the 256-ID bound |
-| `insufficient_disk` | The download would leave less free disk than `[backend] autopilot_download_reserve_gb` (default `50` GiB) |
+| `model_limit_reached` | The operator's `max_models` cap is reached |
+| `storage_limit_reached` | The download would exceed the operator's `max_storage_gb` cap |
+| `insufficient_disk` | The download would leave less free disk than the reserve (`reserve_gb`, default `50` GiB) |
 | `catalog_unavailable` | The catalog or manifest could not be fetched; retryable |
-| `download_failed` | Transfer, verification, scan or hash failed; retryable |
+| `download_failed` | Transfer, verification, scan or hash failed, or the model was loaded when the download verified; retryable |
 
 Shutdown and drain refusals keep their existing text (`provider is shutting
 down`, `provider draining for update`).
@@ -1278,12 +1280,16 @@ Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 ordinary serving the provider replies with `prefetch_model_status` and then
 `models_update`.
 
-With saved Autopilot consent (capability `inventory_downloads`), a build
-outside ordinary serving is an Autopilot download: the provider downloads and
+With saved Autopilot consent and downloads not turned off by the operator
+(capability `inventory_downloads`; on by default), a build outside ordinary
+serving is an Autopilot
+download, even under a live lease: the provider downloads and
 verifies it through the same pipeline, adds it to `selected_models` and the
 registration inventory, and sends **no** `models_update`, because that would make
 it ordinary and publicly routable. It never loads or advertises the build; an
-Autopilot operation may load it. The provider then re-registers once when idle
+Autopilot operation may load it. With consent but downloads off, such a request
+is refused `model_not_selected` and never takes the ordinary path. The provider then re-registers once when idle (no busy reason,
+operation, live lease or other download)
 so `register.autopilot_inventory` carries the build's `ModelInfo`
 ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 
@@ -1382,7 +1388,8 @@ support.
 | `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
 | `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
 | `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
-| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads`. Absent on older providers, which do not adopt, hold or download |
+| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`, and `inventory_downloads` unless the operator turned downloads off. Absent on older providers, which do not adopt, hold or download |
+| `download_storage` | — / `ModelAutopilotDownloadStorage?` | opt; only with `inventory_downloads` | `{disk_free_bytes, reserve_bytes, used_bytes, used_models, limit_bytes?, limit_models?}`, int64 bytes. Free space on the model cache volume (0 when unknown), the reserve a download keeps, the builds Autopilot downloaded that are still on disk, and the operator's caps (absent = no cap). Measured at most once a minute and after each download |
 | `adopted_models` | — / `[String]?` | opt; with consent | Cached inventory targets of succeeded operations that keep serving without a lease; each is resident. Absent when none |
 | `held_models` | — / `[ModelAutopilotHold]?` | opt; with consent | Active holds `{model_id, expires_at_ms}` (Unix milliseconds); each held model is resident and is never evicted for an ordinary cold load. Absent when none |
 | `busy_reasons` | — / `[String]?` | opt; with consent | Every condition that would make the provider answer `provider_busy` now, in report order; absent when not busy |
@@ -1406,7 +1413,7 @@ Report order lists an owner before the work it owns:
 | `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
 | `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
 | `capabilities` (`ModelAutopilotCapability`) | `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads` |
-| Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |
+| Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `model_limit_reached`, `storage_limit_reached`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |
 
 Bounds and the watchdog's cancellation rules are in the
 [Autopilot architecture](../architecture/model-autopilot.md#busy-reasons-and-stalled-transitions).
@@ -1463,7 +1470,8 @@ reward declarations require an updated provider build to be released separately.
 With saved consent, the `selected_models` set is the persisted selection plus
 every verified active catalog build in the local cache, including builds
 downloaded on the operator's behalf; never arbitrary local or off-catalog
-builds. It can be broader than saved `enabled_models`; its metadata is carried
+builds. The operator can turn downloads on their behalf off or limit them
+(`[backend.autopilot_downloads]`). It can be broader than saved `enabled_models`; its metadata is carried
 in optional `register.autopilot_inventory` (`[]ModelInfo`, at most 256 entries),
 not in ordinary `register.models`. The inventory is built from the same
 snapshot as that frame's `selected_models`, and the provider records which IDs

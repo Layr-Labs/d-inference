@@ -4,9 +4,10 @@
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
-catalog build in the local cache, which a controller can grow by downloading
-catalog builds on the operator's behalf. Interest or shadow enrollment does not
-authorize live control, higher earnings or relaxed memory limits.
+catalog build in the local cache. Unless the operator turns downloads off, a
+controller can grow that set by downloading catalog builds on the operator's
+behalf, within the operator's optional limits. Interest or shadow enrollment does not authorize live control, higher
+earnings or relaxed memory limits.
 
 ## Mechanism
 
@@ -44,61 +45,100 @@ registration inventory all read it. No consent step, prompt or revision change
 widens it; the saved opt-in is the gate. Without consent, or on a
 `private_only` Mac, the report is the persisted list exactly as before.
 
-A cached build qualifies under the opt-in picker's default-selection rules
-(`AutopilotBuildEligibility`): an active catalog build, the catalog RAM floor
-and runtime capabilities met, a supported engine family, a footprint inside the
-load budget, and a reportable ID (1 to 256 bytes of visible ASCII). It is
-verified when its weight hash is the catalog's current `weight_hash` (or the
-manifest aggregate). The start path checks this with its single weight-hash pass
-(`AutopilotStartInventory`, used by `runForeground`). Pins stay a subset of the
+A cached build of the start scan qualifies under the opt-in picker's
+default-selection rules (`AutopilotBuildEligibility`): an active catalog build,
+the catalog RAM floor and runtime capabilities met, a supported engine family, a
+footprint inside the load budget, and a reportable ID (1 to 256 bytes of visible
+ASCII). It is verified when its weight hash is the catalog's current
+`weight_hash` (or the manifest aggregate), rather than by a second manifest
+read (`AutopilotStartInventory`). Start time does not grow with the cache:
+`runForeground` hashes only the persisted selection and the ordinary builds, as
+before, and the provider hashes the other candidates one at a time after
+registration (`startAutopilotCandidateVerification`). Pins stay a subset of the
 persisted selection, so they are a subset of the set.
 
 | Event | Effect on the set |
 |---|---|
-| Daemon start with the catalog | Every verified current catalog build in the cache joins |
+| Daemon start with the catalog | The persisted selection and verified ordinary builds join at once; every other verified current catalog build joins after its background hash |
 | Daemon start without the catalog | A build recorded in `autopilot-downloads.json` joins while its bytes still hash to the recorded value |
-| Next scheduled window | Builds verified at start or recorded stay while their bytes are unchanged (`ScheduledWindowSelection`) |
+| Next scheduled window | Builds verified at start or by the previous window's provider stay while their bytes are unchanged (`ScheduledWindowSelection`, `autopilotCachedBuildHashes`) |
+| Consent revoked at runtime | Cached builds outside the persisted selection leave, unless resident or advertised (`dropAutopilotCachedBuildsWithoutConsent`) |
 | A verified Autopilot download | Joins, persisted in the ledger |
 | An ordinary prefetch verifies a build | Joins with its advertisement (`publishVerifiedPrefetch`) |
 | A build is superseded or its files disappear | Leaves (`dropAdvertisedBuild`; `sweepAutopilotCachedBuilds`, once a minute, never for a saved, resident, loading or ordinary build) |
 
 The union is capped at 256 IDs, persisted selection first, because the
-coordinator fences a machine whose report exceeds its bounds. Changes never
+coordinator fences a machine whose report exceeds its bounds; a build joins
+only as a member or while there is room (`autopilotSetHasRoom`), so no member
+is ever pushed out. Changes never
 touch the consent `revision`, so a live lease or accepted operation stays
 valid. The coordinator learns inventory metadata (`ModelInfo`) only from
 `register.autopilot_inventory`: a build added at runtime appears in the next
 heartbeat's `selected_models`, and the provider re-registers once
 (`refreshAutopilotInventoryRegistration`, a planned reconnect) on the first
-capacity tick with no busy reason and no operation. A busy provider keeps
-waiting rather than interrupting work; a registration made for any other reason
-also ends the wait (`registeredAutopilotInventoryIDs`).
+capacity tick with no busy reason, no operation, no live lease, no running or
+queued download and the background verification finished. A busy provider
+keeps waiting rather than interrupting work; a registration made for any other
+reason also ends the wait (`registeredAutopilotInventoryIDs`).
 
 ## Downloads on the operator's behalf
 
-With saved consent, a `prefetch_model` for a build outside ordinary serving is
-a download into the set (`handleAutopilotDownloadRequest`). It reuses the
-ordinary resumable, manifest-verified prefetch on a separate prefetch
-coordinator (`autopilotDownloadCoordinator`), replies `started`, `downloading`
-and a terminal `verified` or `failed`, and never advertises, loads or deletes
-anything; a later Autopilot operation may load the build. Serving is never
-fenced for a download. Without consent the reply stays `model_not_selected`.
+Downloads are on by default for a Mac with saved consent
+(`autopilotDownloadsEnabled`). The operator can limit them or turn them off in
+provider configuration (`[backend.autopilot_downloads]`,
+`AutopilotDownloadSettings`), for example with `darkbloom autopilot downloads
+enable --max-storage-gb N` or `darkbloom autopilot downloads disable`. They are
+not part of the consent record: turning them on or off or changing a limit
+never changes the consent `revision` or a lease, and the running provider
+applies the change at its next policy refresh (`refreshAutopilotSettings`).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` (table or key absent) | Allow downloads |
+| `max_storage_gb` | absent: no cap | GiB the builds Autopilot downloaded may use together |
+| `max_models` | absent: no cap | Builds Autopilot may have downloaded at once |
+| `reserve_gb` | absent: `AutopilotDiskGuard.defaultReserveGiB = 50` | GiB of free disk a download must leave on the model cache volume |
+
+With saved consent and downloads on, a `prefetch_model` for a build outside
+ordinary serving is a download into the set (`handleAutopilotDownloadRequest`),
+even under a live lease, so it is never advertised or sent in `models_update`.
+It reuses the ordinary resumable, manifest-verified prefetch on a separate
+prefetch coordinator (`autopilotDownloadCoordinator`), replies `started`,
+`downloading` and a terminal `verified` or `failed`, and never advertises,
+loads or deletes anything; a later Autopilot operation may load the build.
+Serving is never fenced for a download. Without consent or with downloads off,
+any prefetch outside ordinary serving is refused `model_not_selected` and never
+takes the ordinary path.
+
+Usage counts the builds Autopilot downloaded that are still on disk
+(`AutopilotDownloadLedger.usage`); deleting one frees its share. The budget
+(`AutopilotDownloadBudget`) is reported as `download_storage` and checked
+before and during each download:
 
 | Step | Check | Refusal (`AutopilotDownloadRefusal`) |
 |---|---|---|
 | Request | Autopilot not paused | `autopilot_paused` |
 | Request | Reportable ID, runtime capabilities | `model_not_supported` |
+| Request | Below `max_models`; below `max_storage_gb` (a member re-verifies without counting) | `model_limit_reached`, `storage_limit_reached` |
 | Download task | Catalog and manifest fetched | `catalog_unavailable` |
 | Download task | Active catalog build with a manifest, RAM floor, capabilities | `model_not_supported` |
-| Download task | Disk guard: free space minus the download keeps `autopilot_download_reserve_gb` (default `AutopilotDiskGuard.defaultReserveGiB = 50` GiB) | `insufficient_disk` |
+| Download task | The build's size within `max_storage_gb` | `storage_limit_reached` |
+| Download task | Free space minus the download keeps the reserve (unknown free space refuses) | `insufficient_disk` |
 | Download task | Transfer and verification | `download_failed` |
-| Publication | Scan and weight hash, supported family, load budget, no failed self-test | `download_failed`, `model_not_supported` |
+| Publication | Scan and weight hash; not loaded meanwhile | `download_failed` |
+| Publication | Supported family, load budget, these bytes not refused by a self-test, room in the set | `model_not_supported` |
 | Publication | Consent still saved and not paused | `model_not_selected`, `autopilot_paused` |
 
-A build already in the set with a verified hash answers `verified` without a
-download. A verified download is recorded in `autopilot-downloads.json` beside
-the config (`AutopilotDownloadLedger`: model, weight hash, time, owner-only),
-so a restart keeps it and a future cleanup can tell it from the operator's own
-downloads.
+A member with a verified hash answers `verified` without a download while it is
+loaded, or its files are present and it has neither failed a self-test nor begun
+retiring. Different bytes from a build that failed its self-test are a new build
+and clear the record, as in ordinary publication. A verified download is
+recorded in `autopilot-downloads.json` beside the config
+(`AutopilotDownloadLedger`: model, weight hash, size, time; owner-only), so a
+restart keeps it, its size counts against the cap, and a future cleanup can
+tell it from the operator's own downloads. A download already verified when the
+operator turns downloads off still joins the set, like any verified cached
+build.
 
 ## Placements after an operation
 
@@ -185,6 +225,9 @@ stops the driver at its next candidate, and the current step finishes normally.
 8. A download never advertises, loads or deletes a build and never fences
    serving; every refusal is a closed code (`AutopilotDownloadRefusal`,
    `publishAutopilotDownload`).
+9. Without saved consent, or with downloads turned off, there is no download, no
+   `inventory_downloads` capability and no `download_storage`
+   (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
 
 ## Failure modes
 
@@ -206,6 +249,9 @@ stops the driver at its next candidate, and the current step finishes normally.
   cached. A provider that is never idle keeps waiting.
 - A build at the 256-ID bound downloads but stays out of the set and its
   download reports `model_not_supported`.
+- A re-registration closes admission briefly, like any planned reconnect, and
+  fails coordinator-side operations queued for that machine; it waits for an
+  idle tick and happens once per batch of new builds.
 
 ## External Policy
 
@@ -215,7 +261,8 @@ Do not administer those systems by reintroducing backend code here. Wire changes
 require coordinated review; fixed provider fixtures alone do not qualify live
 controller behavior or a production cohort. A coordinator uses adoption, holds
 and downloads only for providers reporting the matching `capabilities`
-(`inventory_adoption`, `placement_holds`, `inventory_downloads`).
+(`inventory_adoption`, `placement_holds`, `inventory_downloads`); it can
+pre-check a download against `download_storage`, but the provider decides.
 
 ## Related
 

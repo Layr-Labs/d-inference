@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1561,7 +1561,10 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows:
+uses exact acceptance for `gemma-4-26b-qat-4bit` and the private Bonsai 9B candidate.
+Gemma's greedy draft proposals can sustain repetitive reasoning when accepted
+by a probability floor; exact acceptance preserves the target distribution.
+Other eligible profiles default to typical acceptance for sampled target-prefix rows:
 a draft is kept when the sampler-filtered target row gives it probability above
 `min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
 position and the bonus position still commit the keyed target sample. Output

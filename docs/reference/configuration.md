@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -382,7 +382,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Config key | Default | Read in | Effect |
 |---|---|---|---|
-| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | model map `{}`; unset uses the model-specific rule: `exact` for `gemma-4-26b-qat-4bit` and the private Bonsai 9B candidate, `typical` (delta `0.2`) otherwise | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. `typical` sampled target-prefix output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Explicit `typical` can override Gemma's exact default and requires separate quality qualification. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

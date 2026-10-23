@@ -6,9 +6,9 @@ import MLXLMCommon
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
-/// private Bonsai 9B candidate, typical for existing profiles). A value that
-/// names no known rule is reported and resolves to `exact`, so a typo can
-/// never install a lossy rule. The typical threshold is the engine constant
+/// served Gemma 4 QAT profile and private Bonsai 9B candidate, typical otherwise).
+/// A value that names no known rule is reported and resolves to `exact`, so a
+/// typo can never install a lossy rule. The typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
 /// Serving reads no environment variable for this rule; the benchmark
 /// harness alone honours `DARKBLOOM_MTP_ACCEPTANCE`.
@@ -35,7 +35,10 @@ public enum MTPAcceptancePolicy {
         let raw = byModel[modelID] ?? global
         guard let raw else {
             return Resolution(
-                acceptance: Bonsai9BModelPolicy.matchesModelID(modelID) ? .exact
+                // Typical acceptance can sustain repetitive Gemma reasoning.
+                // Exact acceptance preserves the target's sampling distribution.
+                acceptance: modelID == "gemma-4-26b-qat-4bit"
+                    || Bonsai9BModelPolicy.matchesModelID(modelID) ? .exact
                     : .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta),
                 unrecognized: nil)
         }

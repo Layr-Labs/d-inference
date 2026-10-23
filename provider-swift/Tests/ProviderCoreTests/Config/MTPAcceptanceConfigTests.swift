@@ -11,7 +11,7 @@ import Testing
 
 @Suite("MTP acceptance config")
 struct MTPAcceptanceConfigTests {
-    @Test("absent keys decode to nil and an empty table, and resolve to typical")
+    @Test("absent keys decode to nil and an empty table, and Gemma QAT resolves to exact")
     func absentKeys() {
         let config = ConfigManager.parse(
             """
@@ -27,8 +27,25 @@ struct MTPAcceptanceConfigTests {
             global: config.backend.mtpAcceptance,
             byModel: config.backend.mtpAcceptanceByModel,
             modelID: "gemma-4-26b-qat-4bit")
-        #expect(resolved.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+        #expect(resolved.acceptance == .exact)
         #expect(resolved.unrecognized == nil)
+    }
+
+    @Test("Gemma's exact default preserves explicit overrides and other model defaults")
+    func gemmaDefaultAndOverrides() {
+        let explicitTypical = MTPAcceptancePolicy.resolve(
+            global: "typical", byModel: [:], modelID: "gemma-4-26b-qat-4bit")
+        #expect(explicitTypical.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+        #expect(explicitTypical.unrecognized == nil)
+
+        let modelTypical = MTPAcceptancePolicy.resolve(
+            global: "exact", byModel: ["gemma-4-26b-qat-4bit": "typical"],
+            modelID: "gemma-4-26b-qat-4bit")
+        #expect(modelTypical.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+
+        let other = MTPAcceptancePolicy.resolve(
+            global: nil, byModel: [:], modelID: "qwen3.8-flash-next")
+        #expect(other.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
     }
 
     @Test("keys decode and the per-model table outranks the global value")

@@ -890,7 +890,9 @@ on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
 parser withholds the call until end of stream, and `ToolConstraintValidation`
 must accept it before it is exposed (`ToolChoiceEnforcementPolicy.forcedStrategy`).
 The provider advertises it for the managed GLM identities. Neither mode
-installs a constraint, so these rows stay MTP-eligible.
+installs a token constraint or requests logprobs, so these rows stay
+MTP-eligible and pass the native engine's output-control refusal
+(`EngineV2Bridge.nativeOutputControlRefusal`).
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it

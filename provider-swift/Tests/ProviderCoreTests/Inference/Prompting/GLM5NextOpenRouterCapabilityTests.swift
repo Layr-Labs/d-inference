@@ -77,11 +77,22 @@ private final class PromptCapture: @unchecked Sendable {
 private final class ScriptedGLMEngine: CBv2Engine, @unchecked Sendable {
     let output: [String]
     let finish: CBv2FinishReason
+    private let lock = NSLock()
+    private var submitted: [CBv2Request] = []
     init(output: [String], finish: CBv2FinishReason = .stop) {
         self.output = output
         self.finish = finish
     }
+    /// What GLM's native-tracked engine decides for each submission
+    /// (`EngineV2Bridge.nativeOutputControlRefusal`); nil admits it.
+    var nativeRefusals: [String?] {
+        lock.withLock { submitted }.map {
+            EngineV2Bridge.nativeOutputControlRefusal(nativeTracked: true,
+                topLogprobs: $0.sampling.topLogprobs, constrained: $0.tokenConstraint != nil)
+        }
+    }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { submitted.append(request) }
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
         for (index, text) in output.enumerated() {
             continuation.yield(.delta(text: text, tokens: [1000 + index], logprobs: nil))
@@ -110,6 +121,8 @@ private struct ServedResponse {
     var error: (any Error)?
     /// When the provider first recorded generated but withheld output.
     var firstWithheldOutputAt: ContinuousClock.Instant?
+    /// The native engine's output-control decision for each submission.
+    var nativeRefusals: [String?] = []
 }
 
 @Suite("GLM-5.3-Flash OpenRouter capability requests")
@@ -153,7 +166,8 @@ struct GLM5NextOpenRouterCapabilityTests {
     /// model's reasoning parser, a forced stream, the OpenAI service and the
     /// scheduler over a GLM slot whose model says `output`.
     fileprivate func serve(_ body: [String: Any], output: [String], finish: CBv2FinishReason = .stop,
-               prompts: PromptCapture = PromptCapture()) async throws -> ServedResponse {
+               prompts: PromptCapture = PromptCapture(),
+               logprobs: EngineV2LogprobsPlumbing? = nil) async throws -> ServedResponse {
         let data = try JSONSerialization.data(withJSONObject: body)
         var request = try ProviderLoop.decodeOpenAIRequest(data, modelType: "glm5_next")
         request.reasoningParser = ProviderLoop.inferReasoningParser(for: "glm5_next")
@@ -161,7 +175,8 @@ struct GLM5NextOpenRouterCapabilityTests {
         let controls = ProviderLoop.extractChatTemplateControls(from: data)
         let tokenizer = TokenizerHandle(try GLM5NextThinkingTokenizer(
             base: GLMTemplateTokenizer(template: try Self.shippedTemplate(), rendered: prompts)))
-        let bridge = EngineV2Bridge(engine: ScriptedGLMEngine(output: output, finish: finish),
+        let engine = ScriptedGLMEngine(output: output, finish: finish)
+        let bridge = EngineV2Bridge(engine: engine,
             modelId: Self.model, tokenizer: tokenizer, eosTokenIds: [154820, 154827, 154829],
             kvBytesPerToken: 0)
         let usage = EngineV2RequestUsageSignal()
@@ -169,7 +184,8 @@ struct GLM5NextOpenRouterCapabilityTests {
             registryProvider: { @Sendable in
                 [Self.model: .init(tokenizer: tokenizer, modelType: "glm5_next", engineV2Bridge: bridge)]
             },
-            defaultMaxTokens: 2048, templateControls: controls, engineV2Usage: usage)
+            defaultMaxTokens: 2048, templateControls: controls, engineV2Logprobs: logprobs,
+            engineV2Usage: usage)
         var served = ServedResponse()
         do {
             for try await frame in try await MLXOpenAIService(engine: scheduler)
@@ -204,6 +220,7 @@ struct GLM5NextOpenRouterCapabilityTests {
             served.error = error
         }
         served.firstWithheldOutputAt = usage.firstWithheldOutputAt
+        served.nativeRefusals = engine.nativeRefusals
         return served
     }
 
@@ -230,6 +247,8 @@ struct GLM5NextOpenRouterCapabilityTests {
         // Reasoning streamed first; the answer left once, after validation.
         #expect(served.order.last == "content" && served.order.filter { $0 == "content" }.count == 1)
         #expect(served.finishReason == "stop")
+        // No sampler constraint or logprobs: GLM's native engine admits it.
+        #expect(served.nativeRefusals == [nil])
         let prompt = try #require(prompts.prompts.first)
         #expect(prompt.contains("<|system|>You must respond with a single valid JSON"))
         #expect(prompt.hasSuffix("<|assistant|><think>"))
@@ -247,6 +266,7 @@ struct GLM5NextOpenRouterCapabilityTests {
         let served = try await serve(body, output: ["\n", Self.austin], prompts: prompts)
         #expect(served.error == nil && served.reasoning.isEmpty)
         #expect(served.content == Self.austin && served.order == ["content"])
+        #expect(served.nativeRefusals == [nil])
         #expect(try #require(prompts.prompts.first).hasSuffix("<|assistant|><think>"))
         // The withheld answer still ends the pre-content interval when it is
         // generated, not when it validates (the relay's first-content deadline).
@@ -316,6 +336,8 @@ struct GLM5NextOpenRouterCapabilityTests {
             with: Data((served.toolCalls.first?.arguments ?? "").utf8)) as? [String: String])
         #expect(arguments == ["location": "Boston, MA", "unit": "fahrenheit"])
         #expect(served.finishReason == "tool_calls")
+        // No sampler constraint or logprobs: GLM's native engine admits it.
+        #expect(served.nativeRefusals == [nil])
         let prompt = try #require(prompts.prompts.first)
         #expect(prompt.contains("<tools>\n{\"description\": \"Get the current weather in a given location\", \"name\": \"get_current_weather\""))
         #expect(prompt.contains(choice == "required"
@@ -344,8 +366,22 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(served.reasoning == "Boston weather needs the tool in fahrenheit.")
         #expect(served.order.first == "reasoning" && served.order.last == "tool" && served.content.isEmpty)
         #expect(served.toolCalls.map(\.name) == ["get_current_weather"])
+        #expect(served.nativeRefusals == [nil])
         let prompt = try #require(prompts.prompts.first)
         #expect(!prompt.contains("get_forecast"))
+    }
+
+    /// Control for the native-engine evidence above: the same check refuses a
+    /// GLM logprobs row, which the native engine cannot serve.
+    @Test func nativeEngineEvidenceRefusesALogprobsRow() async throws {
+        var body = Self.jsonObjectBody()
+        body.removeValue(forKey: "response_format")
+        // The coordinator handler threads the sealed body's logprobs request
+        // this way (`ProviderLoop+InferenceHandler`).
+        let served = try await serve(body, output: ["Sunny."], logprobs: EngineV2LogprobsPlumbing(
+            topLogprobs: 2, channel: EngineV2LogprobsChannel()))
+        let refusal = try #require(served.nativeRefusals.first ?? nil)
+        #expect(refusal.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix))
     }
 
     /// Prose, a missing call, the wrong function, a schema violation, a

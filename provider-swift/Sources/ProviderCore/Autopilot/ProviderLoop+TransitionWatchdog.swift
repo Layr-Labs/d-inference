@@ -40,9 +40,7 @@ extension ProviderLoop {
             let occurrence = TransitionWatchdog.Occurrence(.startupPreload, subject: model,
                 generation: transitionGenerations.generation(of: .startupPreload, subject: model))
             active.insert(occurrence)
-            if let candidate = startupPreloadCandidate, candidate.model == model {
-                began[occurrence] = candidate.startedAt
-            }
+            if let candidate = startupPreloadCandidate { began[occurrence] = candidate.startedAt }
         }
         for (model, taskId) in preloadTaskIds where preloadTasks[model] != nil {
             active.insert(.init(.preload, subject: model, generation: taskId.uuidString))

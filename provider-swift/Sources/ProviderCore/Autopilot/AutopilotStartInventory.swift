@@ -46,8 +46,27 @@ public struct AutopilotStartInventory: Sendable {
                     runtimeCapabilities: runtimeCapabilities)
             } ?? false
         }
-        return recordedDownloads[model.id] != nil && EngineV2SupportedModels.isSupported(model: model)
-            && AutopilotBuildEligibility.fitsLoadBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb)
+        return recordedDownloads[model.id] != nil
+            && AutopilotBuildEligibility.allowsScannedBuild(model, memoryGb: memoryGb)
+    }
+
+    /// Cached candidates the start path does not hash: the provider verifies
+    /// them in the background after registration, so start time does not
+    /// grow with the cache (`ProviderLoop.startAutopilotCandidateVerification`).
+    public struct Pending: Sendable {
+        public let rule: AutopilotStartInventory
+        public let models: [ModelInfo]
+
+        public init(rule: AutopilotStartInventory, models: [ModelInfo]) {
+            self.rule = rule
+            self.models = models
+        }
+    }
+
+    /// The local candidates outside `hashed`, deduplicated by ID.
+    public func pending(local: [ModelInfo], hashed: Set<String>) -> Pending {
+        var seen = hashed
+        return Pending(rule: self, models: local.filter { isCandidate($0) && seen.insert($0.id).inserted })
     }
 
     /// The hashed candidates that belong to the set, capped like the report.

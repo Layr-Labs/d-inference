@@ -208,28 +208,30 @@ extension Start {
 
         let selectedIDs = Set(selectedModels.map(\.id))
         let autopilot = config.backend.modelAutopilot
-        // Saved consent: the Autopilot set is the persisted selection plus
-        // every verified catalog build in the cache this Mac can run.
-        let autopilotStart: AutopilotStartInventory? = autopilot.hasConsent && !config.coordinator.privateOnly
-            ? await AutopilotStartInventory.load(settings: autopilot, coordinatorURL: coordinatorURL,
-                configDirectory: snapshot.configPath.deletingLastPathComponent(),
-                memoryGb: Double(hardware.memoryGb), runtimeCapabilities: runtimeCapabilities)
-            : nil
         let inventory = autopilot.hasConsent
-            ? snapshot.models.filter { model in
-                autopilotStart?.isCandidate(model) ?? (autopilot.allows(model.id)
-                    && ModelRuntimeRequirements.isEligible(modelID: model.id, available: runtimeCapabilities))
+            ? snapshot.models.filter {
+                autopilot.allows($0.id)
+                    && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
             } : []
         let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
         let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(
             to: combined, verifiedWeightHashesFile: VerifiedWeightHashStore.path())
         let models = verified.filter { selectedIDs.contains($0.id) }
+        // Saved consent: the Autopilot set is the persisted selection plus
+        // every verified catalog build in the cache this Mac can run. Builds
+        // hashed above join now; the provider verifies the others after
+        // registration, so start time does not grow with the cache.
+        let autopilotStart: AutopilotStartInventory? = autopilot.hasConsent && !config.coordinator.privateOnly
+            ? await AutopilotStartInventory.load(settings: autopilot, coordinatorURL: coordinatorURL,
+                configDirectory: snapshot.configPath.deletingLastPathComponent(),
+                memoryGb: Double(hardware.memoryGb), runtimeCapabilities: runtimeCapabilities)
+            : nil
         let autopilotInventory = autopilotStart?.inventory(from: verified) ?? verified.filter {
             autopilot.allows($0.id) && $0.weightHash?.isEmpty == false
         }
-        if let autopilotStart {
-            let added = autopilotInventory.filter { !autopilot.allows($0.id) }.map(\.id)
-            print("  Autopilot set: \(autopilot.selectedModels.count) saved + \(added.count) cached build(s)"
+        let autopilotPending = autopilotStart?.pending(local: snapshot.models, hashed: Set(verified.map(\.id)))
+        if let autopilotStart, let autopilotPending {
+            print("  Autopilot set: \(autopilotInventory.count) verified, \(autopilotPending.models.count) cached build(s) to verify"
                 + (autopilotStart.catalog == nil ? " (catalog unavailable: recorded downloads only)" : ""))
         }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
@@ -348,7 +350,8 @@ extension Start {
             modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig,
             configPath: snapshot.configPath,
-            autopilotInventory: autopilotInventory
+            autopilotInventory: autopilotInventory,
+            autopilotPendingCandidates: autopilotPending
         )
 
         do {
@@ -483,6 +486,7 @@ extension Start {
                 }
             }
             if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
+            selection.noteAutopilotCachedBuilds(await loop.autopilotCachedBuildHashes)
         }
     }
 

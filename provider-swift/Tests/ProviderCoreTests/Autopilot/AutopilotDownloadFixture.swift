@@ -25,8 +25,8 @@ final class AutopilotDownloadFixture: @unchecked Sendable {
     }
 
     static func make(consent: Bool = true, paused: Bool = false, privateOnly: Bool = false,
-                     inventory: [ModelInfo] = [], ordinary: [ModelInfo] = [],
-                     reserveGb: UInt64? = nil) async throws -> AutopilotDownloadFixture {
+                     selected: [String] = [saved], inventory: [ModelInfo] = [], ordinary: [ModelInfo] = [],
+                     downloads: AutopilotDownloadSettings? = .init(enabled: true)) async throws -> AutopilotDownloadFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("autopilot-download-\(UUID().uuidString)", isDirectory: true)
         let cache = root.appendingPathComponent("hub", isDirectory: true)
@@ -34,7 +34,7 @@ final class AutopilotDownloadFixture: @unchecked Sendable {
         let previous = ModelScanner.configuredCacheDirectory
         ModelScanner.configureCacheDirectory(cache.path)
         let settings = ModelAutopilotSettings(enabled: consent, consentRecorded: consent, paused: paused,
-            selectedModels: [saved], revision: revision, minIdleSeconds: 1)
+            selectedModels: selected, revision: revision, minIdleSeconds: 1)
         let configPath = root.appendingPathComponent("provider.toml")
         let loop = try ProviderLoop(
             config: ProviderLoopConfig(
@@ -43,7 +43,7 @@ final class AutopilotDownloadFixture: @unchecked Sendable {
                 config: ProviderConfig(
                     provider: ProviderSettings(name: "autopilot-download-test", memoryReserveGB: 0),
                     backend: BackendSettings(idleTimeoutMins: 60, maxModelSlots: 4, mtpMode: .off,
-                        modelAutopilot: settings, autopilotDownloadReserveGb: reserveGb),
+                        modelAutopilot: settings, autopilotDownloads: downloads),
                     coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60, privateOnly: privateOnly)),
                 modelHashes: Dictionary((inventory + ordinary).compactMap { m in m.weightHash.map { (m.id, $0) } },
                     uniquingKeysWith: { first, _ in first }),
@@ -99,10 +99,23 @@ final class AutopilotDownloadFixture: @unchecked Sendable {
         AutopilotDownloadLedger.read(from: AutopilotDownloadLedger.url(configDirectory: root))
     }
 
-    func remove() async {
-        await loop.idleMonitorTask?.cancel()
+    /// `darkbloom autopilot disable` as the running provider sees it: the
+    /// saved config changes and the next policy refresh reads it.
+    func revokeConsent() async throws {
+        var config = await loop.loopConfig.config
+        config.backend.modelAutopilot.consentRecorded = false
+        config.backend.modelAutopilot.enabled = false
+        try ConfigManager.save(config, to: configPath)
+        await loop.refreshAutopilotSettings()
+    }
+
+    /// Synchronous, so the process-wide model cache folder is restored
+    /// before the next test configures its own.
+    func release() {
         ModelScanner.configureCacheDirectory(previousCache)
         try? FileManager.default.removeItem(at: root)
+        let loop = self.loop
+        Task { await loop.idleMonitorTask?.cancel() }
     }
 }
 
@@ -119,6 +132,35 @@ final class DownloadLog: @unchecked Sendable {
     private var ids: [String] = []
     func started(_ id: String) { lock.withLock { ids.append(id) } }
     var started: [String] { lock.withLock { ids } }
+}
+
+/// Whether a registered connection exists, and every reconnect request.
+final class ReconnectLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isRegistered = false
+    private var accepts: Bool
+    private var count = 0
+    init(accept: Bool) { accepts = accept }
+    var registered: Bool {
+        get { lock.withLock { isRegistered } }
+        set { lock.withLock { isRegistered = newValue } }
+    }
+    var accept: Bool {
+        get { lock.withLock { accepts } }
+        set { lock.withLock { accepts = newValue } }
+    }
+    var requests: Int { lock.withLock { count } }
+    func request() -> Bool { lock.withLock { count += 1; return accepts } }
+}
+
+/// Outbound messages other than prefetch replies.
+final class OutboundLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates = 0
+    func append(_ message: OutboundMessage) {
+        if case .modelsUpdate = message { lock.withLock { updates += 1 } }
+    }
+    var modelsUpdates: Int { lock.withLock { updates } }
 }
 
 /// `prefetch_model_status` replies, in order.
@@ -142,6 +184,16 @@ extension ProviderLoop {
     func installAutopilotDownloadCoordinatorForTesting(_ coordinator: ModelPrefetchCoordinator) {
         autopilotDownloadCoordinator = coordinator
     }
+
+    func setAutopilotRegistrationSeamForTesting(_ log: ReconnectLog) {
+        autopilotRegistrationSeamForTesting = (registered: { log.registered }, reconnect: { log.request() })
+    }
+
+    func setOutboundSendForTesting(_ send: SendHandle) { outboundSend = send }
+
+    /// A self-test failed on `hash` ("" refuses every build of the ID).
+    func recordFailedSelfTestForTesting(_ id: String, hash: String) { failedSelfTestHashes[id] = hash }
+    func failedSelfTestHashForTesting(_ id: String) -> String? { failedSelfTestHashes[id] }
 
     /// Sends the request and waits for its terminal reply.
     func prefetchForTesting(_ id: String) async -> PrefetchReplies {

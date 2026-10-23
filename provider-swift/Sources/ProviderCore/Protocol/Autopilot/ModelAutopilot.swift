@@ -45,6 +45,8 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
     public var busySinceMs: Int64?
     /// Stuck-transition watchdog activations in this process, by transition.
     public var transitionStalls: [ModelAutopilotTransitionStall]?
+    /// Room for Autopilot downloads; only with `inventory_downloads`.
+    public var downloadStorage: ModelAutopilotDownloadStorage?
 
     public init(enabled: Bool, consentEnabled: Bool? = nil, minDwellSeconds: Int = 1_800, pinnedModels: [String] = [],
                 maxModelSlots: Int = 1, residentModels: [ModelAutopilotResident] = [],
@@ -78,6 +80,7 @@ public struct ModelAutopilotSnapshot: Codable, Sendable, Equatable {
         case capabilities, adoptedModels = "adopted_models", heldModels = "held_models"
         case busyReasons = "busy_reasons", busyReason = "busy_reason", busySinceMs = "busy_since_ms"
         case transitionStalls = "transition_stalls"
+        case downloadStorage = "download_storage"
     }
 }
 
@@ -92,11 +95,41 @@ public enum ModelAutopilotCapability: String, CaseIterable, Sendable {
     /// `busy_reason(s)`, `busy_since_ms`, `transition_stalls` and the
     /// `provider_busy` status `detail` are reported.
     case busyReasons = "busy_reasons"
-    /// `selected_models` is the persisted selection plus every verified
-    /// catalog build in the local cache, and a `prefetch_model` for a build
-    /// outside it downloads the build into it (`AutopilotDownloadRefusal`
-    /// codes on refusal).
+    /// Downloads are on (`[backend.autopilot_downloads]`, the default): a
+    /// `prefetch_model` for a build outside ordinary serving downloads it into
+    /// the Autopilot set (`AutopilotDownloadRefusal` codes on refusal), and
+    /// `download_storage` reports the room for downloads.
     case inventoryDownloads = "inventory_downloads"
+}
+
+/// Free disk, the reserve and the operator's caps for Autopilot downloads, in
+/// bytes. Usage counts the builds Autopilot downloaded that are still on disk.
+public struct ModelAutopilotDownloadStorage: Codable, Sendable, Equatable {
+    /// Free bytes for important usage on the model cache volume; 0 when unknown.
+    public var diskFreeBytes: Int64
+    /// Bytes a download must leave free.
+    public var reserveBytes: Int64
+    public var usedBytes: Int64
+    public var usedModels: Int
+    /// The storage cap; absent when the operator set none.
+    public var limitBytes: Int64?
+    /// The model cap; absent when the operator set none.
+    public var limitModels: Int?
+
+    public init(diskFreeBytes: Int64, reserveBytes: Int64, usedBytes: Int64, usedModels: Int,
+                limitBytes: Int64? = nil, limitModels: Int? = nil) {
+        self.diskFreeBytes = diskFreeBytes
+        self.reserveBytes = reserveBytes
+        self.usedBytes = usedBytes
+        self.usedModels = usedModels
+        self.limitBytes = limitBytes
+        self.limitModels = limitModels
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case diskFreeBytes = "disk_free_bytes", reserveBytes = "reserve_bytes", usedBytes = "used_bytes"
+        case usedModels = "used_models", limitBytes = "limit_bytes", limitModels = "limit_models"
+    }
 }
 
 public struct ModelAutopilotHold: Codable, Sendable, Equatable {

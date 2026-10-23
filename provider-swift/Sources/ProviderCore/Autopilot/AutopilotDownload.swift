@@ -2,8 +2,8 @@ import Foundation
 
 /// Closed vocabulary of the `prefetch_model_status` `error` for a download
 /// Autopilot makes on the operator's behalf. A provider without saved consent
-/// keeps answering `model_not_selected`, and lifecycle refusals keep their
-/// existing replies.
+/// or without downloads enabled keeps answering `model_not_selected`, and
+/// lifecycle refusals keep their existing replies.
 public enum AutopilotDownloadRefusal: String, Error, LocalizedError, CaseIterable, Sendable {
     /// Saved consent is present but Autopilot is paused.
     case autopilotPaused = "autopilot_paused"
@@ -12,8 +12,12 @@ public enum AutopilotDownloadRefusal: String, Error, LocalizedError, CaseIterabl
     /// unsupported engine family, larger than the load budget, or not
     /// reportable as an Autopilot model ID.
     case modelNotSupported = "model_not_supported"
-    /// The download would leave less free disk than the configured reserve.
+    /// The download would leave less free disk than the reserve.
     case insufficientDisk = "insufficient_disk"
+    /// The operator's storage cap (`max_storage_gb`) would be exceeded.
+    case storageLimitReached = "storage_limit_reached"
+    /// The operator's model cap (`max_models`) is reached.
+    case modelLimitReached = "model_limit_reached"
     /// The catalog or the build's manifest could not be fetched; retryable.
     case catalogUnavailable = "catalog_unavailable"
     /// The transfer or its verification failed; retryable. The detail stays
@@ -23,14 +27,15 @@ public enum AutopilotDownloadRefusal: String, Error, LocalizedError, CaseIterabl
     public var errorDescription: String? { rawValue }
 }
 
-/// Keeps a configurable amount of disk free after an Autopilot download
-/// (`backend.autopilot_download_reserve_gb`, `defaultReserveGiB` when
-/// absent). The downloader's own capacity check still applies on top.
+/// Keeps disk free after an Autopilot download: `defaultReserveGiB`, or the
+/// operator's `[backend.autopilot_downloads] reserve_gb`. The downloader's own
+/// capacity check still applies on top.
 public enum AutopilotDiskGuard {
     public static let defaultReserveGiB: UInt64 = 50
 
-    public static func reserveBytes(configuredGiB: UInt64?) -> Int64 {
-        let (bytes, overflow) = (configuredGiB ?? defaultReserveGiB).multipliedReportingOverflow(by: 1 << 30)
+    /// Saturating GiB to bytes.
+    public static func bytes(gib: UInt64) -> Int64 {
+        let (bytes, overflow) = gib.multipliedReportingOverflow(by: 1 << 30)
         return overflow ? .max : Int64(clamping: bytes)
     }
 
@@ -56,9 +61,10 @@ public enum AutopilotDiskGuard {
 }
 
 /// Downloads a catalog build for Autopilot through the ordinary resumable,
-/// verified prefetch, after the catalog gates and the disk guard. Every
-/// failure leaves as an `AutopilotDownloadRefusal`, so the status `error`
-/// stays a closed code. It never loads, advertises or deletes anything.
+/// verified prefetch, after the catalog gates, the disk reserve and the
+/// operator's caps. Every failure leaves as an `AutopilotDownloadRefusal`, so
+/// the status `error` stays a closed code. It never loads, advertises or
+/// deletes anything.
 struct AutopilotDownloadPrefetcher: ModelPrefetcher {
     struct Dependencies: Sendable {
         var catalog: @Sendable () async throws -> [CatalogModel]
@@ -66,14 +72,14 @@ struct AutopilotDownloadPrefetcher: ModelPrefetcher {
         /// Bytes the download still needs on disk; 0 when the revision is
         /// already present.
         var neededBytes: @Sendable (CatalogModel, ModelManifest) -> Int64
-        var freeBytes: @Sendable (CatalogModel) -> Int64?
+        /// Free disk, the reserve and the caps, with usage excluding this build.
+        var budget: @Sendable (CatalogModel) async -> AutopilotDownloadBudget
         var download: @Sendable (CatalogModel, ModelManifest, @escaping @Sendable (Int64, Int64) -> Void) async throws -> Void
         var log: @Sendable (String) -> Void
     }
 
     let memoryGb: Double
     let runtimeCapabilities: Set<ProviderRuntimeCapability>
-    let reserveBytes: Int64
     let dependencies: Dependencies
 
     func prefetchToDisk(modelID: String,
@@ -96,9 +102,8 @@ struct AutopilotDownloadPrefetcher: ModelPrefetcher {
             dependencies.log("Autopilot download \(modelID): manifest unavailable: \(error.localizedDescription)")
             throw AutopilotDownloadRefusal.catalogUnavailable
         }
-        guard AutopilotDiskGuard.allows(neededBytes: dependencies.neededBytes(entry, manifest),
-            freeBytes: dependencies.freeBytes(entry), reserveBytes: reserveBytes)
-        else { throw AutopilotDownloadRefusal.insufficientDisk }
+        let needed = dependencies.neededBytes(entry, manifest)
+        if let refusal = await dependencies.budget(entry).refusal(neededBytes: needed) { throw refusal }
         do {
             try await dependencies.download(entry, manifest, onByteProgress)
         } catch is CancellationError {
@@ -115,6 +120,7 @@ extension AutopilotDownloadPrefetcher.Dependencies {
     /// The catalog client and resumable verified downloader of ordinary
     /// prefetch, with the disk measured where the build will be written.
     static func live(coordinatorURL: String, runtimeCapabilities: Set<ProviderRuntimeCapability>,
+                     budget: @escaping @Sendable (CatalogModel) async -> AutopilotDownloadBudget,
                      log: @escaping @Sendable (String) -> Void) -> Self {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
         let downloader = ModelDownloader(catalogClient: client, runtimeCapabilities: runtimeCapabilities)
@@ -131,9 +137,7 @@ extension AutopilotDownloadPrefetcher.Dependencies {
                 else { return max(0, manifest.totalSizeBytes) }
                 return 0
             },
-            freeBytes: { entry in
-                AutopilotDiskGuard.volumeFreeBytes(at: ModelDownloader.cacheSnapshotDirectory(for: entry.id))
-            },
+            budget: budget,
             download: { entry, manifest, progress in
                 try await downloader.prefetch(model: entry, manifest: manifest, onByteProgress: progress)
             },

@@ -64,6 +64,11 @@ struct AutopilotBuildEligibilityTests {
             memoryGb: 64, runtimeCapabilities: []))
         #expect(!AutopilotBuildEligibility.allowsCachedBuild(Self.local("other/model"), entry: entry,
             memoryGb: 64, runtimeCapabilities: []))
+        // The scanned build's own gates, used without a catalog entry by the
+        // start path's recorded downloads and by download publication.
+        #expect(AutopilotBuildEligibility.allowsScannedBuild(Self.local(), memoryGb: 64))
+        #expect(!AutopilotBuildEligibility.allowsScannedBuild(Self.local(type: "not_a_family"), memoryGb: 64))
+        #expect(!AutopilotBuildEligibility.allowsScannedBuild(Self.local(memoryGb: 200), memoryGb: 64))
         #expect(AutopilotBuildEligibility.loadBudgetGiB(memoryGb: .nan) == 0)
     }
 
@@ -156,9 +161,9 @@ struct AutopilotDownloadLedgerTests {
 
     @Test func theDiskGuardKeepsTheReserveAndFailsClosed() {
         let gib: Int64 = 1 << 30
-        #expect(AutopilotDiskGuard.reserveBytes(configuredGiB: nil) == 50 * gib)
-        #expect(AutopilotDiskGuard.reserveBytes(configuredGiB: 0) == 0)
-        #expect(AutopilotDiskGuard.reserveBytes(configuredGiB: .max) == .max)
+        #expect(AutopilotDownloadSettings().reserveBytes == 50 * gib)
+        #expect(AutopilotDownloadSettings(reserveGb: 0).reserveBytes == 0)
+        #expect(AutopilotDiskGuard.bytes(gib: .max) == .max)
         #expect(AutopilotDiskGuard.allows(neededBytes: 10 * gib, freeBytes: 60 * gib, reserveBytes: 50 * gib))
         #expect(!AutopilotDiskGuard.allows(neededBytes: 10 * gib + 1, freeBytes: 60 * gib, reserveBytes: 50 * gib))
         #expect(!AutopilotDiskGuard.allows(neededBytes: 0, freeBytes: nil, reserveBytes: 0))
@@ -167,15 +172,65 @@ struct AutopilotDownloadLedgerTests {
             .appendingPathComponent("missing-\(UUID().uuidString)/deeper")).map { $0 > 0 } == true)
     }
 
-    @Test func theReserveIsProviderConfigurationOutsideConsent() throws {
+    @Test func downloadsAreOnByDefaultAndProviderConfigurationOutsideConsent() throws {
         var backend = BackendSettings()
-        #expect(backend.autopilotDownloadReserveGb == nil)
+        #expect(backend.autopilotDownloads == nil)
         let encoded = try JSONEncoder().encode(backend)
-        #expect(String(decoding: encoded, as: UTF8.self).contains("autopilot_download_reserve_gb") == false)
-        backend.autopilotDownloadReserveGb = 120
+        #expect(String(decoding: encoded, as: UTF8.self).contains("autopilot_downloads") == false)
+        // No table, or a table with no `enabled` key, means on; absent limits
+        // encode as absent.
+        #expect(AutopilotDownloadSettings().enabled)
+        let table = try JSONDecoder().decode(AutopilotDownloadSettings.self, from: Data(#"{"max_models":2}"#.utf8))
+        #expect(table == AutopilotDownloadSettings(enabled: true, maxModels: 2))
+        #expect(try JSONDecoder().decode(AutopilotDownloadSettings.self, from: Data(#"{"enabled":false}"#.utf8))
+            == AutopilotDownloadSettings(enabled: false))
+        #expect(String(decoding: try JSONEncoder().encode(AutopilotDownloadSettings(enabled: true)), as: UTF8.self)
+            == #"{"enabled":true}"#)
+        backend.autopilotDownloads = .init(enabled: true, maxStorageGb: 200, maxModels: 3)
         let decoded = try JSONDecoder().decode(BackendSettings.self, from: JSONEncoder().encode(backend))
-        #expect(decoded.autopilotDownloadReserveGb == 120)
+        #expect(decoded.autopilotDownloads == backend.autopilotDownloads)
         #expect(decoded.modelAutopilot == backend.modelAutopilot)
+        // The TOML file round-trips the table under [backend].
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("downloads-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var config = ProviderConfig(provider: ProviderSettings(name: "downloads"))
+        config.backend.autopilotDownloads = backend.autopilotDownloads
+        try ConfigManager.save(config, to: path)
+        #expect(try ConfigManager.load(from: path).backend.autopilotDownloads == backend.autopilotDownloads)
+        #expect(try String(contentsOf: path, encoding: .utf8).contains("[backend.autopilot_downloads]"))
+    }
+
+    @Test func theBudgetRefusesAtEachCapAndAtTheReserve() {
+        let gib: Int64 = 1 << 30
+        var budget = AutopilotDownloadBudget(freeBytes: 100 * gib, reserveBytes: 50 * gib, usedBytes: 20 * gib,
+            usedModels: 2, limitBytes: 40 * gib, limitModels: 3)
+        #expect(budget.refusalBeforeSizing == nil)
+        #expect(budget.refusal(neededBytes: 20 * gib) == nil)
+        #expect(budget.refusal(neededBytes: 20 * gib + 1) == .storageLimitReached)
+        budget.limitBytes = nil
+        #expect(budget.refusal(neededBytes: 50 * gib) == nil)
+        #expect(budget.refusal(neededBytes: 50 * gib + 1) == .insufficientDisk)
+        budget.usedModels = 3
+        #expect(budget.refusalBeforeSizing == .modelLimitReached)
+        budget = .init(freeBytes: 100 * gib, reserveBytes: 0, usedBytes: 40 * gib, usedModels: 0, limitBytes: 40 * gib)
+        #expect(budget.refusalBeforeSizing == .storageLimitReached)
+        budget = .init(freeBytes: nil, reserveBytes: 0, usedBytes: 0, usedModels: 0)
+        #expect(budget.refusal(neededBytes: 0) == .insufficientDisk)
+        #expect(budget.report == ModelAutopilotDownloadStorage(diskFreeBytes: 0, reserveBytes: 0, usedBytes: 0, usedModels: 0))
+        budget = .init(freeBytes: .max, reserveBytes: 0, usedBytes: .max, usedModels: 0, limitBytes: .max)
+        #expect(budget.refusal(neededBytes: 1) == .storageLimitReached)
+    }
+
+    @Test func usageCountsOnlyRecordedBuildsStillOnDisk() {
+        var ledger = AutopilotDownloadLedger()
+        ledger.record(.init(modelId: "net/a", weightHash: "h", downloadedAtMs: 1, sizeBytes: 10))
+        ledger.record(.init(modelId: "net/b", weightHash: "h", downloadedAtMs: 2, sizeBytes: 20))
+        ledger.record(.init(modelId: "net/gone", weightHash: "h", downloadedAtMs: 3, sizeBytes: 40))
+        let onDisk: (String) -> Bool = { $0 != "net/gone" }
+        #expect(ledger.usage(onDisk: onDisk) == (bytes: 30, models: 2))
+        #expect(ledger.usage(excluding: "net/b", onDisk: onDisk) == (bytes: 10, models: 1))
     }
 }
 
@@ -197,11 +252,13 @@ struct AutopilotDownloadPrefetcherTests {
     private func prefetcher(catalog: @escaping @Sendable () async throws -> [CatalogModel] = { [E.entry(aggregate: "a")] },
                             manifest: @escaping @Sendable (CatalogModel) async throws -> ModelManifest = { _ in Self.manifest },
                             freeGiB: Int64? = 100, neededBytes: Int64 = 4 << 30,
+                            usedGiB: Int64 = 0, limitGiB: Int64? = nil,
                             download: @escaping @Sendable () async throws -> Void = {},
                             calls: Calls = Calls()) -> AutopilotDownloadPrefetcher {
-        AutopilotDownloadPrefetcher(memoryGb: 64, runtimeCapabilities: [], reserveBytes: 50 << 30,
+        AutopilotDownloadPrefetcher(memoryGb: 64, runtimeCapabilities: [],
             dependencies: .init(catalog: catalog, manifest: manifest, neededBytes: { _, _ in neededBytes },
-                freeBytes: { _ in freeGiB.map { $0 << 30 } },
+                budget: { _ in AutopilotDownloadBudget(freeBytes: freeGiB.map { $0 << 30 }, reserveBytes: 50 << 30,
+                    usedBytes: usedGiB << 30, usedModels: 0, limitBytes: limitGiB.map { $0 << 30 }) },
                 download: { _, _, progress in
                     calls.downloaded()
                     try await download()
@@ -229,8 +286,12 @@ struct AutopilotDownloadPrefetcherTests {
         #expect(await refusal(prefetcher(freeGiB: 53)) == "insufficient_disk")
         #expect(await refusal(prefetcher(freeGiB: nil)) == "insufficient_disk")
         #expect(await refusal(prefetcher(download: { throw Offline() })) == "download_failed")
+        // The operator's storage cap counts the build being fetched.
+        #expect(await refusal(prefetcher(usedGiB: 7, limitGiB: 10)) == "storage_limit_reached")
+        #expect(await refusal(prefetcher(usedGiB: 6, limitGiB: 10)) == nil)
         #expect(Set(AutopilotDownloadRefusal.allCases.map(\.rawValue)) == ["autopilot_paused", "model_not_supported",
-            "insufficient_disk", "catalog_unavailable", "download_failed"])
+            "insufficient_disk", "storage_limit_reached", "model_limit_reached", "catalog_unavailable",
+            "download_failed"])
     }
 
     @Test func aGuardedDownloadRunsOnceAndAPresentRevisionNeedsNoRoom() async {

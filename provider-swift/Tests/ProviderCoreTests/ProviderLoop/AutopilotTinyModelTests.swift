@@ -209,8 +209,9 @@ extension TinyModelLoadTests {
             defer { sandbox.remove() }
             try await checkpoint.withModelCache {
                 let model = checkpoint.modelID
-                // Saved consent selected another model. The checkpoint is not
-                // selected, in the inventory, advertised or resident.
+                // Saved consent selected another model, and the operator enabled
+                // downloads. The checkpoint is not selected, in the inventory,
+                // advertised or resident.
                 let settings = ModelAutopilotSettings(enabled: true, consentRecorded: true,
                     selectedModels: ["darkbloom-test/saved-elsewhere"], revision: Self.revision, minIdleSeconds: 1)
                 let loop = try ProviderLoop(
@@ -220,7 +221,7 @@ extension TinyModelLoadTests {
                         config: ProviderConfig(
                             provider: ProviderSettings(name: "autopilot-download-tiny-test", memoryReserveGB: 0),
                             backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3, mtpMode: .off,
-                                modelAutopilot: settings),
+                                modelAutopilot: settings, autopilotDownloads: .init(enabled: true)),
                             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
                         configPath: sandbox.root.appendingPathComponent("provider.toml")),
                     attestationSigner: nil,

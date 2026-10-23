@@ -73,6 +73,14 @@ extension ProviderLoop {
     func refreshAutopilotSettings() {
         guard let path = loopConfig.configPath,
               let config = try? ConfigManager.load(from: path) else { return }
+        // Download settings are provider configuration, never consent: they
+        // change no control, lease or revision.
+        let downloads = config.backend.autopilotDownloads ?? .init()
+        if downloads != autopilotDownloadSettings {
+            autopilotDownloadSettingsOverride = downloads
+            refreshAutopilotDownloadStorage(force: true)
+            publishModelAutopilotSnapshot()
+        }
         let settings = config.backend.modelAutopilot
         guard settings != autopilotSettings else { return }
         let previouslyManaged = autopilotManagesResidency
@@ -83,6 +91,7 @@ extension ProviderLoop {
         }
         autopilotControl = nil
         withdrawInactiveAutopilotModels()
+        dropAutopilotCachedBuildsWithoutConsent()
         autopilotGeneration &+= 1
         // Disabling / pausing does not cancel an accepted mutation. Its owner
         // finishes and publishes actual capacity before ordinary changes resume.

@@ -242,11 +242,6 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _currentModelHash = newValue } }
     }
 
-    var autopilotInventory: [ModelInfo]? {
-        get { lock.withLock { _autopilotInventory } }
-        set { lock.withLock { _autopilotInventory = newValue } }
-    }
-
     /// One Autopilot state and the inventory built with it. A registration
     /// reads both at once, so its inventory always matches the
     /// `selected_models` it is filtered by.

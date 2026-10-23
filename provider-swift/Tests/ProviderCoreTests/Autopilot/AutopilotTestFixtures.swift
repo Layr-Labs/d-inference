@@ -18,8 +18,8 @@ func autopilotTestLoop(enabled: Bool, models: [ModelInfo] = [], activeControl: B
 }
 
 extension ProviderLoop {
-    func activateAutopilotForTesting() {
-        autopilotControl = .init(sessionId:"session", revision:"test", enabled:true,
+    func activateAutopilotForTesting(revision: String = "test") {
+        autopilotControl = .init(sessionId:"session", revision:revision, enabled:true,
             expiresAtMs:Int64(Date().timeIntervalSince1970*1000)+120000)
         publishModelAutopilotSnapshot()
     }

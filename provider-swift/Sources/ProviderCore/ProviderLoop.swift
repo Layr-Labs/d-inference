@@ -359,6 +359,12 @@ public actor ProviderLoop {
     /// Placement holds by model. An expired hold stays as the idle anchor
     /// until the placement ends; only an unexpired hold protects a slot.
     internal var autopilotHolds: [String: AutopilotHold] = [:]
+    /// Download settings read from the config file by the policy refresh;
+    /// nil until they first differ from the start configuration.
+    internal var autopilotDownloadSettingsOverride: AutopilotDownloadSettings?
+    /// The last `download_storage` report and when it was measured.
+    internal var autopilotDownloadStorage: ModelAutopilotDownloadStorage?
+    internal var autopilotDownloadStorageAt: ContinuousClock.Instant?
     /// Downloads on the operator's behalf (`ProviderLoop+AutopilotDownload`):
     /// a prefetch coordinator whose verified builds join the Autopilot set
     /// rather than the advertised set. Created on the first request.
@@ -368,6 +374,14 @@ public actor ProviderLoop {
     internal var autopilotInventoryAwaitingRegistration: Set<String> = []
     /// Last check that cached Autopilot builds are still on disk.
     internal var autopilotCacheSweepAt: ContinuousClock.Instant?
+    /// Background verification of the cached builds the start path left
+    /// unhashed (`startAutopilotCandidateVerification`); cancelled at shutdown.
+    internal var autopilotCandidateVerification: Task<Void, Never>?
+    internal var autopilotCandidateVerificationDone = false
+    /// Replaces the registered-connection check and the planned reconnect of
+    /// `refreshAutopilotInventoryRegistration` in tests; nil in production.
+    internal var autopilotRegistrationSeamForTesting:
+        (registered: @Sendable () async -> Bool, reconnect: @Sendable () -> Bool)?
     /// Unix milliseconds at which each reported busy reason was first
     /// continuously observed.
     internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()

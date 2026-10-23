@@ -23,15 +23,11 @@ public enum AutopilotModelSet {
     /// `maximumCount`, sorted for a deterministic report.
     public static func effective(selected: [String], cached: some Sequence<String>) -> [String] {
         var members = Set<String>()
-        var ordered: [String] = []
-        for id in selected where members.count < maximumCount && members.insert(id).inserted {
-            ordered.append(id)
+        for id in selected where members.count < maximumCount { members.insert(id) }
+        for id in Set(cached).sorted() where members.count < maximumCount && isReportableID(id) {
+            members.insert(id)
         }
-        for id in Set(cached).sorted() where members.count < maximumCount
-            && isReportableID(id) && members.insert(id).inserted {
-            ordered.append(id)
-        }
-        return ordered.sorted()
+        return members.sorted()
     }
 }
 
@@ -65,12 +61,18 @@ public enum AutopilotBuildEligibility {
                 catalogRequirements: entry.requiredProviderCapabilities, available: runtimeCapabilities)
     }
 
-    /// The catalog gates plus the scanned build's engine family and footprint.
+    /// Gates that need only the scanned build: a supported engine family
+    /// within the load budget.
+    public static func allowsScannedBuild(_ model: ModelInfo, memoryGb: Double) -> Bool {
+        EngineV2SupportedModels.isSupported(model: model)
+            && fitsLoadBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb)
+    }
+
+    /// The catalog gates plus the scanned build's.
     public static func allowsCachedBuild(_ model: ModelInfo, entry: CatalogModel, memoryGb: Double,
                                          runtimeCapabilities: Set<ProviderRuntimeCapability>) -> Bool {
         model.id == entry.id && catalogAllows(entry, memoryGb: memoryGb, runtimeCapabilities: runtimeCapabilities)
-            && EngineV2SupportedModels.isSupported(model: model)
-            && fitsLoadBudget(sizeGb: model.estimatedMemoryGb, memoryGb: memoryGb)
+            && allowsScannedBuild(model, memoryGb: memoryGb)
     }
 
     /// Whether a locally computed weight hash is the catalog's current build:

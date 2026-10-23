@@ -37,6 +37,19 @@ extension ModelAutopilotSnapshot {
         busyReason = try c.optional(String.self, .busyReason)
         busySinceMs = try c.optional(Int64.self, .busySinceMs)
         transitionStalls = try c.optional([ModelAutopilotTransitionStall].self, .transitionStalls)
+        downloadStorage = try c.optional(ModelAutopilotDownloadStorage.self, .downloadStorage)
+    }
+}
+
+extension ModelAutopilotDownloadStorage {
+    public init(from decoder: Decoder) throws {
+        let c = try AutopilotSnapshotDecoder<CodingKeys>(decoder)
+        diskFreeBytes = try c.required(Int64.self, .diskFreeBytes)
+        reserveBytes = try c.required(Int64.self, .reserveBytes)
+        usedBytes = try c.required(Int64.self, .usedBytes)
+        usedModels = try c.required(Int.self, .usedModels)
+        limitBytes = try c.optional(Int64.self, .limitBytes)
+        limitModels = try c.optional(Int.self, .limitModels)
     }
 }
 

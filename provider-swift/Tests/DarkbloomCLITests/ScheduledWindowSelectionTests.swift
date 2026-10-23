@@ -127,10 +127,10 @@ struct ScheduledWindowSelectionTests {
         #expect(later.modelHashFingerprints["fixture/b"] != fingerprint)
     }
 
-    /// Cached builds the start path verified, and recorded Autopilot
-    /// downloads, stay in the next window's set while their bytes still hash
-    /// to the verified value. One that changed or vanished is dropped without
-    /// failing the window.
+    /// Cached builds the start path verified, and builds the previous window's
+    /// provider verified (downloads, background checks), stay in the next
+    /// window's set while their bytes still hash to the verified value. One
+    /// that changed or vanished is dropped without failing the window.
     @Test func cachedAutopilotBuildsCarryIntoTheNextWindowWhileUnchanged() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -148,9 +148,6 @@ struct ScheduledWindowSelectionTests {
         config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
             selectedModels: ["fixture/a"], revision: "initial")
         try ConfigManager.save(config, to: path)
-        var ledger = AutopilotDownloadLedger()
-        ledger.record(.init(modelId: "fixture/downloaded", weightHash: try hash("fixture/downloaded"), downloadedAtMs: 1))
-        try ledger.write(to: AutopilotDownloadLedger.url(configDirectory: directory))
         let startInventory = try ["fixture/a", "fixture/cached", "fixture/rewritten", "fixture/vanished"].map {
             ModelInfo(id: $0, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1, weightHash: try hash($0))
         }
@@ -160,6 +157,15 @@ struct ScheduledWindowSelectionTests {
             configPath: path, autopilotInventory: startInventory)
         var selection = ScheduledWindowSelection(startup: start, configFileExists: true)
         _ = try selection.nextWindowConfiguration()
+        // Window 1's provider downloaded a build; nothing else changed, and
+        // the next window still carries it.
+        selection.noteAutopilotCachedBuilds(["fixture/cached": try hash("fixture/cached"),
+                                             "fixture/downloaded": try hash("fixture/downloaded")])
+        let unchanged = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] })
+        #expect(unchanged.autopilotInventory.map(\.id).sorted()
+            == ["fixture/a", "fixture/cached", "fixture/downloaded", "fixture/rewritten", "fixture/vanished"])
 
         let rewritten = try #require(paths["fixture/rewritten"])
         try Data("rewritten bytes".utf8).write(to: rewritten.appendingPathComponent("model.safetensors"))

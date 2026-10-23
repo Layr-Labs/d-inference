@@ -70,13 +70,16 @@ extension ProviderLoop {
         let reasons = reportedAutopilotBusyReasons()
         autopilotBusyClock.observe(reasons, at: Self.autopilotNowMs)
         let placements = autopilotPlacementReport(now: now)
-        snapshot.capabilities = ModelAutopilotCapability.allCases.map(\.rawValue)
+        snapshot.capabilities = ModelAutopilotCapability.allCases
+            .filter { $0 != .inventoryDownloads || autopilotDownloadsEnabled }.map(\.rawValue)
         snapshot.adoptedModels = placements.adopted
         snapshot.heldModels = placements.held
         snapshot.busyReasons = reasons.isEmpty ? nil : reasons.map(\.rawValue)
         snapshot.busyReason = reasons.first?.rawValue
         snapshot.busySinceMs = reasons.first.flatMap { autopilotBusyClock.since($0) }
         snapshot.transitionStalls = transitionWatchdog.report
+        if autopilotDownloadsEnabled, autopilotDownloadStorage == nil { refreshAutopilotDownloadStorage() }
+        snapshot.downloadStorage = autopilotDownloadsEnabled ? autopilotDownloadStorage : nil
     }
 
     private static func autopilotSeconds(_ duration: Duration) -> Int {

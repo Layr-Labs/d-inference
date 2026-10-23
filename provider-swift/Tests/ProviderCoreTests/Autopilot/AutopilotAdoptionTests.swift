@@ -47,6 +47,7 @@ struct AutopilotAdoptionTests {
 
         let snapshot = try #require(await loop.state.modelAutopilot)
         #expect(snapshot.adoptedModels == [Fixture.inventory])
+        // Downloads are on by default with saved consent.
         #expect(snapshot.capabilities == ["inventory_adoption", "placement_holds", "busy_reasons", "inventory_downloads"])
         #expect(fixture.engines.values.allSatisfy { $0.shutdownCalls == 0 })
     }

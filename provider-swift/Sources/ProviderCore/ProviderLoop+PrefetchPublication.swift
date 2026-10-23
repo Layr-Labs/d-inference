@@ -22,7 +22,7 @@ extension ProviderLoop {
     /// `applyVerifiedPrefetch`, not just the first: a retirement completing
     /// entirely inside any of the suspensions sets the record after an
     /// earlier check already passed.
-    private func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
+    func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
         guard let failed = failedSelfTestHashes[modelId] else { return false }
         return failed.isEmpty || failed == hash
     }

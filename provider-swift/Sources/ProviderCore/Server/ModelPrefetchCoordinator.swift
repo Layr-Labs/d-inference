@@ -14,8 +14,9 @@
 ///     drops anything still queued)
 ///   - short-circuits to `.verified` when the build is already
 ///     loaded/on-disk-and-valid
-///   - fires a re-advertise hook on `.verified` so the coordinator learns the
-///     provider can now serve the build
+///   - fires a publish hook once the build is verified, so the host can apply
+///     it (advertise it, or add it to the Autopilot set); a refusal makes the
+///     terminal status `.failed`
 ///
 /// Kept separate from `ProviderLoop` (and tested in isolation) so the
 /// download/verify/coalesce/advertise logic does not depend on the GPU model
@@ -136,10 +137,10 @@ public actor ModelPrefetchCoordinator {
     public func inFlightCount() -> Int { prefetchTasks.count }
 
     /// Whether a prefetch for `modelId` is still running — including the
-    /// tail of an attempt whose `onVerified` callback has returned but whose
+    /// tail of an attempt whose `publish` hook has returned but whose
     /// terminal status has not been emitted yet. A new `handlePrefetch` for
     /// the same id during that window coalesces into the running attempt
-    /// (no second `onVerified`), so callers that need a genuinely NEW pass
+    /// (no second `publish`), so callers that need a genuinely NEW pass
     /// must wait until this is false.
     public func isInFlight(modelId: String) -> Bool { prefetchTasks[modelId] != nil }
 
@@ -236,8 +237,8 @@ public actor ModelPrefetchCoordinator {
     /// Called from the host's shutdown path.
     ///
     /// The wait is bounded by `timeout` and MUST NOT block on a task that
-    /// cancellation cannot stop: a prefetch parked in its verified→re-advertise
-    /// hook can be awaiting an off-actor synchronous weight-hash (multi-GB,
+    /// cancellation cannot stop: a prefetch parked in its `publish` hook can
+    /// be awaiting an off-actor synchronous weight-hash (multi-GB,
     /// uninterruptible). We therefore resume on whichever of "drain completed"
     /// or "deadline elapsed" fires FIRST, using an unstructured drain task +
     /// timer (a structured `withTaskGroup` cannot return while a child is still

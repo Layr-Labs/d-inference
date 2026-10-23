@@ -73,6 +73,7 @@ extension ProviderLoop {
         // their pool while headroom is healthy); the GPU sync never runs here.
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         sweepAutopilotCachedBuilds()
+        refreshAutopilotDownloadStorage()
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         await cleanupAutopilotSupersededModels()

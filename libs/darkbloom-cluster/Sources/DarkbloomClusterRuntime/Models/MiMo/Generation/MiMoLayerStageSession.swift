@@ -24,6 +24,7 @@ final class MiMoLayerStageSession {
     private let producerStageFingerprint: String
     private var caches: [KVCache]?
     private let independentHistory: Bool
+    var usesPagedHistory: Bool { independentHistory }
     private var batchMemoryScope: UUID?
     private var nextBatchMemoryObservation = 1
     private var schedule: QwenLayerStageGenerationSchedule
@@ -123,9 +124,9 @@ final class MiMoLayerStageSession {
             throw ProbeError("MiMo stage plan layers differ from the loaded stage")
         }
         globalLayers = layers.map(\.globalIndex)
-        guard !independentHistory || (restoring == nil && adopting == nil && split == nil
+        guard !independentHistory || (restoring == nil
             && request.reusedPrefixTokens == 0 && request.mimoImages == nil) else {
-            throw ProbeError("MiMo independent histories require plain text without prefix or phase state")
+            throw ProbeError("MiMo independent histories require text without restored prefix state")
         }
         self.independentHistory = independentHistory
         let fresh: [any KVCache] = independentHistory
@@ -320,7 +321,13 @@ final class MiMoLayerStageSession {
                 func checked() throws { try error.check(); try check() }
                 let caches = caches!, count = tokens.count, last = stage.layerCount - 1
                 let input = MLXArray(tokens.map(Int32.init)).reshaped([1, count])
-                let output = try stage.model.forward(inputIDs: input, cache: caches, captureLayers: [last])
+                let output: MiMoV26TextOutput
+                if independentHistory {
+                    guard let pages = caches as? [MiMoV26IndependentHistoryCache] else {
+                        throw ProbeError("MiMo verify page storage changed")
+                    }
+                    output = try stage.model.forwardIndependentHistory(inputIDs: input, caches: pages, captureLayers: [last])
+                } else { output = try stage.model.forward(inputIDs: input, cache: caches, captureLayers: [last]) }
                 guard let residual = output.layerFeatures[last] else {
                     throw ProbeError("MiMo stage 0 produced no residual for the verify window")
                 }
@@ -351,7 +358,13 @@ final class MiMoLayerStageSession {
             return try MLX.withError { error in
                 try error.check(); try check()
                 let caches = caches!
-                let result = try stage.model.forward(embeddings: residual, cache: caches, logitsStart: 0)
+                let result: MiMoV26TextOutput
+                if independentHistory {
+                    guard let pages = caches as? [MiMoV26IndependentHistoryCache] else {
+                        throw ProbeError("MiMo verify page storage changed")
+                    }
+                    result = try stage.model.forwardIndependentHistory(embeddings: residual, caches: pages, logitsStart: 0)
+                } else { result = try stage.model.forward(embeddings: residual, cache: caches, logitsStart: 0) }
                 windowRows = tokens.count
                 return (result.logits, result.normalizedHiddenStates, caches.flatMap { $0.innerState() })
             }
@@ -389,6 +402,7 @@ final class MiMoLayerStageSession {
                 chain(rowSHA256[index])
             }
             try requireFrontier(after: schedule.committedTokens)
+            recordBatchMemory()
             try check()
         } catch { try fail(error) }
     }
@@ -418,7 +432,7 @@ final class MiMoLayerStageSession {
 
     private func requireWindowable(_ tokens: [Int], offset: Int, producer: Bool) throws {
         try requireOpen()
-        guard !independentHistory, windowRows == nil, producer == (stage.stageIndex == 0), (1...4).contains(tokens.count),
+        guard windowRows == nil, producer == (stage.stageIndex == 0), (1...4).contains(tokens.count),
               tokens.allSatisfy({ (0..<stage.vocabularySize).contains($0) }),
               offset == schedule.committedTokens, schedule.committedPromptTokens == request.promptCount,
               offset + tokens.count <= request.maximumTokens,
@@ -479,7 +493,7 @@ final class MiMoLayerStageSession {
                            check: () throws -> Void) throws -> [QwenPhaseSplitHandoffSender.Component] {
         do {
             try requireOpen()
-            guard !independentHistory, stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
                   schedule.decodeForwardCount == 0, !handedOff, let caches,
                   split.shapes.count == 2 * caches.count else {
                 throw ProbeError("Only the producer stage hands over, once, after its last prompt frame")
@@ -506,7 +520,7 @@ final class MiMoLayerStageSession {
     func retireAfterHandoff() throws {
         do {
             try requireOpen()
-            guard !independentHistory, stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
                   schedule.decodeForwardCount == 0, !handedOff else {
                 throw ProbeError("Hand-off retirement differs from the producer's committed prompt frontier")
             }

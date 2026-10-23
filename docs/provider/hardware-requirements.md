@@ -422,3 +422,13 @@ default. Full-artifact output, retirement and memory qualification are
 separate from the tiny model's raw output/state checks. See [cluster inference](../architecture/inference.md#context)
 and `NemotronH35Model.cbv2BatchedStageResidual` in
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Nemotron35BatchDecode.swift`.
+
+## MiMo cluster history storage
+
+MiMo's supported text pipeline, compact, speculative and phase modes use
+request-owned pages. Only the plain pipeline admits multiple native lanes;
+other modes retain their single-request schedules. Pages grow with forwarded
+rows, while admission keeps the full request and transfer allowances. This
+does not reduce the model's RAM requirement or establish a new qualified
+hardware tier. See [MiMo history ownership](../architecture/inference.md#mimo-plain-pipeline-independent-histories)
+and [its admission bounds](../architecture/hardware-support.md#context).

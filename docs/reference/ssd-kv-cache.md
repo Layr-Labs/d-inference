@@ -493,3 +493,10 @@ Gemma 4's `gemma4-original-chunk-grid-v1` numerical receipt separates the
 registered rows' new existing-chunk prefix scope from prior final-token-split
 records. Resident and SSD hits obey identical frontier filtering and bilateral
 restore confirmation. See [Gemma reuse](../architecture/prefix-cache.md#gemma-chunk-grid-reuse).
+
+MiMo cluster independent page histories are not eligible for the contiguous
+trained-head COMPLETE checkpoint codec. Plain, compact, MTP and phase page
+paths disable cluster prefix reuse; the standalone contiguous row above keeps
+its existing contract. See [the cluster boundary](../architecture/prefix-cache.md#mimo-cluster-paged-mode-boundary)
+and `MiMoV26MTPHistoryStorage` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26MTP.swift`.

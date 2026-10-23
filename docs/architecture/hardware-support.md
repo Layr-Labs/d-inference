@@ -826,12 +826,16 @@ Measurements must retain any nonzero retirement or failed cleanup, without
 relabeling it as idle release. These counters do not include model weights,
 recurrent state or allocator caches and are not total process memory.
 
-MiMo plain-pipeline requests, including a single lane, retain their full contiguous-state
+MiMo text requests in plain, compact, MTP and phase modes retain their full contiguous-state
 allowance and add rounded page allocations, copy-on-write versions, gathered
 attention views and sliding repack storage. Keys and values are priced with
 their distinct registered widths. Host prompt/selected-token histories and
-shared native decode workspace remain additional. This does not change the
-speculative, phase-handoff or image cache contracts. See
+shared native decode workspace remain additional. Both MTP target ranks price
+the larger of the prompt chunk and the admitted `depth + 1` verification window.
+The trained assistant preserves its whole previous allocation envelope and adds
+separately rounded resident and working pages. Phase rank 1 prices every target
+layer; both ranks retain the moving-state allowance during transfer. Image
+allowances and standalone contiguous histories are unchanged. See
 [MiMo independent histories](inference.md#mimo-plain-pipeline-independent-histories),
 `MiMoPagedKVAllowance.pages` and `MiMoBatchMemory.workspace` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Metadata/`.

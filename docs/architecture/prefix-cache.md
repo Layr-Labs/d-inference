@@ -954,3 +954,14 @@ chunk on repeat. The serial resident/SSD and batch paths apply the shared
 request policy, offer filtering and bilateral confirmation. Gemma's own
 `gemma4-original-chunk-grid-v1` receipt field changes its cache namespace;
 Qwen, Bonsai, MiMo and GLM retain their existing prefix framing.
+
+### MiMo cluster paged mode boundary
+
+Cluster MiMo text plain, compact, MTP and phase modes keep prefix reuse disabled
+when using their independent page histories. The trained-head COMPLETE codec
+accepts only its explicit contiguous storage policy; it cannot reinterpret
+page metadata as an older prefix checkpoint. Standalone native contiguous
+MiMo COMPLETE-prefix behavior is unchanged. See `MiMoBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Batch/MiMoBatchSettings.swift`
+and `MiMoV26MTPPrefixCheckpoint.swift` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/`.

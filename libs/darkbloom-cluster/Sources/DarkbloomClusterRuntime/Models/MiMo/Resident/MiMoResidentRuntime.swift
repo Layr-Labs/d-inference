@@ -283,7 +283,7 @@ public final class MiMoResidentRuntime {
                             // Both ranks name the head's tensors; the last rank reads them.
                             headInventorySHA256 = try MiMoMTPHead.inventory(source: source).0.sha256
                             if configuration.rank == 1, let consumer = stage {
-                                head = try MiMoMTPHead(source: source, consumer: consumer, check: checked)
+                                head = try MiMoMTPHead(source: source, consumer: consumer, pagedHistory: batch.usesPagedHistory, check: checked)
                             }
                         }
                         // A phase split's decoding rank loads the producer stage after
@@ -317,7 +317,8 @@ public final class MiMoResidentRuntime {
                         plan: admission.plan, rank: collective.rank,
                         maximumTokens: admission.profile.maximumContextTokens,
                         chunkSize: admission.profile.maximumChunkTokens, phaseSplit: mode.isPhaseSplit,
-                        speculativeBytes: try speculativeBytes(admission.profile.maximumChunkTokens),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory)
+                        speculativeBytes: try speculativeBytes(admission.profile.maximumChunkTokens),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory,
+                        verificationTokens: speculativeTerms.map { $0.depth + 1 } ?? 1)
                     try configuration.allocatorPolicy.prepareReady(
                         synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                         snapshot: {
@@ -331,7 +332,8 @@ public final class MiMoResidentRuntime {
                     func allowance(_ context: Int, _ chunk: Int) throws -> MiMoResidentRequestAllowance {
                         try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                             plan: admission.plan, rank: collective.rank, maximumTokens: context, chunkSize: chunk,
-                            phaseSplit: mode.isPhaseSplit, speculativeBytes: try speculativeBytes(chunk),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory)
+                            phaseSplit: mode.isPhaseSplit, speculativeBytes: try speculativeBytes(chunk),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory,
+                        verificationTokens: speculativeTerms.map { $0.depth + 1 } ?? 1)
                     }
                     let sharedBatch = batch.lanes > 1 ? try MiMoBatchMemory.workspace(
                         spec: admission.specification, localLayers: admission.plan.stages[collective.rank].layers.count,
@@ -496,7 +498,7 @@ public final class MiMoResidentRuntime {
             var allowance = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
                 chunkSize: chunk, phaseSplit: generationMode.isPhaseSplit, speculativeBytes: headBytes,imageCandidate:admission.plan.visionEnabled,
-                independentHistory: usesPagedHistory)
+                independentHistory: usesPagedHistory, verificationTokens: speculative.map { $0.terms.depth + 1 } ?? 1)
             if let budget = imageBudget {
                 // Check the combined sum before storing in the nonthrowing ledger accessor.
                 _ = try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,budget.reservedBytes])

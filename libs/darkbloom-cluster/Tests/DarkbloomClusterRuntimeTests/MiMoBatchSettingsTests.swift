@@ -13,7 +13,7 @@ struct MiMoBatchSettingsTests {
                 for images in [false, true] {
                     let settings = try MiMoBatchSettings.fromEnvironment([key: String(width)], mode: mode, images: images)
                     #expect(settings.lanes == (mode == .pipeline && !images ? width : 1))
-                    #expect(settings.usesPagedHistory == (mode == .pipeline && !images))
+                    #expect(settings.usesPagedHistory == ([ClusterGenerationMode.pipeline, .pipelineCompactDecode, .pipelineMTP, .phaseSplit].contains(mode) && !images))
                     #expect(try (settings.binding(base) == base) == !settings.usesPagedHistory)
                 }
             }

@@ -2962,8 +2962,8 @@ do not read backend counters. This does not change GLM, GPT-OSS or MiMo logging.
 
 The registered MiMo text row uses demand-grown pages for one through eight
 requests in its plain-pipeline native owner. `MiMoBatchSettings` keeps the default at one;
-MTP, phase handoff, compact decode and image candidates retain their existing
-single-request paths. Both ranks bind the effective width, 64-token page policy,
+MTP, phase handoff and compact decode also use request-owned pages while retaining
+their single-request schedules. Image candidates retain contiguous histories. Both ranks bind the effective width, 64-token page policy,
 BF16 row arithmetic, original-grid serial prefill and disabled prefix reuse in
 their LOAD agreement. Installed-child admission and qualification propagate
 that same effective width; this is not an automatic planner or serving grant.
@@ -2976,8 +2976,8 @@ normalizes and projects its own vocabulary rows. Histories are bound to the
 loaded model, request and local layer order. Their full/sliding physical order
 matches the ordinary SDK caches, including unequal key/value widths, while
 64-token pages grow with forwarded rows. Gathered attention arrays are temporary.
-This SDK seam does not change the ordinary validator, engine capabilities,
-speculative rollback, phase handoff or media behavior.
+The scalar page path preserves the original target forward. The ordinary SDK
+validator, engine capabilities and media entry points are unchanged.
 
 `MiMoLayerStageSession` evaluates every output and page root before committing
 all participating request schedules. `MiMoNativeBatchExecutor` owns native
@@ -2994,8 +2994,20 @@ workspace is additional. LOAD context admission, reservation and periodic live
 checks all include their applicable host/native charges. `MiMoPagedKVAllowance`
 and `MiMoBatchMemory` are metadata-only pricing helpers, not serving grants.
 
-The resident LOAD record reports `kv_backend=paged` only for this plain text
-page path; other modes report `contiguous`.
+The resident LOAD record reports `kv_backend=paged` for these four supported
+text modes. `MiMoBatchSettings` binds the window/handoff and explicit assistant
+page policy in LOAD agreement; unsupported/image paths remain contiguous.
+
+`MiMoWindowRollback` prevalidates all target caches before removing unaccepted
+rows from a multi-token verification window. `MiMoPhaseSplitState` exports the
+physical full/window layout and restores it into fresh page owners only after
+all incoming layers pass shape, dtype, frontier and rotation checks. The donor
+and recipient retain independent ownership. The trained-head assistant selects
+paged storage explicitly; its default standalone storage remains contiguous.
+Assistant compaction detaches page roots before measuring retained residency,
+and the contiguous COMPLETE-prefix codec refuses paged state. Cluster prefix
+reuse remains off for these page paths. Neither state transfer nor rollback
+changes attention arithmetic or qualification tolerances.
 
 `darkbloom-mimo-batch-decode-v1` reports a new maximum completed native width,
 at most eight records per owner loop. Size-only `darkbloom-mimo-batch-memory-v1`

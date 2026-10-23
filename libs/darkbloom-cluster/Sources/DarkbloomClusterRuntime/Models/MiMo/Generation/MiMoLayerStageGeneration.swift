@@ -47,11 +47,10 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
     producerStage: LoadedMiMoLayerStage? = nil, handoffFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
-    guard !independentHistory || (speculative == nil && producerStage == nil
-        && unplannedAgreement.phaseSplit == nil && !unplannedAgreement.compactDecode
-        && !unplannedAgreement.request.decodingRankAlone && unplannedAgreement.request.mimoImages == nil
-        && requestedPrefixCache?.enabled != true) else {
-        throw ProbeError("Paged MiMo serving requires the common plain text pipeline")
+    guard !independentHistory || (unplannedAgreement.request.mimoImages == nil
+        && requestedPrefixCache?.enabled != true
+        && (speculative?.head?.assistant.historyStorage != .contiguous)) else {
+        throw ProbeError("Paged MiMo serving requires text, no prefix reuse and a paged assistant when present")
     }
     return try MLX.withError { nativeError in
         func checked() throws { try nativeError.check(); try check(); try nativeError.check() }

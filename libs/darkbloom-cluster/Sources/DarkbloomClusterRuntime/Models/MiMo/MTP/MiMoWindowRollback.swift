@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXLMCommon
+import MLXLLM
 
 /// Takes the last rows of a verify window back out of a stage's attention
 /// caches, so that the caches hold exactly what they would hold had only the
@@ -28,6 +29,8 @@ enum MiMoWindowRollback {
         // Check every cache before changing any.
         for cache in caches {
             switch cache {
+            case let pages as MiMoV26IndependentHistoryCache:
+                try pages.validateWindowRollback(by: count)
             case let rotating as RotatingKVCache:
                 let meta = rotating.metaState.compactMap(Int.init)
                 let state = rotating.innerState()
@@ -46,6 +49,8 @@ enum MiMoWindowRollback {
         }
         for cache in caches {
             switch cache {
+            case let pages as MiMoV26IndependentHistoryCache:
+                try pages.rollbackWindow(by: count)
             case let rotating as RotatingKVCache:
                 var meta = rotating.metaState
                 let state = rotating.innerState()

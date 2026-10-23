@@ -95,7 +95,7 @@ final class MiMoMTPHead {
         return (try MiMoMTPHeadInventory(configuration: source.plan.originalConfiguration, headers: headers), indexed)
     }
 
-    init(source: MiMoResidentSource, consumer: LoadedMiMoLayerStage, check: () throws -> Void) throws {
+    init(source: MiMoResidentSource, consumer: LoadedMiMoLayerStage, pagedHistory: Bool = false, check: () throws -> Void) throws {
         guard consumer.stageIndex == 1, consumer.plan.fingerprint == source.plan.fingerprint,
               consumer.receipt.verifiedAggregateSHA256 == source.checkpoint.aggregate else {
             throw ProbeError("The speculative head loads beside the consumer stage of the same verified source")
@@ -176,7 +176,7 @@ final class MiMoMTPHead {
         try check()
         self.shell = shell; self.predictor = predictor
         assistant = try MiMoV26MTPAssistant(target: shell, predictor: predictor, retaining: nil,
-            verificationMode: .rectangular)
+            verificationMode: .rectangular, historyStorage: pagedHistory ? .paged : .contiguous)
         Stream.gpu.synchronize()
         let after = Memory.snapshot().activeMemory
         receipt = .init(headTensors: inventory.head.count, headBytes: inventory.head.reduce(0) { $0 + $1.byteCount },

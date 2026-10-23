@@ -1,8 +1,8 @@
 import DarkbloomClusterProtocol
 import Foundation
 
-/// Only plain text pipeline owners use independent-history batches. Every
-/// other mode keeps its existing one-request stage and cache contracts.
+/// Only the plain text pipeline batches. Every supported text serving mode
+/// uses demand-grown pages; other modes retain their single-request schedule.
 public struct MiMoBatchSettings: Equatable, Sendable {
     public let lanes: Int
     public let usesPagedHistory: Bool
@@ -10,10 +10,10 @@ public struct MiMoBatchSettings: Equatable, Sendable {
                                        images: Bool = false) throws -> Self {
         let requested = try QwenBatchSettings.fromEnvironment(values)
         return .init(lanes: mode == .pipeline && !images ? requested.lanes : 1,
-            usesPagedHistory: mode == .pipeline && !images)
+            usesPagedHistory: [.pipeline, .pipelineCompactDecode, .pipelineMTP, .phaseSplit].contains(mode) && !images)
     }
     var fields: [String] { !usesPagedHistory ? [] : ["mimo-independent-history-v1", "lanes=\(lanes)",
-        "bf16-independent-paged-history-v1", "cache-page-tokens=64", "affine8-broadcast-m1-v1",
+        "bf16-independent-paged-history-v2-window-handoff", "assistant-pages=explicit-v1", "cache-page-tokens=64", "affine8-broadcast-m1-v1",
         "singleton-rope-attention-mxfp4-finish-v1", "prefill=original-grid-serial-v1", "prefix=off"] }
     func binding(_ single: String) throws -> String {
         fields.isEmpty ? single : sha256(try canonicalJSONData([single] + fields))

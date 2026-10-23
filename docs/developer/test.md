@@ -1578,3 +1578,29 @@ profiles, including final-layer tail thresholds and chunk boundaries through
 off-grid refusal, the changed Gemma receipt and unchanged Qwen/Bonsai/GLM
 framing. CPU checks do not establish model-level agreement: rerun prefix-on
 full-artifact qualification and keep the separate cross-chip negative evidence.
+
+## MiMo paged speculative and phase checks
+
+Run `MiMoV26MTPPagedHistoryTests` and `MiMoV26IndependentHistoryTests` in the
+SDK integration suites, then `MiMoPagedPhaseStateTests`,
+`MiMoPagedModelHandoffTests`, `MiMoPagedAdmissionTests` and
+`MiMoBatchSettingsTests` in the cluster runtime. The runtime tests live in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/`; the SDK tests live
+in `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/MiMo/`.
+
+Use an explicit CPU device for the bounded fixtures. Actual packed BF16
+model forwards cover a producer with both full and sliding attention, byte
+transfer into fresh pages, original/kept/adopted continuation rows and every
+cache byte. Cache tests cover wrapped rings, rollback 0...3, malformed late
+layers and refusal before recipient mutation. The trained-head tests compare
+accepted draft counts 0...3 and subsequent drafts against contiguous replay,
+including compaction, measured page ownership and release. Admission tests
+retain the prior envelopes, every page bound, phase handoff, and the target's
+verification width on both ranks even with a one-token prompt chunk.
+
+The unchanged unquantized BF16 routed-target legacy cases require GPU GatherMM;
+CPU-only runs must identify those excluded cases explicitly. Packed BF16
+fixtures execute on CPU. Source-matched both-host GPU and full-artifact MTP,
+compact and phase runs remain separate gates, with existing references and
+numeric tolerances unchanged. The CPU checks do not prove transport, installed
+worker loading or artifact throughput.

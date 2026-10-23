@@ -93,6 +93,12 @@ extension EngineV2Bridge {
             continuation.yield(.error(message))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
+            // Same for a refused output control; the marker maps back to 400.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(message))
+            continuation.finish()
+            return stream
         } catch {
             // Unknown admission failures remain bounded for nonthrowing callers.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -144,6 +150,11 @@ extension EngineV2Bridge {
             continuation.yield(.error("request queue full: engine is shutting down"))
             continuation.finish()
             return stream
+        }
+        if let refusal = nativeOutputControlRefusal(request: request, tokenConstraint: tokenConstraint) {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.unsupportedOutputControl(refusal)
         }
 
         // Duplicate request-id guard (legacy: the planner's
@@ -949,5 +960,30 @@ extension EngineV2Bridge {
         for error: Error
     ) -> PrefixCacheLookupFailureClass {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
+    }
+
+    /// A native-tracked engine refuses logprob capture and token constraints
+    /// at submit (`EngineV2.validateRequest`) with an SDK-internal error this
+    /// bridge could report only as a generation failure: an untyped 500 that
+    /// strikes the coordinator's inference-error breaker for every request of
+    /// the model's shape. Refuse those requests first, as a typed client error.
+    func nativeOutputControlRefusal(
+        request: ChatCompletionRequest, tokenConstraint: (any CBv2TokenConstraint)?
+    ) -> String? {
+        Self.nativeOutputControlRefusal(
+            nativeTracked: (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil,
+            topLogprobs: EngineV2Translation.topLogprobs(
+                logprobs: request.logprobs, topLogprobs: request.top_logprobs),
+            constrained: tokenConstraint != nil)
+    }
+
+    static func nativeOutputControlRefusal(
+        nativeTracked: Bool, topLogprobs: Int, constrained: Bool
+    ) -> String? {
+        guard nativeTracked else { return nil }
+        let prefix = EngineV2Translation.unsupportedOutputControlPrefix
+        if topLogprobs != 0 { return "\(prefix): this model's engine does not return logprobs" }
+        if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
+        return nil
     }
 }

@@ -33,7 +33,10 @@ cache as available memory. Unsupported logprob requests on native engines get a
 typed 400 instead of a 500 that cooled every provider of the model; logprobs
 themselves are deferred to a later release. The provider CLI also gains the
 desktop control API from #1518; the provider release does not build, sign or
-publish the Electron desktop app. See the
+publish the Electron desktop app. On Macs with saved Autopilot consent, Autopilot
+reports every verified cached build and can download on the operator's behalf
+(#1565); holds, adopted-model routing and downloads need darkbloom-platform#439.
+See the
 [`v0.10.1` changelog entry](../../CHANGELOG.md) for the full scope.
 
 Before tagging `v0.10.1`:

@@ -458,3 +458,9 @@ The metadata-only placement check compiles `QwenVisionResidentBudget` alongside
 the registered Qwen closure. This helper has no MLX dependency and performs no
 tensor loading. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` to verify
 this source closure; native/media module and hardware checks remain separate.
+
+The Qwen native media source closure needs the matching SDK `Qwen3VLMediaProcessor`,
+`Qwen35VisionTower` and explicit-position Qwen language seams plus the
+`ClusterQwenMedia` protocol carrier. Build these together with Runtime and Worker;
+a worker gate without its protocol dependency does not compile. Preserve the
+regular-file source manifest when preparing isolated validation mirrors.

@@ -16,8 +16,8 @@ public enum ClusterWorkerLimits {
     /// each, 5 1/3 in base64): 8 MiB holds a `wirePromptTokens` prompt with its
     /// stop tokens, sampling and routes.
     public static let commandBytes = 8 * 1024 * 1024
-    /// The one larger command: a reservation carrying GLM media bytes to the
-    /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,
+    /// The one larger command: a reservation carrying GLM or Qwen media bytes to the
+    /// rank on the leader's own Mac (`ClusterGLMMedia`, `ClusterQwenMedia`). Every other command,
     /// and every record that crosses the link, stays within `commandBytes`.
     public static let mediaCommandBytes = commandBytes + ClusterGLMMedia.maximumEnvelopeBytes
     /// One command inside its owner envelope (`ClusterOwnerWire`) or as a pipe
@@ -301,6 +301,8 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// GLM image and video input on the tensor-parallel pair; nil is text, and
     /// then the reservation's bytes are exactly those of a worker without media.
     public let glmMedia: ClusterGLMMedia?
+    /// Artifact-bound Qwen/Bonsai image/video request on a tensor-parallel pair.
+    public let qwenMedia: ClusterQwenMedia?
     /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
     /// placed, and then the reservation's bytes are exactly those of a worker
     /// without routes.
@@ -308,12 +310,12 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
                 sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
-                glmMedia: ClusterGLMMedia? = nil) {
+                glmMedia: ClusterGLMMedia? = nil, qwenMedia: ClusterQwenMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
         self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
-        self.glmMedia = glmMedia
+        self.glmMedia = glmMedia; self.qwenMedia = qwenMedia
     }
 }
 

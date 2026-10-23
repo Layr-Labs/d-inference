@@ -1650,3 +1650,31 @@ The placement suite retains the exact Qwen3.8 27B visual header fixture in
 inventory and configuration corruption, decoded invalid charges, strictly
 additive TP rank memory, working-set refusal, and unchanged pipeline/legacy
 behavior. It uses metadata only and is not a model or media execution test.
+
+### Qwen media carrier checks
+
+Run `bash libs/darkbloom-cluster/Tests/QwenMediaChecks/run.sh` for the actual
+Foundation-only protocol/codec checks, then
+`bash libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh` for existing text and
+worker-message regressions. The media suite verifies round trips, metadata-only
+peer identity, nil omission, prompt/span and geometry identity, byte/raster
+bounds, malformed/duplicate fields, and checked memory arithmetic. These checks
+do not decode media, load a model, run MLX or establish visual capability.
+
+Qwen native media coverage includes `QwenNativeMediaSeamTests` and
+`QwenNativeMediaForwardTests` in SDK Integration/Qwen, plus native
+`QwenMediaStateTests`, `QwenMediaPreparationTests` and
+`WorkerQwenMediaAdmissionTests`. They check processor precedence and preallocation
+grids, request-local axes/deltas, vision-only tiny wrapper parity, serial loading,
+malformed-cache refusal, live producer custody, memory overflow and fail-closed
+worker dispatch. CPU tensor execution does not prove CoreImage/AVFoundation
+rasterization, the full registered tower, cross-Mac feature transfer, or endpoint
+media concurrency. Those require separate paired hardware evidence.
+
+Qwen media forwarding is covered by `ClusterQwenMediaForwardingTests`, which
+round-trips both encoded and metadata-only envelopes through owner and peer-link
+clock translation. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+--owner-only` runs the actual child/owner checks, including rank-specific media
+bytes, cancellation before start, early-release refusal and idempotent release
+after retirement. It runs no model or MLX code; it does not replace the full
+provider contract or hardware suites.

@@ -3216,3 +3216,53 @@ Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Meta
 (`QwenVisionResidentBudget`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
 (`tensorRequirement`).
+
+### Qwen media transport prerequisite
+
+`ClusterQwenMedia` adds a typed image/video reservation envelope for a future
+Qwen tensor-parallel media path. It binds the exact artifact, model and resolved
+processor identities, expanded prompt IDs, three-axis position digest and decode
+delta, ordered placeholder spans, prepared-patch digests, and source raster
+bounds. Encoded inputs are carried only to rank zero; the metadata-only peer
+reservation has the same fingerprint. This transport addition enables no HTTP
+capability, native media owner or model readiness by itself. Provider ingress,
+complete live memory admission, actual vision execution and paired qualification
+remain separate gates. Nil media preserves existing text wire bytes.
+
+### Request-owned Qwen27 TP media
+
+The native keyed Qwen3.8 27B TP owner can load its exact verified vision tower
+on rank zero. `QwenStageVision` reads one pinned tensor at a time and checks
+source shape, dtype, allocation ownership and LOAD headroom. It constructs no
+duplicate language model. `QwenTensorParallelMedia` runs one complete image or
+clip through the original tower, then distributes exact features through the
+existing sealed collective codec without summing or re-encoding their values.
+
+`QwenMediaRequestState` recomputes three-axis positions from authenticated token
+spans and grids. It verifies processor, prompt, position and patch identities,
+splices features across actual prompt chunks, and retains a request-local decode
+delta. Original text-only calls keep their original position path. Prefix scope
+includes the media fingerprint. `QwenMediaBudget` retains the complete text
+allowance and separately prices source rasters, encoded copies, prepared patches,
+positions, tower work, features and sealed transfers before raster preparation.
+
+Native readiness advertises media only for the exact registered 27B model with
+a verified keyed peer. Worker dispatch refuses a carrier if readiness, rank or
+identity differs. This native owner is singleton; provider ingress and the
+independent TP batch owner are separate integrations. Pipeline/MTP media and
+other models are not activated by these changes. Tiny CPU tests establish
+interfaces and ownership; full-artifact image/video parity and concurrent
+hardware qualification remain required.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenStageVision.swift`
+(`QwenStageVision`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`
+(`QwenMediaRequestState`), and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMedia.swift`
+(`prepare`).
+
+Qwen media reservations retain the encoded source only in the request owner and
+rank 0; rank 1 receives the same authenticated metadata without encoded bytes.
+Owner and peer deadline translation preserve the entire media envelope. The
+request owner drops its encoded alias only after definitive retirement and
+resource release, preserving immutable metadata for accounting. This transport
+prerequisite does not advertise media support or activate a native model path.

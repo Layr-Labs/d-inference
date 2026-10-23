@@ -117,6 +117,13 @@ import DarkbloomClusterSecurity
                 switch command.command {
                 case .reserve(let value):
                     requestID = command.requestID; reservation = value; selected = 0; reservationCount += 1
+                    if behavior == "qwen-media" {
+                        guard let media = value.qwenMedia,
+                              media.carriesEncodedBytes == (rank == 0),
+                              media.artifactSHA256 == fixtureIdentity.artifactSHA256,
+                              media.configurationSHA256 == fixtureIdentity.configurationSHA256 else { exit(69) }
+                        if rank == 0 { try media.verifyEncodedBytes() }
+                    }
                     // The owner must hand both ranks the request's sampling (the
                     // selecting rank draws with it): from this reservation on, each
                     // must carry the test's resolved seed.

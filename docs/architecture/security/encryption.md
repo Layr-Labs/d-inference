@@ -260,3 +260,31 @@ fences a stale control client before a new native epoch opens. These checks
 grant neither coordinator membership nor worker ownership. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetupTransaction.swift`
 and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`.
+
+### Qwen media reservation identity
+
+The optional `qwen35_tp_media_v1` carrier uses at most 16 images, eight videos and
+32 MiB of encoded input, with bounded source-raster totals and checked grid/span
+arithmetic. Its fingerprint binds all immutable identity and geometry fields but
+not encoded-byte presence, so the local payload and peer metadata agree. Rank
+zero must separately verify encoded and prepared-patch digests before execution;
+a supplied digest is not a decoded-feature authorization. The carrier cannot be
+combined with another media contract or request route. Existing record sealing,
+worker trust and actual memory admission remain required; this codec change does
+not advertise a media-capable runtime or endpoint.
+
+The Qwen27 native media seam sends rank-zero vision features through the
+existing authenticated TP collective records. The receiver copies rank-zero
+values without a numerical sum, and both ranks verify the same media fingerprint
+and recomputed three-axis position identity. Encoded source media is retained
+only on its declared rank. `WorkerQwenMediaAdmission` rejects an unsupported
+runtime, missing verified data plane, wrong rank payload or mismatched artifact
+before reservation. These checks do not grant provider ingress or qualify media
+numerics. Source:
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerQwenMediaAdmission.swift`.
+
+Qwen media transport preserves the typed envelope through owner and peer-link
+clock translation. The pair sends encoded inputs to rank 0 only; rank 1 receives
+metadata and the same content-bound fingerprint. A caller cancellation or early
+resource-release attempt cannot release the owner's encoded alias before the
+request has retired. Other model media contracts retain their existing behavior.

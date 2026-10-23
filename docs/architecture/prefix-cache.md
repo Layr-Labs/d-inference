@@ -965,3 +965,11 @@ MiMo COMPLETE-prefix behavior is unchanged. See `MiMoBatchSettings` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Batch/MiMoBatchSettings.swift`
 and `MiMoV26MTPPrefixCheckpoint.swift` in
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/`.
+
+Qwen27 TP media prefixes bind `QwenMediaRequestState.prefixIdentity`, including
+authenticated source/processor/position metadata, in addition to the existing
+text request identity. Request-owned positions and feature roots are not model
+globals. Native retirement releases them only after preparation completion and
+checked drain. This preserves identity separation; it is not a full-artifact
+media-prefix performance qualification. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.

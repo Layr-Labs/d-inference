@@ -139,15 +139,23 @@ struct QwenResidentAdmission {
     }
 
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
+        try request(value, id: id, now: now, allowsQwenMedia: false)
+    }
+
+    func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64,
+                 allowsQwenMedia: Bool) throws -> QwenLayerStageGenerationRequest {
         guard value.profileID == profile.identifier, value.capacityLimitBytes > 0,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
         guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
+        guard value.qwenMedia == nil || allowsQwenMedia else {
+            throw ProbeError("This Qwen native generation path has no media owner")
+        }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling, route: value.route)
+            sampling: value.sampling, route: value.route, qwenMedia: value.qwenMedia)
     }
 
     /// Rank, local path and local uptime are intentionally absent. The explicit

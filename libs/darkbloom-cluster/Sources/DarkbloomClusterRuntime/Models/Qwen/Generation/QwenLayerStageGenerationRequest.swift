@@ -73,6 +73,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let promptTokenIDs: [Int]
     let mimoImages: ClusterMiMoImages?
     let stillImages: ClusterStillImages?
+    let qwenMedia: ClusterQwenMedia?
     let stopTokenIDs: Set<Int>
     let chunkSize: Int
     let outputCount: Int
@@ -117,11 +118,22 @@ struct QwenLayerStageGenerationRequest: Equatable {
 
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
          chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
-         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) throws {
+         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+         qwenMedia: ClusterQwenMedia? = nil) throws {
         try mimoImages?.validate(prompt:promptTokenIDs)
         try stillImages?.validateStructure(promptCount: promptTokenIDs.count)
         guard stillImages == nil || (mimoImages == nil && route == nil
             && profile.identifier == ClusterStillImages.glmProfileID) else { throw ProbeError("Foreign still-image request") }
+        if let qwenMedia {
+            try qwenMedia.validateStructure()
+            guard mimoImages == nil, stillImages == nil, route == nil,
+                qwenMedia.promptLength == promptTokenIDs.count,
+                promptTokenIDs.allSatisfy({ (0...Int(Int32.max)).contains($0) }),
+                qwenMedia.promptSHA256 == ClusterQwenMedia.int32SHA256(promptTokenIDs.map(Int32.init)) else {
+                throw ProbeError("Foreign or mismatched Qwen media generation request")
+            }
+        }
+        self.qwenMedia = qwenMedia
         self.stillImages = stillImages
         self.mimoImages = mimoImages
         guard (1...profile.maximumPromptTokens).contains(promptTokenIDs.count),
@@ -158,6 +170,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
         // request agreement. Absent media preserves every legacy hash byte.
         if let mimoImages { fields.append("mimo-images=" + mimoImages.fingerprint) }
         if let stillImages { fields.append("still-images=" + stillImages.fingerprint) }
+        if let qwenMedia { fields.append("qwen-media=" + qwenMedia.fingerprint) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 

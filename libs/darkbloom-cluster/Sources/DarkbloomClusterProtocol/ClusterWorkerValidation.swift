@@ -31,7 +31,7 @@ enum ClusterWorkerValidation {
         try workerRequire(value.servingContextTokens.map { (1...p.maximumContextTokens).contains($0) } ?? true,
             "Invalid serving context")
         try workerRequire(value.linkProbe?.valid ?? true, "Invalid link probe")
-        try workerRequire(value.media.map { $0 == ClusterGLMMedia.contract } ?? true, "Unknown worker media contract")
+        try workerRequire(value.media.map { $0 == ClusterGLMMedia.contract || $0 == ClusterQwenMedia.contract } ?? true, "Unknown worker media contract")
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)
@@ -62,6 +62,14 @@ enum ClusterWorkerValidation {
             try workerRequire(value.profileID.hasSuffix(ClusterMiMoImages.profileSuffix) && value.route == nil,
                 "MiMo images require the private image pipeline profile")
             try media.validate(prompt: value.promptTokenIDs)
+        }
+        if let media = value.qwenMedia {
+            try workerRequire(value.stillImages == nil && value.mimoImages == nil && value.glmMedia == nil
+                && value.route == nil && value.promptTokenIDs.count == media.promptLength,
+                "Qwen media requires its own contract on the pair as placed")
+            try media.validateStructure()
+            try workerRequire(ClusterQwenMedia.int32SHA256(value.promptTokenIDs.map(Int32.init)) == media.promptSHA256,
+                "Qwen media reservation prompt differs")
         }
         if let sampling = value.sampling { try ClusterWorkerSamplingCodec.validate(sampling) }
     }

@@ -3,7 +3,12 @@ import DarkbloomClusterProtocol
 
 public final class ClusterWorkerRequest: @unchecked Sendable {
     public let requestID: UUID
-    public let reservation: ClusterWorkerReservation
+    private let baseReservation: ClusterWorkerReservation
+    private var qwenMedia: ClusterQwenMedia?
+    /// Metadata remains available after retirement; encoded Qwen bytes do not.
+    public var reservation: ClusterWorkerReservation {
+        lock.withLock { Self.replacingQwenMedia(baseReservation, qwenMedia ?? baseReservation.qwenMedia) }
+    }
     private let owner: ClusterWorkerPair
     private let lock = NSLock()
     private let retired = WorkerCompletion()
@@ -29,7 +34,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     private var isCancelled: Bool { lock.withLock { cancellation != nil } }
 
     init(owner: ClusterWorkerPair, requestID: UUID, reservation: ClusterWorkerReservation) {
-        self.owner = owner; self.requestID = requestID; self.reservation = reservation
+        self.owner = owner; self.requestID = requestID
+        self.baseReservation = Self.replacingQwenMedia(reservation, reservation.qwenMedia?.withoutEncodedBytes)
+        self.qwenMedia = reservation.qwenMedia
         byteReservation = reservation.capacityLimitBytes
     }
 
@@ -42,25 +49,27 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             if cleanup { queue.async { self.cleanup(acknowledged: [false, false]) } }
         }
         let now = DispatchTime.now().uptimeNanoseconds
-        guard now < reservation.deadlineUptimeNanoseconds,
-              reservation.deadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+        guard now < baseReservation.deadlineUptimeNanoseconds,
+              baseReservation.deadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else {
             throw ClusterWorkerOwnerError.deadline
         }
-        let deadline = min(reservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
+        let deadline = min(baseReservation.deadlineUptimeNanoseconds, admissionDeadline ?? UInt64.max,
                            now + owner.admissionWaitNanoseconds)
         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
+        let qwenMedia = lock.withLock { self.qwenMedia }
         var bytes = 0
         for (index, worker) in owner.workers.enumerated() {
             guard let capacity = worker.readiness?.requestCapacityBytes,
-                  bytes < reservation.capacityLimitBytes else { throw ClusterWorkerOwnerError.unavailable }
-            let local = ClusterWorkerReservation(profileID: reservation.profileID, promptTokenIDs: reservation.promptTokenIDs,
-                stopTokenIDs: reservation.stopTokenIDs, outputCount: reservation.outputCount, chunkSize: reservation.chunkSize,
-                deadlineUptimeNanoseconds: reservation.deadlineUptimeNanoseconds,
-                capacityLimitBytes: min(capacity, reservation.capacityLimitBytes - bytes),
+                  bytes < baseReservation.capacityLimitBytes else { throw ClusterWorkerOwnerError.unavailable }
+            let local = ClusterWorkerReservation(profileID: baseReservation.profileID, promptTokenIDs: baseReservation.promptTokenIDs,
+                stopTokenIDs: baseReservation.stopTokenIDs, outputCount: baseReservation.outputCount, chunkSize: baseReservation.chunkSize,
+                deadlineUptimeNanoseconds: baseReservation.deadlineUptimeNanoseconds,
+                capacityLimitBytes: min(capacity, baseReservation.capacityLimitBytes - bytes),
                 // Both ranks get the request's sampling (the selecting rank draws with it) and its route.
-                sampling: reservation.sampling, route: reservation.route, mimoImages: reservation.mimoImages, stillImages: reservation.stillImages,
+                sampling: baseReservation.sampling, route: baseReservation.route, mimoImages: baseReservation.mimoImages, stillImages: baseReservation.stillImages,
                 // GLM media bytes go to rank 0 alone, which runs the vision tower; rank 1 gets their digests.
-                glmMedia: index == 0 ? reservation.glmMedia : reservation.glmMedia?.withoutEncodedBytes)
+                glmMedia: index == 0 ? baseReservation.glmMedia : baseReservation.glmMedia?.withoutEncodedBytes,
+                qwenMedia: index == 0 ? qwenMedia : qwenMedia?.withoutEncodedBytes)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
                 do {
@@ -105,8 +114,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         // A lane is cancelled early enough to leave both ranks' loops and
         // retire before its deadline, which each rank's owner holds it to.
         let margin = owner.lanesRetireAlone ? Self.laneDeadlineMarginNanoseconds : 0
-        let cancelAt = max(DispatchTime.now().uptimeNanoseconds, reservation.deadlineUptimeNanoseconds - min(margin,
-            reservation.deadlineUptimeNanoseconds))
+        let cancelAt = max(DispatchTime.now().uptimeNanoseconds, baseReservation.deadlineUptimeNanoseconds - min(margin,
+            baseReservation.deadlineUptimeNanoseconds))
         DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: cancelAt)) { [weak self] in
             if let self, !self.retired.isComplete { self.cancel(reason: .deadline) }
         }
@@ -252,14 +261,27 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     }
     public func releaseResources() {
         let release = lock.withLock { () -> Bool in
-            guard retired.isComplete && !released else { return false }; released = true; return true
+            guard retired.isComplete && !released else { return false }
+            qwenMedia = nil
+            released = true
+            return true
         }
         if release { owner.release(self) }
     }
     func waitForRetirement() { retired.wait() }
 
+    private static func replacingQwenMedia(_ value: ClusterWorkerReservation,
+        _ media: ClusterQwenMedia?) -> ClusterWorkerReservation {
+        .init(profileID: value.profileID, promptTokenIDs: value.promptTokenIDs,
+            stopTokenIDs: value.stopTokenIDs, outputCount: value.outputCount, chunkSize: value.chunkSize,
+            deadlineUptimeNanoseconds: value.deadlineUptimeNanoseconds,
+            capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route,
+            mimoImages: value.mimoImages, stillImages: value.stillImages, glmMedia: value.glmMedia,
+            qwenMedia: media)
+    }
+
     private func event(_ rank: Int) throws -> ClusterWorkerEvent {
-        let value = try owner.receive(rank: rank, requestID: requestID, until: reservation.deadlineUptimeNanoseconds,
+        let value = try owner.receive(rank: rank, requestID: requestID, until: baseReservation.deadlineUptimeNanoseconds,
             cancelled: { self.isCancelled })
         guard value.requestID == requestID else { throw ClusterWorkerOwnerError.invalid("Stale worker request event") }
         return value.event
@@ -272,7 +294,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
                 // Enqueue is bounded/nonblocking. Linearize both start commands
                 // against cancellation without holding a lock across native IO.
-                for worker in owner.workers { try worker.sendWorkerCommand(.start, requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds) }
+                for worker in owner.workers { try worker.sendWorkerCommand(.start, requestID: requestID, deadline: baseReservation.deadlineUptimeNanoseconds) }
             }
             var count = 0, last: Int?, cleanStop = false
             var finish: ClusterWorkerFinishReason?
@@ -282,10 +304,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 let value = try event(0)
                 switch value {
                 case .committedToken(let ordinal, let token, let committed, let logprobs):
-                    guard !cleanStop, ordinal == count, count < reservation.outputCount,
-                          committed == reservation.promptTokenIDs.count + ordinal, token < owner.profile.vocabularySize,
-                          last.map({ !reservation.stopTokenIDs.contains($0) }) ?? true,
-                          logprobs?.top.count == reservation.sampling?.capturedLogprobs else {
+                    guard !cleanStop, ordinal == count, count < baseReservation.outputCount,
+                          committed == baseReservation.promptTokenIDs.count + ordinal, token < owner.profile.vocabularySize,
+                          last.map({ !baseReservation.stopTokenIDs.contains($0) }) ?? true,
+                          logprobs?.top.count == baseReservation.sampling?.capturedLogprobs else {
                         throw ClusterWorkerOwnerError.invalid("Unexpected committed worker token")
                     }
                     count += 1; last = token
@@ -298,10 +320,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     let keepGoing = wanted && !cleanStopWasRequested
                     cleanStop = !keepGoing
                     try owner.workers[0].sendWorkerCommand(.tokenDecision(ordinal: ordinal, decision: keepGoing ? .proceed : .cleanStop),
-                        requestID: requestID, deadline: reservation.deadlineUptimeNanoseconds)
+                        requestID: requestID, deadline: baseReservation.deadlineUptimeNanoseconds)
                 case .promptCache(let reused, let stored):
-                    guard count > 0, cacheReport == nil, reused < reservation.promptTokenIDs.count,
-                          stored.allSatisfy({ $0 < reservation.promptTokenIDs.count }) else {
+                    guard count > 0, cacheReport == nil, reused < baseReservation.promptTokenIDs.count,
+                          stored.allSatisfy({ $0 < baseReservation.promptTokenIDs.count }) else {
                         throw ClusterWorkerOwnerError.invalid("Unexpected prompt cache report")
                     }
                     cacheReport = (reused, stored)
@@ -310,8 +332,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     telemetry = value
                 case .finished(let reason):
                     guard count > 0, let last else { throw ClusterWorkerOwnerError.invalid("Finish precedes committed token") }
-                    let expected: ClusterWorkerFinishReason? = reservation.stopTokenIDs.contains(last) ? .eos
-                        : count == reservation.outputCount ? .length : cleanStop ? .clientStop : nil
+                    let expected: ClusterWorkerFinishReason? = baseReservation.stopTokenIDs.contains(last) ? .eos
+                        : count == baseReservation.outputCount ? .length : cleanStop ? .clientStop : nil
                     guard reason == expected else { throw ClusterWorkerOwnerError.invalid("Worker clean finish differs") }
                     finish = reason
                 case .failed(let reason):
@@ -320,7 +342,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                     throw ClusterWorkerOwnerError.invalid("Rank 0 became unavailable: \(reason.rawValue)")
                 default: throw ClusterWorkerOwnerError.invalid("Rank 0 emitted an unexpected request event: \(String(describing: value).prefix(80))")
                 }
-                guard DispatchTime.now().uptimeNanoseconds < reservation.deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
+                guard DispatchTime.now().uptimeNanoseconds < baseReservation.deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
             }
             guard try event(0) == .retired(.clean) else { throw ClusterWorkerOwnerError.invalid("Rank 0 lacks local retirement") }
             acknowledged[0] = true

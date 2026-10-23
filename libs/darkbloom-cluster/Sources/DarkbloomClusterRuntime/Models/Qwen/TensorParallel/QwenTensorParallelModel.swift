@@ -408,6 +408,18 @@ public final class QwenTensorParallelModel {
     /// The model over `input` `[1, T]` with `cache`: logits `[1, T, V or V/size]`, not evaluated.
     func forwardForRuntime(_ input: MLXArray, cache: [KVCache]) -> MLXArray { model(input, cache: cache) }
 
+    /// Preserve the replicated text embedding before authenticated rank-zero
+    /// vision features replace the request's placeholder rows.
+    func embeddingsForMedia(_ input: MLXArray) -> MLXArray { model.scaledInputEmbeddings(input) }
+
+    /// Media uses the same sharded model and reductions, with request-owned
+    /// three-axis positions. No mutable position delta lives on the model.
+    func forwardMediaForRuntime(_ input: MLXArray, cache: [KVCache],
+        embeddings: MLXArray?, positions: MLXArray) throws -> MLXArray {
+        try model.forwardWithMedia(input, inputEmbeddings: embeddings,
+            positionIds: positions, cache: cache)
+    }
+
     /// One decode step's logits `[1, V or V/size]` for `token` (`[1]` int32,
     /// possibly not evaluated), not evaluated.
     func step(_ token: MLXArray, cache: [KVCache]) -> MLXArray {

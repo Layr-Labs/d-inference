@@ -923,3 +923,11 @@ working-set fit; request floors never absorb this charge. The registered Qwen3.8
 supplement fails layout decoding. This metadata proof does not qualify image or
 video inference on hardware. See
 [inference residency](inference.md#qwen27-vision-tower-residency-in-tp-placement).
+
+The native Qwen27 TP media gate additionally charges bounded host preparation
+and native feature/tower allocations before decode. Header geometry is checked
+before image rasterization or video sampling; one clip retains its temporal
+geometry through the original tower. Cancellation retains preparation custody
+until the producer exits, then retains native roots until checked drain. A
+readiness ceiling is not a memory grant: every reservation still passes the
+live native/OS gate. See [request-owned media](inference.md#request-owned-qwen27-tp-media).

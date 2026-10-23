@@ -209,6 +209,10 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .reserve(let value):
                     do {
                         try Self.requireLogprobCapture(value, runtime: runtime)
+                        guard WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) else {
+                            throw ClusterResidentRequestRefusal(reason: .unsupported,
+                                message: "This loaded worker does not serve the bound Qwen media request")
+                        }
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
                         admittedNotStarted = command.requestID
@@ -552,7 +556,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
         switch command.command {
         case .reserve(let value):
-            if value.sampling?.capturedLogprobs != nil, !runtime.capturesLogprobs {
+            if (value.sampling?.capturedLogprobs != nil && !runtime.capturesLogprobs)
+                || !WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) {
                 try publish(.refused(.unsupported), requestID: command.requestID)
                 return false
             }

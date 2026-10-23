@@ -13,6 +13,9 @@
   considered instead of silently using an unmeasured link.
 - Add Qwen27 independent TP histories, grouped collectives, per-request sampling
   and captured logprobs, with checked bilateral cancellation and retirement.
+- Coalesce nearby Qwen27 TP token acknowledgments within the existing bounded
+  scheduling window so ready rows can decode together; joining, prefill,
+  cancellation and retirement continue without waiting for a silent client.
 - Reuse mutually held original-grid Qwen27 TP prefixes with bounded resident
   snapshots, fresh per-request histories, separately priced capture/cache banks
   and publication only after bilateral clean retirement.

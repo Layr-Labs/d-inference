@@ -87,6 +87,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     func serve(host: QwenBatchServingHost, check: () throws -> Void) throws {
         var step = 0
         var decisions = QwenBatchDecisionProgress()
+        var coalescing = QwenBatchDecodeCoalescing()
         var peerCancelled = Set<Int>()
         do {
             while true {
@@ -95,7 +96,8 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                     if executor.rank == 1 { try host.serviceControl() }
                     try check()
                     let localPlan = executor.rank == 0
-                        ? makePlan(step: step, answers: answers, decisions: decisions, peerCancelled: peerCancelled) : nil
+                        ? makePlan(step: step, answers: answers, decisions: decisions, peerCancelled: peerCancelled,
+                                   coalescing: &coalescing) : nil
                     let localReport = executor.rank == 1 ? report(step: step) : nil
                     let sum = try executor.exchange(QwenTensorParallelBatchWire.contribution(
                         rank: executor.rank, plan: localPlan, report: localReport), check: check)
@@ -151,7 +153,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     }
 
     private func makePlan(step: Int, answers: [UUID: Bool], decisions: QwenBatchDecisionProgress,
-                          peerCancelled: Set<Int>) -> QwenBatchWire.Header {
+                          peerCancelled: Set<Int>, coalescing: inout QwenBatchDecodeCoalescing) -> QwenBatchWire.Header {
         var slots = [QwenBatchWire.Slot](repeating: .init(), count: capacity)
         for (slot, record) in records {
             var value = QwenBatchWire.Slot(state: .active, requestID: record.id)
@@ -177,6 +179,17 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         }).min(by: { $0.order < $1.order }), let frame = prompt.native?.nextFrame {
             slots[prompt.slot].role = .prefill; slots[prompt.slot].frameOffset = frame.tokenOffset
             slots[prompt.slot].frameCount = frame.tokenCount; slots[prompt.slot].finalChunk = frame.finalPromptChunk
+        }
+        let decoding = slots.indices.filter {
+            slots[$0].state == .active && records[$0]?.native?.nextFrame?.phase == .decode
+        }
+        let ready = decoding.filter { slots[$0].role == .decode }
+        // Let nearby credits form one decode rectangle without waiting on a
+        // silent lane. Joining, prefill and retirement keep their next step.
+        if coalescing.shouldDefer(ready: ready.count, pending: decoding.count - ready.count,
+            hasOtherWork: slots.contains { $0.state == .joining || $0.state == .leaving || $0.role == .prefill },
+            now: now) {
+            for slot in ready { slots[slot].role = .none; slots[slot].inputToken = -1 }
         }
         return .init(step: step, stop: slots.allSatisfy({ $0.state == .empty }) && !book.hasStarted, slots: slots)
     }

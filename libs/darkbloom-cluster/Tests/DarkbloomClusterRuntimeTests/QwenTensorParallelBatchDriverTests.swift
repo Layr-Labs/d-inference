@@ -189,6 +189,7 @@ struct QwenTensorParallelBatchDriverTests {
         let pair = Pair(4), held = try pair.request(output: 8), later = try pair.request(length: 7, output: 8)
         try pair.reserve(held)
         pair.hosts[0].answer = { id in id == held.requestID && !pair.flag("finished-\(later.requestID)") ? nil : true }
+        pair.hosts[0].onControl = { pair.lock.withLock { pair.clock += 250_000 } }
         pair.hosts[0].onToken = { id, _ in
             if id == held.requestID && !pair.flag("joined") {
                 pair.set("joined"); try pair.reserve(later, rank: 0)
@@ -200,6 +201,89 @@ struct QwenTensorParallelBatchDriverTests {
         try pair.run()
         #expect(pair.hosts[0].tokens[held.requestID] == HistoryBatchTestSession.oracle(held))
         #expect(pair.hosts[0].tokens[later.requestID] == HistoryBatchTestSession.oracle(later))
+    }
+
+    @Test func staggeredOwnerCreditsFormOneDecodeRectangleOnBothRanks() throws {
+        let pair = Pair(2), first = try pair.request(), second = try pair.request()
+        try pair.reserve(first); try pair.reserve(second)
+        var tick = 0, readyAt: [UUID: Int] = [:]
+        pair.hosts[0].onControl = {
+            tick += 1
+            pair.lock.withLock { pair.clock += 250_000 }
+        }
+        // Each real publication gets a later owner answer. The two initial
+        // prefills stagger these answers; immediate scheduling alternates
+        // singleton decodes forever instead of forming a rectangle.
+        pair.hosts[0].onToken = { id, _ in readyAt[id] = tick + 2 }
+        pair.hosts[0].answer = { id in tick >= readyAt[id, default: .max] ? true : nil }
+        try pair.run()
+        for rank in 0...1 {
+            #expect(pair.native[rank].maximumWidth == 2)
+            #expect(pair.books[rank].isEmpty)
+        }
+        for request in [first, second] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+        }
+    }
+
+    @Test func silentOwnerCreditCannotHoldAReadyLaneBeyondTheWindow() throws {
+        let pair = Pair(2), held = try pair.request(output: 4), live = try pair.request(output: 4)
+        try pair.reserve(held); try pair.reserve(live)
+        let tick: UInt64 = 250_000
+        var partialReadyAt: UInt64?, firstSoloDecodeAt: UInt64?
+        pair.hosts[0].onControl = { pair.lock.withLock { pair.clock += tick } }
+        pair.hosts[0].answer = { id in
+            if id == held.requestID && !pair.flag("finished-\(live.requestID)") { return nil }
+            if id == live.requestID && partialReadyAt == nil { partialReadyAt = pair.now() }
+            return true
+        }
+        pair.native[0].afterDecode = { ids in
+            if ids == [live.requestID] && firstSoloDecodeAt == nil {
+                firstSoloDecodeAt = pair.now()
+                #expect(pair.hosts[0].tokens[held.requestID]?.count == 1)
+            }
+        }
+        try pair.run()
+        let began = try #require(partialReadyAt), decoded = try #require(firstSoloDecodeAt)
+        #expect(decoded - began >= QwenBatchDecodeCoalescing.windowNanoseconds)
+        #expect(decoded - began <= QwenBatchDecodeCoalescing.windowNanoseconds + tick)
+        for request in [held, live] {
+            #expect(pair.hosts[0].tokens[request.requestID] == HistoryBatchTestSession.oracle(request))
+        }
+        #expect(pair.books.allSatisfy { $0.isEmpty })
+    }
+
+    @Test func cancellationAndDeadlineInterruptCreditCoalescing() throws {
+        for expires in [false, true] {
+            let pair = Pair(2), held = try pair.request(), live = try pair.request(output: 4)
+            let tick: UInt64 = 250_000
+            let deadline: UInt64 = expires ? 1_250_000 : .max
+            try pair.reserve(held, deadline: deadline); try pair.reserve(live)
+            var partialReadyAt: UInt64?, firstDecodeAt: UInt64?
+            pair.hosts[0].answer = { id in
+                if id == held.requestID { return nil }
+                if partialReadyAt == nil { partialReadyAt = pair.now() }
+                return true
+            }
+            pair.hosts[0].onControl = {
+                pair.lock.withLock { pair.clock += tick }
+                if !expires, let began = partialReadyAt, pair.now() > began {
+                    pair.books[0].cancel(held.requestID)
+                }
+            }
+            pair.native[0].afterDecode = { ids in
+                if ids.contains(live.requestID) && firstDecodeAt == nil { firstDecodeAt = pair.now() }
+            }
+            try pair.run()
+            let began = try #require(partialReadyAt), decoded = try #require(firstDecodeAt)
+            #expect(decoded - began < QwenBatchDecodeCoalescing.windowNanoseconds)
+            for rank in 0...1 {
+                #expect(pair.hosts[rank].left.contains(held.requestID))
+                #expect(pair.hosts[rank].finished[live.requestID] == .length)
+                #expect(pair.books[rank].isEmpty)
+            }
+            #expect(pair.hosts[0].tokens[live.requestID] == HistoryBatchTestSession.oracle(live))
+        }
     }
 
     @Test func followerCancellationAndDeadlineRetireOnlyTheirLanes() throws {

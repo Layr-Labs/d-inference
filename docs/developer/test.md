@@ -1704,7 +1704,11 @@ provider contract or hardware suites.
 Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`
 and `QwenTensorParallelBatchSettingsTests` in the Runtime test target for
 bilateral scheduling/retirement, canonical inventory pricing and exact keyed
-model admission. Run `QwenTensorParallelBatchSessionTests` with the matching SDK
+model admission. The real paired-driver fixtures stagger owner token credits to
+require a two-row decode rectangle, bound a silent owner's delay, and interrupt
+credit coalescing for cancellation or deadline retirement. Existing fixtures
+keep later joins and prefills moving while an older token credit is withheld.
+These CPU scheduling checks do not establish installed native batch width. Run `QwenTensorParallelBatchSessionTests` with the matching SDK
 for physically sliced native attention, greedy ties, seeded mixed sampling,
 raw logprobs, reordered histories, nonfinite refusal and resource-release retry.
 The default execution is CPU; the production hybrid recurrence requires Metal.

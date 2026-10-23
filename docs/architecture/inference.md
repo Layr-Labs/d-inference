@@ -3317,7 +3317,12 @@ the TP row helper preserves singleton matmul shape. Mixed text/media rows retain
 their own original fused RoPE or MRoPE calculation.
 
 The driver coordinates join, one prefill frame and a decode cohort on both
-ranks. A held token credit blocks only its request. Cancellation or expiry before
+ranks. A held token credit blocks only its request. When some decode rows are
+ready and others await nearby owner acknowledgments, the driver reuses
+`QwenBatchDecodeCoalescing`'s absolute 2,000,000-nanosecond window. It keeps
+exchanging no-work steps and servicing control; new joins, prefills and retirement
+bypass the window. A silent owner cannot extend it, and a sole decode row or
+complete cohort advances immediately. Cancellation or expiry before
 opening discards a lane bilaterally; once a media phase is announced, both ranks
 finish and drain it before applying that request's stop at the next boundary.
 Native and host resource release must succeed on both ranks before retirement
@@ -3334,7 +3339,9 @@ fixtures are not full-artifact, RDMA, tower, throughput or endpoint evidence.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchSession.swift`
 (`QwenTensorParallelBatchSession`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchDriver.swift`
-(`serve`, `join`, `leave`), and
+(`serve`, `makePlan`, `join`, `leave`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDecodeCoalescing.swift`
+(`shouldDefer`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
 (`serveBatch`, `prepareBatch`).
 

@@ -952,6 +952,10 @@ the vision tower. Reservation and live checks use the same ledger; readiness is
 a ceiling, not a memory grant. Wider lanes require the exact27 model and keyed
 pair. The tiny numerical fixtures do not establish safe full-artifact capacity,
 throughput or automatic placement; each requires installed hardware evidence.
+Capacity is not observed decode width: the TP driver briefly coalesces nearby
+owner token credits within the [bounded scheduling contract](inference.md#independent-qwen27-tensor-parallel-batch-lanes).
+A completed native decode marker on both ranks is required to establish a width;
+concurrent HTTP requests alone do not establish it.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenTensorParallelBatchBudget.swift`
 (`derive`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelVerifiedLoad.swift`

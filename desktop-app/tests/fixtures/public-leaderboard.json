@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "rank": 1,
+      "pseudonym": "forest-komodo-7812",
+      "earnings_micro_usd": 15645601,
+      "work_earnings_micro_usd": 14207758,
+      "reward_earnings_micro_usd": 1437843,
+      "tokens": 275964094,
+      "jobs": 71880
+    },
+    {
+      "rank": 2,
+      "pseudonym": "downy-scorpion-2274",
+      "earnings_micro_usd": 10134353,
+      "work_earnings_micro_usd": 9973607,
+      "reward_earnings_micro_usd": 160746,
+      "tokens": 159792697,
+      "jobs": 41053
+    },
+    {
+      "rank": 3,
+      "pseudonym": "pluckier-stoat-9536",
+      "earnings_micro_usd": 9699908,
+      "work_earnings_micro_usd": 9077104,
+      "reward_earnings_micro_usd": 622804,
+      "tokens": 86487839,
+      "jobs": 19426
+    }
+  ],
+  "metric": "earnings",
+  "updated_at": "2026-09-18T18:27:46Z",
+  "window": "24h"
+}

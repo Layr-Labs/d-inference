@@ -84,6 +84,28 @@ Invalid, missing or changed selected storage disables SSD caching; inference can
 continue cold. See [selecting cache storage](cache-storage.md) for disk preparation,
 limits and verification. These checks do not certify disk firmware.
 
+## Desktop frontend control
+
+`darkbloom desktop serve --config <path>` runs the authenticated loopback API.
+`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent,
+reinstalling it when the plist changed and restarting it once when the running
+API reports a different version than the invoking CLI.
+The desktop frontend sends validated actions to existing CLI operations and
+keeps the provider independent of its window lifetime. Internal
+`desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
+(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
+`desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
+to request macOS administrator authorization for the existing signed helper.
+`darkbloom desktop login [--config <path>]` signs into the account
+workspace through browser approval; `darkbloom desktop logout [--config <path>]`
+signs out without changing provider linkage or serving state. Both use the same
+CLI and native account store as Electron (`Desktop.Login`, `Desktop.Logout`).
+It prefers a scoped account session and supports existing coordinator device-code
+grants when the desktop scope is not reported. Dashboard credentials stay separate
+from the running provider (`DeviceLoginScope`, `DesktopAccountCredential`).
+See [desktop control](../reference/desktop-control.md) for the exact routes,
+credentials, outcomes, and limits (`Desktop`, `DesktopBackend`).
+
 ## Global options
 
 The hidden `--native-serve-qualification-v1 <ws-url> <private-directory>` entry
@@ -128,7 +150,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -436,6 +458,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
+| `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
 Clearing restores model-aware `auto` on the next model load, not guaranteed
 paged service. It preserves explicit settings, the kill switch and capability
@@ -881,7 +904,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
@@ -1012,7 +1035,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard] [--hardware]
 ```
 
 | Flag | Description |
@@ -1021,6 +1044,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
 | `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
+| `--hardware` | Print one whole-machine load sample and which counters this Mac exposes, as JSON ([format](../reference/desktop-control.md#hardware-load)), and exit |
 
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and

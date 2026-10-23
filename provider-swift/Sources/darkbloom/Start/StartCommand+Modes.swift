@@ -213,7 +213,8 @@ extension Start {
                     && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
             } : []
         let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
-        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
+        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(
+            to: combined, verifiedWeightHashesFile: VerifiedWeightHashStore.path())
         let models = verified.filter { selectedIDs.contains($0.id) }
         let autopilotInventory = verified.filter {
             config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false

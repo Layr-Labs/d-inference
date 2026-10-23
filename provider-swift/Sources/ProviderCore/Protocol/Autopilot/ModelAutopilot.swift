@@ -92,6 +92,11 @@ public enum ModelAutopilotCapability: String, CaseIterable, Sendable {
     /// `busy_reason(s)`, `busy_since_ms`, `transition_stalls` and the
     /// `provider_busy` status `detail` are reported.
     case busyReasons = "busy_reasons"
+    /// `selected_models` is the persisted selection plus every verified
+    /// catalog build in the local cache, and a `prefetch_model` for a build
+    /// outside it downloads the build into it (`AutopilotDownloadRefusal`
+    /// codes on refusal).
+    case inventoryDownloads = "inventory_downloads"
 }
 
 public struct ModelAutopilotHold: Codable, Sendable, Equatable {

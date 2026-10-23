@@ -358,6 +358,15 @@ public actor ProviderLoop {
     /// Placement holds by model. An expired hold stays as the idle anchor
     /// until the placement ends; only an unexpired hold protects a slot.
     internal var autopilotHolds: [String: AutopilotHold] = [:]
+    /// Downloads on the operator's behalf (`ProviderLoop+AutopilotDownload`):
+    /// a prefetch coordinator whose verified builds join the Autopilot set
+    /// rather than the advertised set. Created on the first request.
+    internal var autopilotDownloadCoordinator: ModelPrefetchCoordinator?
+    /// Builds added to the Autopilot inventory since the last registration;
+    /// the coordinator learns inventory metadata only from `register`.
+    internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// Last check that cached Autopilot builds are still on disk.
+    internal var autopilotCacheSweepAt: ContinuousClock.Instant?
     /// Unix milliseconds at which each reported busy reason was first
     /// continuously observed.
     internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()

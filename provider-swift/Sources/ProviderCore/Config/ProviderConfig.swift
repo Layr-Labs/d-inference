@@ -158,6 +158,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Explicit network residency control; advertising all cached models is not consent.
     public var modelAutopilot: ModelAutopilotSettings
+    /// GiB of free disk an Autopilot download must leave on the model cache
+    /// volume (`autopilot_download_reserve_gb` under `[backend]`). nil (key
+    /// absent) uses `AutopilotDiskGuard.defaultReserveGiB`; optional so a
+    /// written default never shadows a later built-in change. Provider
+    /// policy, not consent: changing it never bumps the Autopilot revision.
+    public var autopilotDownloadReserveGb: UInt64?
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 4, the knee of the measured
@@ -333,7 +339,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        modelAutopilot: ModelAutopilotSettings = .init()
+        modelAutopilot: ModelAutopilotSettings = .init(),
+        autopilotDownloadReserveGb: UInt64? = nil
     ) {
         self.port = port
         self.model = model
@@ -361,6 +368,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.modelAutopilot = modelAutopilot
+        self.autopilotDownloadReserveGb = autopilotDownloadReserveGb
     }
 
     enum CodingKeys: String, CodingKey {
@@ -371,6 +379,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
         case modelAutopilot = "model_autopilot"
+        case autopilotDownloadReserveGb = "autopilot_download_reserve_gb"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -414,6 +423,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
+        self.autopilotDownloadReserveGb = try container.decodeIfPresent(UInt64.self, forKey: .autopilotDownloadReserveGb)
         self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
@@ -468,6 +478,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
         try container.encode(modelAutopilot, forKey: .modelAutopilot)
+        try container.encodeIfPresent(autopilotDownloadReserveGb, forKey: .autopilotDownloadReserveGb)
         if engineV2MaxConcurrentIsExplicit {
             try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
         }

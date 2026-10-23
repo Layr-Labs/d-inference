@@ -127,6 +127,64 @@ struct ScheduledWindowSelectionTests {
         #expect(later.modelHashFingerprints["fixture/b"] != fingerprint)
     }
 
+    /// Cached builds the start path verified, and recorded Autopilot
+    /// downloads, stay in the next window's set while their bytes still hash
+    /// to the verified value. One that changed or vanished is dropped without
+    /// failing the window.
+    @Test func cachedAutopilotBuildsCarryIntoTheNextWindowWhileUnchanged() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var paths: [String: URL] = [:]
+        for id in ["fixture/a", "fixture/cached", "fixture/rewritten", "fixture/vanished", "fixture/downloaded"] {
+            paths[id] = try snapshot(in: directory, id: id)
+        }
+        func hash(_ id: String) throws -> String {
+            let snapshot = try #require(paths[id])
+            return try #require(WeightHasher.computeHash(snapshotDir: snapshot, modelID: id))
+        }
+        var config = ProviderConfig(provider: ProviderSettings(name: "autopilot-window"))
+        config.backend.enabledModels = ["fixture/a"]
+        config.backend.modelAutopilot = .init(enabled: true, consentRecorded: true,
+            selectedModels: ["fixture/a"], revision: "initial")
+        try ConfigManager.save(config, to: path)
+        var ledger = AutopilotDownloadLedger()
+        ledger.record(.init(modelId: "fixture/downloaded", weightHash: try hash("fixture/downloaded"), downloadedAtMs: 1))
+        try ledger.write(to: AutopilotDownloadLedger.url(configDirectory: directory))
+        let startInventory = try ["fixture/a", "fixture/cached", "fixture/rewritten", "fixture/vanished"].map {
+            ModelInfo(id: $0, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1, weightHash: try hash($0))
+        }
+        let start = ProviderLoopConfig(
+            coordinatorURL: "wss://startup.invalid/ws/provider", hardware: hardware,
+            models: [startInventory[0]], config: config, runtimeCapabilities: [.appleM5, .mlxNAX],
+            configPath: path, autopilotInventory: startInventory)
+        var selection = ScheduledWindowSelection(startup: start, configFileExists: true)
+        _ = try selection.nextWindowConfiguration()
+
+        let rewritten = try #require(paths["fixture/rewritten"])
+        try Data("rewritten bytes".utf8).write(to: rewritten.appendingPathComponent("model.safetensors"))
+        let vanished = try #require(paths["fixture/vanished"])
+        try FileManager.default.removeItem(at: vanished.deletingLastPathComponent().deletingLastPathComponent())
+        paths["fixture/vanished"] = nil
+        config.backend.modelAutopilot.revision = "refreshed"
+        try ConfigManager.save(config, to: path)
+        let next = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] })
+        #expect(next.autopilotInventory.map(\.id).sorted() == ["fixture/a", "fixture/cached", "fixture/downloaded"])
+        #expect(next.modelHashes["fixture/cached"] == (try hash("fixture/cached")))
+        #expect(next.modelHashes["fixture/downloaded"] == (try hash("fixture/downloaded")))
+        #expect(next.models.map(\.id) == ["fixture/a"])
+
+        // Without saved consent nothing beyond the persisted selection carries.
+        config.backend.modelAutopilot.consentRecorded = false
+        try ConfigManager.save(config, to: path)
+        let withoutConsent = try selection.nextWindowConfiguration(
+            resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+            resolveLocalPath: { paths[$0] })
+        #expect(withoutConsent.autopilotInventory.isEmpty)
+    }
+
     @Test func explicitSwitchToAlreadySavedIDsReplacesManualOverrideNextWindow() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

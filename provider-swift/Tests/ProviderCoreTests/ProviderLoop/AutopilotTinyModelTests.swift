@@ -200,6 +200,58 @@ extension TinyModelLoadTests {
             }
         }
 
+        @Test("A build downloaded on the operator's behalf joins the set; an operation loads, adopts and serves it")
+        func downloadedBuildIsLoadedByAnOperation() async throws {
+            _ = LiveInferenceFixtures.ensureMetallibColocated()
+            let checkpoint = try TinyModelCheckpoint(seed: 31)
+            defer { checkpoint.remove() }
+            let sandbox = try ModelLoadingSandbox()
+            defer { sandbox.remove() }
+            try await checkpoint.withModelCache {
+                let model = checkpoint.modelID
+                // Saved consent selected another model. The checkpoint is not
+                // selected, in the inventory, advertised or resident.
+                let settings = ModelAutopilotSettings(enabled: true, consentRecorded: true,
+                    selectedModels: ["darkbloom-test/saved-elsewhere"], revision: Self.revision, minIdleSeconds: 1)
+                let loop = try ProviderLoop(
+                    config: ProviderLoopConfig(
+                        coordinatorURL: "ws://127.0.0.1:0/ignored", hardware: ModelLoadingFixtures.defaultHardware,
+                        models: [],
+                        config: ProviderConfig(
+                            provider: ProviderSettings(name: "autopilot-download-tiny-test", memoryReserveGB: 0),
+                            backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3, mtpMode: .off,
+                                modelAutopilot: settings),
+                            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
+                        configPath: sandbox.root.appendingPathComponent("provider.toml")),
+                    attestationSigner: nil,
+                    kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [model]))
+                await loop.setDaemonStateFileForTesting(sandbox.daemonStateFile)
+                await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+                #expect(await loop.autopilotSetAllows(model) == false)
+
+                // The checkpoint's bytes are already in the cache: the scripted
+                // transfer has nothing left to fetch, publication verifies them.
+                let downloads = await loop.makeAutopilotDownloadCoordinator(prefetcher: ScriptedDownload { _ in })
+                await loop.installAutopilotDownloadCoordinatorForTesting(downloads)
+                let replies = await loop.prefetchForTesting(model)
+                #expect(replies.terminal == .init(status: .verified, error: nil))
+                #expect(await loop.state.modelAutopilot?.selectedModels.contains(model) == true)
+                #expect(await loop.modelLoadingResidentIDs().isEmpty)
+
+                await lease(loop, enabled: true)
+                let loaded = try #require(
+                    await loop.runAutopilotCommandForTesting(command("load-download", load: model, hold: 600)))
+                #expect(loaded.status == .succeeded)
+                #expect(loaded.modelAutopilot.adoptedModels == [model])
+                await lease(loop, enabled: false)
+                #expect(await loop.autopilotServesModel(model))
+                let bridge = try #require(await loop.slotBridgeForTesting(modelId: model))
+                let generation = await TinyGeneration.run(bridge: bridge, modelID: model)
+                generation.check()
+                #expect(await loop.unloadModel(model))
+            }
+        }
+
         // MARK: - Fixture
 
         private func makeLoop(_ checkpoint: TinyModelCheckpoint, sandbox: ModelLoadingSandbox, asInventory: Bool,

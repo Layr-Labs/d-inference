@@ -44,7 +44,13 @@ extension ProviderLoop {
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
         guard autopilotAllowsModel(modelId) else {
-            send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
+            // With saved consent, a build outside ordinary serving is an
+            // Autopilot download into the Autopilot set, never advertised.
+            if autopilotConsented {
+                await handleAutopilotDownloadRequest(modelId: modelId, priority: priority, send: send)
+            } else {
+                send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
+            }
             return
         }
         guard ModelRuntimeRequirements.isEligible(
@@ -338,7 +344,7 @@ extension ProviderLoop {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
                 !entry.desiredBuild.isEmpty {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
-                if autopilotConsented && !autopilotSettings.allows(entry.desiredBuild) {
+                if autopilotConsented && !autopilotSetAllows(entry.desiredBuild) {
                     autopilotSuccessorNeedsInventoryRefresh = true
                 }
             }

@@ -258,7 +258,11 @@ extension ProviderLoop {
         // clear deliberately does NOT happen at the check, see there).
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
-        if autopilotInventoryModels[modelId] != nil { autopilotInventoryModels[modelId] = info }
+        // With saved consent, every verified catalog build this machine can
+        // run is in the Autopilot set; `models_update` carries this one.
+        if autopilotInventoryModels[modelId] != nil || joinsAutopilotSetWhenVerified(info) {
+            autopilotInventoryModels[modelId] = info
+        }
         pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
         reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash

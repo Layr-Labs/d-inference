@@ -472,6 +472,9 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
+        if let autopilotDownloadCoordinator {
+            await autopilotDownloadCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
         // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).

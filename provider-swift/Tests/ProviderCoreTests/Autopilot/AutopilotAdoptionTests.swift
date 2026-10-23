@@ -47,7 +47,7 @@ struct AutopilotAdoptionTests {
 
         let snapshot = try #require(await loop.state.modelAutopilot)
         #expect(snapshot.adoptedModels == [Fixture.inventory])
-        #expect(snapshot.capabilities == ["inventory_adoption", "placement_holds", "busy_reasons"])
+        #expect(snapshot.capabilities == ["inventory_adoption", "placement_holds", "busy_reasons", "inventory_downloads"])
         #expect(fixture.engines.values.allSatisfy { $0.shutdownCalls == 0 })
     }
 
@@ -117,7 +117,10 @@ struct AutopilotAdoptionTests {
         case .consentRevoked: await loop.updateAutopilotSettingsForTesting { $0.consentRecorded = false }
         case .disabled: await loop.updateAutopilotSettingsForTesting { $0.enabled = false }
         case .deselected:
+            // Leaving the Autopilot set: out of the persisted selection and
+            // superseded in the cache. Either alone keeps it in the set.
             await loop.updateAutopilotSettingsForTesting { $0.selectedModels.removeAll { $0 == Fixture.inventory } }
+            await loop.dropAdvertisedBuild(Fixture.inventory)
         case .selfTestFailed: await loop.markSelfTestFailedForTesting(Fixture.inventory)
         case .retiring: await loop.markRetiringForTesting(Fixture.inventory)
         case .hashUnavailable: await loop.markWeightHashUnavailable(modelId: Fixture.inventory)

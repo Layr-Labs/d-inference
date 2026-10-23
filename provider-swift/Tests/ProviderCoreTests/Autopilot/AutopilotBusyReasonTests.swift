@@ -25,7 +25,7 @@ struct AutopilotBusyReasonTests {
             "model_switch", "reslice", "reconnect_after_retirement",
         ])
         #expect(ModelAutopilotCapability.allCases.map(\.rawValue)
-            == ["inventory_adoption", "placement_holds", "busy_reasons"])
+            == ["inventory_adoption", "placement_holds", "busy_reasons", "inventory_downloads"])
     }
 
     @Test(arguments: settableReasons)

@@ -23,6 +23,11 @@ extension Autopilot {
             print("  Live state: \(Self.phaseDescription(fresh ? live?.autopilotPhase : nil))")
             if fresh && live?.autopilot?.revision != settings.revision { print("  Configuration change waiting to apply") }
             print("  Selected: \(settings.selectedModels.joined(separator: ", "))")
+            // The running provider adds every verified downloaded catalog build.
+            if fresh, let set = live?.autopilot?.selectedModels {
+                let downloaded = set.filter { !settings.selectedModels.contains($0) }
+                if !downloaded.isEmpty { print("  Also downloaded: \(downloaded.joined(separator: ", "))") }
+            }
             print("  Pinned: \(settings.pinnedModels.isEmpty ? "none" : settings.pinnedModels.joined(separator: ", "))")
             if fresh, let state = live?.autopilot {
                 print("  Loaded in memory: \(state.residentModels.map(\.modelId).joined(separator: ", "))")

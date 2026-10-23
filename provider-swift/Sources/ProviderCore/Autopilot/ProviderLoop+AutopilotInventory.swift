@@ -21,7 +21,7 @@ extension ProviderLoop {
     /// to the reserve basis; cold candidates require an explicit owned command.
     func restoreAutopilotResidentModels() {
         guard modelAutopilotEnabled else { return }
-        for id in modelSlots.keys where autopilotSettings.allows(id) && advertisedModels[id] == nil {
+        for id in modelSlots.keys where autopilotSetAllows(id) && advertisedModels[id] == nil {
             if let model = autopilotInventoryModels[id], failedSelfTestHashes[id] == nil,
                 !retiringModels.contains(id) { advertisedModels[id] = model }
         }

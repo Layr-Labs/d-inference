@@ -207,16 +207,29 @@ extension Start {
         ProviderProcessRun.begin()
 
         let selectedIDs = Set(selectedModels.map(\.id))
-        let inventory = config.backend.modelAutopilot.hasConsent
-            ? snapshot.models.filter {
-                config.backend.modelAutopilot.allows($0.id)
-                    && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+        let autopilot = config.backend.modelAutopilot
+        // Saved consent: the Autopilot set is the persisted selection plus
+        // every verified catalog build in the cache this Mac can run.
+        let autopilotStart: AutopilotStartInventory? = autopilot.hasConsent && !config.coordinator.privateOnly
+            ? await AutopilotStartInventory.load(settings: autopilot, coordinatorURL: coordinatorURL,
+                configDirectory: snapshot.configPath.deletingLastPathComponent(),
+                memoryGb: Double(hardware.memoryGb), runtimeCapabilities: runtimeCapabilities)
+            : nil
+        let inventory = autopilot.hasConsent
+            ? snapshot.models.filter { model in
+                autopilotStart?.isCandidate(model) ?? (autopilot.allows(model.id)
+                    && ModelRuntimeRequirements.isEligible(modelID: model.id, available: runtimeCapabilities))
             } : []
         let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
         let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
         let models = verified.filter { selectedIDs.contains($0.id) }
-        let autopilotInventory = verified.filter {
-            config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        let autopilotInventory = autopilotStart?.inventory(from: verified) ?? verified.filter {
+            autopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        }
+        if let autopilotStart {
+            let added = autopilotInventory.filter { !autopilot.allows($0.id) }.map(\.id)
+            print("  Autopilot set: \(autopilot.selectedModels.count) saved + \(added.count) cached build(s)"
+                + (autopilotStart.catalog == nil ? " (catalog unavailable: recorded downloads only)" : ""))
         }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()

@@ -11,10 +11,12 @@ extension ProviderLoop {
 
     /// Keep exact cached consent separate from ordinary selected-model updates.
     /// Older coordinators inspect enabled/selected_models even when they do not
-    /// understand protocol 3, so suspend wire participation until refresh.
+    /// understand protocol 3, so suspend wire participation until the
+    /// successor joins the Autopilot set: an operator refresh, or its own
+    /// verified prefetch.
     var autopilotNeedsInventoryRefresh: Bool {
         autopilotConsented && autopilotSuccessorNeedsInventoryRefresh
-            && !ordinaryServingModelIDs.isSubset(of: Set(autopilotSettings.selectedModels))
+            && !ordinaryServingModelIDs.isSubset(of: Set(autopilotModelSet))
     }
 
     var autopilotManagesResidency: Bool {
@@ -50,7 +52,7 @@ extension ProviderLoop {
         }
         // Inventory is observational until a valid live lease. Never let
         // waiting, shadow, paused, expired or disconnected control widen it.
-        return modelAutopilotEnabled && autopilotSettings.allows(id)
+        return modelAutopilotEnabled && autopilotSetAllows(id)
             && autopilotInventoryModels[id] != nil
     }
 
@@ -76,7 +78,7 @@ extension ProviderLoop {
         let previouslyManaged = autopilotManagesResidency
         let hadControl = autopilotControl != nil
         autopilotSettingsOverride = settings
-        if ordinaryServingModelIDs.isSubset(of: Set(settings.selectedModels)) {
+        if ordinaryServingModelIDs.isSubset(of: Set(autopilotModelSet)) {
             autopilotSuccessorNeedsInventoryRefresh = false
         }
         autopilotControl = nil

@@ -19,7 +19,6 @@ extension ProviderLoop {
 
     func publishModelAutopilotSnapshot() {
         reconcileAutopilotPlacements()
-        state.autopilotInventory = autopilotInventoryModels.values.sorted { $0.id < $1.id }
         loadAutopilotTimingHistory()
         let now = ContinuousClock.now
         autopilotResidentSince = autopilotResidentSince.filter { modelSlots[$0.key] != nil }
@@ -48,7 +47,7 @@ extension ProviderLoop {
         snapshot.paused = autopilotSettings.paused
         snapshot.sessionId = autopilotControl?.sessionId
         snapshot.revision = autopilotSettings.revision
-        snapshot.selectedModels = autopilotSettings.selectedModels
+        snapshot.selectedModels = autopilotModelSet
         snapshot.minIdleSeconds = autopilotSettings.effectiveMinIdleSeconds
         snapshot.loadHistory = autopilotTimingHistory.loads
         snapshot.lastElapsedMs = autopilotLastElapsedMs
@@ -61,7 +60,7 @@ extension ProviderLoop {
             // continuity so `busy_since_ms` never spans that gap.
             autopilotBusyClock = ContinuityClock()
         }
-        state.modelAutopilot = snapshot
+        state.publishModelAutopilot(snapshot, inventory: autopilotInventoryModels.values.sorted { $0.id < $1.id })
     }
 
     /// Fields beyond protocol 3, attached only with saved consent so that a

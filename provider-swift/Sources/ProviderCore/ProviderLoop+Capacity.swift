@@ -72,10 +72,12 @@ extension ProviderLoop {
         // (rate-limited, threshold-gated, and windowed so busy engines keep
         // their pool while headroom is healthy); the GPU sync never runs here.
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
+        sweepAutopilotCachedBuilds()
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         await cleanupAutopilotSupersededModels()
         await refreshModelCalibration()
+        await refreshAutopilotInventoryRegistration()
         writeDaemonState()
     }
 

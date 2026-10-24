@@ -513,7 +513,7 @@ survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
-requests (`3,2,1,1,0` on an M5; `off` or `DARKBLOOM_CBV2_MTP=0`
+requests, `3,2,1,1,0` on an M5 (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above

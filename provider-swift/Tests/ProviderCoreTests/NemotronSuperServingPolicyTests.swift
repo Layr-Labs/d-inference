@@ -2,6 +2,7 @@
 
 import Foundation
 import MLXLLM
+@testable import MLXLMCommon
 import MLXVLM
 import Testing
 @testable import ProviderCoreFoundation
@@ -136,7 +137,7 @@ struct NemotronSuperServingPolicyTests {
     /// ends target-only, and the owner's round reservation shrinks with it.
     @Test func m5DefaultDepthTableDecodesTargetOnlyFromFiveRequests() throws {
         #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5) == [3, 2, 1, 1, 0])
-        for family in [ChipFamily.m3, .m4, .m2, .unknown] {
+        for family in [ChipFamily.m1, .m2, .m3, .m4, .m6, .unknown] {
             #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: family) == [3, 2, 2, 2, 1])
         }
         let m5 = NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5)
@@ -155,6 +156,26 @@ struct NemotronSuperServingPolicyTests {
             base: [NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"], mode: .auto, configuredConcurrency: nil,
             kvBytesCapacity: 100 << 30, physicalBytes: Self.machine, depthByRequests: m5)
         #expect(pinned.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
+    }
+
+    /// Each chip's default table through the engine's own per-step depth
+    /// selection, built from the planned config as the round driver builds
+    /// it, at every width the owner serves: an M5 decodes target-only from
+    /// five requests, an M3 drafts at depth 1 from five.
+    @Test func chipDefaultTableFixesTheDepthAtEveryDecodingWidth() throws {
+        for (family, depths) in [(ChipFamily.m5, [3, 2, 1, 1, 0, 0, 0, 0]), (.m3, [3, 2, 2, 2, 1, 1, 1, 1])] {
+            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+                kvBytesCapacity: 100 << 30, physicalBytes: Self.machine,
+                depthByRequests: NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: family))
+            let setting = try #require(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment))
+            let config = NemotronSuperLocalMTP.config(setting, requests: plan.requests)
+            let controller = CBv2MTPDepthController(maxDepth: config.maxDraftTokens,
+                fixedDepth: config.fixedDraftTokens, fixedDepthByDecodeRows: config.fixedDraftTokensByDecodeRows)
+            #expect(plan.requests == depths.count, "\(family)")
+            #expect((1 ... plan.requests).map {
+                controller.select(plannedDecodeRows: $0, canSpeculate: true).depth
+            } == depths, "\(family)")
+        }
     }
 
     /// The depth key takes one depth, `auto` or a width table; malformed or

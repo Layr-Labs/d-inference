@@ -16,6 +16,7 @@
 // TTFT-oracle window). SEC-035 stays the accepted residual.
 
 import Foundation
+import MLXLMCommon
 
 enum SSDPrefixCachePolicy {
 
@@ -243,4 +244,19 @@ enum SSDPrefixCachePolicy {
     static let writeQueueMaxBytes = 512 * 1_048_576
     /// Headroom above `maxStageBytes` in the effective queue-byte cap.
     static let writeQueueSlackBytes = 256 * 1_048_576
+
+    /// Complete-checkpoint donations a store holds behind the one it is
+    /// writing; more settle `write_queue_full`. A donor offers its checkpoints
+    /// one at a time, so this bounds donors that finish together. Every GLM
+    /// donor of a burst captures (the SDK capture-boundary partition), and on
+    /// an M5 Ultra two donors finishing in the same millisecond lost both of
+    /// one donor's files to a single slot. A queued GLM donation pins its
+    /// donor's pages and KDA copies, which stay charged to the admission
+    /// ledger until the write settles; a 32k donation writes in about 0.3 s.
+    static let glm5NextCompleteCheckpointWriteQueueJobs = 8
+
+    static func completeCheckpointWriteQueueJobs(backendLayout: String) -> Int {
+        backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+            ? glm5NextCompleteCheckpointWriteQueueJobs : 1
+    }
 }

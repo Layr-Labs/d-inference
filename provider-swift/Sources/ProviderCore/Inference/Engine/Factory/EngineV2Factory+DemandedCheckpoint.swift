@@ -44,6 +44,20 @@ extension EngineV2Factory {
       hasRecurrentState: recurrent?.cbv2RecurrentStateSpec.layers.isEmpty == false)
   }
 
+  /// GLM captures at aligned prefill range ends, but its prefill chunk and
+  /// decode rows share one step budget, so beside other requests no range end
+  /// lands on the grid. Its protected engine with the GLM complete store ends
+  /// demanded ranges on the store's boundaries instead (SDK
+  /// `CBv2SchedulerConfig.demandedCaptureBoundaryMinimumTokens`).
+  static func demandedCaptureBoundaryMinimumTokens(
+    model: any LanguageModel, store: (any CBv2CompletePrefixCache)?
+  ) -> Int? {
+    guard model is GLM5NextProtectedModel, let store = store as? SSDHybridCheckpointStore,
+      store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+    else { return nil }
+    return store.config.minEffectiveTokens
+  }
+
   /// Host-only policy shared by the actual assembly and qualification tests.
   /// A benchmark request cannot qualify another backend or lower a floor.
   static func benchmarkRecurrentShortCheckpointMinimumTokens(

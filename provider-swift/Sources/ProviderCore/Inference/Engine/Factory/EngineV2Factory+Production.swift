@@ -288,6 +288,8 @@ extension EngineV2Factory {
             benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
                 model: model, backend: preparedBackend.kind, store: completePrefixCache,
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
+        schedulerConfig.demandedCaptureBoundaryMinimumTokens = demandedCaptureBoundaryMinimumTokens(
+            model: model, store: completePrefixCache)
         let processOwner: (any CBv2ProcessMemoryOwner)?
         if let glmNative {
             guard glmNative.resources.backend === backend,

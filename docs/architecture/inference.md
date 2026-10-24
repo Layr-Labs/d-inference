@@ -677,7 +677,7 @@ activate a catalog entry.
 Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
 `prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
 a four-row recurrence kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`, `GatedDeltaPrefill`).
 In each process, the first such window of each kernel instantiation (input
 dtype and head geometry) tries the `packed` and then the `rows` kernel on a
 fixed probe window and keeps the first that reproduces `gated_delta_step` bit

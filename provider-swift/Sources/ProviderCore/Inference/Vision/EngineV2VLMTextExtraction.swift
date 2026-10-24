@@ -163,7 +163,7 @@ enum EngineV2VLMTextExtraction {
             family = .qwen35Dense
             skeleton = Qwen35Model(targetConfig)
         }
-        let targetWeights = reKeyedQwenTargetWeights(
+        let targetWeights = try reKeyedQwenTargetWeights(
             flattenedWeights: wrapper.parameters().flattened(), sanitizer: skeleton)
         try applyQuantizationStructure(
             skeleton: skeleton,
@@ -255,13 +255,13 @@ enum EngineV2VLMTextExtraction {
     /// needed. Dictionary assignment retains the same lazy MLXArray handles.
     static func reKeyedQwenTargetWeights(
         flattenedWeights: [(String, MLXArray)], sanitizer: Qwen35Model
-    ) -> [String: MLXArray] {
+    ) throws -> [String: MLXArray] {
         var targetWeights: [String: MLXArray] = [:]
         targetWeights.reserveCapacity(flattenedWeights.count)
         for (key, value) in flattenedWeights where key.hasPrefix(languageModelPrefix) {
             targetWeights[key] = value
         }
-        return sanitizer.sanitize(weights: targetWeights)
+        return try sanitizer.sanitize(weights: targetWeights)
     }
 
     /// Mirror `loadWeights`' quantization pass onto the skeleton: a module is

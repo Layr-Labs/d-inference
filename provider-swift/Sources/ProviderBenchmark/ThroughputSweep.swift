@@ -224,7 +224,8 @@ public enum ThroughputSweep {
         return await container.perform { ctx -> [ThroughputSweepReport.PrefillSample] in
             // Warm-up (compile kernels) — not timed.
             let warm = Self.tile(baseTokens, to: 8)
-            let warmCache = ctx.model.newCache(parameters: nil)
+            // Default caches (no parameters) cannot fail validation.
+            guard let warmCache = try? ctx.model.newCache(parameters: nil) else { return [] }
             var warmLogits = ctx.model.callAsFunction(
                 MLXArray(warm.map { UInt32($0) }).reshaped([1, warm.count]), cache: warmCache)
             warmLogits = warmLogits[.ellipsis, -1, 0...]
@@ -234,7 +235,7 @@ public enum ThroughputSweep {
             for length in cleaned {
                 let tokens = Self.tile(baseTokens, to: length)
                 let arr = MLXArray(tokens.map { UInt32($0) }).reshaped([1, length])
-                let cache = ctx.model.newCache(parameters: nil)
+                guard let cache = try? ctx.model.newCache(parameters: nil) else { break }
                 let start = ContinuousClock.now
                 var logits = ctx.model.callAsFunction(arr, cache: cache)
                 logits = logits[.ellipsis, -1, 0...]

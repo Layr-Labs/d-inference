@@ -30,6 +30,7 @@ private actor SuperMTPRun {
     var text = ""
     var completions: [Int] = []
     var errors: [String] = []
+    private var streamingWaiters: [CheckedContinuation<Void, Never>] = []
     func record(_ event: GenerationEvent) {
         switch event {
         case .chunk(let chunk): text += chunk
@@ -37,6 +38,14 @@ private actor SuperMTPRun {
         case .error(let message): errors.append(message)
         case .terminal(_, let message, _, _): errors.append(message)
         }
+        streamingWaiters.forEach { $0.resume() }
+        streamingWaiters.removeAll()
+    }
+
+    /// Returns once the request has streamed its first event.
+    func streaming() async {
+        guard text.isEmpty, completions.isEmpty, errors.isEmpty else { return }
+        await withCheckedContinuation { streamingWaiters.append($0) }
     }
 }
 
@@ -228,14 +237,19 @@ struct NemotronSuperLocalMTPTests {
 
     private func run(_ owner: NemotronSuperLocalBridgeBuilder.Owner, prompt: [Int], maxTokens: Int)
         async throws -> (text: String, completions: [Int], errors: [String]) {
+        try await run(owner, prompt: prompt, request: .init(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: maxTokens))
+    }
+
+    private func run(_ owner: NemotronSuperLocalBridgeBuilder.Owner, prompt: [Int],
+                     request: ChatCompletionRequest, events: SuperMTPRun = SuperMTPRun())
+        async throws -> (text: String, completions: [Int], errors: [String]) {
         let binding = NemotronSuperLocalBinding(acquire: { model in
             .init(tokenizer: TokenizerHandle(SuperTokenTextTokenizer()),
                 releaseToken: OneShotRelease(release: { _ in }, modelId: model),
                 engineV2Bridge: owner.bridge)
         })
-        let events = SuperMTPRun()
-        try await binding.run(request: .init(model: NemotronSuperLocalBinding.modelID,
-            messages: [], temperature: 0, max_tokens: maxTokens), promptTokens: prompt) {
+        try await binding.run(request: request, promptTokens: prompt) {
             await events.record($0)
         }
         await binding.drain()
@@ -304,5 +318,138 @@ struct NemotronSuperLocalMTPTests {
         #expect(speculativeFixture.residency.snapshot.usedBytes == 0)
         for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// A plain and a speculating owner on one budget, each with its own
+    /// fixture, LOAD lease and 2 GiB of KV per configured request.
+    private struct OwnerPair {
+        let plain: NemotronSuperLocalBridgeBuilder.Owner
+        let speculative: NemotronSuperLocalBridgeBuilder.Owner
+        let fixtures: [SuperMTPInstalledFixture.Installation]
+        let budget: GlobalKVCacheBudget
+        let leases: [PendingModelLoadLease]
+
+        func speculativeEngine() async throws -> EngineV2 {
+            let ownedEngine = await speculative.bridge.ownedEngine
+            return try #require(ownedEngine as? EngineV2)
+        }
+
+        func close() async throws {
+            try await plain.closeAfterDrain()
+            try await speculative.closeAfterDrain()
+            for fixture in fixtures { #expect(fixture.residency.snapshot.usedBytes == 0) }
+            for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
+            #expect(await budget.outstandingReservedBytes() == 0)
+        }
+    }
+
+    private func ownerPair(_ setting: NemotronSuperLocalMTP.Setting, requests: Int = 1)
+        async throws -> OwnerPair {
+        let fixtures = [try SuperMTPInstalledFixture().make(), try SuperMTPInstalledFixture().make()]
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let kvBytes = requests * (2 << 30)
+        var leases: [PendingModelLoadLease] = []
+        for (name, fixture) in zip(["plain", "speculative"], fixtures) {
+            let bytes = fixture.installed.receipt.payloadBytes
+                + (try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote))
+            leases.append(try #require(await budget.claimPendingLoad(requestID: "super-mtp-\(name)",
+                weightBytes: UInt64(bytes), minimumKVBytes: UInt64(kvBytes))))
+        }
+        let environment = [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: String(requests)]
+        let plain = try await owner(fixtures[0], setting: nil, budget: budget, lease: leases[0],
+            kvBytesCapacity: kvBytes, environment: environment)
+        let speculative = try await owner(fixtures[1], setting: setting, budget: budget,
+            lease: leases[1], kvBytesCapacity: kvBytes, environment: environment)
+        #expect(!plain.speculates && speculative.speculates)
+        return OwnerPair(plain: plain, speculative: speculative, fixtures: fixtures, budget: budget,
+            leases: leases)
+    }
+
+    /// A sampled request speculates and draws exactly the plain owner's
+    /// tokens: its seed gives it the same engine request id, and so the same
+    /// RNG stream, on both owners.
+    @Test(.timeLimit(.minutes(3)), arguments: [
+        (3, NemotronSuperLocalMTP.Setting.Verification.rectangularExact), (1, .serial),
+    ])
+    func sampledRequestSpeculatesAndDrawsThePlainOwnersTokens(
+        depth: Int, verification: NemotronSuperLocalMTP.Setting.Verification
+    ) async throws {
+        let pair = try await ownerPair(.init(depth: depth, verification: verification))
+        let prompt = [5, 9, 1, 4, 22, 7, 3, 8, 30]
+        let sampled = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID, messages: [],
+            temperature: 0.7, top_p: 0.95, max_tokens: 24, seed: 29)
+        let expected = try await run(pair.plain, prompt: prompt, request: sampled)
+        let actual = try await run(pair.speculative, prompt: prompt, request: sampled)
+        #expect(expected.errors.isEmpty && actual.errors.isEmpty, "\(actual.errors)")
+        #expect(!expected.text.isEmpty && actual.text == expected.text, "depth \(depth) \(verification)")
+        #expect(actual.completions == expected.completions)
+        let engine = try await pair.speculativeEngine()
+        let metrics = try #require(engine.mtpMetricsSnapshot())
+        // Before target-prefix acceptance a sampled row never drafted.
+        #expect(metrics.rounds > 0, "rounds=\(metrics.rounds)")
+        print("SYNTHETIC provider super-mtp-sampled depth=\(depth) \(verification) "
+            + "rounds=\(metrics.rounds) drafted=\(metrics.draftedTokens) "
+            + "accepted=\(metrics.acceptedTokens) completion=\(actual.completions)")
+        try await pair.close()
+    }
+
+    enum RequestControl: String, CaseIterable, Sendable {
+        case stop, repetitionPenalty, logitBias
+
+        func request(maxTokens: Int) -> ChatCompletionRequest {
+            let model = NemotronSuperLocalBinding.modelID
+            switch self {
+            case .stop:
+                return .init(model: model, messages: [], temperature: 0, max_tokens: maxTokens,
+                    stop: .single("never matches"))
+            case .repetitionPenalty:
+                return .init(model: model, messages: [], temperature: 0, max_tokens: maxTokens,
+                    repetition_penalty: 1.3)
+            case .logitBias:
+                return .init(model: model, messages: [], temperature: 0, max_tokens: maxTokens,
+                    logit_bias: ["5": -40])
+            }
+        }
+    }
+
+    /// A request the engine cannot draft for decodes target-only without
+    /// stopping the text request beside it from speculating; both outputs are
+    /// the ones they produce on their own.
+    @Test(.timeLimit(.minutes(3)), arguments: RequestControl.allCases)
+    func controlledRequestLeavesSpeculationOnForTheRequestBesideIt(_ control: RequestControl)
+        async throws {
+        let pair = try await ownerPair(.init(depth: 3, verification: .rectangularExact), requests: 2)
+        let textPrompt = [5, 9, 1, 4, 22, 7, 3, 8, 30]
+        let controlledPrompt = [1, 2, 3]
+        let controlled = control.request(maxTokens: 56)
+        let soloText = try await run(pair.speculative, prompt: textPrompt, maxTokens: 8)
+        let reference = try await run(pair.plain, prompt: controlledPrompt, request: controlled)
+        #expect(soloText.errors.isEmpty && reference.errors.isEmpty, "\(reference.errors)")
+        let engine = try await pair.speculativeEngine()
+
+        // The text request starts after the controlled one streams, so all of
+        // its decode steps share the batch with the controlled row.
+        let speculative = pair.speculative
+        let controlledEvents = SuperMTPRun()
+        async let controlledRun = run(speculative, prompt: controlledPrompt, request: controlled,
+            events: controlledEvents)
+        await controlledEvents.streaming()
+        let roundsBefore = engine.mtpMetricsSnapshot()?.rounds ?? 0
+        let text = try await run(speculative, prompt: textPrompt, maxTokens: 8)
+        let roundsBeside = (engine.mtpMetricsSnapshot()?.rounds ?? 0) - roundsBefore
+        let controlledLive = await controlledEvents.completions.isEmpty
+        let controlledResult = try await controlledRun
+
+        #expect(text.errors.isEmpty && controlledResult.errors.isEmpty, "\(controlledResult.errors)")
+        #expect(text.text == soloText.text && text.completions == soloText.completions, "\(control)")
+        #expect(controlledResult.text == reference.text, "\(control)")
+        #expect(controlledResult.completions == reference.completions)
+        #expect(controlledLive, "\(control): the controlled request finished before the text request")
+        // Before, one ineligible row kept every row of the step target-only.
+        #expect(roundsBeside > 0, "\(control) rounds beside the controlled request=\(roundsBeside)")
+        print("SYNTHETIC provider super-mtp-controls \(control) roundsBeside=\(roundsBeside) "
+            + "controlled completion=\(controlledResult.completions)")
+        try await pair.close()
     }
 }

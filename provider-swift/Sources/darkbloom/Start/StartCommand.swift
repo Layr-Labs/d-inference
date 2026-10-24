@@ -216,6 +216,9 @@ struct Start: AsyncParsableCommand {
         apply: (GemmaOptimizationSettings) throws -> Void = {
             try GemmaOptimizationEnvironment.apply($0)
         },
+        refreshResidency: () -> Void = {
+            MLXResidencyRefresh.applyDefault()
+        },
         bindMetallib: () -> String? = {
             bindRuntimeMetallibForMLX(from: nil)
         },
@@ -226,6 +229,7 @@ struct Start: AsyncParsableCommand {
         try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             apply: apply,
+            refreshResidency: refreshResidency,
             bindMetallib: bindMetallib,
             requireMetal: requireMetal
         )

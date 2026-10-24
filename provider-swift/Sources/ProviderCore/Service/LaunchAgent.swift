@@ -376,6 +376,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
+        MLXResidencyRefresh.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

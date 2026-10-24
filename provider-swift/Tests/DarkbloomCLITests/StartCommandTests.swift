@@ -22,6 +22,7 @@ struct StartCommandTests {
                 #expect(received.weightedR1 == false)
                 events.append("projection")
             },
+            refreshResidency: { events.append("residency") },
             bindMetallib: {
                 events.append("metallib")
                 return "bound-hash"
@@ -32,7 +33,7 @@ struct StartCommandTests {
         )
 
         #expect(hash == "bound-hash")
-        #expect(events == ["projection", "metallib", "metal"])
+        #expect(events == ["projection", "residency", "metallib", "metal"])
     }
 
     @Test("a rejected projection aborts before the first MLX touch")
@@ -56,6 +57,7 @@ struct StartCommandTests {
                     events.append("projection")
                     throw failure
                 },
+                refreshResidency: { events.append("residency") },
                 bindMetallib: {
                     events.append("metallib")
                     return "must-not-bind"
@@ -92,6 +94,7 @@ struct StartCommandTests {
             let projection = GemmaOptimizationEnvironment.projection(for: settings)
             var metalProbed = false
 
+            unsetenv(MLXResidencyRefresh.environmentKey)
             try ServeRuntimePreparer.prepareRuntime(
                 settings: settings,
                 bindMetallib: { "test-bound-hash" },
@@ -102,6 +105,10 @@ struct StartCommandTests {
                 let observed = key.withCString { getenv($0).map { String(cString: $0) } }
                 #expect(observed == value)
             }
+            let refresh = MLXResidencyRefresh.environmentKey.withCString {
+                getenv($0).map { String(cString: $0) }
+            }
+            #expect(refresh == String(MLXResidencyRefresh.defaultIntervalMilliseconds))
             #expect(metalProbed)
         }
     }
@@ -112,6 +119,7 @@ struct StartCommandTests {
         let hash = try Start.prepareServeRuntime(
             settings: GemmaOptimizationSettings(),
             apply: { _ in events.append("projection") },
+            refreshResidency: { events.append("residency") },
             bindMetallib: {
                 events.append("metallib")
                 return "bound-hash"
@@ -119,7 +127,7 @@ struct StartCommandTests {
             requireMetal: { events.append("metal") }
         )
         #expect(hash == "bound-hash")
-        #expect(events == ["projection", "metallib", "metal"])
+        #expect(events == ["projection", "residency", "metallib", "metal"])
     }
 
     @Test("benchmark env guard: a conflicting shell preset is rejected")

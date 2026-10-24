@@ -7,8 +7,9 @@ import Darwin
 /// Process-start seam shared by every serving/benchmarking entry point
 /// (`start` daemon/foreground/local, `benchmark`): the authoritative
 /// `[gemma_optimizations]` TOML projection must be applied first, then the
-/// immutable metallib snapshot must be bound, and only then may MLX be touched
-/// by `requireMetal`.
+/// MLX residency-refresh default exported (MLX reads it when its Metal device
+/// is created), then the immutable metallib snapshot must be bound, and only
+/// then may MLX be touched by `requireMetal`.
 ///
 /// A rejected projection throws before binding. Binding strictly precedes the
 /// first MLX device access, so diagnostics and later model loads cannot select
@@ -26,6 +27,9 @@ enum ServeRuntimePreparer {
         apply: (GemmaOptimizationSettings) throws -> Void = {
             try GemmaOptimizationEnvironment.apply($0)
         },
+        refreshResidency: () -> Void = {
+            MLXResidencyRefresh.applyDefault()
+        },
         bindMetallib: () -> String? = {
             bindRuntimeMetallibForMLX(from: nil)
         },
@@ -34,6 +38,7 @@ enum ServeRuntimePreparer {
         }
     ) throws -> String? {
         try apply(settings)
+        refreshResidency()
         let boundMetallibHash = bindMetallib()
         try requireMetal()
         return boundMetallibHash

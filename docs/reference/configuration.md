@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -713,6 +713,7 @@ variable; its required input and backend are documented in the
 |---|---|---|---|---|
 | `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT` | flag | set by the provider | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift` | Provider-set MLX fused-unsort switch for Gemma 4. |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | `1` (drain) or config-backed `0`/`trust` | `trust` | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/PackagedRuntimeSmoke.swift` | Expert-slice route mode; only an exact `1` is persisted into the LaunchAgent plist. |
+| `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` | milliseconds; `0` disables | `1000`, exported at serve start when unset | `provider-swift/Sources/ProviderCore/Config/MLXResidencyRefresh.swift` (`applyDefault`); `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`; read by MLX (`mlx/backend/metal/resident.cpp`) when its Metal device is created | MLX re-requests residency for its buffers at this interval from a background thread (ml-explore/mlx#4633; no GPU work). macOS drops a process's GPU residency about 2 s after the GPU idles (ml-explore/mlx#4609), so without it the first request after an idle gap waits for the model's buffers to become resident again. An operator value wins and is forwarded to the launchd provider job. MLX builds before the 2026-10-23 upstream sync ignore it. |
 | `SUDO_UID` | uid | set by `sudo` | `provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift` | Resolves the invoking user when `darkbloom fan` runs under `sudo`. |
 | `SUDO_USER` | user name | set by `sudo` | `provider-swift/Sources/darkbloom/Diagnostics/ReportAppAttestEvidence.swift` | Under `sudo darkbloom report`, selects the invoking user's state, config and read-only canonical token lookup instead of root's; explicit config/token overrides retain precedence. |
 | `GITHUB_SHA` | commit | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Fallback source SHA in benchmark reports. |

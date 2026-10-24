@@ -182,6 +182,28 @@ struct GLM5NextLocalQualificationTests {
         #expect(scheduler.prefillChunkSize == 2048 && scheduler.maxBatchedTokensPerStep == 2048)
     }
 
+    /// GLM holds prompt work for eight decode-only steps after each chunk while
+    /// other requests decode. The override takes 0...64; anything else refuses
+    /// the load, and the rollback reaches the launchd provider job.
+    @Test func decodeStepsBetweenChunksDefaultOverrideAndRefusal() throws {
+        let key = EngineV2Factory.glm5NextDecodeStepsKey
+        #expect(key == "DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS")
+        #expect(try EngineV2Factory.glm5NextDecodeStepsBetweenChunks(environment: [:]) == 8)
+        for (raw, steps) in [("0", 0), (" 24 ", 24), ("64", 64), (" ", 8)] {
+            #expect(try EngineV2Factory.glm5NextDecodeStepsBetweenChunks(environment: [key: raw]) == steps)
+        }
+        for raw in ["-1", "65", "eight", "8.0"] {
+            #expect(throws: EngineV2ProductionError.self) {
+                try EngineV2Factory.glm5NextDecodeStepsBetweenChunks(environment: [key: raw])
+            }
+        }
+        let refusal = String(describing: EngineV2ProductionError.invalidDecodeStepsBetweenChunks(
+            key: key, value: "eight", maximum: 64))
+        #expect(refusal.contains("DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS=\"eight\""))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+    }
+
     /// Request concurrency follows the operator cap and its reviewed-profile
     /// ceiling; GLM adds no width-1 pin of its own. Native step pricing and
     /// per-request admission bound what actually runs together.

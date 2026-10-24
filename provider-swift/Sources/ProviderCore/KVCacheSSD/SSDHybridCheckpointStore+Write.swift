@@ -129,7 +129,8 @@ extension SSDHybridCheckpointStore {
         else { return .refused(.incompleteLayerState) }
         let envelope: SSDHybridCheckpointEnvelope
         do {
-            envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
+            envelope = try deltaEnvelope(requestID: requestID, manifest: manifest)
+                ?? SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
         } catch SSDHybridCheckpointEnvelope.EncodingError.sizeExceeded {
             return .refused(.stageSizeExceeded)
         } catch {
@@ -186,6 +187,22 @@ extension SSDHybridCheckpointStore {
             source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: demand.repeated,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
+    }
+
+    /// A request that consumed a restore shares its rows byte for byte, so it
+    /// extends the restored file, or the chain's root once the chain is full.
+    private func deltaEnvelope(requestID: CBv2RequestID?, manifest: CBv2CompleteCheckpointManifest)
+        -> SSDHybridCheckpointEnvelope? {
+        guard config.incrementalCheckpoints, let requestID,
+            let restored = lock.withLock({ restoredCheckpoints[requestID] }), restored.consumed else { return nil }
+        for parent in restored.files {
+            guard let chain = index.chain(tag16: parent.tag16), chain.tags.count < SSDCheckpointDeltaLayout.maximumChainFiles,
+                let envelope = try? SSDHybridCheckpointEnvelope(
+                    manifest: manifest, maximumPlaintextBytes: config.maxReadBytes, parent: parent),
+                chain.bytes + envelope.plaintextBytes <= config.maxReadBytes else { continue }
+            return envelope
+        }
+        return nil
     }
 
     private static func writeRefusal(_ decision: SSDWriteRateLimiter.Decision) -> PrefixCacheDonationOutcome? {
@@ -268,7 +285,8 @@ extension SSDHybridCheckpointStore {
                         let segment = envelope.segments[index - 1]
                         self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
                         return try job.source.readSegment(
-                            tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
+                            tensorIndex: segment.tensor, byteOffset: envelope.completeOffset(of: segment),
+                            maximumBytes: segment.bytes)
                     })
                 lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
@@ -285,11 +303,15 @@ extension SSDHybridCheckpointStore {
                     guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
                         return false
                     }
-                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds(),
+                                 parent: envelope.parent?.tag16)
                     return true
                 }
                 guard indexed else { result.outcome = .cacheEntryEvicted; return }
+                // Keep parents as recent as their children.
+                index.touch(tags16: index.chain(tag16: short)?.tags ?? [], now: config.nowSeconds())
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
+                if envelope.parent != nil { statsBox.update { $0.deltaFilesWritten += 1 } }
             }
             if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
             // The durable file and its index entry now form one committed

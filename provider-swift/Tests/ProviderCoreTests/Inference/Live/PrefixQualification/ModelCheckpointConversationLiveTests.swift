@@ -11,7 +11,9 @@ import Testing
 /// repeated-prefix hint, as an agent loop's next turn would be. Per turn the
 /// report records TTFT, restored tokens, the gap from the last token to the
 /// terminal (which waits for checkpoint publication) and the checkpoint bytes
-/// written. Every turn after the first must restore part of the previous one;
+/// and delta files written and the greedy output tokens, so runs with
+/// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` and without compare
+/// turn by turn. Every turn after the first must restore part of the previous one;
 /// timings and bytes are otherwise observations.
 @Suite("Complete-checkpoint conversation growth (live)", .serialized)
 struct ModelCheckpointConversationLiveTests {
@@ -34,6 +36,8 @@ struct ModelCheckpointConversationLiveTests {
         let terminalSeconds: Double
         let filesWritten: Int
         let bytesWritten: Int
+        var deltaFilesWritten = 0
+        var outputTokens: [Int] = []
     }
 
     struct Report: Codable {
@@ -69,7 +73,8 @@ struct ModelCheckpointConversationLiveTests {
         let stageMegabytes = try Self.environment["DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB"].map {
             try #require(Int($0), "the stage cap override must be whole megabytes")
         }
-        let fixture = try await ModelPrefixBenchmarkFixture(specification, maximumStageMegabytes: stageMegabytes)
+        let fixture = try await ModelPrefixBenchmarkFixture(specification, maximumStageMegabytes: stageMegabytes,
+            incrementalCheckpoints: Self.environment[SSDPrefixCachePolicy.incrementalCheckpointsFlag])
         var report = Report(modelID: specification.modelID, weightHash: specification.expectedWeightHash,
             maximumStageMegabytes: stageMegabytes)
         do {
@@ -116,7 +121,7 @@ struct ModelCheckpointConversationLiveTests {
         let submitted = try await fixture.session.submit(request)
         var first: ContinuousClock.Instant?
         var last: ContinuousClock.Instant?
-        var outputCount = 0
+        var outputTokens: [Int] = []
         var finish: CBv2FinishReason?
         var finalUsage: CBv2Usage?
         for await event in submitted.events {
@@ -126,7 +131,7 @@ struct ModelCheckpointConversationLiveTests {
                     last = .now
                     if first == nil { first = last }
                 }
-                outputCount += newTokens.count
+                outputTokens += newTokens
             case .finished(let reason, let usage):
                 finish = reason
                 finalUsage = usage
@@ -134,13 +139,13 @@ struct ModelCheckpointConversationLiveTests {
         }
         let terminal = ContinuousClock.now
         let usage = try await ModelPrefixBenchmarkTerminal.completeSuccessfulRequest(
-            finish: finish, usage: finalUsage, outputCount: outputCount,
+            finish: finish, usage: finalUsage, outputCount: outputTokens.count,
             expectedOutputCount: fixture.specification.outputTokens) {
                 await fixture.session.complete(receiptID: submitted.receiptID)
             }
         try await fixture.session.drainCheckpointWrites()
         let after = try #require(await fixture.session.cacheSnapshot().checkpoints)
-        let sample = Sample(turn: turn, promptTokens: tokens.count, sharedTokens: shared,
+        var sample = Sample(turn: turn, promptTokens: tokens.count, sharedTokens: shared,
             stageDisposition: submitted.stageDisposition,
             restoredTokens: usage.prefixCachePrefillTokensSaved,
             firstOutputSeconds: (try #require(first) - started) / .seconds(1),
@@ -148,6 +153,7 @@ struct ModelCheckpointConversationLiveTests {
             terminalSeconds: (terminal - started) / .seconds(1),
             filesWritten: after.filesWritten - before.filesWritten,
             bytesWritten: after.bytesWritten - before.bytesWritten)
+        (sample.deltaFilesWritten, sample.outputTokens) = (after.deltaFilesWritten - before.deltaFilesWritten, outputTokens)
         print("[checkpoint-conversation] turn=\(turn) prompt=\(tokens.count) restored=\(sample.restoredTokens) "
             + "ttft_s=\(String(format: "%.2f", sample.firstOutputSeconds)) "
             + "terminal_after_last_s=\(String(format: "%.2f", sample.terminalSeconds - sample.lastOutputSeconds)) "

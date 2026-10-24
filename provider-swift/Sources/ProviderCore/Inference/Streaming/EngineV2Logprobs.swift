@@ -36,7 +36,10 @@
 // content chunk (OpenAI omits reasoning/tool tokens from
 // `logprobs.content`). Conversely, trailing entries whose text never
 // renders as content (stop-token holdback, end-of-stream) are dropped
-// with the request.
+// with the request. GLM5-Next and Nemotron Super entries also attach to the
+// reasoning chunks that carry their tokens, as vLLM-style servers attach them
+// (`ProviderLoop.logprobsCoverReasoning`), so their `logprobs.content` covers
+// reasoning tokens even when the response ends before any content.
 //
 // PRIVACY NOTE: entries carry token text — they are response content. They
 // ride only inside the E2E-encrypted SSE stream back to the consumer,

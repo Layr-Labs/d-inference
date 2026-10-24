@@ -260,6 +260,13 @@ struct NemotronSuperManagedSlotTests {
         #expect(relayed.logprobs.count == pieces.count)
         #expect(relayed.logprobs.allSatisfy { $0.top.count == 2 && $0.top.first == $0.logprob })
         #expect(try #require(engine.mtpMetricsSnapshot()).draftedTokens == draftedBefore)
+        // Entries ride the reasoning frames too, so a response that ends
+        // while reasoning still carries one per token.
+        let thinking = SuperSSE(try await Self.send(Self.body(["Plan", " it."], script: script,
+            ["logprobs": true, "chat_template_kwargs": ["enable_thinking": true]]), to: loop,
+            recorder: recorder, consumer: consumer).sse)
+        #expect(thinking.reasoning == "Plan it." && thinking.content.isEmpty)
+        #expect(thinking.finishReason == "length" && thinking.logprobs.count == 2)
 
         // The unified local endpoint serves the same owner identically.
         let app = makeLocalInferenceApplication(

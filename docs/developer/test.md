@@ -1220,10 +1220,12 @@ The managed slot is covered by `NemotronSuperServingPolicyTests` and
 plan, footprint, media charge and capacity quotes; CPU only) and
 `NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
 coordinator and local-endpoint text and image requests on the speculating
-owner, logprobs on both paths without a draft, an image beside speculating
-text, media refusal before allocation, cancellation, admission refusal and
-retirement). The local hook's `liveHTTPTextReasoningToolsAndStructuredOutput`
-checks streamed and complete logprobs on the tiny installed fixture, and the
+owner, logprobs on both paths without a draft and on a relayed response that
+ends while reasoning, an image beside speculating text, media refusal before
+allocation, cancellation, admission refusal and retirement). The local hook's
+`liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and complete
+logprobs on the tiny installed fixture, including a response that ends while
+reasoning, and the
 SDK's `NemotronSuperMTPMediaFallbackTests` checks a logprob row's tokens and
 logprobs against the plain owner's while a text row beside it speculates
 ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)). Three gated cases need the

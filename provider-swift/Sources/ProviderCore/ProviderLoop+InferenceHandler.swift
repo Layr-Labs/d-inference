@@ -695,6 +695,8 @@ extension ProviderLoop {
         // Withheld Flint reasoning must not return as logprob entry tokens.
         let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
             chatRequest, controls: templateControls, modelType: modelType)
+        let logprobsCoverReasoning = Self.logprobsCoverReasoning(
+            modelType: modelType, nemotronSuper: superOwner != nil)
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -1125,7 +1127,8 @@ extension ProviderLoop {
             // Logprobs entries drained from the v2 bridge but not yet
             // attached to a frame. Entries attach to the NEXT content-
             // bearing chunk (role preambles / reasoning-only deltas /
-            // usage chunks are skipped); consumers accumulate
+            // usage chunks are skipped), or the next reasoning chunk too
+            // where `logprobsCoverReasoning`; consumers accumulate
             // `logprobs.content` across chunks, so chunk-boundary
             // alignment is not load-bearing — order and exactly-once are.
             //
@@ -1299,7 +1302,8 @@ extension ProviderLoop {
                         }
                         if !pendingLogprobs.isEmpty,
                             let injected = Self.injectLogprobs(
-                                into: frameToEmit, entries: pendingLogprobs)
+                                into: frameToEmit, entries: pendingLogprobs,
+                                includingReasoning: logprobsCoverReasoning)
                         {
                             frameToEmit = injected
                             pendingLogprobs = []

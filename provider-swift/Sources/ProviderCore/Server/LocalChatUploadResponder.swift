@@ -195,10 +195,11 @@ where Inner.Context == BasicRequestContext {
         return try Self.jsonResponse(response, logprobs: logprobs.drain())
     }
 
-    /// A raw-body owner's frames with its logprob entries spliced into
-    /// content-bearing chunks, as the coordinator relay splices them
-    /// (`ProviderLoop.injectLogprobs`): entries wait for the next content
-    /// frame, and those no content frame follows end with the stream.
+    /// A raw-body owner's frames with its logprob entries spliced into the
+    /// content and reasoning chunks that carry their tokens, as the coordinator
+    /// relay splices a Super owner's (`ProviderLoop.injectLogprobs`): entries
+    /// wait for the next such frame, and those no such frame follows end with
+    /// the stream.
     static func splicingLogprobs(_ frames: AsyncThrowingStream<String, Error>,
                                  from channel: EngineV2LogprobsChannel) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
@@ -208,7 +209,8 @@ where Inner.Context == BasicRequestContext {
                     for try await frame in frames {
                         pending += channel.drain()
                         _ = EngineV2LogprobsChannel.capPending(&pending)
-                        if !pending.isEmpty, let spliced = ProviderLoop.injectLogprobs(into: frame, entries: pending) {
+                        if !pending.isEmpty, let spliced = ProviderLoop.injectLogprobs(
+                            into: frame, entries: pending, includingReasoning: true) {
                             pending = []
                             continuation.yield(spliced)
                         } else {
@@ -225,16 +227,18 @@ where Inner.Context == BasicRequestContext {
     }
 
     /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`,
-    /// attached as the stream attaches them: only to a message with content,
-    /// and without the token a `stop` finish ends on (a stop token or
-    /// sequence, never content). The upstream response has no logprobs field,
-    /// so the encoded JSON is edited.
+    /// attached as the stream attaches them: only to a message with content or
+    /// reasoning, so reasoning tokens' entries are included, and without the
+    /// token a `stop` finish ends on (a stop token or sequence, never content).
+    /// The upstream response has no logprobs field, so the encoded JSON is
+    /// edited.
     static func jsonResponse(_ response: OpenAIChatCompletionResponse,
                              logprobs entries: [SSETokenLogprob]) throws -> Response {
         let data = try JSONEncoder.openAIServer.encode(response)
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             var choices = object["choices"] as? [[String: Any]], var choice = choices.first,
-            let content = (choice["message"] as? [String: Any])?["content"] as? String, !content.isEmpty
+            let message = choice["message"] as? [String: Any],
+            ["content", "reasoning_content"].contains(where: { (message[$0] as? String)?.isEmpty == false })
         else { return try jsonResponse(response) }
         let attached = choice["finish_reason"] as? String == "stop" ? entries.dropLast() : entries[...]
         guard !attached.isEmpty else { return try jsonResponse(response) }

@@ -128,8 +128,8 @@ extension NemotronSuperLocalHTTPTests {
                 #expect(text.contains("error"))
             }
             // Logprobs: one entry per generated token (reasoning entries ride
-            // the first content chunk), the requested alternatives, greedy
-            // first; the visible output is unchanged.
+            // the reasoning chunks), the requested alternatives, greedy first;
+            // the visible output is unchanged.
             for stream in [true, false] {
                 let text = try await send(body(reasoning, stream: stream, ["logprobs": true, "top_logprobs": 2]))
                 let served = stream ? (SuperSSE(text).content, SuperSSE(text).logprobs)
@@ -140,6 +140,14 @@ extension NemotronSuperLocalHTTPTests {
                     #expect(entry.top.count == 2 && entry.logprob <= 0)
                     #expect(entry.top.first == entry.logprob && entry.top[0] >= entry.top[1])
                 }
+            }
+            // A response that ends while reasoning still carries one entry
+            // per token, streamed or complete.
+            for stream in [true, false] {
+                let text = try await send(body(["Plan", " it."], stream: stream, ["logprobs": true]))
+                let served = stream ? (SuperSSE(text).reasoning, SuperSSE(text).logprobs)
+                    : try (SuperJSON(text).reasoning ?? "", SuperJSON(text).logprobs)
+                #expect(served.0 == "Plan it." && served.1.count == 2, "stream \(stream)")
             }
         }
         #expect(await budget.outstandingReservedBytes() == baseline)

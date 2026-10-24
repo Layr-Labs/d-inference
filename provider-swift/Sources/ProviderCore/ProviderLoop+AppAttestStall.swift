@@ -120,6 +120,7 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
+        usageHistory.flush()
         do {
             try ProcessLifecycle.restartAfterUpdate(cause: .stallRestart)
         } catch {

@@ -176,6 +176,12 @@ final class WorkerCoordinator: @unchecked Sendable {
             ready = value; session = fresh; laneSession = freshLanes
             condition.unlock()
             try publish(.ready(value), requestID: nil)
+            if let assistant = value.tensorAssistant {
+                let line = "darkbloom-tensor-parallel-mtp-ready-v1 rank=\(value.rank) capacity=\(assistant.capacity)"
+                    + " depth=\(assistant.policy.depth) maximum_speculative_width=\(assistant.maximumSpeculativeWidth)"
+                    + " inventory_sha256=\(assistant.policy.inventorySHA256) verification=\(assistant.policy.verification.rawValue)"
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             startReading()
             if lanes > 1 {
                 // Continuous batching: control is applied as it arrives, and

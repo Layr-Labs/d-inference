@@ -116,6 +116,24 @@ struct StageLoadFileCacheGuardTests {
         #expect(throws: ProbeError.self) { _ = try Mac.decide(Mac.observation(), required: 0, since: laterSwap) }
     }
 
+    @Test func aDrainedScopeRestartsTheHarmWindowWithoutChangingTheLimits() throws {
+        let limit = QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes
+        let watch = QwenDenseStageLoadWatch("Window", list: nil), need = 16 * Self.gib
+        // The first sample is the baseline; compression past the limit since then withdraws the cache.
+        #expect(try watch.admits(Mac.observation(), bytes: need, now: Mac.now))
+        #expect(throws: ProbeError.self) {
+            _ = try watch.admits(Mac.observation(compressedBytes: limit + Self.page), bytes: need, now: Mac.now)
+        }
+        // A served scope drained: its compression is not the next scope's harm.
+        watch.restartWindow()
+        #expect(try watch.admits(Mac.observation(compressedBytes: limit + Self.page), bytes: need, now: Mac.now))
+        #expect(try watch.admits(Mac.observation(compressedBytes: 2 * limit + Self.page), bytes: need, now: Mac.now))
+        // New harm past the same limit inside the new window still withdraws it.
+        #expect(throws: ProbeError.self) {
+            _ = try watch.admits(Mac.observation(compressedBytes: 2 * limit + 2 * Self.page), bytes: need, now: Mac.now)
+        }
+    }
+
     @Test func theCurrentCountersTripTheGuardWhenTheStatisticsAreACachedCopy() throws {
         // The kernel serves this binary cached statistics for most of each
         // second: `compressions` has not moved, the counter read by sysctl has.

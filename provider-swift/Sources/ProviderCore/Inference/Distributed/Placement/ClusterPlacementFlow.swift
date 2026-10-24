@@ -24,6 +24,9 @@ public enum ClusterPlacementFlow {
         public var speedMeasurements: [URL] = []
         public var promptTokens: Int?
         public var outputTokens: Int?
+        /// Explicit typed selection until the full assistant path is qualified.
+        /// The metadata helper must return this exact inventory and depth.
+        public var tensorAssistant: ClusterQwenTensorAssistantPolicy? = nil
         public var regime = ClusterPlacementPolicy.Regime.rested
         /// A new directory for the two setups and the plan, created owner-only.
         public var output: URL
@@ -52,10 +55,13 @@ public enum ClusterPlacementFlow {
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
                               requestScope: ClusterPlacementRequestScope? = nil,
                               batchScope: ClusterPlacementBatchScope? = nil,
+                              tensorAssistantQuote: ClusterPlacementTensorBatchQuote? = nil,
+                              tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
                               incumbentMode: ClusterGenerationMode? = nil,
+                              incumbentTensorShares: [Int]? = nil,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
@@ -136,13 +142,22 @@ public enum ClusterPlacementFlow {
         if promptTokens == nil, outputTokens == nil, let mix = ClusterRequestMix.reference(ours.map(\.sample), layout: layout) {
             policy.promptTokens = mix.promptTokens; policy.outputTokens = mix.outputTokens
         }
-        if let requestScope = batchScope?.request ?? requestScope {
+        guard tensorAssistantQuote == nil || batchScope == nil else {
+            throw ClusterConfigurationError.invalid("Placement cannot combine singleton and concurrent assistant quotes")
+        }
+        if let requestScope = batchScope?.request ?? tensorAssistantQuote?.request ?? requestScope {
             guard requestScope.maximumPromptTokens == capability.profile.maximumPromptTokens,
                   requestScope.maximumOutputTokens == capability.profile.maximumOutputTokens,
                   requestScope.maximumContextTokens == capability.profile.maximumContextTokens else {
                 throw ClusterConfigurationError.invalid("The request scope and worker capability have different profile limits")
             }
-            try requestScope.apply(to: &policy, layout: layout)
+            // A singleton tensor quote prices the native profile's complete envelope, which
+            // covers the served or planned reference; other scopes price exactly their request.
+            if batchScope == nil, tensorAssistantQuote != nil { try requestScope.applyCovering(to: &policy, layout: layout) }
+            else { try requestScope.apply(to: &policy, layout: layout) }
+        }
+        if let tensorAssistantQuote, let requestScope, tensorAssistantQuote.request != requestScope {
+            throw ClusterConfigurationError.invalid("Assistant placement carries two different request scopes")
         }
         if let batchScope, let requestScope, batchScope.request != requestScope {
             throw ClusterConfigurationError.invalid("Batch placement carries two different request scopes")
@@ -186,6 +201,29 @@ public enum ClusterPlacementFlow {
             }
             policy.modes = modes; policy.schedules = [.serial]
             try batchScope.apply(to: &policy, layout: layout)
+        }
+        if let tensorAssistantQuote {
+            let chunk = description.derivesRequestLimits
+                ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: capability.runtimeModelID,
+                    artifactSHA256: capability.artifactSHA256, layoutMaximum: layout.maximumChunkTokens,
+                    capabilityMaximum: capability.profile.maximumChunkTokens).tokens : description.chunkTokens
+            guard admissibleModes.contains(.tensorParallel), !capability.hasPrivateImages,
+                  tensorAssistantQuote.chunkTokens == chunk else {
+                throw ClusterConfigurationError.invalid("Singleton assistant quote differs from the selected native scope")
+            }
+            policy.modes = [.tensorParallel]; policy.schedules = [.serial]
+            policy.keptMode = nil; policy.keptModeReason = nil
+            try tensorAssistantQuote.applySingleton(to: &policy, layout: layout)
+            // Capacity changes keep the shares: steer them to a split that can widen.
+            policy.tensorParallelWideningQuote = tensorWideningQuote
+        }
+        if let incumbentTensorShares {
+            guard batchScope != nil, capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID,
+                  policy.modes?.contains(.tensorParallel) == true, policy.leader != nil else {
+                throw ClusterConfigurationError.invalid("Retained tensor shares require a priced Qwen27 capacity replacement")
+            }
+            policy.modes = [.tensorParallel]; policy.schedules = [.serial]
+            policy.requiredTensorShares = incumbentTensorShares
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
@@ -239,7 +277,8 @@ public enum ClusterPlacementFlow {
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
             let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
-                chosen: chosen, batchLanes: batchScope?.lanes)
+                chosen: chosen, batchLanes: batchScope?.lanes,
+                tensorAssistant: (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

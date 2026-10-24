@@ -64,6 +64,13 @@ public enum ClusterConfigurationCodec {
             }
             expected.insert("batchLanes")
         }
+        if let assistant = object["tensorAssistant"] {
+            guard let fields = assistant as? [String: Any] else {
+                throw ClusterConfigurationError.invalid("Tensor assistant policy must be a non-null object")
+            }
+            _ = try ClusterQwenTensorAssistantPolicy.decodeObject(fields)
+            expected.insert("tensorAssistant")
+        }
         if let attachment = object["nativeMember"] {
             guard let fields = attachment as? [String: Any] else {
                 throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")

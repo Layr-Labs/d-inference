@@ -104,14 +104,16 @@ public struct DistributedResidentReadiness: Sendable {
     /// The media contract both ranks serve (`ClusterGLMMedia.contract` for GLM
     /// images and video on the tensor-parallel pair); nil serves text only.
     public let media: String?
+    public let tensorAssistant: ClusterQwenTensorAssistantReady?
 
     public init(identity: DistributedResidentIdentity, profileID: String, requestCapacityBytes: Int,
-                servingContextTokens: Int? = nil, media: String? = nil) {
+                servingContextTokens: Int? = nil, media: String? = nil,
+                tensorAssistant: ClusterQwenTensorAssistantReady? = nil) {
         self.identity = identity
         self.profileID = profileID
         self.requestCapacityBytes = requestCapacityBytes
         self.servingContextTokens = servingContextTokens
-        self.media = media
+        self.media = media; self.tensorAssistant = tensorAssistant
     }
 }
 

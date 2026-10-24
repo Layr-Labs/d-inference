@@ -106,6 +106,7 @@ enum ConsoleFixtures {
             "capabilitySHA256": pin("1"), "publicModelID": "fixture/public-model", "runtimeModelID": "registered_fixture",
             "artifactSHA256": pin("b"), "configurationModelSHA256": pin("2"), "planSHA256": pin("c"), "prefillSchedule": ClusterPrefillSchedule.serial.rawValue,
             "generationMode": ClusterGenerationMode.pipeline.rawValue,
+            "speculationEnabled": false, "speculationOffReason": "runtimeCapabilityDisablesSpeculation",
             "peers": [["id": "peer-0", "rank": 0, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]],
                       ["id": "peer-1", "rank": 1, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]]],
         ] as [String: Any]))

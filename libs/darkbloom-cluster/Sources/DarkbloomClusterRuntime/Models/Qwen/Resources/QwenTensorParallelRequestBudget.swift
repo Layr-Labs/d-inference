@@ -3,7 +3,9 @@ import Foundation
 
 /// A complete TP request ledger derived from the same canonical inventory
 /// used at LOAD. No weights are loaded, and the allocator bound is explicit.
-/// All heads and fused banks are conservatively charged on each rank.
+/// Without a rank, all heads and fused banks are conservatively charged on
+/// each rank. With one, that rank's own heads, rows and input columns
+/// (`QwenTensorParallelRankLedger`), as it loads and runs them.
 struct QwenTensorParallelRequestBudget {
     let stateBytes: Int
     let fusionBytes: Int
@@ -14,7 +16,7 @@ struct QwenTensorParallelRequestBudget {
 
     static func derive(geometry g: QwenLongPrefillBudgetGeometry, plan: QwenTensorParallelPlan,
                        tensors: [QwenDenseCanonicalTensor], maximumTokens: Int, chunkSize: Int,
-                       allocationBound: (Int) throws -> Int) throws -> Self {
+                       rank: Int? = nil, allocationBound: (Int) throws -> Int) throws -> Self {
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
         guard g.hiddenSize == plan.hiddenSize, g.layers == plan.layerCount,
               g.fullAttentionInterval == plan.fullAttentionInterval,
@@ -28,7 +30,8 @@ struct QwenTensorParallelRequestBudget {
             }
             return try product([allocated, count])
         }
-        let budget = try QwenLongPrefillTensorBudget.estimate(geometry: g,
+        let local = try g.tensorParallelShard(plan: plan, rank: rank)
+        let budget = try QwenLongPrefillTensorBudget.estimate(geometry: local,
             maximumTokens: maximumTokens, chunkSize: chunkSize)
         let state = try sum([
             bound(budget.convolutionBytesPerLayer, count: 3 * budget.recurrentLayers),
@@ -42,7 +45,8 @@ struct QwenTensorParallelRequestBudget {
         // FP32 row projections retain widened affine scales and offsets in
         // ConstantArrayCastCache, outside the parameter tree. LOAD has not run
         // a forward yet, so its active-byte observation does not include them.
-        // Charge the full bank on each rank, independently bounding every cast.
+        // Charge the rank's own columns of the bank (the full bank without a
+        // rank), independently bounding every cast.
         var constants = 0
         for path in plan.inputColumnModulePaths() {
             for suffix in ["scales", "biases"] {
@@ -57,7 +61,8 @@ struct QwenTensorParallelRequestBudget {
                     throw ProbeError("Tensor-parallel projection constant byte conservation differs")
                 }
                 if sourceBytes < 4 {
-                    constants = try sum([constants, bound(product([elements, 4]))])
+                    let held = try rank.map { try plan.rankElements(of: tensor, rank: $0) } ?? elements
+                    constants = try sum([constants, bound(product([held, 4]))])
                 }
             }
         }
@@ -81,10 +86,14 @@ struct QwenTensorParallelRequestBudget {
                 guard logical == (try sum(parts.map(\.byteCount))) else {
                     throw ProbeError("Tensor-parallel fusion byte conservation differs")
                 }
-                fusion = try sum([fusion, bound(logical)])
+                // A rank fuses only the rows of its own heads.
+                let fused = try rank.map { rank in
+                    try product([sum(parts.map { try plan.rankElements(of: $0, rank: rank) }), suffix == "weight" ? 4 : 2])
+                } ?? logical
+                fusion = try sum([fusion, bound(fused)])
             }
         }
-        let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: g,
+        let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: local,
             stageHasAttention: budget.attentionLayers > 0, chunkTokens: chunkSize, contextTokens: maximumTokens)
         let transient = transientLogical == 0 ? 0 : try bound(transientLogical)
         let logits = try bound(product([plan.vocabularySize, 4]), count: 3)

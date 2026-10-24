@@ -26,7 +26,7 @@ struct QwenTensorParallelBatchBudgetTests {
         let context = family.largestContextTokens, chunk = family.maximumChunkTokens
         let scalar = try QwenTensorParallelRequestBudget.derive(geometry: family.geometry, plan: plan,
             tensors: tensors, maximumTokens: context, chunkSize: chunk, allocationBound: bound)
-        for lanes in [2, 4, 8] {
+        for lanes in [1, 2, 4, 8] {
             let candidate = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                 tensors: tensors, maximumTokens: context, chunkSize: chunk, lanes: lanes, paged: true, allocationBound: bound)
             #expect(candidate.batchProjectionConstantBytes == scalar.projectionConstantBytes)
@@ -64,7 +64,7 @@ struct QwenTensorParallelBatchBudgetTests {
             _ = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                 tensors: source, maximumTokens: 512, chunkSize: 32, lanes: lanes, paged: true, allocationBound: allocator)
         }
-        for lanes in [0, 1, 9, Int.max] { #expect(throws: (any Error).self) { try budget(tensors, lanes: lanes) } }
+        for lanes in [0, 9, Int.max] { #expect(throws: (any Error).self) { try budget(tensors, lanes: lanes) } }
         #expect(throws: (any Error).self) { try budget(tensors, allocator: { $0 - 1 }) }
         #expect(throws: (any Error).self) { try budget(tensors, allocator: { _ in Int.max }) }
         #expect(throws: (any Error).self) { try budget(tensors.filter { !$0.name.hasSuffix(".mlp.down_proj.scales") }) }

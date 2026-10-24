@@ -1816,3 +1816,38 @@ with `ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure --no-t
 This component check does not reproduce or qualify an installed RDMA model;
 repeat the installed provider's automatic cluster flow and concurrent API
 requests on both Macs after a native pin change.
+
+### Qwen27 TP speculative ownership tests
+
+Run SDK `QwenMTPPagedHistoryTests` for paged assistant append/trim/copy/restore and failed-constructor custody. Native `QwenTensorParallelMTPPolicyTests`, `QwenTensorParallelMTPBudgetTests`, `QwenTensorParallelBatchMTPBudgetTests` and `QwenTensorParallelAssistantQuoteTests` check exact inventory, complete singleton/cohort reservations and metadata/native quote equality. `QwenTensorAssistantStartupTests` exercises real bilateral worker arguments; Process `TensorAssistantReadinessCheck` checks real child READY mismatch rejection. Provider `DistributedAutomaticBatchPlannerTests` covers automatic inline discovery, malformed/off cases, complete initial quote and saved-policy preservation through wider replans.
+
+Set `QWEN_TP_MTP_GPU=1` only in an isolated native test run with the matching Metal resource. Run `QwenTensorParallelBatchMTPWindowTests` and `QwenTensorParallelBatchMTPTransitionTests` with `--no-parallel` so suites do not race global MLX state. Actual tiny targets test unequal histories/keep counts, rejected-suffix settlement, greedy target-column continuation, singleton/wider transitions, independent accepted-token credits, survivor retirement, mixed ordinary rows and poisoned-cohort cleanup. The trained head remains single-row; the decoder creates the target cohort. Tied-head transition fixtures do not establish full-model acceptance behavior or sampled equivalence.
+
+Retain the exact executable, imported module/object/resource hashes and all fixtures resolved relative to compiled `#filePath` on each host. These fixtures use an in-process paired reduction and establish neither RDMA nor installed-product qualification. Run full-artifact automatic setup, bilateral READY, ordinary/media/logprob/history requests, prefix reuse, concurrent MTP, cancellation and retirement before a release claim. Compile ProviderCore tests against the actual final product module built with `-enable-testing`; do not reuse a pre-policy test binary with changed contract modules.
+
+### Cluster service stop ordering
+
+`ClusterServiceRecoveryTests.plannedStopWaitsForOwnedServiceChildBeforePeerAndRetainsFailureIntent`
+runs the actual service loop with an owned process held after SIGTERM. It checks
+that the peer stop is withheld until exit and idle publication, including local
+timeout/retry and missing-peer failure. Additional cases cover a recycled PID,
+an unavailable live-service publication, and a replacement process that must
+not inherit the old stop's authority. `ClusterServiceLoginAgentTests` exercises
+the actual CLI completion gate: failed pair retirement cannot uninstall the
+service or return success. These are isolated CPU/process tests; native graceful
+shutdown still requires a fresh installed two-Mac run.
+
+Focused checks: `swift test --filter ClusterServiceRecoveryTests` and
+`swift test --filter ClusterServiceLoginAgentTests` from `provider-swift`.
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServiceRecoveryTests.swift`
+and `provider-swift/Tests/DarkbloomCLITests/ClusterServiceLoginAgentTests.swift`.
+
+The planned-stop lifecycle suite also pauses the actual service immediately before Process.run, then requests stop against its stale idle publication. Rewriting ordinary status with a fresh inode must not release the peer. Only a subsequent real supervision-cycle acknowledgement after child retirement permits success. The private initializer callback is nil in production.
+
+Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
+
+### Qwen27 capacity consistency checks
+
+Run `swift test --filter QwenTensorParallelBatchSettingsTests`, `swift test --filter QwenTensorParallelBatchBudgetTests`, `swift test --filter QwenTensorParallelAssistantQuoteTests` and `swift test --filter QwenTensorParallelSingletonHostTests` from `libs/darkbloom-cluster`. These CPU checks cover keyed singleton routing, complete plain/assistant quotations, token credit and the bilateral-retirement completion boundary. Run `swift test --filter DistributedAutomaticBatchPlannerTests` from `provider-swift` for retained-share placement, current-memory refusal and handoff compatibility.
+
+With exclusive GPU custody, run `QWEN_TP_BATCH_GPU=1 QWEN_TP_BATCH_KV=paged swift test --filter QwenTensorParallelBatchSessionTests.capacityOneAndTwoKeepExactPagedLogitsAndHistory` from `libs/darkbloom-cluster`. This synthetic two-rank test compares raw logits and attention/conv/SSM state at capacities one and two. It also prints whether the former scalar paged path differs; at this tiny geometry it matched byte-for-byte, so the fixture does not reproduce the installed divergence and is not a negative control. It does not establish full-model installed parity or physical peer transport. The installed run must retain the original singleton output and require exact equality after automatic widening, then verify media, tools, logprobs, cancellation and native retirement on both Macs.

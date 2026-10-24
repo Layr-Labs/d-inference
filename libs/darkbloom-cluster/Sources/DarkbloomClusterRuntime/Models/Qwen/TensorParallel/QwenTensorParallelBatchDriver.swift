@@ -13,11 +13,13 @@ protocol QwenTensorParallelBatchLane: AnyObject {
     var isClosed: Bool { get }
     var reusedPrefixTokens: Int { get }
     var storedPrefixFrontiers: [Int] { get }
+    var canSelectNext: Bool { get }
 }
 
 extension QwenTensorParallelBatchLane {
     var reusedPrefixTokens: Int { 0 }
     var storedPrefixFrontiers: [Int] { [] }
+    var canSelectNext: Bool { nextFrame?.phase == .decode }
 }
 
 /// Both ranks run every forward. Selection returns the same token to both;
@@ -84,7 +86,11 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
         book.isCancelled(record.id) || now() >= record.reservation.deadline
     }
 
-    func serve(host: QwenBatchServingHost, check: () throws -> Void) throws {
+    /// `retiredSelection` receives each clean, bilaterally retired selection
+    /// for this call only; a retained failed driver keeps no host callback.
+    func serve(host: QwenBatchServingHost,
+               retiredSelection: (UUID, [Int], QwenLayerStageGenerationFinishReason) throws -> Void = { _, _, _ in },
+               check: () throws -> Void) throws {
         var step = 0
         var decisions = QwenBatchDecisionProgress()
         var coalescing = QwenBatchDecodeCoalescing()
@@ -107,13 +113,13 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
                     try validate(plan, peer: peer)
                     peerCancelled = Set((0..<capacity).filter { peer.cancelledMask & (1 << $0) != 0 })
                     if plan.stop { return true }
-                    try leave(plan, host: host, decisions: &decisions, check: check)
+                    try leave(plan, host: host, decisions: &decisions, retiredSelection: retiredSelection, check: check)
                     try join(plan, host: host, check: check)
                     let decode = plan.slots.indices.filter { plan.slots[$0].role == .decode }
                     if !decode.isEmpty {
                         let lanes = try decode.map { slot -> Record in
                             guard let record = records[slot], let native = record.native,
-                                  native.nextFrame?.phase == .decode, record.tokens.last == plan.slots[slot].inputToken else {
+                                  native.canSelectNext, record.tokens.last == plan.slots[slot].inputToken else {
                                 throw ProbeError("Qwen TP decode differs from its request history")
                             }
                             return record
@@ -163,7 +169,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             if cancelled(record) || peerCancelled.contains(slot) || reason != nil {
                 value.state = .leaving; value.leaveCancelled = cancelled(record) || peerCancelled.contains(slot)
                 value.leaveReason = value.leaveCancelled ? nil : reason
-            } else if record.native?.nextFrame?.phase == .decode, decisions.canForward(record.id) {
+            } else if record.native?.canSelectNext == true, decisions.canForward(record.id) {
                 value.role = .decode; value.inputToken = record.tokens.last ?? -1
             }
             slots[slot] = value
@@ -181,7 +187,7 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             slots[prompt.slot].frameCount = frame.tokenCount; slots[prompt.slot].finalChunk = frame.finalPromptChunk
         }
         let decoding = slots.indices.filter {
-            slots[$0].state == .active && records[$0]?.native?.nextFrame?.phase == .decode
+            slots[$0].state == .active && records[$0]?.native?.canSelectNext == true
         }
         let ready = decoding.filter { slots[$0].role == .decode }
         // Let nearby credits form one decode rectangle without waiting on a
@@ -272,7 +278,9 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
     }
 
     private func leave(_ plan: QwenBatchWire.Header, host: QwenBatchServingHost,
-                       decisions: inout QwenBatchDecisionProgress, check: () throws -> Void) throws {
+                       decisions: inout QwenBatchDecisionProgress,
+                       retiredSelection: (UUID, [Int], QwenLayerStageGenerationFinishReason) throws -> Void,
+                       check: () throws -> Void) throws {
         let leaving = plan.slots.indices.filter { plan.slots[$0].state == .leaving }
         guard !leaving.isEmpty else { return }
         for slot in leaving {
@@ -303,8 +311,11 @@ final class QwenTensorParallelBatchDriver<Executor: QwenTensorParallelBatchExecu
             }
             record.native = nil; book.finish(record.id); decisions.retired(record.id); records[slot] = nil
             if value.leaveCancelled { try host.publishLeft(requestID: record.id) }
-            else if let reason = value.leaveReason { try host.publishFinished(requestID: record.id, reason: .init(rawValue: reason.rawValue)!) }
-            else { throw ProbeError("Qwen TP clean leave omitted its reason") }
+            else if let reason = value.leaveReason {
+                // Only a bilaterally retired clean selection is handed over.
+                try retiredSelection(record.id, record.tokens, reason)
+                try host.publishFinished(requestID: record.id, reason: .init(rawValue: reason.rawValue)!)
+            } else { throw ProbeError("Qwen TP clean leave omitted its reason") }
         }
     }
 

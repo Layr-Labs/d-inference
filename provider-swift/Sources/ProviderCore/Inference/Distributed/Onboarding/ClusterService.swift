@@ -70,6 +70,10 @@ public final class ClusterService: @unchecked Sendable {
     let store: ClusterSetupStore
     let pairingStore: ClusterPairingStore
     private let recoveryGraceSeconds: Double
+    private let beforePartStart: (@Sendable () -> Void)?
+    /// Main supervision thread only; a pending stop cannot be acknowledged by
+    /// a cycle that read the preceding serving intent.
+    private var supervisedStopDrainID: UUID?
     let lock = NSLock()
     private var child: Process?
     /// A previous service's part can outlive the cleanup deadline. Keep its identity
@@ -138,9 +142,11 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Internal composition of the service's existing stores. Public callers keep
     /// the canonical user namespace and the normal recovery deadline.
-    init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300) {
+    init(settings: Settings, paths: ClusterUserPaths, recoveryGraceSeconds: Double = 300,
+         beforePartStart: (@Sendable () -> Void)? = nil) {
         precondition(recoveryGraceSeconds.isFinite && recoveryGraceSeconds >= 0)
         self.recoveryGraceSeconds = recoveryGraceSeconds
+        self.beforePartStart = beforePartStart
         pairingStore = .default(home: paths.homeDirectory)
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -169,12 +175,17 @@ public final class ClusterService: @unchecked Sendable {
 
     /// Whether a cluster service holds this home's lock now.
     public static func running() -> Bool {
-        guard let lockFile = try? paths().lock else { return false }
+        guard let directory = try? paths().lock.deletingLastPathComponent() else { return false }
+        return running(in: directory) == true
+    }
+
+    private static func running(in directory: URL) -> Bool? {
+        let lockFile = files(in: directory).lock
         let fd = open(lockFile.path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return errno == ENOENT ? false : nil }
         defer { close(fd) }
         if flock(fd, LOCK_EX | LOCK_NB) == 0 { _ = flock(fd, LOCK_UN); return false }
-        return errno == EWOULDBLOCK
+        return errno == EWOULDBLOCK ? true : nil
     }
 
     /// Starts `darkbloom cluster service` detached from this terminal (its own
@@ -262,7 +273,7 @@ public final class ClusterService: @unchecked Sendable {
                 refreshPowerAssertions(power)
                 syncMembers(say: say)
                 checkForUpdate(say: say)
-                publish()
+                publish(afterSupervision: true)
             }
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
@@ -557,6 +568,13 @@ public final class ClusterService: @unchecked Sendable {
                 memberDigest: member.cacheSync), send(.init(op: .cacheSettings, cache: cache), seconds: 10) != nil {
                 say("synced this Mac's cache settings to the member (\(String(ClusterMemberCacheControl.digest(cache).prefix(12))))")
             }
+            guard let self,
+                  let held = ClusterControlCommandLock.acquire(seconds: 0,
+                    file: self.store.paths.directory.appendingPathComponent("control.lock")) else { return }
+            defer { held.release() }
+            guard let current = try? self.store.readRecord(), current.stopDrain == nil,
+                  let leadership = current.leadership, leadership.peerPin == pairing.peerPin,
+                  self.leadsAndRunsCluster() else { return }
             switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
                                                 memberServing: member?.serving, memberModel: member?.modelName,
                                                 leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly) {
@@ -569,6 +587,11 @@ public final class ClusterService: @unchecked Sendable {
                     say(runsIt ? "synced how the cluster serves to the member" : "the member had missed the start: started its part")
                 }
             case .stop:
+                // A member stopped before rank 0 fences the still-live pair.
+                // A local retirement timeout is not proof that rank 0 drained.
+                guard self.lock.withLock({
+                    self.child?.isRunning != true && Self.runningPart(self.leftoverPart) == nil
+                }) else { return }
                 if send(.init(op: .stop), seconds: 10) != nil { say("the member had missed the stop: stopped its part") }
             }
         }
@@ -736,6 +759,45 @@ public final class ClusterService: @unchecked Sendable {
             usleep(100_000)
         }
         return true
+    }
+
+    /// After saved serving intent is cleared, retire this Mac's exact owned
+    /// part before asking its peer to stop. The live service must publish idle
+    /// too: a part may have been starting when the first snapshot was read.
+    /// An unavailable service can still leave a recorded part to recover.
+    static func stopLocalPart(in directory: URL, seconds: Double) -> Bool {
+        precondition(seconds.isFinite && seconds >= 0)
+        let deadline = Date().addingTimeInterval(seconds)
+        let previousAcknowledgement = supervisionAcknowledgement(in: directory)?.publication
+        var owned: RecordedPart?
+        repeat {
+            let status = published(in: directory)
+            if status == nil, FileManager.default.fileExists(atPath: directory.appendingPathComponent("service-status.json").path) {
+                return false
+            }
+            if let child = status?.child, child.running, child.pid == nil || child.startedAt == nil { return false }
+            if let part = recordedPart(status) {
+                // A replacement is a new operation's custody, never another
+                // process to signal using the previous stop's authority.
+                if let owned, owned != part { return false }
+                owned = part
+                guard stopLeftover(part, seconds: max(0, deadline.timeIntervalSinceNow)) else { return false }
+                continue
+            }
+            guard let serviceRunning = running(in: directory) else { return false }
+            if !serviceRunning { return owned.map { runningPart($0) == nil } ?? true }
+            let pidFile = files(in: directory).pid
+            if let status, let text = try? String(contentsOf: pidFile, encoding: .utf8),
+               let writer = status.servicePID,
+               let current = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), writer == current,
+               !status.serving, !status.child.running,
+               let acknowledgement = supervisionAcknowledgement(in: directory),
+               acknowledgement.servicePID == writer, acknowledgement.idle,
+               acknowledgement.publication != previousAcknowledgement { return true }
+            if Date() >= deadline { return false }
+            usleep(100_000)
+        } while Date() < deadline
+        return false
     }
 
     /// `authorized`: whether a server answers its model list on the solo port with this Mac's local API token (only
@@ -937,11 +999,50 @@ public final class ClusterService: @unchecked Sendable {
         return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
     }
 
+    /// Private local acknowledgement; only the supervision loop can advance
+    /// it. An ordinary status publication can happen while a start is in flight.
+    private struct SupervisionAcknowledgement: Codable {
+        var servicePID: Int32
+        var publication: UUID
+        var idle: Bool
+    }
+
+    private static func supervisionAcknowledgement(in directory: URL) -> SupervisionAcknowledgement? {
+        let file = directory.appendingPathComponent("service-supervision.json")
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(SupervisionAcknowledgement.self, from: data)
+    }
+
     /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.
-    private func publish() {
+    private func publish(afterSupervision: Bool = false) {
+        let value = status()
         let file = store.paths.directory.appendingPathComponent("service-status.json")
-        guard let data = try? JSONEncoder().encode(status()) else { return }
+        guard let data = try? JSONEncoder().encode(value) else { return }
         try? data.write(to: file, options: .atomic)
+        if afterSupervision {
+            var idle = !value.serving && !value.child.running
+            if idle {
+                idle = lock.withLock {
+                    // A previously constructed running=true lease must finish
+                    // before the stop becomes visible to the peer. New sends
+                    // take this same lock and reread the cleared record.
+                    guard !leaseInFlight else { return false }
+                    do {
+                        var record = try store.readRecord()
+                        if let drain = record.stopDrain, drain.id == supervisedStopDrainID {
+                            record = try store.updateRecord {
+                                if $0.stopDrain?.id == drain.id, $0.leadership?.serving != true { $0.stopDrain = nil }
+                            }
+                        }
+                        return record.stopDrain == nil && record.leadership?.serving != true
+                    } catch { return false }
+                }
+            }
+            let acknowledgement = SupervisionAcknowledgement(servicePID: getpid(), publication: UUID(), idle: idle)
+            if let data = try? JSONEncoder().encode(acknowledgement) {
+                try? data.write(to: store.paths.directory.appendingPathComponent("service-supervision.json"), options: .atomic)
+            }
+        }
     }
 
     /// The status the running service last published on this Mac.
@@ -987,6 +1088,7 @@ public final class ClusterService: @unchecked Sendable {
                 say("this Mac's setup record reads again")
             }
         }
+        supervisedStopDrainID = record.stopDrain?.id
         let saved = context.savedConfiguration()
         let reference = try? saved.reference.get()
         let serving = record.leadership?.serving ?? false
@@ -1112,6 +1214,7 @@ public final class ClusterService: @unchecked Sendable {
         let log = serviceFiles.rankLog
         if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
         if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
+        beforePartStart?()
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
             lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }

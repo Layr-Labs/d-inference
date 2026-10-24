@@ -14,7 +14,16 @@ enum DistributedInstalledGenerationSelection {
         let mode = configuration.selectedGenerationMode
         try ClusterGenerationSelection.requireSupport(for: mode, peers: configuration.peers, capability: capability)
         let shares = configuration.tensorShares.map { ["--tensor-shares", $0.map(String.init).joined(separator: ":")] } ?? []
-        return mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
+        var arguments = mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
+        if let assistant = configuration.tensorAssistant {
+            try assistant.validate()
+            guard mode == .tensorParallel, capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID else {
+                throw ClusterConfigurationError.invalid("Tensor assistant launch differs from the saved Qwen27 TP policy")
+            }
+            arguments += ["--mtp-depth", String(assistant.depth),
+                ClusterQwenTensorAssistantPolicy.inventoryArgument, assistant.inventorySHA256] + assistant.verificationArguments
+        }
+        return arguments
     }
 }
 
@@ -52,6 +61,11 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
     }
 
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
+        if configuration.tensorAssistant != nil, configuration.selectedGenerationMode == .tensorParallel,
+           capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID {
+            self.init(enabled: true, offReason: Self.enabledReason)
+            return
+        }
         self.init(mode: configuration.selectedGenerationMode,
             everyMemberAdvertisesHead: configuration.peers.allSatisfy {
                 ClusterGenerationSelection.supportedModes(for: $0, capability: capability).contains(.phaseSplitMTP)

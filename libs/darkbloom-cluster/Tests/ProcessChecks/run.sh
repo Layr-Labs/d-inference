@@ -28,6 +28,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/WorkerOwnerTests.swift" -o "$task_build/check"
 "$task_build/check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/TensorAssistantReadinessCheck.swift" -o "$task_build/assistant-readiness-check"
+"$task_build/assistant-readiness-check"
 # Focused actual child/owner checks without the provider contract stand-ins.
 if [[ "${1:-}" == "--owner-only" ]]; then exit 0; fi
 if [[ -n "${PROCESS_CHECKS_LONG_SECONDS:-}" ]]; then

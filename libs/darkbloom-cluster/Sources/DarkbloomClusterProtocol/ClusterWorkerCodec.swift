@@ -359,6 +359,7 @@ public enum ClusterWorkerCodec {
             .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
             .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
             .merging(r.media.map { ["media": $0] } ?? [:]) { first, _ in first }
+            .merging(r.tensorAssistant.map { ["tensorAssistant": $0.object] } ?? [:]) { first, _ in first }
     }
     private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
         ["transport": p.transport, "keyed": p.keyed,
@@ -396,10 +397,11 @@ public enum ClusterWorkerCodec {
                 allSumLargeBytes: l.int("allSumLargeBytes"), allSumLargeMicroseconds: l.int("allSumLargeMicroseconds"))
             try l.finish()
         }
+        let assistant = try r.optionalObject("tensorAssistant").map(ClusterQwenTensorAssistantReady.decodeObject)
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
             dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe,
-            media: r.values["media"] == nil ? nil : try r.string("media"))
+            media: r.values["media"] == nil ? nil : try r.string("media"), tensorAssistant: assistant)
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

@@ -985,7 +985,7 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
-        if leadership?.serving == true {
+        if leadership?.serving == true || (try? store.readRecord().stopDrain) != nil {
             // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
             // (each part releases its memory), then changes the setup; `serve` starts the new one.
             if case .failure(let failure) = localStop() { return .failure(failure) }
@@ -1079,6 +1079,9 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func localServe() -> Result<[String], ClusterOnboardingFailure> {
+        guard (try? store.readRecord().stopDrain) == nil else {
+            return .failure(.init("This Mac is still finishing a stop. Run `darkbloom cluster stop` again before serving."))
+        }
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
@@ -1362,7 +1365,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .stop), acting: true, local: { localStop() }) { $0.lines }
+        routed(.init(op: .stop), seconds: 330, acting: true, local: { localStop() }) { $0.lines }
     }
 
     func verifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
@@ -1381,10 +1384,40 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func localStop() -> Result<[String], ClusterOnboardingFailure> {
+        localStop(seconds: 300) { _ = try command(.init(op: .stop)) }
+    }
+
+    /// The transport remains separate from local process custody so every
+    /// caller (CLI, model switch, or update) uses the same retirement ordering.
+    func localStop(seconds: Double, stopPeer: () throws -> Void) -> Result<[String], ClusterOnboardingFailure> {
+        let stopID = UUID()
         do {
-            try store.updateRecord { $0.leadership?.serving = false }
+            try store.updateRecord { record in
+                record.stopDrain = .init(id: stopID,
+                    keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
+                record.leadership?.serving = false
+            }
             lock.withLock { partsStoppedAt = Date() }
-            _ = try command(.init(op: .stop))
+        } catch {
+            return .failure(.init("This Mac could not save the stop request: \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
+        }
+        guard ClusterService.stopLocalPart(in: store.paths.directory, seconds: seconds) else {
+            return .failure(.init("This Mac's part has not finished releasing its memory, so the other Mac was not asked to stop yet. The stop request is saved; run `darkbloom cluster stop` again to check it."))
+        }
+        do {
+            // The service normally clears this after its matching cycle. A
+            // missing service can also leave an exact owned part we retired.
+            let record = try store.updateRecord {
+                if $0.stopDrain?.id == stopID { $0.stopDrain = nil }
+            }
+            guard record.stopDrain == nil, record.leadership?.serving != true else {
+                return .failure(.init("The stop request changed while this Mac drained; the other Mac was not asked to stop."))
+            }
+        } catch {
+            return .failure(.init("This Mac drained but could not finish saving the stop request; the other Mac was not asked to stop."))
+        }
+        do {
+            try stopPeer()
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
             return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(reason)). This Mac's cluster service tells it to stop as soon as it answers again."))

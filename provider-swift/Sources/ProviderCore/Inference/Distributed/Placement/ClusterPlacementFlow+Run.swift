@@ -83,6 +83,22 @@ extension ClusterPlacementFlow {
         } else {
             requestScope = nil
         }
+        let assistantChunk = description.derivesRequestLimits
+            ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: capability.runtimeModelID,
+                artifactSHA256: capability.artifactSHA256, layoutMaximum: layout.maximumChunkTokens,
+                capabilityMaximum: capability.profile.maximumChunkTokens).tokens : description.chunkTokens
+        let mtpMode = try ConfigManager.loadOrDefaults(from: ConfigManager.defaultConfigPath()).backend.mtpMode
+        let assistantQuote: ClusterPlacementTensorBatchQuote?
+        if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
+           let policy = inputs.tensorAssistant {
+            assistantQuote = try ClusterPlacementTensorAssistantSelection.read(tool: tool, modelDirectory: local.modelDirectory,
+                policy: policy, promptTokens: capability.profile.maximumPromptTokens,
+                outputTokens: capability.profile.maximumOutputTokens, lanes: 1, chunkTokens: assistantChunk, deadline: deadline)
+        } else {
+            assistantQuote = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                modelDirectory: URL(fileURLWithPath: local.modelDirectory), publicModelID: description.publicModelID,
+                capability: capability, mode: mtpMode, chunkTokens: assistantChunk, deadline: deadline)
+        }
         let peerProfile: ClusterDeviceProfile
         if let file = inputs.peerProfile {
             peerProfile = try ClusterDeviceProfile.decode(
@@ -106,7 +122,8 @@ extension ClusterPlacementFlow {
         }
         let decided = try decide(description: description, capability: capability, localMemberID: inputs.localMemberID,
             localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
-            promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, requestScope: requestScope, regime: inputs.regime,
+            promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, requestScope: assistantQuote?.request ?? requestScope,
+            tensorAssistantQuote: assistantQuote, regime: inputs.regime,
             served: ClusterServedSpeedHistory.entries(homeDirectory: home),
             link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured)
         var written: [URL] = []

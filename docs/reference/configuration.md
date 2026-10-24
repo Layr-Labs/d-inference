@@ -1321,3 +1321,33 @@ Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlaceme
 ### Qwen27 saved mode compatibility
 
 For the existing `qwen35-dense-layer-stage` / `registered_qwen38_27b` / `registered_qwen38_27b_greedy_generation_v1` tuple, new configuration saves and installed startup require `tensor_parallel_v1` to preserve the model's images, video and committed-token logprobs. Old pipeline records remain readable and immutable; rerun `darkbloom cluster` to replan them under current link and memory facts. An inadmissible TP plan produces no reduced-feature replacement. This is a provider mode restriction, not a new configuration field or evidence of native readiness. Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`, `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+
+### Qwen27 TP assistant policy
+
+Normal setup discovers the embedded assistant from the native quote; the saved fields below bind that decision through both workers' actual READY.
+
+| Setting | Bound and behavior | Source |
+|---|---|---|
+| `[backend] mtp_mode` | Existing `auto`/`on` allow exact Qwen27 embedded-assistant discovery; `off` retains the ordinary fully quoted target. Automatic discovery selects depth `2` and admitted-cohort verification. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `automaticCandidate`, `automaticDepth` |
+| Saved `tensorAssistant` | Optional `qwen27_tensor_assistant_v1` object containing `depth` 1...4 and native `inventorySHA256`; omitted policy preserves legacy ordinary setup bytes. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `ClusterQwenTensorAssistantPolicy` |
+| Saved `tensorAssistant.verification` | `singleton_ready_set_v1` is the omitted legacy value; `admitted_target_cohort_v1` verifies eligible rows together up to the completely priced capacity. Unknown/null values are refused. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `Verification` |
+| Native worker `--mtp-depth`, `--tp-mtp-inventory-sha256`, `--tp-mtp-verification` | Installed launch arguments derived from saved policy, bilaterally bound at LOAD. Normal setup does not ask the user to choose them. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledGenerationSelection.swift`; `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` |
+| `DARKBLOOM_QWEN_MTP_SERIAL`, `DARKBLOOM_QWEN_MTP_DOUBLE_FORWARD`, `DARKBLOOM_QWEN_MTP_SHORTLIST` | True serial/double-forward overrides and any shortlist setting other than `0` conflict with this TP policy and are refused; complete vocabulary scores and captured target settlement remain authoritative. | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPolicy.swift`, `require` |
+
+### Qwen27 TP capacity replacement
+
+For authenticated Qwen3.8 27B tensor-parallel setups, effective `batchLanes` one uses the same request-owned native cache and execution contract as larger capacities. Capacity-only replacement preserves the ordered `tensorShares` (omitted means equal shares), and retains the existing `tensorAssistant` policy. Complete native LOAD quotations apply at every capacity. Sources: `ClusterPlacementTensorBatchQuote`, `QwenTensorParallelBatchSettings` and `ClusterAutomaticSetupHandoff`.
+
+## Cluster stopped intent and retirement
+
+The existing saved `leadership.serving = false` intent remains set when local
+retirement or a peer stop acknowledgement fails; no new configuration field is
+introduced. The login service is retained on a failed leader stop, and a retry
+still runs the stop path even though serving intent is already false. Local
+retirement is bounded at 300 seconds, with 330 seconds allowed for a forwarded
+stop. See [planned cluster stop ordering](../architecture/inference.md#planned-cluster-stop-ordering).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.localStop`, `stop`) and
+`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop`).
+
+The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.

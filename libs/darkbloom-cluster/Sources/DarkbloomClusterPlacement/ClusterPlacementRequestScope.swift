@@ -68,4 +68,21 @@ public struct ClusterPlacementRequestScope: Codable, Equatable, Sendable {
         policy.largestContextTokens = maximumContextTokens
         policy.requestChargeEveryRankBytes = requestChargeEveryRankBytes
     }
+
+    /// A complete request envelope (a singleton tensor quote's) prices any
+    /// reference request inside it: its charge is at least that request's, so
+    /// the planner may keep its served or planned reference for speed while
+    /// memory is charged for the envelope. A reference outside it is refused.
+    public func applyCovering(to policy: inout ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
+        try validate()
+        let prompt = policy.promptTokens ?? layout.maximumPromptTokens
+        let outputs = policy.outputTokens ?? layout.maximumOutputTokens
+        guard runtimeModelID == layout.runtimeModelID, artifactSHA256 == layout.artifactSHA256,
+              configurationSHA256 == layout.configurationSHA256,
+              (1...promptTokens).contains(prompt), (1...outputTokens).contains(outputs) else {
+            throw ClusterPlacementError("Placement request envelope describes another model or does not cover the reference request")
+        }
+        policy.largestContextTokens = maximumContextTokens
+        policy.requestChargeEveryRankBytes = requestChargeEveryRankBytes
+    }
 }

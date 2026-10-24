@@ -35,7 +35,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     public func readiness() -> DistributedResidentReadiness? {
         guard let value = pair.readiness else { return nil }
         return .init(identity: identity, profileID: profile.id, requestCapacityBytes: value.requestCapacityBytes,
-            servingContextTokens: value.servingContextTokens, media: value.media)
+            servingContextTokens: value.servingContextTokens, media: value.media, tensorAssistant: value.tensorAssistant)
     }
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)

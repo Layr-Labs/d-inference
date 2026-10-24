@@ -23,15 +23,20 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     init(_ configuration: QwenResidentLoadConfiguration, family: ClusterResidentModelCatalog.Family = .qwenDense,
          attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
+         tensorAssistantPolicy: ClusterQwenTensorAssistantPolicy? = nil,
          qualification: QwenResidentQualificationSwitches = .refused,
          dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil, tensorShares: [Int] = [1, 1]) throws {
         // With the owner's attachment, the exchange it installed creates the
         // JACCL group (no coordinator socket); a load that did not use it stops.
         self.attachment = attachment
+        guard tensorAssistantPolicy == nil || (family == .qwenDense && generationMode == .tensorParallel) else {
+            throw WorkerFailure.invalid("A tensor assistant policy requires the Qwen tensor runtime")
+        }
         switch family {
         case .qwenDense where generationMode == .tensorParallel:
             owner = .qwenTensorParallel(try .load(configuration, shares: tensorShares, qualification: qualification,
-                dataPlane: dataPlane, prefixSSDKey: prefixSSDKey))
+                dataPlane: dataPlane, prefixSSDKey: prefixSSDKey, speculativeTerms: speculativeTerms,
+                tensorAssistantPolicy: tensorAssistantPolicy))
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
                 speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane,

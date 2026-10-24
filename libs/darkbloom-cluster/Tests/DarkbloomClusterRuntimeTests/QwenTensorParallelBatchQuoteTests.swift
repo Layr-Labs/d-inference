@@ -40,7 +40,7 @@ struct QwenTensorParallelBatchQuoteTests {
         try file.truncate(atOffset: UInt64(8 + encoded.count + offset)); try file.close()
         let root = try JSONSerialization.jsonObject(with: input.configuration) as! [String: Any]
         let text = root["text_config"] as! [String: Any], quantization = root["quantization"] as! [String: Any]
-        for lanes in [2, 4, 8] {
+        for lanes in [1, 2, 4, 8] {
             let quote = try ClusterPlacementArtifact.requestedTensorBatchQuote(directory: directory,
                 promptTokens: 1024, outputTokens: 9, chunkTokens: 128, lanes: lanes, allocationBound: bound)
             #expect(quote.request.promptTokens == 1024 && quote.request.outputTokens == 9 && quote.chunkTokens == 128)
@@ -65,7 +65,7 @@ struct QwenTensorParallelBatchQuoteTests {
         }
         #expect(throws: (any Error).self) {
             try ClusterPlacementArtifact.requestedTensorBatchQuote(directory: directory, promptTokens: 1024, outputTokens: 9,
-                chunkTokens: 128, lanes: 1, allocationBound: bound)
+                chunkTokens: 128, lanes: 3, allocationBound: bound)
         }
     }
 }

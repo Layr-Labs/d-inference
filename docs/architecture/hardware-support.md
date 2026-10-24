@@ -1019,3 +1019,23 @@ shared prompt preparation and, for nonstream output, JSON/schema post-validation
 It requires no token constraint or additional native model allocation. Forced
 media tool choices and nondefault processing controls remain unsupported; source
 acceptance does not qualify actual image/schema model answers.
+
+### Qwen27 TP speculative LOAD and request ownership
+
+`QwenTensorParallelMTPInventory` pins all 31 assistant arrays to the registered artifact and configuration before payload reads. Replicated packed weights, constructor bounds, two largest read buffers and aligned-read scratch remain additive during LOAD. Metadata quotation and native LOAD derive the same complete per-rank allowance; admitted request capacity never follows an unpriced speculative width.
+
+`QwenTensorParallelBatchMTPBudget` prices each request's full assistant history/pages, retained target state, copy-on-write pages and accepted-token queue. A slice can retain the whole backing of an earlier target cohort after its peers retire, so the full cohort backing is charged per independently surviving lane. A separate new verification cohort and its workspace remain charged at the same time. Collective and carry backing use the admitted width times verification length, including the seed; a tiny prefill chunk cannot shrink that reservation. First-draft scratch is shared once because assistant drafts execute serially, while the assistant weights load once per owner.
+
+The owner retains its full reservation through checked target and assistant retirement. Failed LOAD roots keep process-lifetime custody and cannot be refunded after an unsuccessful native drain. Metadata fit and tiny fixtures remain distinct from measured full-artifact memory or throughput qualification.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchMTPBudget.swift` (`derive`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPLoad.swift` (`QwenTensorParallelMTPAbandonedLoad`), and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTensorBatchBudget.swift` (`ClusterPlacementTensorBatchBudget`).
+
+### Planned cluster retirement
+
+A requested cluster stop keeps the follower available until the leader's owned
+part has exited. Local service custody and idle publication must confirm that
+retirement before the peer stop is sent; a timeout is not proof that device
+memory is free. Admission limits and native memory guards are unchanged. See
+[planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
+(`ClusterService.stopLocalPart`).

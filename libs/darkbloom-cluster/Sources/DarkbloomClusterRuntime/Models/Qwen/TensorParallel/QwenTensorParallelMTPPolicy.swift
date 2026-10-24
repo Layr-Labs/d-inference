@@ -1,0 +1,51 @@
+import Foundation
+
+/// Opt-in only. One resident head serves request-local states at any admitted
+/// owner capacity, but only singleton scheduled decode sets speculate. Media
+/// keeps the ordinary target path, as the standalone contract requires.
+enum QwenTensorParallelMTPPolicy {
+    static let agreement = "qwen27-tensor-mtp-resident-batch-v1"
+    /// Trusted assistant history enters head K/V in blocks of at most this
+    /// many rows (first draft and ordinary decode), bounding its workspace.
+    static let historyFlushRows = 512
+    static func require(model: QwenRegisteredDenseModel, lanes: Int, keyed: Bool, paged: Bool,
+                        terms: QwenMTPTerms?, environment: [String: String]) throws {
+        guard terms != nil else { return }
+        guard model == .qwen38TwentySevenB, (1...8).contains(lanes), keyed, paged else {
+            throw ProbeError("Qwen TP MTP requires exact Qwen27, bounded lanes and keyed paged ownership")
+        }
+        for key in ["DARKBLOOM_QWEN_MTP_SERIAL", "DARKBLOOM_QWEN_MTP_DOUBLE_FORWARD"] {
+            guard !["1", "true", "yes", "on"].contains(environment[key]?.lowercased() ?? "") else {
+                throw ProbeError("Qwen TP MTP does not admit alternate assistant verification graphs")
+            }
+        }
+        guard environment["DARKBLOOM_QWEN_MTP_SHORTLIST"].map({ $0 == "0" }) ?? true else {
+            throw ProbeError("Qwen TP MTP uses the complete sharded vocabulary head")
+        }
+    }
+    static func fields(terms: QwenMTPTerms?, inventory: QwenTensorParallelMTPInventory?) throws -> [String] {
+        guard let terms else {
+            guard inventory == nil else { throw ProbeError("Unexpected tensor assistant inventory") }
+            return []
+        }
+        guard let inventory else { throw ProbeError("Tensor assistant inventory is missing") }
+        return [agreement, "depth=\(terms.depth)", "inventory=\(inventory.fingerprint)",
+            "target=captured-rectangle", "head=rank0-hidden-sharded-vocabulary", "draft-ids=rank0",
+            "assistant-kv=paged64", QwenTensorParallelMTPPrefixBudget.policy, "media=target-only", "maximum-speculative-batch=1", "decode-history=observed", "history-flush=\(historyFlushRows)", "request-ledger=rank-heads-v1", "verify-rows=single-window-v1", "accepted-credit=bounded-suffix-v1", "shortlist=off"]
+    }
+}
+
+/// A bounded two-rank stop vote; the owner calls it only after the current
+/// prefill, draft/verification, or publication phase has completed.
+enum QwenTensorParallelMTPStopVote {
+    static func contribution(rank: Int, stopped: Bool) throws -> [Int32] {
+        guard (0...1).contains(rank) else { throw ProbeError("Qwen TP MTP stop rank is invalid") }
+        return rank == 0 ? [stopped ? 1 : 0, 0] : [0, stopped ? 1 : 0]
+    }
+    static func stopped(_ values: [Int32]) throws -> Bool {
+        guard values.count == 2, values.allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw ProbeError("Qwen TP MTP stop vote is invalid")
+        }
+        return values.contains(1)
+    }
+}

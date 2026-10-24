@@ -51,7 +51,20 @@ final class QwenTensorParallelRowLinear: QuantizedLinear, Qwen35BatchDecodeProje
     /// One actual batched partial, with the singleton M=1 affine kernel for
     /// each independent row. The collective sees the whole [B,1,H] tensor;
     /// it is not repeated once per row. Ordinary/prefill dispatch is unchanged.
+    /// A scoped verify rectangle [B,S,H] takes each row's partial exactly as
+    /// that row's own [1,S,H] window computes it, then one collective.
     func qwen35BatchDecode(_ x: MLXArray) -> MLXArray {
+        if x.ndim == 3, (2...8).contains(x.dim(0)), (2...5).contains(x.dim(1)) {
+            let partial = concatenated((0..<x.dim(0)).map { row in
+                let input = x[row..<row + 1]
+                return super.callAsFunction(partialDType == .float32 ? input.asType(.float32) : input)
+            }, axis: 0)
+            if timing == .explicit {
+                eval(partial)
+                Stream.gpu.synchronize()
+            }
+            return reduction.value.allSum(partial).asType(x.dtype)
+        }
         guard x.ndim == 3, (2...8).contains(x.dim(0)), x.dim(1) == 1,
               partialDType == .float32, mode == .affine,
               [4, 8].contains(bits), [64, 128].contains(groupSize), bias == nil else {

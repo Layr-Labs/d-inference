@@ -41,7 +41,8 @@ struct DistributedAutomaticBatchPlanner {
     /// records retain the existing unmeasured fallback; no rate is invented.
     static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                        localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
-                       layout: ClusterModelLayout, scope: ClusterPlacementBatchScope, homeDirectory: URL) throws
+                       layout: ClusterModelLayout, scope: ClusterPlacementBatchScope, homeDirectory: URL,
+                       incumbentTensorShares: [Int]? = nil) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         try ClusterPlacementFlow.decide(description: description, capability: capability,
             localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
@@ -49,7 +50,7 @@ struct DistributedAutomaticBatchPlanner {
             leader: localMemberID,
             served: ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory),
             link: ClusterLinkProbeHistory.costs(homeDirectory: homeDirectory, members: description.members.map(\.id)) ?? .unmeasured,
-            environment: [:], benchDebugBuild: false)
+            incumbentTensorShares: incumbentTensorShares, environment: [:], benchDebugBuild: false)
     }
 
     /// An automatic replacement cannot promise that unrelated memory will
@@ -151,24 +152,29 @@ struct DistributedAutomaticBatchPlanner {
                 if capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID {
                     let quote = try ClusterPlacementTensorBatchQuote.decode(run(["tensor-batch-scope", "--model-dir", local.modelDirectory,
                         "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens),
-                        "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)],
+                        "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)]
+                        + (configuration.tensorAssistant.map { ["--mtp-depth", String($0.depth)] + $0.verificationArguments } ?? []),
                         maximum: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
                     try quote.requireRequest(promptTokens: demand.maximumPromptTokens,
                         outputTokens: demand.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
+                    try quote.requireAssistant(configuration.tensorAssistant)
                     tensorQuote = quote
                 } else { tensorQuote = nil }
                 scope = try ClusterPlacementBatchScope(request: request!, lanes: lanes, tensorParallelQuote: tensorQuote)
             }
             let decision = try Self.decide(description: description, capability: capability,
                 localMemberID: configuration.memberID, localProfile: profile, peerProfile: peerProfile,
-                layout: layout, scope: scope, homeDirectory: paths.homeDirectory)
+                layout: layout, scope: scope, homeDirectory: paths.homeDirectory,
+                incumbentTensorShares: capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID
+                    && configuration.selectedGenerationMode == .tensorParallel ? (configuration.tensorShares ?? [1, 1]) : nil)
             guard let chosen = decision.result.chosen, let setup = decision.setup,
                   Self.accepts(chosen, requireNow: requireNow) else { continue }
             for peer in configuration.peers {
                 guard let bytes = setup.configurations[peer.id] else { return nil }
                 let after = try ClusterConfigurationCodec.decode(bytes, capability: capability,
                     capabilitySHA256: configuration.capabilitySHA256)
-                try ClusterAutomaticSetupHandoff.requireCompatible(peer.rank == 0 ? configuration : previousPeer, after)
+                try ClusterAutomaticSetupHandoff.requireCompatible(peer.rank == 0 ? configuration : previousPeer, after,
+                    runtimeModelID: capability.runtimeModelID)
             }
             try verified.requireUnchanged()
             return Snapshot(reference: reference, configuration: configuration, capability: capability, setup: setup,

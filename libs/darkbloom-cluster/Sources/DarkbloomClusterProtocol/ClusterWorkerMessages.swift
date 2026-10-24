@@ -268,15 +268,17 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
     /// text only, and then the record's bytes are those of a worker without it.
     public let media: String?
+    public let tensorAssistant: ClusterQwenTensorAssistantReady?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
-                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil) {
+                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil,
+                tensorAssistant: ClusterQwenTensorAssistantReady? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
         self.linkProbe = linkProbe
-        self.media = media
+        self.media = media; self.tensorAssistant = tensorAssistant
     }
 }
 

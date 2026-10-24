@@ -41,5 +41,7 @@
 
 Qwen3.8 27B tensor-parallel workers with more than one configured lane now default to event synchronization to avoid a fast-fence collective stall. Native batching and model capabilities remain enabled. Single-lane and other-model defaults, including GLM, remain unchanged; explicit local synchronization choices still take precedence.
 
+Authenticated Qwen3.8 27B TP owners now use the same fully priced request-owned execution at one lane and wider capacities. Automatic capacity changes preserve the tensor split, preventing capacity changes from switching the attention path or repartitioning arithmetic. The original exact-output acceptance gate remains required.
+
 - Forward an explicit local eager-fence-commit diagnostic through the installed tensor owner and native worker, reporting its canonical value at startup while preserving the default.
 - Report completed decode steps by actual batch width once per retired or failed scope, without request content or extra memory samples.

@@ -31,6 +31,9 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// Unequal share weights the plan accepts for this artifact (tried from
     /// `QwenTensorParallelPlan.candidateShares`; each part in whole units).
     let tensorParallelShareOptions: [[Int]]
+    /// The plan of each accepted unequal split, in `tensorParallelShareOptions`
+    /// order; what each rank of that split loads and reserves.
+    let tensorParallelSharePlans: [QwenTensorParallelPlan]
     var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
     var tensorParallelAdditionalResidentBytes: Int?
 
@@ -71,9 +74,11 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         } catch {
             tensorParallel = nil; tensorParallelRefusal = "\(error)"
         }
-        tensorParallelShareOptions = tensorParallel == nil ? [] : QwenTensorParallelPlan.candidateShares.filter { shares in
-            (try? QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)) != nil
+        let sharePlans = tensorParallel == nil ? [] : QwenTensorParallelPlan.candidateShares.compactMap { shares in
+            try? QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)
         }
+        tensorParallelSharePlans = sharePlans
+        tensorParallelShareOptions = sharePlans.map(\.shares)
     }
 
     var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {

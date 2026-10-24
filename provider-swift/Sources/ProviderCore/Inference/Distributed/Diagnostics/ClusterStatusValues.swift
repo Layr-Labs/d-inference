@@ -17,6 +17,12 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
     /// The saved setup's selected generation mode; the pipeline when it names none.
     public let generationMode: ClusterGenerationMode
     public let peers: [Peer]
+    /// The speculation the saved setup runs, derived exactly as the session
+    /// derives it (`DistributedInstalledSpeculation(configuration:capability:)`):
+    /// a phase-split head, or the Qwen27 tensor-parallel resident assistant
+    /// that no generation mode names.
+    public let speculationEnabled: Bool
+    public let speculationOffReason: String
 
     public struct Peer: Codable, Sendable, Equatable {
         public let id: String
@@ -38,6 +44,8 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         generationMode = configuration.selectedGenerationMode
         peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256,
             supportedGenerationModes: ClusterGenerationSelection.supportedModes(for: $0, capability: capability)) }
+        let speculation = DistributedInstalledSpeculation(configuration: configuration, capability: capability)
+        speculationEnabled = speculation.enabled; speculationOffReason = speculation.offReason
     }
 }
 

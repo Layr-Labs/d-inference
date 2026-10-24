@@ -373,6 +373,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 throw DistributedEngineError.unavailable
             }
         }
+        guard let assistantReadiness = pair.readiness else { throw DistributedEngineError.unavailable }
+        try ClusterQwenTensorAssistantReady.require(assistantReadiness.tensorAssistant,
+            policy: configuration.tensorAssistant, capacity: prepared.plan.batchLanes() ?? 1)
         // The link as this load measured it (every load over the cable measures it, pipeline or tensor parallel):
         // the next plan of this pair uses it, with no user step.
         if let probe = values.compactMap({ $0.readiness?.linkProbe }).first {

@@ -45,6 +45,14 @@ extension ClusterService {
         return lock.withLock { control.map { $0.leads && $0.mode(now: now) == .cluster } ?? false }
     }
 
+    /// The peer must retain its lease until a planned stop retires this Mac.
+    /// Both wire booleans come from one atomic local-record snapshot.
+    static func peerLeaseState(record: ClusterSetupRecord?, mode: ClusterControlNode.Mode,
+                               leads: Bool) -> (running: Bool, serving: Bool?) {
+        let serving = record?.stopDrain?.keepPeerRunning == true ? true : record?.leadership?.serving
+        return (leads && ClusterControlPartChoice.leaseSaysRunning(mode: mode, serving: serving == true), serving)
+    }
+
     // MARK: - This Mac's facts
 
     func localControlMember(pairing: ClusterSetupLinkExchange.Pairing, record: ClusterSetupRecord?) -> ClusterControlMember {
@@ -207,7 +215,7 @@ extension ClusterService {
                                                 aloneRefusal: node.members[node.localID]?.aloneRefusal)
             let logKey = ClusterControlWords.logKey(node.mode(now: now), line: line)
             // Members run their parts while the cluster runs and while the leader waits for a member inside the grace.
-            let running = node.leads && ClusterControlPartChoice.leaseSaysRunning(mode: node.mode(now: now), serving: record?.leadership?.serving ?? false)
+            let running = Self.peerLeaseState(record: record, mode: node.mode(now: now), leads: node.leads).running
             // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease (the
             // planner's verdicts, which members record; each Mac narrows its own by its own check, F14, and answers
             // with that, so a Mac's solo-server record never rewrites what the other Mac records).
@@ -238,6 +246,7 @@ extension ClusterService {
                 // effect could be undone by the new leader): offered again at the next tick. The command waits for the
                 // hand-over's exchange in turn, then finds this Mac no longer leads and is routed to the new leader.
                 guard target == pairing.peerMemberID, let held = ClusterControlCommandLock.acquire(seconds: 0) else { continue }
+                guard (try? store.readRecord().stopDrain) == nil else { held.release(); continue }
                 say("control: handing leadership to \(due.facts.first { $0.memberID == target }?.name ?? target) (term \(claim.term): \(claim.reason))")
                 sendLease(claim, running: false, facts: due.facts, alonePlan: due.alonePlan, to: target, pairing: pairing, say: say,
                           done: { held.release() })
@@ -268,8 +277,15 @@ extension ClusterService {
             defer { self.lock.withLock { self.leaseInFlight = false } }
             // The serving intent is read as the lease leaves (a hand-over holds the command lock, so no start or stop
             // changes it meanwhile): the Mac that accepts records it, and leads with it if control moves there.
-            let intent = (try? self.store.readRecord())?.leadership?.serving
-            let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts, alonePlan: alonePlan, serving: intent)
+            let record = try? self.store.readRecord()
+            let state = self.lock.withLock { () -> (running: Bool, serving: Bool?) in
+                guard let node = self.control else { return (false, nil) }
+                let state = Self.peerLeaseState(record: record, mode: node.mode(now: Self.monotonicSeconds()), leads: node.leads)
+                // A hand-over deliberately carries running=false. Ordinary
+                // renewal recomputes both fields, avoiding a stale tick value.
+                return (claim.leaderID == node.localID ? state.running : running, state.serving)
+            }
+            let command = ClusterServiceCommand(op: .lease, claim: claim, running: state.running, facts: facts, alonePlan: alonePlan, serving: state.serving)
             let answer: ClusterControlNode.LeaseAnswer
             do {
                 let body = try JSONEncoder().encode(command)

@@ -1952,3 +1952,27 @@ again after old-owner release. The normal measured mode comparison remains
 authoritative. The [configuration reference](../reference/configuration.md#native-automatic-batch-quote)
 defines the response and supported saved widths. Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`.
+
+### Qwen27 TP assistant setup and native diagnostics
+
+Run the normal `darkbloom cluster` setup for the catalog Qwen3.8 27B model. Its embedded assistant is discovered and fully priced under the existing `backend.mtp_mode` setting; no internal verification or inventory option is required in the normal flow. Verify the saved policy against both workers' actual READY before serving. Explicit `off` retains the ordinary target with its complete width-one quote. See [configuration](../reference/configuration.md#qwen27-tp-assistant-policy) and [native ownership](../architecture/inference.md#qwen27-tensor-parallel-resident-assistant).
+
+The internal worker still accepts diagnostic `--mtp-depth N` in 1...4 for exact keyed Qwen27 TP with paged KV. Installed launches also carry the pinned inventory and typed verification mode from the saved policy; these are implementation arguments, not user setup choices. Omitted policy preserves the legacy ordinary contract. Unsupported model, memory, backend, startup and conflicting speculative controls are refused before serving.
+
+Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` (`WorkerConfiguration`) and `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift` (`readAutomatic`).
+
+### `cluster stop`: failed retirement
+
+On a paired leader, `darkbloom cluster stop` waits for its owned part to retire
+before asking the member to stop and removing the local login service. A local
+retirement timeout or missing peer acknowledgement exits with status 1 and prints
+the pair's reason (a runtime failure, not a usage error, so no usage text follows),
+and retains the login service and saved stopped intent. Run the command again after the
+reported condition clears; retries repeat the drain/acknowledgement path. An
+already stopped local part does not require another model load.
+
+Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
+(`Cluster.Stop.finishStop`). See [planned stop ordering](../architecture/inference.md#planned-cluster-stop-ordering)
+for the bounds and process custody rules.
+
+Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.

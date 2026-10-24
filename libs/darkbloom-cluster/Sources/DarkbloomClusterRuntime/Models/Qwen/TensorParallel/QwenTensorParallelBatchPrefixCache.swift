@@ -2,7 +2,12 @@ import Foundation
 import MLX
 
 /// Immutable compact roots; no snapshot refers to mutable native page storage.
-struct QwenTensorParallelBatchPrefixState {
+protocol QwenTensorParallelPrefixSnapshot {
+    var committedTokens: Int { get }
+    var allocatedBytes: Int { get }
+}
+
+struct QwenTensorParallelBatchPrefixState: QwenTensorParallelPrefixSnapshot {
     let committedTokens: Int
     let attention: [Int: (keys: MLXArray, values: MLXArray)]
     let recurrent: [Int: (conv: MLXArray, ssm: MLXArray)]
@@ -13,11 +18,13 @@ struct QwenTensorParallelBatchPrefixState {
 /// Keys bind the loaded shard agreement, backend, prompt grid and authenticated
 /// media identity. A local hit is only an offer: restoration requires a sealed
 /// two-rank vote. Insertion happens after bilateral clean native retirement.
-final class QwenTensorParallelBatchPrefixCache {
-    static let maximumEntries = 32
+typealias QwenTensorParallelBatchPrefixCache = QwenTensorParallelSnapshotCache<QwenTensorParallelBatchPrefixState>
+
+final class QwenTensorParallelSnapshotCache<Snapshot: QwenTensorParallelPrefixSnapshot> {
+    static var maximumEntries: Int { 32 }
     let enabled: Bool
     let budgetBytes: Int
-    private struct Entry { let state: QwenTensorParallelBatchPrefixState; var lastUse: UInt64 }
+    private struct Entry { let state: Snapshot; var lastUse: UInt64 }
     private var entries: [String: Entry] = [:]
     private var clock: UInt64 = 0
     private(set) var bytesInUse = 0
@@ -43,14 +50,14 @@ final class QwenTensorParallelBatchPrefixCache {
         }
         return zip(candidates, votes).filter { $0.1 == 2 }.map(\.0).max() ?? 0
     }
-    func restore(key: String, frontier: Int) throws -> QwenTensorParallelBatchPrefixState {
+    func restore(key: String, frontier: Int) throws -> Snapshot {
         guard enabled, var entry = entries[key], entry.state.committedTokens == frontier else {
             throw ProbeError("Qwen TP mutually held prefix disappeared")
         }
         clock &+= 1; entry.lastUse = clock; entries[key] = entry
         return entry.state
     }
-    @discardableResult func insert(key: String, state: QwenTensorParallelBatchPrefixState) -> Bool {
+    @discardableResult func insert(key: String, state: Snapshot) -> Bool {
         guard enabled, state.allocatedBytes > 0, state.allocatedBytes <= budgetBytes else { return false }
         if let old = entries.removeValue(forKey: key) { bytesInUse -= old.state.allocatedBytes }
         while entries.count >= Self.maximumEntries || bytesInUse > budgetBytes - state.allocatedBytes {

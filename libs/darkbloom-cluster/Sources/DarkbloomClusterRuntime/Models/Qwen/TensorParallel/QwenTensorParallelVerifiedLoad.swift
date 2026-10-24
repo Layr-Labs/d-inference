@@ -37,9 +37,11 @@ enum QwenTensorParallelVerifiedLoad {
     static func load(_ admission: QwenResidentAdmission, rank: Int, shares: [Int],
                      reduction: QwenTensorParallelReduction, partialDType: DType = .float32, includeVision: Bool = false,
                      requestAllowance: ((QwenRegisteredDenseModelProfile, QwenTensorParallelPlan) throws -> Int)? = nil,
+                     additionalResidentBytes: Int = 0,
                      check: () throws -> Void) throws
         -> (model: QwenTensorParallelModel, receipt: QwenTensorParallelShardReceipt, profile: QwenRegisteredDenseModelProfile,
             visionInventory: QwenStageVisionInventory?, vision: QwenStageVision?) {
+        guard additionalResidentBytes >= 0 else { throw ProbeError("Negative tensor-parallel resident supplement") }
         let started = DispatchTime.now().uptimeNanoseconds
         try admission.definition.arithmetic.requireNativeRoute()
         try requireSupportedProduct(admission.definition, shares: shares)
@@ -84,7 +86,7 @@ enum QwenTensorParallelVerifiedLoad {
                 }
             }
             let gate = try QwenTensorParallelLoadGate(entries: kept.map(\.entry), shardBounds: kept.map(\.bytes),
-                additionalResidentBytes: QwenLongPrefillCheckedBytes.sum([futureVision, futureRequest]))
+                additionalResidentBytes: QwenLongPrefillCheckedBytes.sum([futureVision, futureRequest, additionalResidentBytes]))
             try local.payload.begin(kept.map(\.entry), gate: gate)
             for (entry, _) in kept {
                 try autoreleasepool {
@@ -110,7 +112,7 @@ enum QwenTensorParallelVerifiedLoad {
         let vision: QwenStageVision?
         if rank == 0, let visionInventory {
             vision = try QwenStageVision(source: local, inventory: visionInventory,
-                remainingResidentAllowanceBytes: futureRequest, check: check)
+                remainingResidentAllowanceBytes: QwenLongPrefillCheckedBytes.sum([futureRequest, additionalResidentBytes]), check: check)
         } else { vision = nil }
         try check()
         return (model, .init(verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,

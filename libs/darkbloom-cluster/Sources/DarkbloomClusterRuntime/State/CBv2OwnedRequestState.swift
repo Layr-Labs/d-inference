@@ -22,6 +22,9 @@ final class CBv2OwnedRequestState {
     /// Width of the speculative window that is open, if one is, and how far
     /// its two-phase evaluation has gone.
     private var windowTokens: Int?
+    /// An open batch must be confirmed and settled by its exact ordered cohort.
+    /// IDs avoid retaining request objects through their own transaction state.
+    private var windowCohort: [ObjectIdentifier]?
     private enum WindowPhase { case built, evaluated, settled }
     private var windowPhase: WindowPhase?
     private(set) var committedTokens = 0
@@ -158,7 +161,7 @@ final class CBv2OwnedRequestState {
     }
 
     func requireOpen() throws {
-        guard !isClosed, !isFailed, evaluation == nil, windowPhase == nil else {
+        guard !isClosed, !isFailed, evaluation == nil, windowPhase == nil, windowCohort == nil else {
             throw ProbeError("CBv2 state is retired, failed or has unfinished work")
         }
     }
@@ -265,6 +268,142 @@ final class CBv2OwnedRequestState {
         }
     }
 
+    /// Build one captured rectangle over distinct requests of the same host.
+    /// No row commits here. The caller evaluates all returned roots before
+    /// confirming, then settles each row's independently accepted prefix.
+    static func beginBatchWindow(_ states: [CBv2OwnedRequestState], tokenCount: Int,
+        forward: ([any CBv2AttendingLayerCache], [CBv2RecurrentStateEvaluation]) throws -> [MLXArray]
+    ) throws -> (outputs: [MLXArray], roots: [MLXArray]) {
+        do {
+            let host = try requireWindowHost(states)
+            for state in states {
+                try state.requireOpen()
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched speculative window exceeds a request's admitted capacity")
+                }
+            }
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            for state in states {
+                state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
+            }
+            let outputs = try buildingWindow(bank: host.bank, pagedHost: states[0].pagedHost) {
+                try forward(caches, states.map { $0.evaluation! })
+            }
+            var roots: [MLXArray] = []
+            for state in states {
+                roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
+                guard state.evaluation!.isCaptured else {
+                    throw ProbeError("CBv2 batched speculative window omitted a row's recurrent capture")
+                }
+            }
+            roots += caches.flatMap { ($0 as! any KVCache).innerState() }
+            let cohort = states.map { ObjectIdentifier($0) }
+            for state in states {
+                state.windowTokens = tokenCount; state.windowPhase = .built; state.windowCohort = cohort
+            }
+            return (outputs, roots)
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    static func confirmBatchWindow(_ states: [CBv2OwnedRequestState], check: () throws -> Void) throws {
+        do {
+            let host = try requireWindowHost(states)
+            try requireWindowCohort(states)
+            try check()
+            let frontiers = try states.map { state -> Int32 in
+                guard let count = state.windowTokens, state.windowPhase == .built else {
+                    throw ProbeError("CBv2 batched speculative row has no built window")
+                }
+                return Int32(state.committedTokens + count)
+            }
+            for (index, cache) in host.caches.enumerated() {
+                guard cache.rows.count == states.count, host.owns(cache, at: index),
+                      cache.positionOffsets.shape == [states.count], cache.positionOffsets.dtype == .int32,
+                      frontier(of: cache, deviceRead: true) == frontiers else {
+                    throw ProbeError("CBv2 batched speculative window changed its shared cache binding")
+                }
+            }
+            for (lane, state) in states.enumerated() {
+                // Captured recurrent roots can contain all window positions;
+                // their ordinary committed shapes apply only after settlement.
+                try state.validateBatchAttentionRow(lane: lane, after: Int(frontiers[lane]))
+                try state.confirmOwnedWindow(check: check)
+            }
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    /// Recurrent captures and KV rollbacks stay request-local. Rebind the
+    /// shared bank once after all rows settle, and retain its final offsets
+    /// with every row's settlement roots for the caller's evaluation.
+    static func settleBatchWindow(_ states: [CBv2OwnedRequestState], keeping kept: [Int]) throws -> [MLXArray] {
+        do {
+            let host = try requireWindowHost(states)
+            try requireWindowCohort(states)
+            guard kept.count == states.count else { throw ProbeError("CBv2 batch settlement lost a row") }
+            for (state, count) in zip(states, kept) {
+                guard let total = state.windowTokens, state.windowPhase == .evaluated,
+                      (1...total).contains(count) else {
+                    throw ProbeError("CBv2 batch settlement keeps an invalid request prefix")
+                }
+            }
+            var roots: [MLXArray] = []
+            for (state, count) in zip(states, kept) { roots += try state.settleOwnedWindow(keeping: count) }
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            roots += caches.map(\.positionOffsets)
+            return roots
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    static func confirmBatchSettled(_ states: [CBv2OwnedRequestState], check: () throws -> Void) throws {
+        do {
+            let host = try requireWindowHost(states)
+            try requireWindowCohort(states)
+            for state in states { try state.confirmOwnedSettlement(check: check) }
+            // Per-row validation temporarily binds each row. Restore the
+            // current cohort after all checked commits, before any next work.
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            let frontiers = states.map { Int32($0.committedTokens) }
+            for (index, cache) in caches.enumerated() {
+                guard host.owns(cache, at: index), cache.rows.count == states.count,
+                      frontier(of: cache, deviceRead: !states[0].pagedHost) == frontiers else {
+                    throw ProbeError("CBv2 settled batch lost its exact row frontiers")
+                }
+            }
+            for (lane, state) in states.enumerated() {
+                try state.validateBatchRow(lane: lane, after: state.committedTokens)
+            }
+            states.forEach { $0.windowCohort = nil }
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    private static func requireWindowHost(_ states: [CBv2OwnedRequestState]) throws -> CBv2StageKVHost {
+        guard let host = states.first?.geometry.host, (1...8).contains(states.count), states.count <= host.lanes,
+              states.allSatisfy({ $0.geometry.host === host && !$0.isClosed && !$0.isFailed }),
+              Set(states.map { ObjectIdentifier($0) }).count == states.count else {
+            throw ProbeError("A captured batch needs distinct live requests of one stage KV host")
+        }
+        return host
+    }
+
+    private static func requireWindowCohort(_ states: [CBv2OwnedRequestState]) throws {
+        let cohort = states.map { ObjectIdentifier($0) }
+        guard states.allSatisfy({ $0.windowCohort == cohort }) else {
+            throw ProbeError("CBv2 captured batch participants or order changed before settlement")
+        }
+    }
+
     /// Builds a speculative window's forward. On a paged host every layer
     /// cache attends the `1 + k` window one query column at a time (the
     /// one-token decode kernel per column), as the single-Mac engine's MTP
@@ -287,6 +426,11 @@ final class CBv2OwnedRequestState {
 
     /// After the caller evaluated the roots `beginWindow` returned.
     func confirmWindow(check: () throws -> Void) throws {
+        try requireIndependentWindow()
+        try confirmOwnedWindow(check: check)
+    }
+
+    private func confirmOwnedWindow(check: () throws -> Void) throws {
         do {
             guard !isClosed, !isFailed, let total = windowTokens, windowPhase == .built,
                   evaluation != nil, evaluationWasStaged else {
@@ -311,6 +455,11 @@ final class CBv2OwnedRequestState {
     /// rolled back by the remainder. Returns the roots to evaluate before
     /// `confirmSettled`.
     func settleWindow(keeping kept: Int) throws -> [MLXArray] {
+        try requireIndependentWindow()
+        return try settleOwnedWindow(keeping: kept)
+    }
+
+    private func settleOwnedWindow(keeping kept: Int) throws -> [MLXArray] {
         do {
             guard !isClosed, !isFailed, let evaluation, evaluationWasStaged,
                   let total = windowTokens, windowPhase == .evaluated, (1...total).contains(kept) else {
@@ -345,6 +494,11 @@ final class CBv2OwnedRequestState {
 
     /// After the caller evaluated the roots `settleWindow` returned.
     func confirmSettled(check: () throws -> Void) throws {
+        try requireIndependentWindow()
+        try confirmOwnedSettlement(check: check)
+    }
+
+    private func confirmOwnedSettlement(check: () throws -> Void) throws {
         do {
             guard !isClosed, !isFailed, windowPhase == .settled, evaluation == nil else {
                 throw ProbeError("CBv2 speculative window was not settled")
@@ -360,6 +514,13 @@ final class CBv2OwnedRequestState {
         } catch {
             isFailed = true
             throw error
+        }
+    }
+
+    private func requireIndependentWindow() throws {
+        guard windowCohort == nil else {
+            isFailed = true
+            throw ProbeError("A captured batch row cannot be finalized independently")
         }
     }
 
@@ -432,7 +593,7 @@ final class CBv2OwnedRequestState {
         if let evaluation, evaluationWasStaged {
             do { try evaluation.rollback() } catch { cleanupError = error }
         }
-        evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
+        evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil; windowCohort = nil
         if PagedLayerCache.engineTrace, pagedHost {
             // Diagnosis only (cumulative per host cache): which paged paths served the request.
             let paged: [PagedLayerCache] = geometry.caches.compactMap { $0 as? PagedLayerCache }
@@ -540,20 +701,24 @@ extension CBv2OwnedRequestState {
     /// One request's rows after a batched frame: each at the new frontier and
     /// bound at its own lane of every cache.
     private func validateBatchRow(lane: Int, after count: Int) throws {
-        for (index, optionalRow) in rows.enumerated() {
-            let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
-            let cache = geometry.caches[index]
-            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
-                  cache.rows.indices.contains(lane), cache.rows[lane] === row else {
-                throw ProbeError("CBv2 batched KV ownership or token frontier differs")
-            }
-        }
+        try validateBatchAttentionRow(lane: lane, after: count)
         for layer in geometry.recurrent.layers {
             guard let state = recurrent.state(modelLayerIndex: layer.modelLayerIndex),
                 let conv = state.conv, let ssm = state.ssm,
                 conv.shape == layer.convShape, conv.dtype == layer.convDType,
                 ssm.shape == layer.ssmShape, ssm.dtype == layer.ssmDType else {
                 throw ProbeError("CBv2 batched conv/SSM shape or dtype differs from its local contract")
+            }
+        }
+    }
+
+    private func validateBatchAttentionRow(lane: Int, after count: Int) throws {
+        for (index, optionalRow) in rows.enumerated() {
+            let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
+            let cache = geometry.caches[index]
+            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
+                  cache.rows.indices.contains(lane), cache.rows[lane] === row else {
+                throw ProbeError("CBv2 batched KV ownership or token frontier differs")
             }
         }
     }

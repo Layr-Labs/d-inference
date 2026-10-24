@@ -38,6 +38,9 @@ public struct ClusterPlacementPolicy: Sendable {
     /// rank 0's Mac, so a Mac that cannot reach the other one cannot lead.
     /// Each Mac alone is still evaluated, and nothing else changes.
     public var leader: String?
+    /// A capacity-only replacement preserves the current TP arithmetic partition.
+    /// This restricts candidates; all current LOAD/request memory gates still apply.
+    public var requiredTensorShares: [Int]?
     /// A request longer than the layout's planned one (its maximum prompt
     /// plus output), up to this context: the family's own largest, which
     /// its ranks admit at load when memory allows. Nil plans within the
@@ -47,9 +50,15 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
-    /// Only a validated batch scope sets this complete native TP LOAD floor.
-    /// Pipeline accounting and all singleton/default families remain unchanged.
+    /// A validated concurrent scope or explicit singleton assistant quote
+    /// sets this complete native TP LOAD floor. Nil preserves existing families.
     public internal(set) var tensorParallelBatchQuote: ClusterPlacementTensorBatchQuote?
+    /// For a request-owned singleton whose capacity changes keep its tensor
+    /// shares: the complete quote of the widest capacity it may widen to.
+    /// Splits whose replacement could load beside the running owner on every
+    /// rank now are preferred; when none can, every split stays. Nil keeps
+    /// the existing speed-only share choice.
+    public var tensorParallelWideningQuote: ClusterPlacementTensorBatchQuote?
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -313,6 +322,26 @@ public enum ClusterPlacementPlanner {
                             link: ClusterLinkCosts = .unmeasured) throws -> ClusterPlacementResult {
         try layout.validate()
         try policy.tensorParallelBatchQuote?.validate(layout: layout)
+        if let widening = policy.tensorParallelWideningQuote {
+            try widening.validate(layout: layout)
+            guard let current = policy.tensorParallelBatchQuote, current.lanes < widening.lanes,
+                  current.request == widening.request, current.assistant?.policy == widening.assistant?.policy else {
+                throw ClusterPlacementError("A widening quote needs the same request and assistant as a narrower tensor quote")
+            }
+        }
+        if let shares = policy.requiredTensorShares {
+            guard devices.count == 2, shares.count == 2, shares.allSatisfy({ (1...64).contains($0) }),
+                  policy.modes == [.tensorParallel], policy.leader != nil,
+                  Set(shares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(shares) else {
+                throw ClusterPlacementError("A retained tensor partition needs its exact ordered, supported two-rank shares")
+            }
+        }
+        if policy.tensorParallelBatchQuote?.assistant != nil {
+            guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
+                  policy.forcedMode == nil, !policy.handOffModes else {
+                throw ClusterPlacementError("Tensor assistant quotation requires its exact two-rank tensor placement")
+            }
+        }
         guard devices.count >= 2, Set(devices.map(\.label)).count == devices.count,
               devices.allSatisfy({ !$0.label.isEmpty && $0.label.utf8.count <= 64 }) else {
             throw ClusterPlacementError("Placement needs two or more devices with distinct labels")
@@ -560,6 +589,12 @@ public enum ClusterPlacementPlanner {
                 throw ClusterPlacementError("A tensor-parallel placement needs the layout's tensor-parallel facts for this many ranks and a measured reduction")
             }
         }
+        if let retained = policy.requiredTensorShares {
+            guard mode == .tensorParallel, devices.first?.label == policy.leader,
+                  (tensorShares ?? [1, 1]) == retained else {
+                throw ClusterPlacementError("Explicit evaluation changed the retained tensor partition")
+            }
+        }
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
@@ -661,7 +696,7 @@ public enum ClusterPlacementPlanner {
                 guard tensor || pipeline else { continue }
                 let sets = pipeline ? cutSets(available, ranges - 1) : []
                 let permutations = orders(ranges)
-                let shares = tensor ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
+                let shares = tensor && policy.requiredTensorShares == nil ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
                     $0.count == ranges && Set($0).count > 1
                 } : []
                 let perOrder = sets.count * layerModes.count + (tensor ? 1 + shares.count : 0)
@@ -673,10 +708,14 @@ public enum ClusterPlacementPlanner {
                     // TP has no layer cuts. Enumerate it independently, including
                     // when this model has no admitted or structural pipeline cut.
                     if tensor {
-                        result.append(bestTensorShares(order: order, schedule: schedule))
+                        var splits: [ClusterPlacementCandidate] = []
+                        if let weights = policy.requiredTensorShares {
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                        } else { splits.append(bestTensorShares(order: order, schedule: schedule)) }
                         for weights in shares {
-                            result.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
                         }
+                        result += keepingWidenable(splits)
                     }
                     for set in sets {
                         for mode in layerModes {
@@ -764,6 +803,30 @@ public enum ClusterPlacementPlanner {
             return (need, held, largest)
         }
 
+        /// Retained shares bind every later capacity of a request-owned owner.
+        /// The replacement is previewed while the running owner still serves
+        /// (`DistributedAutomaticBatchFactory` credits nothing back), so a
+        /// split is widenable when, on every rank, that owner's weights and
+        /// its own request reservation, plus the widest replacement's need
+        /// (this need grown by that rank's reservation difference under this
+        /// split), fit what that Mac admits now. The live replacement gate
+        /// stays authoritative; this only steers which split serves first.
+        func keepingWidenable(_ splits: [ClusterPlacementCandidate]) -> [ClusterPlacementCandidate] {
+            guard let widening = policy.tensorParallelWideningQuote, let current = policy.tensorParallelBatchQuote else { return splits }
+            func reserved(_ quote: ClusterPlacementTensorBatchQuote, rank: Int, shares: [Int]?) -> Int {
+                quote.rankReservedBytes(rank: rank, shares: shares) ?? quote.allowance.reservedBytes
+            }
+            let widenable = splits.filter { split in
+                split.ranks.enumerated().allSatisfy { index, rank in
+                    let serving = reserved(current, rank: index, shares: split.tensorShares)
+                    let growth = max(0, reserved(widening, rank: index, shares: split.tensorShares) - serving)
+                    return rank.fit == .now
+                        && rank.weightsBytes + serving + rank.needBytes + growth <= rank.admissibleNowBytes
+                }
+            }
+            return widenable.isEmpty ? splits : widenable
+        }
+
         /// The tensor-parallel candidate of this order at its best shares: equal,
         /// or, when the family's plan hands out `shareUnits` groups and two ranks
         /// run it, every split in whole groups, the best by the planner's own order.
@@ -786,7 +849,7 @@ public enum ClusterPlacementPlanner {
         /// than the family's every-rank charge.
         func tensorRequirement(rank: Int, of count: Int, device: ClusterPlacementDevice, own: ClusterModelLayout.Range,
                                mode: ClusterGenerationMode, schedule: ClusterPrefillSchedule,
-                               fraction: Double? = nil) -> ClusterPlacementRank {
+                               fraction: Double? = nil, weights: [Int]? = nil) -> ClusterPlacementRank {
             let tp = layout.tensorParallel!, memory = device.profile.memory, count = max(1, count)
             func shareOf(divided: Int, replicated: Int) -> Int {
                 fraction.map { tp.shareBytes(divided: divided, replicated: replicated, fraction: $0) }
@@ -813,9 +876,10 @@ public enum ClusterPlacementPlanner {
             // Resident bytes are additive outside the request maximum. With
             // no extra tensor geometry, conservatively allow two host copies
             // and one native allocation as large as the complete supplement.
-            let load = (need: textLoad.need + 3 * additional,
-                        held: textLoad.held + additional,
-                        largest: max(textLoad.largest, additional))
+            let assistant = policy.tensorParallelBatchQuote?.assistant
+            let load = (need: textLoad.need + 3 * additional + (assistant?.loadBytes ?? 0),
+                        held: textLoad.held + additional + (assistant?.residentBytes ?? 0),
+                        largest: max(textLoad.largest, additional, assistant?.largestAllocationBytes ?? 0))
             let divides = tp.family.stateDividesByHeads
             func share(_ bytes: Int) -> Int {
                 guard divides else { return bytes }
@@ -828,7 +892,15 @@ public enum ClusterPlacementPlanner {
             let transient = pipelined
                 ? max(own.transientBytes(chunk: chunk, context: context), share(whole.transientBytes(chunk: chunk, context: context)))
                 : share(whole.transientBytes(chunk: chunk, context: context))
-            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
+            // A rank-priced native quote is what this rank reserves under this
+            // split: its own heads, rows and input columns. The whole-model
+            // every-rank charge then gives way to this rank's share of every
+            // lane. Only the equal and integer-weighted splits are quoted.
+            let quote = policy.tensorParallelBatchQuote
+            let rankReserved = mode == .tensorParallel && (weights != nil || fraction == nil)
+                ? quote?.rankReservedBytes(rank: rank, shares: weights) : nil
+            let state = rankReserved != nil ? ownState * (quote?.lanes ?? 1)
+                : max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = pipelined ? own.requestWorkBytes + share(whole.requestWorkBytes - own.requestWorkBytes) : share(whole.requestWorkBytes)
             var extra = 0
             if pipelined {
@@ -841,16 +913,19 @@ public enum ClusterPlacementPlanner {
             // The native quote already includes its full state, workspace and
             // collective buffers. Keep the larger complete reservation, then
             // add loading headroom once; adding both quotes double counts KV.
-            let nativeFloor = (policy.tensorParallelBatchQuote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
+            let nativeFloor = rankReserved ?? (quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             // Qwen27 batch LOAD reserves its complete future request while
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
             // A missing batch quote preserves all existing family behavior.
-            let batchLoadReservation = policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? 0
             let loadPeak = load.need + batchLoadReservation
-            let allocatorHeld = load.held + batchLoadReservation
+            // Native shard LOAD keeps the whole future head constructor/read
+            // charge live, not merely its final replicated parameter arrays.
+            let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
+            let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
@@ -1043,7 +1118,7 @@ public enum ClusterPlacementPlanner {
             let ranks = ranges.indices.map { index in
                 mode.usesTensorParallelDecode && layout.tensorParallel != nil
                     ? tensorRequirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
-                        mode: mode, schedule: schedule, fraction: fractions?[index])
+                        mode: mode, schedule: schedule, fraction: fractions?[index], weights: weighted)
                     : requirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
                         earlier: Array(ranges[..<index]), mode: mode, schedule: schedule)
             }

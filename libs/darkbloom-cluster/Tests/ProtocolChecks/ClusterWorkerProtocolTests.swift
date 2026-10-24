@@ -59,7 +59,49 @@ struct ClusterWorkerProtocolTests {
         try logprobs()
         try nativeContext()
         try mtpTelemetry()
-        print("{\"passed\":true,\"groups\":17,\"modelExecution\":false,\"localPipeIO\":true}")
+        try tensorAssistantReadiness()
+        print("{\"passed\":true,\"groups\":18,\"modelExecution\":false,\"localPipeIO\":true}")
+    }
+
+    static func tensorAssistantReadiness() throws {
+        let policy = try ClusterQwenTensorAssistantPolicy(depth: 4, inventorySHA256: String(repeating: "f", count: 64))
+        let assistant = try ClusterQwenTensorAssistantReady(policy: policy, capacity: 4)
+        let id = ClusterWorkerIdentity(membershipEpoch: epoch, modelID: ClusterQwenTensorAssistantPolicy.runtimeModelID,
+            artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
+        let p = ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248320,
+            maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536)
+        let plane = ClusterWorkerDataPlane(protection: ClusterWorkerDataPlane.encrypted, peerVerified: true,
+            transcriptSHA256: String(repeating: "a", count: 64), edgeID: String(repeating: "b", count: 32))
+        func frame(_ value: ClusterWorkerReady) -> ClusterWorkerEventFrame {
+            .init(membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(value))
+        }
+        let value = ClusterWorkerReady(identity: id, rank: 0, profile: p,
+            executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024,
+            dataPlane: plane, media: ClusterQwenMedia.contract, tensorAssistant: assistant)
+        let encoded = try ClusterWorkerCodec.encode(frame(value))
+        try check(try ClusterWorkerCodec.decodeEvent(encoded) == frame(value), "Resident tensor assistant roundtrip")
+        try check(!String(decoding: try ClusterWorkerCodec.encode(frame(ready)), as: UTF8.self).contains("tensorAssistant"),
+            "Legacy READY must omit the absent assistant")
+        try ClusterQwenTensorAssistantReady.require(assistant, policy: policy, capacity: 4)
+        try ClusterQwenTensorAssistantReady.require(nil, policy: nil, capacity: 1)
+        try refuses { try ClusterQwenTensorAssistantReady.require(nil, policy: policy, capacity: 4) }
+        try refuses { try ClusterQwenTensorAssistantReady.require(assistant, policy: nil, capacity: 4) }
+        try refuses { try ClusterQwenTensorAssistantReady.require(assistant, policy: policy, capacity: 2) }
+        for capacity in [0, 9] {
+            try refuses { _ = try ClusterQwenTensorAssistantReady(policy: policy, capacity: capacity) }
+        }
+        for (foreign, keyed, media) in [(true, true, true), (false, false, true), (false, true, false)] {
+            let bad = ClusterWorkerReady(identity: foreign ? identity : id, rank: 0, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024,
+                dataPlane: keyed ? plane : nil, media: media ? ClusterQwenMedia.contract : nil, tensorAssistant: assistant)
+            try refuses { _ = try ClusterWorkerCodec.encode(frame(bad)) }
+        }
+        let text = String(decoding: encoded, as: UTF8.self)
+        for replacement in ["\"capacity\":true", "\"capacity\":4.0", "\"capacity\":4,\"capacity\":4", "\"capacity\":4,\"unknown\":1"] {
+            let bad = text.replacingOccurrences(of: "\"capacity\":4", with: replacement)
+            try check(bad != text, "Assistant malformed fixture replacement occurred")
+            try refuses { _ = try ClusterWorkerCodec.decodeEvent(Data(bad.utf8)) }
+        }
     }
 
     /// Both ranks must accept and retain the requested 32K output budget.

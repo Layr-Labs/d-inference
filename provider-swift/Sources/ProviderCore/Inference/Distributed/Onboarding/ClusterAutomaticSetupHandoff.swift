@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterPlacement
 import DarkbloomClusterProcess
 import Darwin
 import DarkbloomClusterRemote
@@ -19,10 +20,21 @@ struct ClusterAutomaticSetupHandoff: Codable, Equatable, Sendable {
 
     static func file(in directory: URL) -> URL { directory.appendingPathComponent("automatic-setup-handoff.json") }
 
-    static func requireCompatible(_ before: ClusterConfiguration, _ after: ClusterConfiguration) throws {
+    static func requireCompatible(_ before: ClusterConfiguration, _ after: ClusterConfiguration,
+                                  runtimeModelID: String? = nil) throws {
         guard before.nativeMember == nil, after.nativeMember == nil,
               before.batchLanes != nil || after.batchLanes != nil else {
             throw ClusterConfigurationError.invalid("Automatic replacement requires an ordinary batch-capable setup")
+        }
+        guard before.tensorAssistant == after.tensorAssistant else {
+            throw ClusterConfigurationError.invalid("Automatic replacement changed the resident tensor assistant policy")
+        }
+        if runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID,
+           before.selectedGenerationMode == .tensorParallel {
+            guard after.selectedGenerationMode == .tensorParallel,
+                  (before.tensorShares ?? [1, 1]) == (after.tensorShares ?? [1, 1]) else {
+                throw ClusterConfigurationError.invalid("A Qwen27 capacity replacement changed its tensor arithmetic partition")
+            }
         }
         func identity(_ configuration: ClusterConfiguration) throws -> Data {
             var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as! [String: Any]
@@ -114,7 +126,7 @@ struct ClusterAutomaticSetupHandoff: Codable, Equatable, Sendable {
             let old = try store.load(reference: record.previous), new = try store.load(reference: record.replacement)
             guard old.configuration.role == .leader, new.configuration.role == .leader,
                   old.capability == new.capability else { return .reject }
-            try requireCompatible(old.configuration, new.configuration)
+            try requireCompatible(old.configuration, new.configuration, runtimeModelID: old.capability.runtimeModelID)
             switch try ClusterDeviceLeaseRecovery.inspect(directoryURL: paths.deviceDirectory) {
             case .absentOrEmpty:
                 guard forward else { return .pending }

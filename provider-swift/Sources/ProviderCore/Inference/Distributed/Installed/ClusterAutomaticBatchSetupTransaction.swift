@@ -41,7 +41,7 @@ extension ClusterAutomaticBatchSetup {
         // A reply can be lost after adoption. Repeating exactly the selected
         // canonical setup is idempotent; another later setup is never overwritten.
         if previous.sha256 == targetSHA256 { return previous }
-        try ClusterAutomaticSetupHandoff.requireCompatible(saved.configuration, after)
+        try ClusterAutomaticSetupHandoff.requireCompatible(saved.configuration, after, runtimeModelID: saved.capability.runtimeModelID)
         try ClusterConfigurationFiles.ensureDirectory(directory, create: true, privateMode: true)
         let input = directory.appendingPathComponent("batch-" + UUID().uuidString.lowercased() + ".json")
         try ClusterConfigurationFiles.update(input, maximum: ClusterConfigurationCodec.maximumBytes) { _ in configuration }

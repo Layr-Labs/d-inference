@@ -35,6 +35,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// a remote memory advertisement. Both installed owners use the same
     /// pinned value, and still run their own native memory/admission gates.
     public private(set) var batchLanes: Int? = nil
+    /// A fully priced resident assistant, identical on both members. Omission
+    /// preserves existing setups and does not activate speculation.
+    public private(set) var tensorAssistant: ClusterQwenTensorAssistantPolicy? = nil
     public let chunkTokens: Int
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
@@ -143,6 +146,14 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
             try require([2, 4, 8].contains(batchLanes) && (pipeline || tensor)
                 && selectedPrefillSchedule == .serial && !capability.hasPrivateImages,
                 "A planned batch width requires a supported pipeline or exact Qwen27 tensor mode with serial prefill")
+        }
+        if let tensorAssistant {
+            try tensorAssistant.validate()
+            try require(capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID
+                && capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
+                && selectedGenerationMode == .tensorParallel && selectedPrefillSchedule == .serial
+                && !capability.hasPrivateImages && nativeMember == nil,
+                "A tensor assistant requires exact Qwen27 TP, serial prefill and a local cluster setup")
         }
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {

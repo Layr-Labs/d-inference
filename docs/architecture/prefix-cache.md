@@ -996,3 +996,9 @@ Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Tens
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
 (`open`, `confirmedRetirement`). Tiny fixtures do not qualify full-artifact
 warm-prefix correctness, media parity, RDMA or useful speed.
+
+### Qwen27 TP assistant prefix ownership
+
+The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.

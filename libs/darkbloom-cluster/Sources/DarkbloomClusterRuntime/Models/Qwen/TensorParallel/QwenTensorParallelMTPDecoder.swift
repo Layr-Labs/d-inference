@@ -1,0 +1,387 @@
+import DarkbloomClusterProtocol
+import Foundation
+import MLX
+import MLXLLM
+import MLXLMCommon
+
+/// One text request's assistant and target state. Both ranks execute each
+/// announced round together; only rank0 samples and publishes. The enclosing
+/// owner checks request cancellation at shared round boundaries, never halfway
+/// through a collective, and retains admission until checked retirement.
+final class QwenTensorParallelMTPDecoder {
+    struct Emitted {
+        let tokens: [Int]
+        let logprobs: [ClusterWorkerTokenLogprobs]
+        let speculative: Bool
+    }
+    private let target: any QwenTensorParallelMTPTarget
+    private let head: QwenTensorParallelMTPHead
+    private let group: any QwenTensorParallelReduction
+    private let state: any CBv2MTPRequestState
+    private let depth: Int
+    private let stops: Set<Int>
+    private let captureFrontier: Int
+    private let captureLimitBytes: Int
+    private let allocationBound: (Int) throws -> Int
+    private var captured: QwenTensorParallelMTPPrefixState?
+    private var promptFrontier: MLXArray?
+    private var carry: (token: Int, hidden: MLXArray)?
+    private var selectedCount = 0
+    private(set) var retired = false
+    private var failed = false
+    private(set) var statistics: QwenMTPStatistics
+    private var request: QwenLayerStageGenerationRequest { target.request }
+
+    init(target: any QwenTensorParallelMTPTarget, head: QwenTensorParallelMTPHead,
+         group: any QwenTensorParallelReduction, depth: Int,
+         restored: QwenTensorParallelMTPPrefixState? = nil, captureFrontier: Int = 0,
+         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
+        guard (1...4).contains(depth), head.assistant.maximumDraftTokens.map({ depth <= $0 }) == true,
+              head.assistant.maximumSpeculativeBatch == 1,
+              case .shard(let rank, let size) = target.model.role,
+              rank == group.rank, size == group.size, size == 2,
+              head.projection.vocabulary == target.model.vocabularyRange,
+              head.projection.vocabularySize == target.model.plan.vocabularySize,
+              target.request.qwenMedia == nil,
+              target.request.reusedPrefixTokens == (restored?.committedTokens ?? 0),
+              captureLimitBytes >= 0,
+              captureFrontier == 0 || (allocationBound != nil && captureFrontier > max(1, target.request.reusedPrefixTokens)
+                && captureFrontier < target.request.promptCount && captureFrontier % target.request.chunkSize == 0) else {
+            throw ProbeError("Qwen TP MTP decoder differs from its request-owned dense target")
+        }
+        self.target = target; self.head = head; self.group = group; self.depth = depth
+        stops = Set(target.request.stopTokenIDs)
+        self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
+        self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP assistant prefix capture") }
+        if let restored {
+            guard restored.assistant.targetInputCount == restored.committedTokens,
+                  let value = try head.assistant.restorePagedPrefixCheckpoint(restored.assistant,
+                    maximumSequenceLength: target.request.maximumTokens) else {
+                throw ProbeError("Qwen TP assistant prefix belongs to another loaded head")
+            }
+            state = value
+        } else {
+            state = try head.assistant.makePagedRequestState(maximumSequenceLength: target.request.maximumTokens)
+        }
+        statistics = .init(depth: depth)
+    }
+
+    func prefill(check: () throws -> Void) throws -> MLXArray? {
+        do {
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                guard !retired, !failed, selectedCount == 0 else { throw ProbeError("Qwen TP MTP prompt is closed") }
+                let start = target.state.committedTokens
+                let output = try target.prefillForMTP(check: checked)
+                let end = target.state.committedTokens
+                let tokens = MLXArray(request.promptTokenIDs[start..<end].map(Int32.init)).reshaped([1, end - start])
+                head.assistant.observeCommittedTarget(.init(tokens: tokens, hidden: output.hidden), requestState: state)
+                promptFrontier = output.hidden[0..., (end - start - 1)..<(end - start), 0...]
+                eval(head.assistant.evaluationTargets(for: state) + [promptFrontier!]); try checked()
+                if end == captureFrontier {
+                    guard captured == nil else { throw ProbeError("Qwen TP assistant prefix is already captured") }
+                    captured = try .capture(target: target, assistant: head.assistant, requestState: state,
+                        frontier: captureFrontier, limitBytes: captureLimitBytes,
+                        allocationBound: allocationBound, check: checked)
+                }
+                return output.logits
+            }
+        } catch { failed = true; throw error }
+    }
+
+    /// The owner selects the ordinary final-prompt token before beginning.
+    /// Its sampler must already have committed that token on rank0.
+    func begin(firstToken: Int) throws {
+        guard !retired, !failed, selectedCount == 0, target.state.committedTokens == request.promptCount,
+              (0..<request.profile.vocabularySize).contains(firstToken), let promptFrontier,
+              group.rank != 0 || request.sampler == nil || request.sampler?.nextOutputIndex == 1 else {
+            throw ProbeError("Qwen TP MTP begins without a committed prompt selection")
+        }
+        carry = (firstToken, promptFrontier); self.promptFrontier = nil; selectedCount = 1
+    }
+
+    func step(lastToken: Int, remaining: Int, check: () throws -> Void) throws -> Emitted {
+        do {
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                guard !retired, !failed, selectedCount > 0, remaining > 0,
+                      remaining == request.outputCount - selectedCount,
+                      (0..<request.profile.vocabularySize).contains(lastToken) else {
+                    throw ProbeError("Qwen TP MTP stepped outside its output allowance")
+                }
+                let speculative = carry?.token == lastToken && remaining >= depth
+                    && (request.sampler?.admitsSpeculativeVerification ?? true)
+                let count = speculative ? depth : 0
+                let seed = MLXArray([Int32(lastToken)]).reshaped([1, 1])
+                var feed = (tokens: seed, hidden: carry?.hidden)
+                var drafted: [MLXArray] = []
+                let started = DispatchTime.now().uptimeNanoseconds
+                for _ in 0..<count {
+                    let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden!, shortlist: nil,
+                        requestState: state)
+                    eval([next.tokens, next.hidden] + head.assistant.evaluationTargets(for: state)); try checked()
+                    // Even proposal IDs are authoritative, so a peer's local
+                    // argmax can never change the following collective graph.
+                    let token = try broadcast(next.tokens.reshaped([1]), count: 1, check: checked).reshaped([1, 1])
+                    drafted.append(token); feed = (token, next.hidden)
+                }
+                let drafts = drafted.isEmpty ? nil : concatenated(drafted, axis: 1)
+                let inputs = drafts.map { concatenated([seed, $0], axis: 1) } ?? seed
+                let built = try target.beginWindow(tokens: inputs, offset: target.state.committedTokens)
+                eval(built.outputs + built.roots); try checked(); try target.confirmWindow(check: checked)
+                let full = try gathered(built.outputs[0], count: count + 1, check: checked)
+                let choices: MLXArray
+                if group.rank == 0 {
+                    if speculative { choices = request.sampler?.verifyRound(full) ?? argMax(full, axis: -1) }
+                    else { choices = request.sampler?.sample(full[0..., 0, 0...]) ?? argMax(full[0..., 0, 0...], axis: -1) }
+                } else { choices = MLXArray.zeros([count + 1], dtype: .int32) }
+                let selected = try broadcast(choices.reshaped([count + 1]), count: count + 1, check: checked)
+                let targetIDs = selected.asArray(Int32.self).map(Int.init)
+                let draftIDs = drafts?.asArray(Int32.self).map(Int.init) ?? []
+                let decision = try Self.accept(drafts: draftIDs, targets: targetIDs, remaining: remaining,
+                    stopTokens: stops, vocabularySize: request.profile.vocabularySize)
+                let emitted = decision.tokens.count
+                let evaluated = DispatchTime.now().uptimeNanoseconds
+                let roots = try target.settleWindow(keeping: emitted)
+                if speculative {
+                    let trustedDrafts = min(decision.accepted, emitted - 1)
+                    head.assistant.finalizeRound(requestState: state, confirmedInputTokens: 1 + trustedDrafts,
+                        committedDraftTokens: drafts![0..., 0..<trustedDrafts],
+                        committedTargetHidden: built.outputs[1][0..., 0..<trustedDrafts, 0...])
+                    // Restore the last actual committed target frontier after
+                    // finalizeRound cleared the drafting frontier. This is an
+                    // observation of the real target input/hidden, not a draft.
+                    // If a wider ordinary batch runs next, its first input is
+                    // paired with this frontier exactly once by the assistant.
+                    head.assistant.observeCommittedTarget(.init(
+                        tokens: inputs[0..., (emitted - 1)..<emitted],
+                        hidden: built.outputs[1][0..., (emitted - 1)..<emitted, 0...]), requestState: state)
+                } else {
+                    head.assistant.observeCommittedTarget(.init(tokens: inputs,
+                        hidden: built.outputs[1]), requestState: state)
+                    head.assistant.flushTrustedHistory(requestState: state)
+                }
+                carry = (decision.tokens.last!, built.outputs[1][0..., (emitted - 1)..<emitted, 0...])
+                eval(roots + head.assistant.evaluationTargets(for: state) + (carry.map { [$0.hidden] } ?? []))
+                try checked(); try target.confirmSettled(check: checked)
+                var logprobs: [ClusterWorkerTokenLogprobs] = []
+                if group.rank == 0, let sampler = request.sampler {
+                    if speculative {
+                        logprobs = sampler.takeRoundLogprobs(tokens: decision.tokens)
+                        sampler.commitRound(decision.tokens)
+                    } else {
+                        logprobs = sampler.takePendingLogprobs().map { [$0] } ?? []
+                        sampler.commit(decision.tokens[0])
+                    }
+                }
+                try checked(); selectedCount += emitted
+                statistics.emittedTokens += emitted
+                if speculative {
+                    statistics.rounds += 1
+                    for i in 0..<min(decision.accepted + 1, depth) { statistics.examinedByPosition[i] += 1 }
+                    for i in 0..<decision.accepted { statistics.acceptedByPosition[i] += 1 }
+                } else { statistics.plainSteps += 1 }
+                statistics.evaluateNanoseconds += evaluated - started
+                statistics.settleNanoseconds += DispatchTime.now().uptimeNanoseconds - evaluated
+                return .init(tokens: decision.tokens, logprobs: logprobs, speculative: speculative)
+            }
+        } catch { failed = true; throw error }
+    }
+
+    /// Draft each request through its existing B=1 assistant state, then
+    /// verify the entire cohort in one captured target rectangle. This does
+    /// not widen the assistant SDK's supported draft shape. Admission must
+    /// quote the simultaneous target windows and their retained backings.
+    static func stepBatch(_ decoders: [QwenTensorParallelMTPDecoder], lastTokens: [Int],
+                          remaining: [Int], check: () throws -> Void) throws -> [Emitted] {
+        do {
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                guard let first = decoders.first, (2...8).contains(decoders.count),
+                      lastTokens.count == decoders.count, remaining.count == decoders.count,
+                      Set(decoders.map { ObjectIdentifier($0) }).count == decoders.count,
+                      decoders.allSatisfy({ $0.head === first.head && $0.group === first.group
+                        && $0.target.model === first.target.model && $0.depth == first.depth }) else {
+                    throw ProbeError("Qwen TP speculative cohort differs from one loaded head and target")
+                }
+                let sessions = try decoders.enumerated().map { row, decoder -> QwenTensorParallelBatchSession in
+                    guard let session = decoder.target as? QwenTensorParallelBatchSession,
+                          decoder.canSpeculate(lastToken: lastTokens[row], remaining: remaining[row]) else {
+                        throw ProbeError("Qwen TP speculative cohort includes an ineligible request")
+                    }
+                    return session
+                }
+                guard Set(sessions.map { ObjectIdentifier($0) }).count == sessions.count else {
+                    throw ProbeError("Qwen TP speculative cohort reuses target history")
+                }
+                let columns = first.depth + 1, started = DispatchTime.now().uptimeNanoseconds
+                var drafts: [MLXArray] = [], inputs: [MLXArray] = []
+                for (row, decoder) in decoders.enumerated() {
+                    let seed = MLXArray([Int32(lastTokens[row])]).reshaped([1, 1])
+                    var feed = (tokens: seed, hidden: decoder.carry!.hidden)
+                    var proposed: [MLXArray] = []
+                    for _ in 0..<decoder.depth {
+                        let next = decoder.head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden,
+                            shortlist: nil, requestState: decoder.state)
+                        eval([next.tokens, next.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
+                        try checked()
+                        let token = try decoder.broadcast(next.tokens.reshaped([1]), count: 1, check: checked).reshaped([1, 1])
+                        proposed.append(token); feed = (token, next.hidden)
+                    }
+                    let proposedTokens = concatenated(proposed, axis: 1)
+                    drafts.append(proposedTokens); inputs.append(concatenated([seed, proposedTokens], axis: 1))
+                }
+                let built = try QwenTensorParallelBatchSession.beginWindows(sessions,
+                    tokens: concatenated(inputs, axis: 0))
+                eval(built.outputs + built.roots); try checked()
+                try QwenTensorParallelBatchSession.confirmWindows(sessions, check: checked)
+                let full = try first.gathered(built.outputs[0], count: columns, rows: decoders.count, check: checked)
+                let choices: MLXArray
+                if first.group.rank == 0 {
+                    let rows = decoders.enumerated().map { row, decoder -> MLXArray in
+                        let logits = full[row..<row + 1]
+                        return (decoder.request.sampler?.verifyRound(logits) ?? argMax(logits, axis: -1)).reshaped([columns])
+                    }
+                    choices = concatenated(rows, axis: 0)
+                } else { choices = MLXArray.zeros([decoders.count * columns], dtype: .int32) }
+                let selected = try first.broadcast(choices, count: decoders.count * columns, check: checked)
+                    .reshaped([decoders.count, columns])
+                let decisions = try decoders.enumerated().map { row, decoder in
+                    try accept(drafts: drafts[row].asArray(Int32.self).map(Int.init),
+                        targets: selected[row].asArray(Int32.self).map(Int.init), remaining: remaining[row],
+                        stopTokens: decoder.stops, vocabularySize: decoder.request.profile.vocabularySize)
+                }
+                let evaluated = DispatchTime.now().uptimeNanoseconds
+                var roots = try QwenTensorParallelBatchSession.settleWindows(sessions,
+                    keeping: decisions.map { $0.tokens.count })
+                for (row, decoder) in decoders.enumerated() {
+                    let decision = decisions[row], emitted = decision.tokens.count
+                    let trusted = min(decision.accepted, emitted - 1)
+                    let hidden = built.outputs[1][row..<row + 1]
+                    decoder.head.assistant.finalizeRound(requestState: decoder.state, confirmedInputTokens: 1 + trusted,
+                        committedDraftTokens: drafts[row][0..., 0..<trusted],
+                        committedTargetHidden: hidden[0..., 0..<trusted, 0...])
+                    decoder.head.assistant.observeCommittedTarget(.init(
+                        tokens: inputs[row][0..., (emitted - 1)..<emitted],
+                        hidden: hidden[0..., (emitted - 1)..<emitted, 0...]), requestState: decoder.state)
+                    decoder.carry = (decision.tokens.last!, hidden[0..., (emitted - 1)..<emitted, 0...])
+                    roots += decoder.head.assistant.evaluationTargets(for: decoder.state) + [decoder.carry!.hidden]
+                }
+                eval(roots); try checked()
+                try QwenTensorParallelBatchSession.confirmSettledWindows(sessions, check: checked)
+                var result: [Emitted] = []
+                for (row, decoder) in decoders.enumerated() {
+                    let decision = decisions[row]
+                    var logprobs: [ClusterWorkerTokenLogprobs] = []
+                    if first.group.rank == 0, let sampler = decoder.request.sampler {
+                        logprobs = sampler.takeRoundLogprobs(tokens: decision.tokens)
+                        sampler.commitRound(decision.tokens)
+                    }
+                    decoder.selectedCount += decision.tokens.count
+                    decoder.statistics.emittedTokens += decision.tokens.count
+                    decoder.statistics.rounds += 1
+                    for index in 0..<min(decision.accepted + 1, decoder.depth) { decoder.statistics.examinedByPosition[index] += 1 }
+                    for index in 0..<decision.accepted { decoder.statistics.acceptedByPosition[index] += 1 }
+                    decoder.statistics.evaluateNanoseconds += evaluated - started
+                    decoder.statistics.settleNanoseconds += DispatchTime.now().uptimeNanoseconds - evaluated
+                    result.append(.init(tokens: decision.tokens, logprobs: logprobs, speculative: true))
+                }
+                try checked()
+                return result
+            }
+        } catch { decoders.forEach { $0.failed = true }; throw error }
+    }
+
+    func canSpeculate(lastToken: Int, remaining: Int) -> Bool {
+        !retired && !failed && selectedCount > 0 && carry?.token == lastToken
+            && remaining == request.outputCount - selectedCount && remaining >= depth
+            && (request.sampler?.admitsSpeculativeVerification ?? true)
+    }
+
+    /// A genuine ordinary batch already evaluated and committed this target
+    /// input and selected the next token. Extend only this request's assistant
+    /// history, allowing singleton speculation to resume without a reload.
+    func observeOrdinary(inputToken: Int, hidden: MLXArray, selectedToken: Int,
+                         check: () throws -> Void) throws {
+        do {
+            try MLX.withError { error in
+                guard !retired, !failed, selectedCount > 0, selectedCount < request.outputCount,
+                      carry?.token == inputToken,
+                      target.state.committedTokens == request.promptCount + selectedCount,
+                      hidden.shape == [1, 1, target.model.plan.hiddenSize],
+                      String(describing: hidden.dtype) == request.profile.activationDType,
+                      (0..<request.profile.vocabularySize).contains(selectedToken),
+                      group.rank != 0 || request.sampler == nil || request.sampler?.nextOutputIndex == selectedCount + 1 else {
+                    throw ProbeError("Qwen TP assistant ordinary observation differs from its committed lane")
+                }
+                head.assistant.observeCommittedTarget(.init(
+                    tokens: MLXArray([Int32(inputToken)]).reshaped([1, 1]), hidden: hidden), requestState: state)
+                head.assistant.flushTrustedHistory(requestState: state)
+                carry = (selectedToken, hidden)
+                eval(head.assistant.evaluationTargets(for: state) + [hidden]); try error.check(); try check()
+                selectedCount += 1; statistics.emittedTokens += 1; statistics.plainSteps += 1
+            }
+        } catch { failed = true; throw error }
+    }
+
+    func discardCapturedPrefix() { captured = nil }
+
+    static func accept(drafts: [Int], targets: [Int], remaining: Int, stopTokens: Set<Int>,
+                       vocabularySize: Int) throws -> (tokens: [Int], accepted: Int) {
+        guard (0...4).contains(drafts.count), targets.count == drafts.count + 1, remaining > 0,
+              vocabularySize > 0, (drafts + targets).allSatisfy({ (0..<vocabularySize).contains($0) }) else {
+            throw ProbeError("Qwen TP MTP target-prefix decision is malformed")
+        }
+        var accepted = 0
+        while accepted < drafts.count, drafts[accepted] == targets[accepted] { accepted += 1 }
+        var emitted = min(accepted + 1, remaining)
+        if let stop = targets[..<emitted].firstIndex(where: stopTokens.contains) { emitted = stop + 1 }
+        return (Array(targets[..<emitted]), accepted)
+    }
+
+    private func broadcast(_ choices: MLXArray, count: Int, check: () throws -> Void) throws -> MLXArray {
+        let supplied = group.rank == 0 ? choices.asType(.float32) : MLXArray.zeros([count], dtype: .float32)
+        let result = group.allSum(supplied); eval(result); try check()
+        guard result.shape == [count], result.dtype == .float32,
+              all(isFinite(result) .&& (result .>= 0) .&& (result .< Float(request.profile.vocabularySize))
+                .&& (result .== floor(result))).item(Bool.self) else {
+            throw ProbeError("Qwen TP MTP authoritative token exchange is invalid")
+        }
+        return result.asType(.int32)
+    }
+
+    private func gathered(_ logits: MLXArray, count: Int, rows: Int = 1, check: () throws -> Void) throws -> MLXArray {
+        let range = target.model.vocabularyRange, vocabulary = target.model.plan.vocabularySize
+        guard (1...8).contains(rows), logits.shape == [rows, count, range.count] else { throw ProbeError("Qwen TP MTP shard logits differ") }
+        var parts: [MLXArray] = []
+        if range.lowerBound > 0 { parts.append(-MLXArray.zeros([rows, count, range.lowerBound], dtype: .float32)) }
+        parts.append(logits.asType(.float32))
+        if range.upperBound < vocabulary { parts.append(-MLXArray.zeros([rows, count, vocabulary - range.upperBound], dtype: .float32)) }
+        let full = group.allSum(concatenated(parts, axis: -1)); eval(full); try check()
+        guard full.shape == [rows, count, vocabulary], full.dtype == .float32,
+              all(isFinite(full)).item(Bool.self) else { throw ProbeError("Qwen TP MTP gathered target rows are invalid") }
+        return full
+    }
+
+    /// The owner may publish this only after the separate bilateral clean
+    /// retirement vote. Local retirement alone never inserts a resident entry.
+    func takeCapturedPrefix() throws -> QwenTensorParallelMTPPrefixState? {
+        guard retired, target.retired, target.state.isClosed else {
+            throw ProbeError("Qwen TP assistant prefix donation precedes checked retirement")
+        }
+        defer { captured = nil }
+        guard !failed else { return nil }
+        return captured
+    }
+
+    func retire() throws {
+        guard !retired else { return }
+        try MLX.withError { error in
+            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+            head.assistant.releaseRequestState(state)
+            try target.retire(); try error.check()
+            guard state.materializedBytes == 0 else { throw ProbeError("Qwen TP MTP assistant remains live after retirement") }
+            promptFrontier = nil; carry = nil; retired = true
+        }
+    }
+}

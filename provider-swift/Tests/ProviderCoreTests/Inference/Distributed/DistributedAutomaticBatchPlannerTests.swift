@@ -103,6 +103,133 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(ClusterLinkProbeHistory.record(probe, members: members, homeDirectory: home, now: now))
     }
 
+    @Test func profileEnvelopeSingletonQuoteCoversThePlannedReference() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, _) = try fixture()
+        // Automatic discovery prices the native profile's envelope, which exceeds
+        // the layout's planned request (installed Qwen27: 32768/32768 vs 8192/128).
+        let envelope = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
+            artifactSHA256: cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
+            promptTokens: cap.profile.maximumPromptTokens, outputTokens: cap.profile.maximumOutputTokens,
+            maximumPromptTokens: cap.profile.maximumPromptTokens, maximumOutputTokens: cap.profile.maximumOutputTokens,
+            maximumContextTokens: cap.profile.maximumContextTokens, requestChargeEveryRankBytes: gib)
+        #expect(envelope.promptTokens != layout.maximumPromptTokens || envelope.outputTokens != layout.maximumOutputTokens)
+        let quote = try ClusterPlacementTensorBatchQuote(request: envelope, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib,
+            allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                requestBytesExcludingCollectives: 2 * gib,
+                maximumCollectivePayloadBytes: 512 * 4096, maximumCollectiveFrameBytes: 512 * 4096 + 1024,
+                allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+        let decided = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: quote,
+            leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+            environment: [:], benchDebugBuild: false)
+        #expect(decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
+        // Memory is charged for the envelope; speed and shares keep the planned request.
+        #expect(decided.result.promptTokens == layout.maximumPromptTokens && decided.result.outputTokens == layout.maximumOutputTokens)
+        // An envelope that does not cover the reference request is refused.
+        let short = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
+            artifactSHA256: cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
+            promptTokens: layout.maximumPromptTokens / 2, outputTokens: layout.maximumOutputTokens / 2,
+            maximumPromptTokens: cap.profile.maximumPromptTokens, maximumOutputTokens: cap.profile.maximumOutputTokens,
+            maximumContextTokens: cap.profile.maximumContextTokens, requestChargeEveryRankBytes: gib)
+        let shortQuote = try ClusterPlacementTensorBatchQuote(request: short, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib, allowance: quote.allowance)
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: shortQuote,
+                leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+                environment: [:], benchDebugBuild: false)
+        }
+    }
+
+    @Test func singletonQuoteCoversTheServedReferenceOnAPairWithServedHistory() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, scope) = try fixture()
+        // Served requests unlike the quoted envelope: before the fix the served
+        // mix replaced the reference and the quote's scope refused planning.
+        let records = (0..<3).map { index in
+            ClusterPairRequestTelemetry(requestID: "served-\(index)", finishedAt: Date().timeIntervalSince1970,
+                modelID: pair.publicModelID, mode: "tensor_parallel_v1", cut: "0-2|0-2", promptTokens: 700, cachedTokens: 0,
+                completionTokens: 90, firstTokenMilliseconds: 1000, decodeTokensPerSecond: 1,
+                handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+                route: "pair", ranks: ["a", "b"], concurrentRequests: 0)
+        }
+        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
+            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records))]
+        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let served = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        #expect(!served.isEmpty)
+        #expect(scope.request.promptTokens != 700 || scope.request.outputTokens != 90)
+        let quote = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib,
+            allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                requestBytesExcludingCollectives: 2 * gib,
+                maximumCollectivePayloadBytes: 512 * 4096, maximumCollectiveFrameBytes: 512 * 4096 + 1024,
+                allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+        let decided = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: quote,
+            leader: "a", served: served, link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+            environment: [:], benchDebugBuild: false)
+        #expect(decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
+        // The served mix stays the reference; the quote's envelope covers it.
+        #expect(decided.result.promptTokens == 700 && decided.result.outputTokens == 90)
+    }
+
+    @Test func plainSingletonQuoteAndRetainedGeometryUseCompleteMemoryGates() throws {
+        let home = try home(); record(home)
+        let (pair, cap, originalLayout, scope) = try fixture()
+        var object = try JSONSerialization.jsonObject(with: originalLayout.encoded()) as! [String: Any]
+        var tensor = object["tensorParallel"] as! [String: Any]
+        var family = tensor["family"] as! [String: Any]
+        family["shareOptions"] = [[1, 2], [2, 1]]
+        tensor["family"] = family; object["tensorParallel"] = tensor
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        let plain = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib,
+            allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                requestBytesExcludingCollectives: 2 * gib,
+                maximumCollectivePayloadBytes: 512 * 4096, maximumCollectiveFrameBytes: 512 * 4096 + 1024,
+                allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+        let first = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: plain,
+            leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+            environment: [:], benchDebugBuild: false)
+        #expect(first.result.chosen?.mode == .tensorParallel && first.setup != nil)
+        for bytes in try #require(first.setup).configurations.values {
+            let config = try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+            #expect(config.tensorAssistant == nil && (config.batchLanes ?? 1) == 1)
+        }
+        func replacement(_ shares: [Int]?, free: Int = 200 * 1_073_741_824) throws
+            -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(free: free), peerProfile: profile(), layout: layout,
+                scope: scope, homeDirectory: home, incumbentTensorShares: shares)
+        }
+        let oldChoice = try replacement(nil), held = try replacement([1, 2])
+        let old = try #require(oldChoice.result.chosen), retained = try #require(held.result.chosen)
+        #expect((old.tensorShares ?? [1, 1]) != [1, 2], "negative control: re-ranking can change the arithmetic split")
+        #expect(retained.tensorShares == [1, 2] && retained.ranks.map(\.device) == ["a", "b"])
+        #expect(held.result.alternatives.allSatisfy { $0.tensorShares == [1, 2] })
+        #expect(retained.ranks.allSatisfy { $0.requestNeedBytes >= scope.tensorParallelQuote!.allowance.reservedBytes })
+        #expect(DistributedAutomaticBatchPlanner.accepts(retained, requireNow: true))
+        let blocked = try replacement([1, 2], free: 6 * gib)
+        let unavailable = try #require(blocked.result.chosen)
+        #expect(unavailable.tensorShares == [1, 2])
+        #expect(!DistributedAutomaticBatchPlanner.accepts(unavailable, requireNow: true))
+        #expect(throws: (any Error).self) { try replacement([1, 3]) }
+        let beforeBytes = try #require(held.setup?.configurations["a"])
+        let afterBytes = try #require(oldChoice.setup?.configurations["a"])
+        let before = try ClusterConfigurationCodec.decode(beforeBytes, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+        let after = try ClusterConfigurationCodec.decode(afterBytes, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+        try ClusterAutomaticSetupHandoff.requireCompatible(before, before, runtimeModelID: cap.runtimeModelID)
+        #expect(throws: (any Error).self) {
+            try ClusterAutomaticSetupHandoff.requireCompatible(before, after, runtimeModelID: cap.runtimeModelID)
+        }
+    }
+
     @Test func testRecordedKeyedReductionReachesActualDecisionAndCanSelectTP() throws {
         let home = try home()
         let before = try decide(home)
@@ -379,6 +506,288 @@ final class DistributedAutomaticBatchPlannerTests {
         try ClusterModelFeaturePolicy.requireReady(valid, identity: id, profile: profile)
     }
 
+    @Test func automaticAssistantUsesVerifiedInlineArtifactAndRespectsDisabledModes() throws {
+        let directory = try home(), modelID = "fixture-inline-qwen"
+        let header = try JSONSerialization.data(withJSONObject: ["mtp.weight": ["dtype": "F32", "shape": [1], "data_offsets": [0, 4]]])
+        var length = UInt64(header.count).littleEndian
+        var shard = withUnsafeBytes(of: &length) { Data($0) }; shard.append(header); shard.append(Data(repeating: 0, count: 4))
+        try shard.write(to: directory.appendingPathComponent("model.safetensors"))
+        let config = try JSONSerialization.data(withJSONObject: ["mtplx_mtp": ["included": true], "mtplx_mtp_quantization": [:]])
+        try config.write(to: directory.appendingPathComponent("config.json"))
+        let index = try JSONSerialization.data(withJSONObject: ["weight_map": ["mtp.weight": "model.safetensors"]])
+        try index.write(to: directory.appendingPathComponent("model.safetensors.index.json"))
+        let files: [ClusterCatalogArtifact.File] = [.init(path: "model.safetensors", sizeBytes: Int64(shard.count),
+            sha256: ClusterConfigurationCodec.sha256(shard))]
+        let aggregate = ClusterCatalogArtifact.aggregateDigest(files)
+        let manifest = try JSONSerialization.data(withJSONObject: ["model_id": modelID, "version": "fixture",
+            "aggregate_sha256": aggregate, "total_size_bytes": shard.count,
+            "files": [["path": files[0].path, "size_bytes": files[0].sizeBytes, "sha256": files[0].sha256]]])
+        try manifest.write(to: directory.appendingPathComponent("manifest.json"))
+        func candidate(_ mode: MTPMode, id: String? = nil, digest: String? = nil,
+                       environment: [String: String] = [:]) throws -> Bool {
+            try ClusterPlacementTensorAssistantSelection.automaticCandidate(mode: mode,
+                runtimeModelID: ClusterQwenTensorAssistantPolicy.runtimeModelID,
+                modelDirectory: directory, publicModelID: id ?? modelID, artifactSHA256: digest ?? aggregate,
+                manifestSHA256: ClusterConfigurationCodec.sha256(manifest), environment: environment)
+        }
+        let automatic = try candidate(.auto), forced = try candidate(.on), off = try candidate(.off)
+        let killed = try candidate(.auto, environment: ["DARKBLOOM_CBV2_MTP": "0"])
+        #expect(automatic && forced && !off && !killed)
+        #expect(throws: (any Error).self) { try candidate(.auto, id: "foreign-entry") }
+        #expect(throws: (any Error).self) { try candidate(.auto, digest: hash("f")) }
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("config.json"))
+        let absent = try candidate(.auto)
+        #expect(!absent)
+        try Data("invalid".utf8).write(to: directory.appendingPathComponent("config.json"))
+        #expect(throws: (any Error).self) { try candidate(.auto) }
+        let disabledMalformed = try candidate(.off)
+        #expect(!disabledMalformed)
+    }
+
+    @Test func automaticQuotePinsNativeInventoryAndCompleteWidthOneScope() throws {
+        let (_, cap, _, _) = try fixture()
+        func quote(_ verification: ClusterQwenTensorAssistantPolicy.Verification = .admittedCohort,
+                   depth: Int = 2, artifact: String? = nil, assistant: Bool = true) throws -> ClusterPlacementTensorBatchQuote {
+            let original = try assistantQuote(1, depth: depth, verification: verification)
+            let request = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
+                artifactSHA256: artifact ?? cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
+                promptTokens: cap.profile.maximumPromptTokens, outputTokens: cap.profile.maximumOutputTokens,
+                maximumPromptTokens: cap.profile.maximumPromptTokens, maximumOutputTokens: cap.profile.maximumOutputTokens,
+                maximumContextTokens: cap.profile.maximumContextTokens, requestChargeEveryRankBytes: gib)
+            return try .init(request: request, lanes: 1, chunkTokens: original.chunkTokens,
+                perLaneStateBytes: original.perLaneStateBytes, sharedBytesExcludingCollectives: original.sharedBytesExcludingCollectives,
+                allowance: original.allowance, assistant: assistant ? original.assistant : nil)
+        }
+        let native = try quote()
+        try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(native, capability: cap, chunkTokens: 128)
+        #expect(native.assistant?.policy.inventorySHA256 == hash("8"))
+        for invalid in [try quote(.singleton), try quote(depth: 3), try quote(artifact: hash("9"))] {
+            #expect(throws: (any Error).self) {
+                try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(invalid, capability: cap, chunkTokens: 128)
+            }
+        }
+        let plain = try quote(assistant: false)
+        try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(plain, capability: cap, chunkTokens: 128, assistant: false)
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(native, capability: cap, chunkTokens: 128, assistant: false)
+        }
+        let args = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
+            promptTokens: 32768, outputTokens: 32768, chunkTokens: 128)
+        #expect(args.suffix(4) == ["--mtp-depth", "2", "--tp-mtp-verification", "admitted_target_cohort_v1"])
+        #expect(!args.contains(ClusterQwenTensorAssistantPolicy.inventoryArgument))
+        let plainArgs = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
+            promptTokens: 32768, outputTokens: 32768, chunkTokens: 128, assistant: false)
+        #expect(!plainArgs.contains("--mtp-depth") && plainArgs.contains("--batch-lanes"))
+    }
+
+    private func assistantQuote(_ lanes: Int, depth: Int = 2,
+                                verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton) throws -> ClusterPlacementTensorBatchQuote {
+        let (_, _, _, scope) = try fixture()
+        return try .init(request: scope.request, lanes: lanes, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: 2 * gib,
+            allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                requestBytesExcludingCollectives: (lanes + 2) * gib,
+                maximumCollectivePayloadBytes: max(512 * 4096, lanes * 248320 * 4),
+                maximumCollectiveFrameBytes: max(512 * 4096, lanes * 248320 * 4) + 1024,
+                allocationBound: { (($0 + 16383) / 16384) * 16384 }),
+            assistant: .init(policy: .init(depth: depth, inventorySHA256: hash("8"), verification: verification),
+                residentBytes: gib, loadBytes: 2 * gib, largestAllocationBytes: gib))
+    }
+
+    @Test func wideningQuoteSteersTheRetainedSplitTowardOneThatCanWiden() throws {
+        let home = try home(); record(home)
+        let (pair, cap, originalLayout, scope) = try fixture()
+        var object = try JSONSerialization.jsonObject(with: originalLayout.encoded()) as! [String: Any]
+        var tensor = object["tensorParallel"] as! [String: Any]
+        var family = tensor["family"] as! [String: Any]
+        family["shareOptions"] = [[1, 2], [2, 1]]
+        tensor["family"] = family; object["tensorParallel"] = tensor
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        func quote(_ lanes: Int) throws -> ClusterPlacementTensorBatchQuote {
+            try .init(request: scope.request, lanes: lanes, chunkTokens: 128,
+                perLaneStateBytes: 8 * gib, sharedBytesExcludingCollectives: gib,
+                allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                    requestBytesExcludingCollectives: lanes * 8 * gib + gib,
+                    maximumCollectivePayloadBytes: 512 * 4096, maximumCollectiveFrameBytes: 512 * 4096 + 1024,
+                    allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+        }
+        let single = try quote(1), wide = try quote(2)
+        func decide(free: Int, widening: ClusterPlacementTensorBatchQuote?) throws -> ClusterSetupPlanning.PlacementDecision {
+            try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(), peerProfile: profile(free: free), layout: layout, tensorAssistantQuote: single,
+                tensorWideningQuote: widening, leader: "a",
+                link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+                environment: [:], benchDebugBuild: false)
+        }
+        let growth = wide.allowance.reservedBytes - single.allowance.reservedBytes
+        // Mac b is rank 1: the running owner's weights and its own request
+        // (the replacement is previewed while it serves), plus the replacement's need.
+        func widen(_ c: ClusterPlacementCandidate) -> Int {
+            c.ranks[1].weightsBytes + single.allowance.reservedBytes + c.ranks[1].needBytes + growth
+        }
+        func splits(_ d: ClusterSetupPlanning.PlacementDecision) -> [ClusterPlacementCandidate] {
+            ([d.result.chosen].compactMap { $0 } + d.result.alternatives).filter { $0.mode == .tensorParallel }
+        }
+        let open = splits(try decide(free: 200 * gib, widening: nil))
+        let lightest = try #require(open.min { widen($0) < widen($1) })
+        let heaviest = try #require(open.max { widen($0) < widen($1) })
+        #expect(widen(lightest) < widen(heaviest))
+        // b admits exactly what the lightest split needs to widen beside its owner.
+        let steered = try decide(free: widen(lightest), widening: wide)
+        #expect(steered.result.chosen?.tensorShares == lightest.tensorShares)
+        #expect(splits(steered).allSatisfy { widen($0) <= widen(lightest) })
+        // Without the widening quote every split stays a candidate.
+        let unsteered = splits(try decide(free: widen(lightest), widening: nil))
+        #expect(unsteered.contains { widen($0) > widen(lightest) })
+        // A widening quote must widen the same request.
+        #expect(throws: (any Error).self) { try decide(free: widen(lightest), widening: single) }
+    }
+
+    @Test func discoveredAssistantThatCannotBePlacedGivesWayToTheOrdinaryTarget() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, scope) = try fixture()
+        let allowance = { (bytes: Int) throws in try ClusterTensorParallelRequestAllowance(maximumContextTokens: 65536,
+            maximumChunkTokens: 512, requestBytesExcludingCollectives: bytes,
+            maximumCollectivePayloadBytes: 512 * 4096, maximumCollectiveFrameBytes: 512 * 4096 + 1024,
+            allocationBound: { (($0 + 16383) / 16384) * 16384 }) }
+        // Larger than either constructed Mac can admit, as the installed
+        // full-context assistant reservation is on a busy M5.
+        let assistant = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: 100 * gib, sharedBytesExcludingCollectives: 200 * gib, allowance: try allowance(300 * gib),
+            assistant: .init(policy: .init(depth: 2, inventorySHA256: hash("8"), verification: .admittedCohort),
+                residentBytes: gib, loadBytes: 2 * gib, largestAllocationBytes: gib))
+        let target = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
+            perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib, allowance: try allowance(2 * gib))
+        func decide(_ quote: ClusterPlacementTensorBatchQuote?) throws -> ClusterSetupPlanning.PlacementDecision {
+            try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: quote,
+                leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+                environment: [:], benchDebugBuild: false)
+        }
+        #expect(try decide(assistant).result.chosen == nil)
+        let discovered = try ClusterSetupPlanning.assistantOrTarget(assistant, fallback: target, decide)
+        #expect(discovered.quote == target && discovered.decision.result.chosen?.mode == .tensorParallel)
+        #expect(discovered.decision.lines.first == ClusterSetupPlanning.assistantDoesNotFit)
+        for bytes in try #require(discovered.decision.setup).configurations.values {
+            let config = try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+            #expect(config.tensorAssistant == nil)
+        }
+        // An explicitly requested assistant has no fallback and keeps its refusal.
+        let requested = try ClusterSetupPlanning.assistantOrTarget(assistant, fallback: nil, decide)
+        #expect(requested.quote == assistant && requested.decision.result.chosen == nil)
+        // A placeable assistant is kept.
+        let fits = try assistantQuote(1, verification: .admittedCohort)
+        let kept = try ClusterSetupPlanning.assistantOrTarget(fits, fallback: target, decide)
+        #expect(kept.quote == fits && kept.decision.result.chosen != nil)
+    }
+
+    @Test func testAssistantSingletonAndWiderPlansPersistSamePolicyAndBilateralArguments() throws {
+        for verification in [ClusterQwenTensorAssistantPolicy.Verification.singleton, .admittedCohort] {
+            let home = try home(); record(home)
+            let (pair, cap, layout, _) = try fixture()
+            let singleton = try assistantQuote(1, verification: verification)
+            let first = try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(), peerProfile: profile(), layout: layout, tensorAssistantQuote: singleton,
+                leader: "a", link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])!,
+                environment: [:], benchDebugBuild: false)
+            let firstSetup = try #require(first.setup)
+            #expect(first.result.chosen?.mode == .tensorParallel)
+            let policy = try #require(singleton.assistant?.policy)
+            for width in [2, 4, 8] {
+                let quote = try assistantQuote(width, verification: verification)
+                let scope = try ClusterPlacementBatchScope(request: quote.request, lanes: width, tensorParallelQuote: quote)
+                let next = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
+                    localProfile: profile(), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
+                let nextSetup = try #require(next.setup)
+                for member in ["a", "b"] {
+                    let initial = try ClusterConfigurationCodec.decode(firstSetup.configurations[member]!, capability: cap,
+                        capabilitySHA256: pair.capabilitySHA256)
+                    let widened = try ClusterConfigurationCodec.decode(nextSetup.configurations[member]!, capability: cap,
+                        capabilitySHA256: pair.capabilitySHA256)
+                    #expect(initial.tensorAssistant == policy && widened.tensorAssistant == policy)
+                    #expect(initial.batchLanes == nil && widened.batchLanes == width)
+                    try ClusterAutomaticSetupHandoff.requireCompatible(initial, widened)
+                    let argv = try DistributedInstalledGenerationSelection.workerArguments(configuration: widened, capability: cap)
+                    let expected = ["--mtp-depth", "2", ClusterQwenTensorAssistantPolicy.inventoryArgument, hash("8")] + policy.verificationArguments
+                    #expect(Array(argv.suffix(expected.count)) == expected)
+                    let quoteArguments = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model",
+                        policy: policy, promptTokens: 1024, outputTokens: 128, lanes: width, chunkTokens: 128)
+                    let quoteSuffix = ["--mtp-depth", "2"] + policy.verificationArguments
+                    #expect(Array(quoteArguments.suffix(quoteSuffix.count)) == quoteSuffix)
+                    let expectedReady = try ClusterQwenTensorAssistantReady(policy: policy, capacity: width)
+                    #expect(expectedReady.maximumSpeculativeWidth == (verification == .admittedCohort ? width : 1))
+                    #expect(DistributedInstalledSpeculation(configuration: widened, capability: cap).enabled)
+                    let canonical = try ClusterConfigurationCodec.encode(widened, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+                    #expect(try ClusterConfigurationCodec.decode(canonical, capability: cap,
+                        capabilitySHA256: pair.capabilitySHA256) == widened)
+                    var object = try JSONSerialization.jsonObject(with: canonical) as! [String: Any]
+                    object.removeValue(forKey: "tensorAssistant")
+                    let dropped = try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: object),
+                        capability: cap, capabilitySHA256: pair.capabilitySHA256)
+                    #expect(throws: (any Error).self) { try ClusterAutomaticSetupHandoff.requireCompatible(widened, dropped) }
+                    object["tensorAssistant"] = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("8")).object
+                    let changed = try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: object),
+                        capability: cap, capabilitySHA256: pair.capabilitySHA256)
+                    #expect(throws: (any Error).self) { try ClusterAutomaticSetupHandoff.requireCompatible(widened, changed) }
+                }
+            }
+        }
+    }
+
+    @Test func testSavedAssistantStrictScopeAndBinaryCompatibilityRefusals() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, _) = try fixture(), quote = try assistantQuote(4)
+        let scope = try ClusterPlacementBatchScope(request: quote.request, lanes: 4, tensorParallelQuote: quote)
+        let decision = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
+            localProfile: profile(), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
+        let bytes = try #require(decision.setup?.configurations["a"])
+        let valid = try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
+        func rejects(_ edit: (inout [String: Any]) -> Void) throws {
+            var object = valid; edit(&object)
+            let malformed = try JSONSerialization.data(withJSONObject: object)
+            #expect(throws: (any Error).self) {
+                _ = try ClusterConfigurationCodec.decode(malformed, capability: cap, capabilitySHA256: pair.capabilitySHA256)
+            }
+        }
+        try rejects { $0["tensorAssistant"] = NSNull() }
+        try rejects { $0["generationMode"] = ClusterGenerationMode.pipeline.rawValue }
+        try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["depth"] = true; $0["tensorAssistant"] = a }
+        try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["depth"] = 1.5; $0["tensorAssistant"] = a }
+        try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["inventorySHA256"] = self.hash("G"); $0["tensorAssistant"] = a }
+        try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["extra"] = "ignored"; $0["tensorAssistant"] = a }
+        let text = String(decoding: bytes, as: UTF8.self)
+        #expect(throws: (any Error).self) {
+            _ = try ClusterConfigurationCodec.decode(Data(text.replacingOccurrences(of: "\"depth\":2", with: "\"depth\":2,\"depth\":2").utf8),
+                capability: cap, capabilitySHA256: pair.capabilitySHA256)
+        }
+        var features = DistributedInstalledWorkerFeatures(hasProgressGuard: true, acceptsStartupDeadline: true,
+            acceptsDataPlane: true)
+        #expect(throws: (any Error).self) { try features.requireTensorAssistantPolicy(required: true) }
+        try features.requireTensorAssistantPolicy(required: false)
+        features.acceptsTensorAssistantPolicy = true
+        try features.requireTensorAssistantPolicy(required: true)
+        #expect(throws: (any Error).self) { try features.requireTensorAssistantPolicy(required: true, cohortRequired: true) }
+        features.acceptsTensorAssistantCohort = true
+        try features.requireTensorAssistantPolicy(required: true, cohortRequired: true)
+        #expect(throws: (any Error).self) { try features.requireTensorAssistantPolicy(required: false, cohortRequired: true) }
+        features.acceptsDataPlane = false
+        #expect(throws: (any Error).self) { try features.requireTensorAssistantPolicy(required: true) }
+        let policy = try #require(quote.assistant?.policy)
+        for width in [1, 2, 4, 8] {
+            let args = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model", policy: policy,
+                promptTokens: 32768, outputTokens: 32768, lanes: width, chunkTokens: 128)
+            #expect(args.suffix(2) == ["--mtp-depth", "2"])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model", policy: policy,
+                promptTokens: 32768, outputTokens: 32768, lanes: 3, chunkTokens: 128)
+        }
+        #expect(throws: (any Error).self) { try quote.requireAssistant(nil) }
+        #expect(throws: (any Error).self) {
+            try quote.requireAssistant(.init(depth: 2, inventorySHA256: hash("9")))
+        }
+    }
+
 }
 
 private final class FeatureReadyOwner: DistributedResidentExecutionOwner, @unchecked Sendable {
@@ -398,4 +807,5 @@ private struct FeatureTokenizer: Tokenizer {
     var bosToken: String? { nil }; var eosToken: String? { nil }; var unknownToken: String? { nil }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?) throws -> [Int] { [] }
     func applyChatTemplate(messages: [[String: any Sendable]], chatTemplate: String) throws -> [Int] { [] }
+
 }

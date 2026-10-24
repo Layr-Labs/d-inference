@@ -23,6 +23,25 @@ struct QwenTensorParallelBatchSettingsTests {
         }
     }
 
+    @Test func keyedSingletonUsesTheSameRequestOwnedContractAsWiderCapacity() throws {
+        let key = QwenBatchSettings.lanesEnvironmentName
+        let singleton = try QwenTensorParallelBatchSettings.resolve(model: .qwen38TwentySevenB,
+            keyed: true, environment: [:])
+        let wider = try QwenTensorParallelBatchSettings.resolve(model: .qwen38TwentySevenB,
+            keyed: true, environment: [key: "2"])
+        #expect(singleton.lanes == 1 && singleton.requestOwned && singleton.backend == .paged)
+        #expect(wider.requestOwned && wider.backend == singleton.backend)
+        #expect(singleton.agreementFields.filter { !$0.hasPrefix("lanes=") }
+            == wider.agreementFields.filter { !$0.hasPrefix("lanes=") })
+        let legacyProbe = try QwenTensorParallelBatchSettings.resolve(model: .qwen38TwentySevenB,
+            keyed: false, environment: [:])
+        #expect(!legacyProbe.requestOwned && legacyProbe.agreementFields.isEmpty)
+        for model in QwenRegisteredDenseModel.allCases where model != .qwen38TwentySevenB {
+            #expect(try !QwenTensorParallelBatchSettings.resolve(model: model,
+                keyed: true, environment: [key: "1"]).requestOwned)
+        }
+    }
+
     @Test func singletonAgreementAndInvalidBatchSettingsStayExplicit() throws {
         let key = QwenBatchSettings.lanesEnvironmentName
         for environment in [[:], [key: "1"]] {

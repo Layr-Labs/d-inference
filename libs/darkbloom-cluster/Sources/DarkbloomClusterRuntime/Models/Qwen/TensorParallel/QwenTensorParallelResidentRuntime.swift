@@ -18,7 +18,9 @@ import MLXVLM
 /// agreement, rekeyed by count and bytes; a frame that does not authenticate
 /// ends the evaluation on both ranks.
 ///
-/// The same contract as `QwenResidentRuntime` for the worker's executor:
+/// Keyed Qwen27 uses request-owned CBv2 execution at every capacity; the
+/// singleton wire adapts to the shared batch driver. Other rows retain
+/// the same contract as `QwenResidentRuntime` for the worker's executor:
 /// synchronous, one request at a time, cancel from the control thread only,
 /// an enclosing process deadline required (a blocked collective cannot be
 /// interrupted cooperatively).
@@ -61,12 +63,20 @@ public final class QwenTensorParallelResidentRuntime {
     public let batchLanes: Int
     var batchHost: CBv2StageKVHost?
     let batchBudget: QwenTensorParallelBatchBudget?
+    let batchMTPBudget: QwenTensorParallelBatchMTPBudget?
     let batchPrefix: QwenTensorParallelBatchPrefixCache?
     let batchBook = ClusterBatchLaneBook<QwenTensorParallelOwnedBatchReservation>()
     var batchServing = false
     var batchOrdinal: UInt64 = 0
     let batchAllocationBaseline: Int
     let batchResourceWatch = QwenDenseStageLoadWatch("Tensor-parallel batch")
+    let mtpTerms: QwenMTPTerms?
+    let mtpPrefix: QwenTensorParallelMTPPrefixCache?
+    var mtpHead: QwenTensorParallelMTPHead?
+    var mtpHost: CBv2StageKVHost?
+    var failedMTPDecoder: QwenTensorParallelMTPDecoder?
+    var failedMTPTarget: QwenTensorParallelMTPSession?
+    var mtpCommittedLogprobs: ClusterWorkerTokenLogprobs?
     // Failed native/resource cleanup must remain reachable until shutdown's
     // checked drain or the enclosing worker's process fence.
     var failedBatchDriver: QwenTensorParallelBatchDriver<QwenTensorParallelNativeBatchExecutor<QwenTensorParallelOwnedBatchReservation>>?
@@ -89,7 +99,9 @@ public final class QwenTensorParallelResidentRuntime {
     public static func load(_ configuration: QwenResidentLoadConfiguration, shares: [Int] = [1, 1],
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential? = nil,
-                            prefixSSDKey: Data? = nil) throws -> QwenTensorParallelResidentRuntime {
+                            prefixSSDKey: Data? = nil,
+                            speculativeTerms: QwenMTPTerms? = nil,
+                            tensorAssistantPolicy: ClusterQwenTensorAssistantPolicy? = nil) throws -> QwenTensorParallelResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         guard shares.count == 2, shares.allSatisfy({ (1...64).contains($0) }) else {
@@ -108,6 +120,22 @@ public final class QwenTensorParallelResidentRuntime {
         try QwenTensorParallelVerifiedLoad.requireSupportedProduct(admission.definition, shares: shares)
         let batch = try QwenTensorParallelBatchSettings.resolve(model: admission.specification.model,
             keyed: credential != nil, environment: environment)
+        try QwenTensorParallelMTPPolicy.require(model: admission.specification.model, lanes: batch.lanes,
+            keyed: credential != nil, paged: Self.pagedKV(environment), terms: speculativeTerms, environment: environment)
+        // The assistant's request-owned history needs the CBv2 paged backend;
+        // refuse before LOAD rather than at the first request.
+        guard speculativeTerms == nil || !(batch.requestOwned || batch.lanes > 1) || batch.backend == .paged else {
+            throw ProbeError("The Qwen27 TP assistant requires the paged batch KV backend")
+        }
+        if let tensorAssistantPolicy {
+            try tensorAssistantPolicy.validate()
+            guard admission.specification.model.rawValue == ClusterQwenTensorAssistantPolicy.runtimeModelID,
+                  speculativeTerms?.depth == tensorAssistantPolicy.depth, credential != nil,
+                  configuration.prefillSchedule == .serial else {
+                throw ProbeError("Saved tensor assistant policy differs from the native load")
+            }
+        }
+        let maximumSpeculativeWidth = try tensorAssistantPolicy?.maximumSpeculativeWidth(capacity: batch.lanes) ?? 1
         let mediaEnabled = admission.specification.model == .qwen38TwentySevenB && credential != nil
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
@@ -117,6 +145,10 @@ public final class QwenTensorParallelResidentRuntime {
         weak var retired: QwenTensorParallelModel?
         var batchHost: CBv2StageKVHost?
         var batchBudget: QwenTensorParallelBatchBudget?
+        var batchMTPBudget: QwenTensorParallelBatchMTPBudget?
+        var loadedMTPHead: QwenTensorParallelMTPHead?
+        var mtpHost: CBv2StageKVHost?
+        var mtpQuote: QwenTensorParallelMTPBudget?
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
             try admission.jaccl.requireUnchanged(environment: environment, read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
@@ -128,6 +160,18 @@ public final class QwenTensorParallelResidentRuntime {
                     } catch { try nativeError.check(); throw error }
                 }
             }
+            // Header-only assistant inventory precedes the peer agreement and
+            // every payload read. It is absent on the unchanged default path.
+            let mtpSource = speculativeTerms == nil ? nil : try prepareQwenResidentSource(admission, check: { try control.check() })
+            let mtpInventory = try mtpSource.map { try QwenTensorParallelMTPInventory(source: $0,
+                configuration: admission.configBytes, specification: admission.specification,
+                allocationBound: QwenResidentResourceEnvironment.allocationBound) }
+            if let tensorAssistantPolicy {
+                guard mtpInventory?.fingerprint == tensorAssistantPolicy.inventorySHA256 else {
+                    throw ProbeError("Saved tensor assistant inventory differs before payload reads")
+                }
+            }
+            let futureAssistant = mtpInventory?.loadBytes ?? 0
             // RDMA only: the sealed all-sum runs on the JACCL group itself.
             let collective = try Collective(transport: .jaccl)
             try admission.jaccl.requireUnchanged(environment: environment, read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
@@ -137,7 +181,10 @@ public final class QwenTensorParallelResidentRuntime {
             let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
             // Paged attention KV (`QwenTensorParallelPagedKV.swift`), bound into the agreement.
             let pagedKV = try Self.pagedKV(environment)
-            let fields = batch.agreementFields + mode.loadAgreementFields + loadAgreementFields(shares: shares)
+            let fields = try QwenTensorParallelMTPPolicy.fields(terms: speculativeTerms, inventory: mtpInventory)
+                + (tensorAssistantPolicy.map { [$0.schema, String($0.depth), $0.inventorySHA256] + $0.verificationArguments }
+                    ?? [])
+                + batch.agreementFields + mode.loadAgreementFields + loadAgreementFields(shares: shares)
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
                 + (mediaEnabled ? [ClusterQwenMedia.contract, Qwen3VLMediaProcessor.policyID] : [])
@@ -170,28 +217,63 @@ public final class QwenTensorParallelResidentRuntime {
                 let value = try autoreleasepool {
                     try QwenTensorParallelVerifiedLoad.load(admission, rank: collective.rank, shares: shares,
                         reduction: group, includeVision: mediaEnabled,
-                        requestAllowance: batch.lanes > 1 ? { profile, plan in
+                        requestAllowance: batch.requestOwned || batch.lanes > 1 || speculativeTerms != nil ? { profile, plan in
+                            if let terms = speculativeTerms, batch.requestOwned || batch.lanes > 1 {
+                                let quote = try QwenTensorParallelBatchMTPBudget.derive(geometry: profile.geometry, plan: plan,
+                                    tensors: profile.canonicalTensors, maximumTokens: admission.profile.maximumContextTokens,
+                                    promptTokens: admission.profile.maximumPromptTokens,
+                                    chunkSize: admission.profile.maximumChunkTokens, lanes: batch.lanes, depth: terms.depth,
+                                    maximumSpeculativeWidth: maximumSpeculativeWidth, rank: collective.rank,
+                                    allocationBound: QwenResidentResourceEnvironment.allocationBound)
+                                batchMTPBudget = quote; batchBudget = quote.target
+                                return quote.allowance.reservedBytes
+                            }
+                            if let terms = speculativeTerms {
+                                let quote = try QwenTensorParallelMTPBudget.derive(geometry: profile.geometry, plan: plan,
+                                    tensors: profile.canonicalTensors, maximumTokens: admission.profile.maximumContextTokens,
+                                    promptTokens: admission.profile.maximumPromptTokens,
+                                    chunkSize: admission.profile.maximumChunkTokens, depth: terms.depth,
+                                    rank: collective.rank, allocationBound: QwenResidentResourceEnvironment.allocationBound)
+                                mtpQuote = quote
+                                return quote.allowance.reservedBytes
+                            }
                             let quote = try QwenTensorParallelBatchBudget.derive(geometry: profile.geometry, plan: plan,
                                 tensors: profile.canonicalTensors, maximumTokens: admission.profile.maximumContextTokens,
                                 chunkSize: admission.profile.maximumChunkTokens, lanes: batch.lanes,
-                                paged: batch.backend == .paged, allocationBound: QwenResidentResourceEnvironment.allocationBound)
+                                paged: batch.backend == .paged, rank: collective.rank,
+                                allocationBound: QwenResidentResourceEnvironment.allocationBound)
                             batchBudget = quote
                             return quote.allowance.reservedBytes
-                        } : nil, check: checked)
+                        } : nil, additionalResidentBytes: futureAssistant, check: checked)
                 }
                 retired = value.model; loadedModel = value.model; shardReceipt = value.receipt; source = value.profile
                 loadedVision = value.vision; loadedVisionInventory = value.visionInventory
+                if let mtpSource, let mtpInventory {
+                    guard let requestAllowance = batchMTPBudget?.allowance ?? mtpQuote?.allowance else {
+                        throw ProbeError("Qwen TP assistant LOAD has no complete native request quote")
+                    }
+                    loadedMTPHead = try QwenTensorParallelMTPHead.load(source: mtpSource,
+                        configuration: admission.configBytes, inventory: mtpInventory,
+                        target: value.model, reduction: group,
+                        remainingResidentAllowanceBytes: requestAllowance.reservedBytes, check: checked)
+                    if batch.lanes == 1 && !batch.requestOwned {
+                        mtpHost = try CBv2StageKVHost(model: value.model.model, kind: .paged, lanes: 1,
+                            maximumTokensPerRequest: admission.profile.maximumContextTokens,
+                            maximumChunkTokens: max(admission.profile.maximumChunkTokens, speculativeTerms!.depth + 1))
+                    }
+                }
                 // Every request's attention keys and values live in this rank's page pool.
-                if pagedKV && batch.lanes == 1 { value.model.attentionPagePool = try value.model.makeAttentionPagePool(pageSize: Self.attentionPageTokens) }
-                if batch.lanes > 1 {
+                if pagedKV && batch.lanes == 1 && !batch.requestOwned { value.model.attentionPagePool = try value.model.makeAttentionPagePool(pageSize: Self.attentionPageTokens) }
+                if batch.requestOwned || batch.lanes > 1 {
                     batchHost = try CBv2StageKVHost(model: value.model.model, kind: batch.backend, lanes: batch.lanes,
                         maximumTokensPerRequest: admission.profile.maximumContextTokens,
-                        maximumChunkTokens: admission.profile.maximumChunkTokens)
+                        maximumChunkTokens: max(admission.profile.maximumChunkTokens, (speculativeTerms?.depth ?? 0) + 1))
                     batchHost?.report("qwen_tensor_parallel")
                 }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
                     value.receipt.storageCommitmentSHA256, value.receipt.planName]
-                    + (value.visionInventory.map { [$0.fingerprint] } ?? [])))
+                    + (value.visionInventory.map { [$0.fingerprint] } ?? [])
+                    + (mtpInventory.map { [$0.fingerprint] } ?? [])))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                     material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                     disagreementMessage: "Tensor-parallel peers did not load matching verified commitments",
@@ -203,7 +285,7 @@ public final class QwenTensorParallelResidentRuntime {
                     + " shares=\(shares.map(String.init).joined(separator: "-")) shard_bytes=\(value.receipt.shardBytes)"
                     + " source_bytes=\(value.receipt.sourceBytes) tensors=\(value.receipt.sourceTensors)"
                     + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)"
-                    + " lanes=\(batch.lanes) batch_policy=\(batch.lanes > 1 ? QwenTensorParallelBatchWire.agreement : "single")"
+                    + " lanes=\(batch.lanes) batch_policy=\(batch.requestOwned || batch.lanes > 1 ? QwenTensorParallelBatchWire.agreement : "single")"
                     + " paged_kv=\(pagedKV ? Self.attentionPageTokens : 0) page_bytes=\(value.model.attentionPagePool?.pageBytes ?? 0)")
                 try configuration.allocatorPolicy.prepareReady(
                     synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
@@ -216,15 +298,28 @@ public final class QwenTensorParallelResidentRuntime {
                     Memory.cacheLimit = bufferCacheBytes
                     try checked()
                 }
+                if let terms = speculativeTerms, let mtpInventory,
+                   let quote = batchMTPBudget?.allowance ?? mtpQuote?.allowance {
+                    log("darkbloom-tensor-parallel-mtp-load-v1 rank=\(collective.rank) depth=\(terms.depth)"
+                        + " capacity=\(batch.lanes) maximum_speculative_width=\(maximumSpeculativeWidth) assistant_bytes=\(mtpInventory.allocationBytes)"
+                        + " kv_backend=paged request_bytes=\(quote.reservedBytes) policy=\(QwenTensorParallelMTPPolicy.agreement)")
+                }
                 if let batchBudget {
-                    let allowance = QwenResidentRequestAllowance(stateBytes: batchBudget.allowance.reservedBytes,
-                        fusionBytes: 0, reservedBytes: batchBudget.allowance.reservedBytes,
+                    let complete = batchMTPBudget?.allowance ?? batchBudget.allowance
+                    let allowance = QwenResidentRequestAllowance(stateBytes: complete.reservedBytes,
+                        fusionBytes: 0, reservedBytes: complete.reservedBytes,
                         contextTokens: admission.profile.maximumContextTokens)
                     try allowance.requireLive()
                     try checked()
-                    return !mediaEnabled ? batchBudget.allowance.reservedBytes : max(batchBudget.allowance.reservedBytes,
+                    return !mediaEnabled ? complete.reservedBytes : max(complete.reservedBytes,
                         min(ClusterWorkerLimits.capacityBytes, Memory.memoryLimit,
                             Int(clamping: ProcessInfo.processInfo.physicalMemory)))
+                }
+                if let mtpQuote {
+                    let maximum = Self.mtpAllowance(mtpQuote)
+                    try maximum.requireLive(); try checked()
+                    return max(mtpQuote.allowance.reservedBytes, min(ClusterWorkerLimits.capacityBytes,
+                        Memory.memoryLimit, Int(clamping: ProcessInfo.processInfo.physicalMemory)))
                 }
                 let maximum = try Self.allowance(profile: source!, admission: admission,
                     maximumTokens: admission.profile.maximumContextTokens, chunkSize: admission.profile.maximumChunkTokens)
@@ -241,24 +336,45 @@ public final class QwenTensorParallelResidentRuntime {
             guard let loaded = loadedModel, let receipt = shardReceipt, let profile = source else {
                 throw ProbeError("Tensor-parallel load returned no shard")
             }
+            let assistantReady = try speculativeTerms.map { terms -> ClusterQwenTensorAssistantReady in
+                guard let mtpInventory, loadedMTPHead != nil else {
+                    throw ProbeError("Tensor assistant readiness precedes its verified resident head")
+                }
+                let policy = try tensorAssistantPolicy ?? .init(depth: terms.depth, inventorySHA256: mtpInventory.fingerprint)
+                return try .init(policy: policy, capacity: batch.lanes,
+                    maximumSpeculativeWidth: batchMTPBudget?.maximumSpeculativeWidth ?? 1)
+            }
             try control.loaded()
             let budget = prefixEnabled ? max(1, QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)) : 0
             return QwenTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: loaded, vision: loadedVision, visionInventory: loadedVisionInventory,
                 profile: profile, shares: shares,
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
-                prefix: QwenTensorParallelPrefixCache(budgetBytes: batch.lanes > 1 ? 0 : budget),
-                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchPrefixEnabled: prefixEnabled)
+                prefix: QwenTensorParallelPrefixCache(budgetBytes: batch.requestOwned || batch.lanes > 1 ? 0 : budget),
+                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget, batchPrefixEnabled: prefixEnabled,
+                mtpTerms: speculativeTerms, mtpHead: loadedMTPHead, mtpHost: mtpHost, mtpBudget: mtpQuote,
+                assistantReady: assistantReady)
         } catch {
-            let primary = error; control.fail(); batchHost = nil; loadedModel = nil
+            let primary = error
+            // The opt-in assistant borrows target weights. Retain every new
+            // LOAD root until the drain, including a partially loaded assistant
+            // carried by the original error. Nil MTP preserves legacy cleanup.
+            var mtpFailedRoots: [AnyObject] = speculativeTerms == nil ? []
+                : ([loadedModel, loadedVision, loadedMTPHead, mtpHost, batchHost] as [AnyObject?]).compactMap { $0 }
+            control.fail(); batchHost = nil; loadedModel = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try nativeError.check()
                 }
-                loadedVision = nil
+                loadedVision = nil; loadedMTPHead = nil; mtpHost = nil
                 (primary as? QwenStageVisionLoadFailure)?.releaseAfterCheckedDrain()
+                (primary as? QwenTensorParallelMTPLoadFailure)?.releaseAfterCheckedDrain()
+                mtpFailedRoots = []
                 guard retired == nil else { throw ProbeError("Tensor-parallel failed-load model remains retained") }
             } catch {
+                if speculativeTerms != nil {
+                    QwenTensorParallelMTPAbandonedLoad.shared.retain(primary, roots: mtpFailedRoots)
+                }
                 throw ProbeError("Tensor-parallel load failed (\(primary)); local cleanup failed (\(error))")
             }
             throw primary
@@ -270,13 +386,21 @@ public final class QwenTensorParallelResidentRuntime {
                  vision: QwenStageVision?, visionInventory: QwenStageVisionInventory?, profile: QwenRegisteredDenseModelProfile, shares: [Int], loadAgreement: String, capacity: Int,
                  receipt: QwenTensorParallelShardReceipt, linkProbe: ClusterWorkerLinkProbe?,
                  prefix: QwenTensorParallelPrefixCache, batchLanes: Int, batchHost: CBv2StageKVHost?,
-                 batchBudget: QwenTensorParallelBatchBudget?, batchPrefixEnabled: Bool) {
+                 batchBudget: QwenTensorParallelBatchBudget?, batchMTPBudget: QwenTensorParallelBatchMTPBudget?,
+                 batchPrefixEnabled: Bool, mtpTerms: QwenMTPTerms?,
+                 mtpHead: QwenTensorParallelMTPHead?, mtpHost: CBv2StageKVHost?, mtpBudget: QwenTensorParallelMTPBudget?,
+                 assistantReady: ClusterQwenTensorAssistantReady?) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
         self.codec = codec; self.model = model; self.profile = profile; self.shares = shares
         self.vision = vision; self.visionInventory = visionInventory
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe; self.prefix = prefix
         self.batchAllocationBaseline = Memory.activeMemory
         self.batchLanes = batchLanes; self.batchHost = batchHost; self.batchBudget = batchBudget
+        self.batchMTPBudget = batchMTPBudget
+        self.mtpTerms = mtpTerms; self.mtpHead = mtpHead; self.mtpHost = mtpHost
+        self.mtpPrefix = (batchMTPBudget?.prefix ?? mtpBudget?.prefix).map {
+            .init(enabled: batchPrefixEnabled, budgetBytes: $0.residentBytes)
+        }
         self.batchPrefix = batchBudget.map {
             .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
         }
@@ -284,7 +408,8 @@ public final class QwenTensorParallelResidentRuntime {
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe,
-            media: visionInventory != nil && collective.workerDataPlane?.encryptedAndVerified == true ? ClusterQwenMedia.contract : nil)
+            media: visionInventory != nil && collective.workerDataPlane?.encryptedAndVerified == true ? ClusterQwenMedia.contract : nil,
+            tensorAssistant: assistantReady)
     }
 
     /// One request's charge on a rank: the pipeline's conservative named state
@@ -341,6 +466,19 @@ public final class QwenTensorParallelResidentRuntime {
     }
 
     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+        if usesRequestOwnedSingleton {
+            // Capacity one reserves through the lane contract; a refusal there is
+            // this request's alone, named as the lane path names it (capacity or
+            // its own deadline), never `unsupported`.
+            do { return try reserveLane(requestID: requestID, request: value) }
+            catch let refusal as ClusterResidentRequestRefusal { throw refusal }
+            catch {
+                let reason: ClusterWorkerRefusal = DispatchTime.now().uptimeNanoseconds >= value.deadlineUptimeNanoseconds
+                    ? .deadline : .capacity
+                log("darkbloom-request-refused-v1 rank=\(collective.rank) reason=\(reason.rawValue)")
+                throw ClusterResidentRequestRefusal(reason: reason, message: String(describing: error))
+            }
+        }
         guard batchLanes == 1 else { throw ProbeError("Batched TP owners reserve through the lane contract") }
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
@@ -367,8 +505,18 @@ public final class QwenTensorParallelResidentRuntime {
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard model != nil else { throw ProbeError("Resident model already released") }
-            let charge = try Self.allowance(profile: profile, admission: admission, maximumTokens: request.maximumTokens,
-                chunkSize: min(request.chunkSize, request.promptCount))
+            let charge: (allowance: QwenResidentRequestAllowance, extraNativeBytes: Int)
+            if let terms = mtpTerms, request.qwenMedia == nil {
+                guard let model else { throw ProbeError("Tensor assistant lost its target") }
+                let quote = try QwenTensorParallelMTPBudget.derive(geometry: profile.geometry, plan: model.plan,
+                    tensors: profile.canonicalTensors, maximumTokens: request.maximumTokens,
+                    promptTokens: request.promptCount, chunkSize: min(request.chunkSize, request.promptCount), depth: terms.depth,
+                    rank: collective.rank, allocationBound: QwenResidentResourceEnvironment.allocationBound)
+                charge = (Self.mtpAllowance(quote), 0)
+            } else {
+                charge = try Self.allowance(profile: profile, admission: admission, maximumTokens: request.maximumTokens,
+                    chunkSize: min(request.chunkSize, request.promptCount))
+            }
             let extra = try QwenLongPrefillCheckedBytes.sum([charge.extraNativeBytes, mediaBudget?.nativeBytes ?? 0])
             let host = mediaBudget?.hostBytes ?? 0
             let total = try QwenLongPrefillCheckedBytes.sum([charge.allowance.reservedBytes, extra, host])
@@ -401,6 +549,10 @@ public final class QwenTensorParallelResidentRuntime {
     }
 
     public func releaseReservation(requestID: UUID) throws {
+        if usesRequestOwnedSingleton {
+            guard withdrawLane(requestID: requestID) else { throw ProbeError("Singleton TP release has no matching unstarted lane") }
+            return
+        }
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
@@ -415,10 +567,11 @@ public final class QwenTensorParallelResidentRuntime {
     public var capturesLogprobs: Bool { admission.specification.model == .qwen38TwentySevenB }
 
     public func start(requestID: UUID, tokens channel: ClusterCommittedTokenChannel) throws -> QwenResidentGenerationCompletion {
-        try start(requestID: requestID) { ordinal, token, frontier in
+        if usesRequestOwnedSingleton { return try startSingletonLane(requestID: requestID, channel: channel) }
+        return try start(requestID: requestID) { ordinal, token, frontier in
             // Sampling remains request-local and is disabled from the greedy
             // lookahead path; the pending raw row belongs to this token only.
-            let logprobs = self.reservation?.request.sampler?.takePendingLogprobs()
+            let logprobs = self.mtpCommittedLogprobs ?? self.reservation?.request.sampler?.takePendingLogprobs()
             try channel.publishToken(ordinal, token, frontier, logprobs)
             return try channel.answer()
         }
@@ -428,6 +581,11 @@ public final class QwenTensorParallelResidentRuntime {
     /// False requests an agreed clean stop; a thrown callback is a failure.
     public func start(requestID: UUID,
                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+        if usesRequestOwnedSingleton {
+            return try ClusterCommittedTokenChannel.answering(onCommittedToken) {
+                try startSingletonLane(requestID: requestID, channel: $0)
+            }
+        }
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         guard let reserved = reservation, reserved.request.requestID == requestID else {
@@ -447,7 +605,10 @@ public final class QwenTensorParallelResidentRuntime {
                             return result
                         }
                     }
-                    return try autoreleasepool { try generate(reserved, onCommittedToken: onCommittedToken, check: {}) }
+                    return try autoreleasepool {
+                        if mtpTerms != nil { return try generateMTP(reserved, onCommittedToken: onCommittedToken) }
+                        return try generate(reserved, onCommittedToken: onCommittedToken, check: {})
+                    }
                 }, prepare: { $0 })
             collective.logDataPlaneStatus()
             reservation = nil
@@ -459,7 +620,10 @@ public final class QwenTensorParallelResidentRuntime {
         }
     }
 
-    public func cancel(requestID: UUID) { control.cancel(requestID) }
+    public func cancel(requestID: UUID) {
+        if usesRequestOwnedSingleton { cancelLane(requestID: requestID) }
+        else { control.cancel(requestID) }
+    }
 
     public func shutdown() throws {
         guard operation.try() else { throw ProbeError("Cannot release a running native request") }
@@ -472,12 +636,16 @@ public final class QwenTensorParallelResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+                    try failedMTPDecoder?.retire()
+                    try failedMTPTarget?.retire()
+                    guard mtpHost?.isDrained ?? true else { throw ProbeError("Qwen TP assistant target histories remain owned") }
+                    failedMTPDecoder = nil; failedMTPTarget = nil; mtpHost = nil; mtpHead = nil; mtpCommittedLogprobs = nil
                     try failedBatchDriver?.retireAll()
                     guard batchHost?.isDrained ?? true else { throw ProbeError("Qwen TP batch histories remain owned") }
                     for reserved in batchBook.reservations() { try reserved.media?.releaseAfterCheckedDrain() }
                     batchBook.clear(); failedBatchDriver = nil; batchHost = nil
                     try reservation?.media?.releaseAfterCheckedDrain()
-                    prefix.sweep(); batchPrefix?.sweep()
+                    prefix.sweep(); batchPrefix?.sweep(); mtpPrefix?.sweep()
                     weak var releasedVision = vision
                     vision = nil
                     guard releasedVision == nil else { throw ProbeError("Tensor-parallel vision model remains retained") }

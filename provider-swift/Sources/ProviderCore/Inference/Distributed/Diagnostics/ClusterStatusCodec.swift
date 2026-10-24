@@ -35,8 +35,10 @@ enum ClusterStatusCodec {
               ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
               // At most the most batch lanes a pair runs (`DistributedRequestQueue.maximumLanes`).
               (0...8).contains(value.acquisitions), value.session.members.count == 2,
-              DistributedInstalledSpeculation(mode: binding.generationMode,
-                  everyMemberAdvertisesHead: binding.peers.allSatisfy { $0.supportedGenerationModes.contains(.phaseSplitMTP) })
+              // The saved setup's own speculation (its binding derives it as the
+              // session does), so a resident tensor assistant reads as running.
+              DistributedInstalledSpeculation.reasons.contains(binding.speculationOffReason),
+              DistributedInstalledSpeculation(enabled: binding.speculationEnabled, offReason: binding.speculationOffReason)
                   == .init(enabled: value.session.mtpEnabled, offReason: value.session.mtpOffReason),
               value.session.nativeBootstrapOwnerAuthenticated == value.session.nativeBootstrap.ownerAuthenticated,
               // S16: a verified peer only on an encrypted data plane, and only once both ranks are observed ready.

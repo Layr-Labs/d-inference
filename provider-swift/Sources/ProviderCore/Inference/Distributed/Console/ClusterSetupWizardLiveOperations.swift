@@ -39,6 +39,9 @@ extension ClusterSetupOperations {
         /// In-memory selection from the private local CLI; never a serving grant.
         public var privateMiMoImageQualification = false
         public var privateGLMImageQualification = false
+        /// An explicit test/qualification override. Normal setup discovers the
+        /// catalog model's embedded assistant and pins the native quote.
+        public var tensorAssistants: [String: ClusterQwenTensorAssistantPolicy] = [:]
         public var privateImageQualification: Bool { privateMiMoImageQualification || privateGLMImageQualification }
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
@@ -546,6 +549,9 @@ final class LiveContext: @unchecked Sendable {
         } catch {
             return .failed("the model folders could not be listed: \(clean(ClusterConsoleText.bounded(error)))")
         }
+        let mtpMode: MTPMode
+        do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
+        catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -576,7 +582,53 @@ final class LiveContext: @unchecked Sendable {
                 capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, fallback: error)))
             }
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
-            return .init(model: model, layout: layout, capability: capability, tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest))
+            let assistantQuote: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>?
+            var targetFallback: Result<ClusterPlacementTensorBatchQuote, ClusterSetupFailure>? = nil
+            var discoveredWidening: ClusterPlacementTensorBatchQuote?, fallbackWidening: ClusterPlacementTensorBatchQuote?
+            if !settings.privateImageQualification,
+               case .success(let admittedValue) = capability,
+               admittedValue.record.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID {
+                do {
+                    let admitted = admittedValue.record, measured = try layout.get()
+                    let chunk = description.derivesRequestLimits
+                        ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: admitted.runtimeModelID,
+                            artifactSHA256: admitted.artifactSHA256, layoutMaximum: measured.maximumChunkTokens,
+                            capabilityMaximum: admitted.profile.maximumChunkTokens).tokens : description.chunkTokens
+                    if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
+                       let policy = settings.tensorAssistants[model.modelID] {
+                        assistantQuote = .success(try ClusterPlacementTensorAssistantSelection.read(tool: tool,
+                            modelDirectory: directory.path, policy: policy, promptTokens: admitted.profile.maximumPromptTokens,
+                            outputTokens: admitted.profile.maximumOutputTokens, lanes: 1, chunkTokens: chunk, deadline: deadline()))
+                    } else {
+                        let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                            modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                            mode: mtpMode, chunkTokens: chunk, deadline: deadline())
+                        assistantQuote = discovered.map { .success($0) }
+                        // Capacity changes keep the shares, so the first widening's complete
+                        // quote steers the initial split; without it the choice is speed-only.
+                        if discovered != nil {
+                            discoveredWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                                mode: mtpMode, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                        }
+                        // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
+                        if discovered?.assistant != nil {
+                            do {
+                                targetFallback = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                    modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                                    mode: .off, chunkTokens: chunk, deadline: deadline()).map { .success($0) }
+                            } catch { targetFallback = .failure(ClusterSetupFailure(error)) }
+                            fallbackWidening = try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                                mode: .off, chunkTokens: chunk, deadline: deadline(), lanes: 2)
+                        }
+                    }
+                } catch { assistantQuote = .failure(ClusterSetupFailure(error)) }
+            } else { assistantQuote = nil }
+            return .init(model: model, layout: layout, capability: capability,
+                tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest), tensorAssistantQuote: assistantQuote,
+                targetFallbackQuote: targetFallback, tensorWideningQuote: discoveredWidening,
+                targetFallbackWideningQuote: fallbackWidening)
         }
         // The profiles are kept for the serving leader's per-request route; the speed
         // records of requests this pair served join the measurements (the next plan).

@@ -13,7 +13,8 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
     public let sharedWorkspaceEveryRankBytes: Int
     public let tensorParallelQuote: ClusterPlacementTensorBatchQuote?
     public var supportedModes: [ClusterGenerationMode] {
-        tensorParallelQuote == nil ? [.pipeline] : [.pipeline, .tensorParallel]
+        if tensorParallelQuote?.assistant != nil { return [.tensorParallel] }
+        return tensorParallelQuote == nil ? [.pipeline] : [.pipeline, .tensorParallel]
     }
 
     public init(request: ClusterPlacementRequestScope, lanes: Int,

@@ -130,4 +130,65 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         var incompatible = p; incompatible.modes = [.pipelineMTP]
         try ClusterPlacementBatchScope(request: request, lanes: 2, tensorParallelQuote: q).apply(to: &incompatible, layout: layout)
     }
+    let assistantPolicy = try ClusterQwenTensorAssistantPolicy(depth: 4,
+        inventorySHA256: String(repeating: "a", count: 64))
+    let assistant = try ClusterPlacementTensorAssistantQuote(policy: assistantPolicy,
+        residentBytes: gib, loadBytes: 5 * gib, largestAllocationBytes: gib)
+    for lanes in [1, 2, 4, 8] {
+        let base = try quote(max(2, lanes))
+        let value = try ClusterPlacementTensorBatchQuote(request: request, lanes: lanes, chunkTokens: 128,
+            perLaneStateBytes: 4 * gib, sharedBytesExcludingCollectives: 80 * gib,
+            allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                requestBytesExcludingCollectives: lanes * 4 * gib + 80 * gib,
+                maximumCollectivePayloadBytes: base.allowance.maximumCollectivePayloadBytes,
+                maximumCollectiveFrameBytes: base.allowance.maximumCollectiveFrameBytes,
+                allocationBound: { (($0 + 16383) / 16384) * 16384 }), assistant: assistant)
+        // Every scope prices the reference request its caller plans.
+        var p = ClusterPlacementPolicy(); p.leader = "a"
+        p.promptTokens = request.promptTokens; p.outputTokens = request.outputTokens
+        if lanes == 1 { try value.applySingleton(to: &p, layout: layout) }
+        else { try ClusterPlacementBatchScope(request: request, lanes: lanes, tensorParallelQuote: value).apply(to: &p, layout: layout) }
+        let planned = try ClusterPlacementPlanner.plan(devices: fast, layout: layout, policy: p, link: link)
+        let candidate = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
+            prefillSchedule: .serial, layout: layout, policy: p, link: link)
+        checks.require("TP assistant \(lanes): no pipeline can silently omit the saved assistant", planned.chosen?.mode == .tensorParallel)
+        checks.require("TP assistant \(lanes): complete future head and request coexist through LOAD",
+            zip(candidate.ranks, noBatchReservation.ranks).allSatisfy {
+                $0.loadNeedBytes == $1.loadNeedBytes + value.allowance.reservedBytes + assistant.loadBytes
+                    && $0.weightsBytes == $1.weightsBytes + assistant.residentBytes
+            })
+        var headAllocator = try JSONSerialization.jsonObject(with: fast[0].profile.encoded()) as! [String: Any]
+        headAllocator["allocatorLimitBytes"] = candidate.ranks[0].weightsBytes
+            + value.allowance.reservedBytes + assistant.loadBytes - assistant.residentBytes
+            + max(largest, assistant.largestAllocationBytes) + fast[0].profile.memory.allocatorHeadroomBytes - 1
+        let headProfile = try ClusterDeviceProfile.decode(JSONSerialization.data(withJSONObject: headAllocator))
+        let headLimited = try ClusterPlacementPlanner.evaluate(devices: [
+            .init(label: "a", profile: headProfile, speed: fast[0].speed), fast[1]], cuts: [], mode: .tensorParallel,
+            prefillSchedule: .serial, layout: layout, policy: p, link: link)
+        checks.require("TP assistant \(lanes): allocator also holds the future constructor and read buffers",
+            headLimited.ranks[0].hardwareFits == false && headLimited.ranks[1].hardwareFits == true)
+        checks.require("TP assistant \(lanes): roundtrip preserves versioned policy and full ledger",
+            try ClusterPlacementTensorBatchQuote.decode(JSONEncoder().encode(value)) == value
+                && value.schema != ClusterPlacementTensorBatchQuote.schemaName)
+        try value.requireAssistant(assistantPolicy)
+        checks.refuses("TP assistant \(lanes): absent saved policy cannot borrow assistant quote", because: "saved assistant policy") {
+            try value.requireAssistant(nil)
+        }
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as! [String: Any]
+        object["assistant"] = nil
+        checks.refuses("TP assistant \(lanes): stripped assistant cannot become a legacy quote", because: "tensor batch quote") {
+            _ = try ClusterPlacementTensorBatchQuote.decode(JSONSerialization.data(withJSONObject: object))
+        }
+        object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as! [String: Any]
+        object["schema"] = ClusterPlacementTensorBatchQuote.schemaName
+        checks.refuses("TP assistant \(lanes): old schema cannot ignore head residency", because: "tensor batch quote") {
+            _ = try ClusterPlacementTensorBatchQuote.decode(JSONSerialization.data(withJSONObject: object))
+        }
+        if lanes == 1 {
+            checks.refuses("TP assistant singleton: no concurrent scope fabricated", because: "priced native pipeline batch scope") {
+                _ = try ClusterPlacementBatchScope(request: request, lanes: 1, tensorParallelQuote: value)
+            }
+        }
+    }
+
 }

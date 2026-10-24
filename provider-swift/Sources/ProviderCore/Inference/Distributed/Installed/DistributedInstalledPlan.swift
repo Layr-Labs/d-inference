@@ -265,6 +265,9 @@ struct DistributedInstalledPlan: Sendable {
                   hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID) else {
             return nil
         }
+        // The assistant quote admits exactly this capacity. A diagnostic
+        // environment override cannot enlarge its resident histories.
+        if configuration.tensorAssistant != nil { return configuration.batchLanes ?? 1 }
         guard let raw = environment[Self.batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
         guard let value = Int(raw), (1...8).contains(value) else { return 1 }
         return value
@@ -367,6 +370,9 @@ struct DistributedInstalledPlan: Sendable {
                   && $0 - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds }) ?? true,
               attachment?.profile == bootstrap.ownerProfile else {
             throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
+        }
+        guard configuration.tensorAssistant == nil || (dataPlane && startupDeadline != nil) else {
+            throw ClusterConfigurationError.invalid("A saved tensor assistant requires keyed transport and a bounded startup")
         }
         let mediaArguments = try ClusterMiMoPrivateImagePolicy.launchArguments(capability,keyed:dataPlane,startupGuard:startupDeadline != nil)
         let id = binding.identity

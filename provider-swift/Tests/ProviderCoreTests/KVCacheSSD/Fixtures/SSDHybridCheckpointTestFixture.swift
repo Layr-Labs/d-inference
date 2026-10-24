@@ -68,7 +68,6 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
                    keyFingerprint: String = "fixture-key",
-                   writeQueueJobs: Int = 1,
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
@@ -80,8 +79,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             backendLayout: backendLayout,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,
             maxStageMillis: 1000, minEffectiveTokens: 256, ttlSeconds: 3600, strictFsync: false,
-            nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {},
-            writeQueueJobs: writeQueueJobs),
+            nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: diskBudgetBytes, maintainWholeRoot: {}),
             kekKey: key, kvBudget: useGlobalBudget ? budget : nil, diskBudget: diskBudget,
             maxWriteBytesPerDay: maxWriteBytesPerDay, writeBudget: writeBudget,
             donationRecorder: donationRecorder, writeNowSeconds: writeNowSeconds)
@@ -125,6 +123,24 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         let source = try source(position: position, chunkSize: chunkSize)
         return await withCheckedContinuation { continuation in
             store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: "tenant-a") { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Starts a donation without awaiting its settlement, so later donations
+    /// can queue behind a blocked writer. `onSettled` runs inside the store's
+    /// completion callback, which for an admitted job runs on the writer.
+    func startDonation(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,
+                       scope: String = "tenant-a",
+                       onSettled: @escaping @Sendable () -> Void = {}) throws -> Task<[Int], Never> {
+        let source = try source(position: position, scope: scope)
+        let tokens = self.tokens
+        return Task {
+            await withCheckedContinuation { continuation in
+                store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: scope) {
+                    onSettled()
+                    continuation.resume(returning: $0)
+                }
+            }
         }
     }
 

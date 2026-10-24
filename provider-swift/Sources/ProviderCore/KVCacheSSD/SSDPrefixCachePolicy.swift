@@ -16,7 +16,6 @@
 // TTFT-oracle window). SEC-035 stays the accepted residual.
 
 import Foundation
-import MLXLMCommon
 
 enum SSDPrefixCachePolicy {
 
@@ -233,8 +232,17 @@ enum SSDPrefixCachePolicy {
 
     /// Max donation jobs buffered behind the serial write-behind consumer
     /// (the CheckpointCapturePipeline in-flight cap pattern). Overflow
-    /// DROPS the donation — the engine is never back-pressured.
-    static let writeQueueMaxJobs = 2
+    /// DROPS the donation — the engine is never back-pressured. The
+    /// complete-checkpoint store applies the same bound to its unsettled
+    /// jobs, the one being written included. The count is not the memory
+    /// bound: attention jobs must also fit the queued-byte cap below, and a
+    /// queued complete checkpoint holds only donor state and I/O scratch
+    /// that stay charged to the admission or process memory ledger. The
+    /// engine ends a complete-checkpoint donor's stream and releases its
+    /// state only after all its checkpoints settle, so under write backlog a
+    /// deeper queue trades stream-end latency and longer-held donor memory
+    /// for fewer dropped checkpoints.
+    static let writeQueueMaxJobs = 6
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
     /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB
@@ -244,19 +252,4 @@ enum SSDPrefixCachePolicy {
     static let writeQueueMaxBytes = 512 * 1_048_576
     /// Headroom above `maxStageBytes` in the effective queue-byte cap.
     static let writeQueueSlackBytes = 256 * 1_048_576
-
-    /// Complete-checkpoint donations a store holds behind the one it is
-    /// writing; more settle `write_queue_full`. A donor offers its checkpoints
-    /// one at a time, so this bounds donors that finish together. Every GLM
-    /// donor of a burst captures (the SDK capture-boundary partition), and on
-    /// an M5 Ultra two donors finishing within 27 ms lost both of one donor's
-    /// files to a single slot. A queued GLM donation pins its donor's pages
-    /// and KDA copies, which stay charged to the admission ledger until the
-    /// write settles; a 32k donation writes in about 0.3 s.
-    static let glm5NextCompleteCheckpointWriteQueueJobs = 8
-
-    static func completeCheckpointWriteQueueJobs(backendLayout: String) -> Int {
-        backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
-            ? glm5NextCompleteCheckpointWriteQueueJobs : 1
-    }
 }

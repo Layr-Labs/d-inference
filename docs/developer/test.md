@@ -1248,7 +1248,10 @@ and JPEG questions and an image beside a text request.
 against the engine's and, at every step the relay served, against a cold
 prefill of the prompt and the tokens before it, twice: with thinking off up to
 the end of turn, and with thinking on for a 48-token reply that ends inside
-reasoning, whose 48 entries must all ride reasoning chunks.
+reasoning, whose 48 entries must all ride reasoning chunks. Each served value
+must be within 0.35 nats of the reference, and the served token the reference
+argmax unless the reference prefers another token by at most 0.7 nats, a swap
+two values within the bound allow.
 `DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
 makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.

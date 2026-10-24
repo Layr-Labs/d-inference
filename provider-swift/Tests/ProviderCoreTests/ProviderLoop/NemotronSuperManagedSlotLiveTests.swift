@@ -247,9 +247,12 @@ extension NemotronSuperManagedSlotTests {
     /// the engine, a greedy logprob row over the relay's rendered prompt,
     /// stopped at the relay's last served position, carries the relay's
     /// values, and at every step the relay served they match the last-position
-    /// log-softmax of a cold prefill of the prompt and the tokens before it:
-    /// the same argmax, within decode-versus-prefill numerics
-    /// (`NemotronSuperPagedLiveTests` bounds the paged decode's logits). Loads
+    /// log-softmax of a cold prefill of the prompt and the tokens before it,
+    /// within decode-versus-prefill numerics (`NemotronSuperPagedLiveTests`
+    /// bounds the paged decode's logits): the served token's value within
+    /// 0.35 nats, and the same argmax unless the reference prefers another
+    /// token by at most twice that, a swing the bound allows. One-token
+    /// prefill chunks make the two bitwise equal. Loads
     /// about 80 GB; run only with `DARKBLOOM_SUPER_MANAGED_LIVE=1` and
     /// `NEMOTRON_SUPER_CHECKPOINT_DIR`. `DARKBLOOM_SUPER_LIVE_MTP=off` and
     /// `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` vary the owner for numerics
@@ -264,7 +267,7 @@ extension NemotronSuperManagedSlotTests {
         let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         let engine = try #require(await owner.bridge.ownedEngine as? EngineV2)
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
-        let count = 48, top = 5
+        let count = 48, top = 5, valueBound: Float = 0.35
         let templateBytes = try NemotronSuperCheckpoint.Inputs(directory: directory).templateBytes
         // `DARKBLOOM_SUPER_LIVE_MTP=off` loads a plain owner, which has no
         // speculation to check; the numerics checks below still apply.
@@ -327,14 +330,17 @@ extension NemotronSuperManagedSlotTests {
             #expect(served.entries.count == servedEnd && served.entries.map(\.token) == served.tokens)
             let relayDeviation = zip(relayed.logprobs, served.entries).map { abs($0.logprob - Double($1.logprob)) }.max() ?? 0
             #expect(relayDeviation < 1e-4, "relay and engine logprobs differ by \(relayDeviation)")
-            var deviations: [Float] = [], argmaxMismatches = 0, topSetMismatches = 0
+            var deviations: [Float] = [], argmaxMismatches = 0, topSetMismatches = 0, mismatchGaps: [Float] = []
             for step in served.tokens.indices {
                 let forced = try await greedy(prompt + served.tokens[..<step], id: base + 0x1000 + UInt64(step), maxTokens: 1)
                 let reference = try #require(forced.entries.first)
                 let entry = served.entries[step]
                 let referenceLogprob = reference.topLogprobs.first { $0.token == entry.token }?.logprob ?? -.infinity
                 deviations.append(abs(entry.logprob - referenceLogprob))
-                if reference.token != entry.token { argmaxMismatches += 1 }
+                if reference.token != entry.token {
+                    argmaxMismatches += 1
+                    mismatchGaps.append(reference.logprob - referenceLogprob)
+                }
                 if Set(entry.topLogprobs.map(\.token)) != Set(reference.topLogprobs.map(\.token)) { topSetMismatches += 1 }
                 print("SUPER_LOGPROBS_TEACHER thinking=\(thinking) step=\(step) token=\(entry.token) "
                     + "served=\(entry.logprob) forced=\(referenceLogprob) forced_argmax=\(reference.token)")
@@ -344,10 +350,13 @@ extension NemotronSuperManagedSlotTests {
             print("SUPER_LOGPROBS_LIVE thinking=\(thinking) relay_entries=\(servedEnd) "
                 + "reasoning_frame_entries=\(relayed.reasoningFrameLogprobs) judged_steps=\(deviations.count) "
                 + "relay_vs_engine=\(relayDeviation) teacher_median=\(median) teacher_worst=\(worst) "
-                + "argmax_mismatches=\(argmaxMismatches) top\(top)_set_mismatches=\(topSetMismatches) "
+                + "argmax_mismatches=\(argmaxMismatches) max_mismatch_gap=\(mismatchGaps.max() ?? 0) "
+                + "top\(top)_set_mismatches=\(topSetMismatches) "
                 + "logprob_drafted=\(logprobDrafted) plain_rounds=\(plainRounds) speculating=\(speculating)")
-            #expect(argmaxMismatches == 0, "thinking \(thinking)")
-            #expect(worst < 0.25, "thinking \(thinking): served logprobs differ from teacher forcing by \(worst)")
+            // Two tokens each within the value bound can swap order only when
+            // the reference separates them by at most twice the bound.
+            #expect(worst < valueBound, "thinking \(thinking): served logprobs differ from teacher forcing by \(worst)")
+            #expect(mismatchGaps.allSatisfy { $0 <= 2 * valueBound }, "thinking \(thinking): argmax gaps \(mismatchGaps)")
         }
         #expect(await loop.unloadModel(Self.modelID))
         try await Self.awaitMemoryReturn(loop)

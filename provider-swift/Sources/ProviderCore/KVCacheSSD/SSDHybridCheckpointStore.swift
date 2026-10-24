@@ -103,8 +103,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
-        // Every buffered job is still in `writing`, so a buffer as deep as
-        // that gate never refuses a job it admitted; the gate alone bounds it.
+        // A buffered job keeps its `writing` entry, so a buffer as deep as the
+        // `prepareWriteJob` gate never drops a job that gate admitted, even one
+        // admitted after the writer settles a job but before it dequeues the
+        // next. The gate alone bounds the queue.
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: SSDPrefixCachePolicy.writeQueueMaxJobs,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },

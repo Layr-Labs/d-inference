@@ -53,21 +53,11 @@ struct SSDCheckpointFleetWritePriorityTests {
         defer { barrier.release() }
         store.afterPublishBeforeIndexForTesting = { try? barrier.block() }
         store.registerDonationDemand(.init(repeatedPrefixTokens: 5_120), requestID: .init(8))
-        func donation(position: Int) throws -> Task<[Int], Never> {
-            let source = try fixture.source(position: position)
-            return Task {
-                await withCheckedContinuation { continuation in
-                    store.donate(source, requestID: .init(8), tokens: fixture.tokens, cacheSalt: "tenant-a") {
-                        continuation.resume(returning: $0)
-                    }
-                }
-            }
-        }
         // The bound counts the job being written: it plus five queued fill it.
-        let first = try donation(position: 1_024)
+        let first = try fixture.startDonation(store, receipt: 8, position: 1_024)
         try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
         let queuedPositions = [2_048, 3_072, 4_096, 256, 512]
-        let queued = try queuedPositions.map { try donation(position: $0) }
+        let queued = try queuedPositions.map { try fixture.startDonation(store, receipt: 8, position: $0) }
         try await SSDCheckpointCoordinationTestSupport.waitUntil {
             store.lock.withLock { store.writing.count == 6 }
         }

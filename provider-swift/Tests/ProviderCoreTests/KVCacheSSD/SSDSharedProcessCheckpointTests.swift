@@ -160,24 +160,16 @@ struct SSDSharedProcessCheckpointTests {
         defer { barrier.release() }
         store.afterPublishBeforeIndexForTesting = { try? barrier.block() }
         // Distinct cache scopes give the same boundary distinct checkpoint tags.
-        func donation(scope: String) throws -> Task<[Int], Never> {
-            let source = try fixture.source(scope: scope)
-            return Task {
-                await withCheckedContinuation { continuation in
-                    store.donate(source, requestID: .init(85), tokens: fixture.tokens, cacheSalt: scope) {
-                        continuation.resume(returning: $0)
-                    }
-                }
-            }
-        }
-        let first = try donation(scope: "tenant-a")
+        let first = try fixture.startDonation(store, receipt: 85, scope: "tenant-a")
         try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
-        let queued = try ["tenant-b", "tenant-c", "tenant-d"].map { try donation(scope: $0) }
+        let queued = try ["tenant-b", "tenant-c", "tenant-d"].map {
+            try fixture.startDonation(store, receipt: 85, scope: $0)
+        }
         try await SSDCheckpointCoordinationTestSupport.waitUntil {
             store.lock.withLock { store.writing.count == 4 }
         }
         #expect(budget.processLedger.snapshot().chargedBytes == 4 * scratch)
-        #expect(try await donation(scope: "tenant-e").value.isEmpty)
+        #expect(try await fixture.startDonation(store, receipt: 85, scope: "tenant-e").value.isEmpty)
         #expect(store.stats().writeHostCapacityRefusals == 1)
         #expect(outcomes.snapshot().first { $0.outcome == .hostMemoryUnavailable }?.count == 1)
         #expect(outcomes.snapshot().first { $0.outcome == .writeQueueFull } == nil)

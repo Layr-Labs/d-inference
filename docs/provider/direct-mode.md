@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -227,8 +227,9 @@ managed slot through the ordinary local acquisition and run on its owner
 (`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
 the controls in the table below apply, prefix reuse uses one partition per
 local endpoint (an image turn reuses only checkpoints of the same images at the
-same positions), and inline images are served as described below, target-only on
-the default speculating owner. Other routes for that id
+same positions), a text response's `usage.prompt_tokens_details.cached_tokens`
+counts the prompt tokens it restored, and inline images are served as described
+below, target-only on the default speculating owner. Other routes for that id
 (`/v1/completions`, `/v1/responses`) are refused; the generic engine never
 serves Super. Standalone mode (`darkbloom start --local`) does not list it.
 

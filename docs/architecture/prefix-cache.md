@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-24
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -407,7 +407,9 @@ reservations described above.
 Only the recurrent bank currently publishes resident-ready routing evidence.
 It requires verified weight and prompt-contract identities to advertise
 `prefix_cache_memory_models`; local reuse can operate without the attested
-weight hash because entries never cross loaded model instances. Paged resident
+weight hash because entries never cross loaded model instances. The managed
+Nemotron Super owner supplies them from its own load
+(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see [`inference.md`](inference.md)). Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
 [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).

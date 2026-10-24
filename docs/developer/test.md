@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -982,6 +982,9 @@ servers for HTML/Markdown negotiation, real 404s, discovery, canonical/structure
 metadata, sitemaps and OpenAPI validation. Pricing uses a local HTTP upstream,
 including unavailable/malformed responses. Preserve framework `Vary` tokens and
 `Accept` across alternating representations when upgrading Next.js.
+Developer and contact coverage checks browser/RSC 404s, explicit and negotiated
+Markdown, agent discovery links, and their absence from human navigation and
+the XML sitemap.
 
 `landing/tests/story-gestures.test.mjs` covers pointer, wheel and keyboard input,
 vertical-scroll passthrough, controls, cancellation and listener cleanup through

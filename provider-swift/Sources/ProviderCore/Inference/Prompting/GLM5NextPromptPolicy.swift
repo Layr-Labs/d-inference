@@ -80,6 +80,11 @@ enum GLM5NextPromptPolicy {
         var excludesReasoning = false
         var effort: Effort?
         var clearThinking: Bool?
+        /// `clear_thinking` as OpenRouter's `reasoning.context` spells it:
+        /// `current_turn` keeps only the reasoning returned after the last
+        /// user turn (true), `all_turns` every turn's (false); `auto`, the
+        /// default, is nil.
+        var contextClearThinking: Bool?
         var hasOriginalTools = false
         var originalTools: [OpenAITool]?
         /// Reasoning returned on assistant turns as OpenRouter's `reasoning`
@@ -95,8 +100,14 @@ enum GLM5NextPromptPolicy {
             init?(intValue: Int) { return nil }
         }
 
-        /// Responses summary levels. The full reasoning is returned for each.
-        private static let summaryLevels: Set<String> = ["auto", "concise", "detailed"]
+        /// `reasoning` members that change nothing: Responses summary levels,
+        /// because the full reasoning is returned for each, and OpenRouter's
+        /// standard reasoning mode (`pro` selects a variant GLM does not have).
+        private static let noOpReasoningMembers: [String: Set<String>] = [
+            "summary": ["auto", "concise", "detailed"],
+            "generate_summary": ["auto", "concise", "detailed"],
+            "mode": ["standard"],
+        ]
 
         init() {}
         init(from decoder: any Decoder) throws { self = Self.capture(from: decoder) }
@@ -197,11 +208,10 @@ enum GLM5NextPromptPolicy {
                 if try present(root, "reasoning", nullable: true) {
                     let reasoning = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
                     for key in reasoning.allKeys
-                    where !["effort", "enabled", "exclude", "max_tokens"].contains(key.stringValue) {
-                        // An unset member or a summary level changes nothing.
+                    where !["effort", "enabled", "exclude", "max_tokens", "context"].contains(key.stringValue) {
                         guard try !reasoning.decodeNil(forKey: key) else { continue }
-                        guard ["summary", "generate_summary"].contains(key.stringValue),
-                            try summaryLevels.contains(reasoning.decode(String.self, forKey: key))
+                        guard let accepted = noOpReasoningMembers[key.stringValue],
+                            try accepted.contains(reasoning.decode(String.self, forKey: key))
                         else {
                             result.invalid = true
                             break
@@ -210,6 +220,14 @@ enum GLM5NextPromptPolicy {
                     nestedEffort = try effort(reasoning, "effort", nullable: true)
                     try thinkingSwitch(reasoning, "enabled", nullable: true)
                     try exclusionSwitch(reasoning, "exclude", excludingValue: true, nullable: true)
+                    if try present(reasoning, "context", nullable: true) {
+                        switch try reasoning.decode(String.self, forKey: Key("context")) {
+                        case "auto": break
+                        case "all_turns": result.contextClearThinking = false
+                        case "current_turn": result.contextClearThinking = true
+                        default: throw GLM5NextPromptPolicy.invalid("unsupported reasoning context")
+                        }
+                    }
                     if try present(reasoning, "max_tokens", nullable: true) {
                         let budget = try reasoning.decode(Int.self, forKey: Key("max_tokens"))
                         guard budget > 0 else {
@@ -244,7 +262,7 @@ enum GLM5NextPromptPolicy {
         func validate() throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
-                    "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, and Boolean clear_thinking and reasoning switches")
+                    "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, reasoning.context auto/all_turns/current_turn, reasoning.mode standard, and Boolean clear_thinking and reasoning switches")
             }
             guard !excludesReasoning else {
                 throw MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
@@ -253,6 +271,17 @@ enum GLM5NextPromptPolicy {
             guard !(disablesThinking && requestsThinking) else {
                 throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
             }
+            _ = try resolvedClearThinking(explicit: clearThinking)
+        }
+
+        /// The template's `clear_thinking`: the explicit Boolean, else the one
+        /// `reasoning.context` spells, else `false`. A context that contradicts
+        /// the explicit Boolean is refused.
+        func resolvedClearThinking(explicit: Bool?) throws -> Bool {
+            if let explicit, let contextClearThinking, explicit != contextClearThinking {
+                throw GLM5NextPromptPolicy.invalid("reasoning.context cannot contradict clear_thinking")
+            }
+            return explicit ?? contextClearThinking ?? false
         }
 
         /// The returned text of one message: its `reasoning` string, else its
@@ -312,9 +341,10 @@ enum GLM5NextPromptPolicy {
         guard !(thinkingOff && thinkingOn) else {
             throw invalid(contradictoryThinking)
         }
+        let clearThinking = try raw.resolvedClearThinking(explicit: controls.clearThinking ?? raw.clearThinking)
         var context: [String: any Sendable] = [
             "reasoning_effort": (nested ?? top ?? raw.effort ?? .max).rawValue,
-            "clear_thinking": controls.clearThinking ?? raw.clearThinking ?? false,
+            "clear_thinking": clearThinking,
         ]
         if thinkingOff { context[thinkingOffContextKey] = false }
         return context

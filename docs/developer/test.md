@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -198,6 +198,11 @@ only the shipped template is recognized and passes the load-time render check.
 `openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
 returned-reasoning tool turn through the coordinator and local HTTP paths to the
 rendered prompt, with each of its reasoning spellings and controls.
+`reasoningContextRendersEveryGoldenLikeItsClearThinkingSpelling` replaces each
+golden's `clear_thinking` with OpenRouter's equivalent `reasoning.context` and
+must still match it byte for byte; `currentTurnReasoningContextRendersLikeClearThinking`
+and `reasoningContextContradictingClearThinkingIsRefused` cover the current
+turn and the refused contradictions.
 `capturedOpenRouterToolRequestIsServed` and
 `capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
 `strict` weather-tool requests, held byte for byte and hash-checked, with tool
@@ -219,7 +224,11 @@ protocol v1. Each served JSON or forced submission must carry no token
 constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
 evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
 a logprobs row that the same check refuses for a native engine without logprobs
-capture. The scripted completions prove the
+capture. `openRouterSecretWordReasoningReturnIsServed` serves OpenRouter's
+secret-word `reasoning-content-return` turn (a `get_time` call whose returned
+reasoning holds the word) with each reasoning carrier, the strict declaration,
+empty-string arguments and `reasoning.context`/`reasoning.mode`; the reasoning
+must render in the call's thinking block. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
 

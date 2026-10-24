@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 import Testing
 @testable import ProviderCore
 
@@ -248,6 +249,53 @@ func concurrentLoadersConvergeOnOneReplacement() async throws {
     let entry = try #require(try storage.load())
     #expect(try keys.first == current.unwrap(entry))
 }
+
+@Test
+func secureEnclaveUnwrapCallsOnlyAnUnopenableCiphertextUnusable() {
+    func replacesEntry(_ error: PersistentEnclaveKeyError) -> Bool {
+        if case .authenticationFailed = SecureEnclaveKeyWrappingService.unwrapError(error) { return true }
+        return false
+    }
+    // How the Secure Enclave reports a ciphertext sealed to another key,
+    // tampered or truncated.
+    #expect(replacesEntry(.signingFailed(status: errSecParam, message: "ECIES: Failed to aes-gcm decrypt data")))
+    #expect(replacesEntry(.signingFailed(status: errSecDecode, message: "")))
+    // Failing to reach or use the key says nothing about the entry.
+    for status in [errSecInteractionNotAllowed, errSecAuthFailed, errSecUnimplemented, errSecInternalError] {
+        #expect(!replacesEntry(.signingFailed(status: status, message: "")), "OSStatus \(status)")
+    }
+    #expect(!replacesEntry(.secureEnclaveUnavailable))
+    #expect(!replacesEntry(.missingEntitlement))
+}
+
+#if DEBUG
+@Test
+func kekReplacesAnEntrySealedToAReplacedSecureEnclaveKey() async throws {
+    guard PersistentEnclaveKey.isAvailable else {
+        print("Skipping Secure Enclave KEK replacement test: Secure Enclave not available")
+        return
+    }
+    // Transient Secure Enclave keys need no keychain entitlement, and the
+    // entry lives in memory. The second key stands in for a re-minted identity.
+    let storage = InMemoryWrappedKEKStorage(identifier: UUID().uuidString)
+    let before = SecureEnclaveKeyWrappingService(enclaveKey: try PersistentEnclaveKey.makeTransient())
+    let stranded = try await KVCacheKEK(wrapper: before, storage: storage).loadOrCreate()
+    let strandedEntry = try #require(try storage.load())
+
+    let after = SecureEnclaveKeyWrappingService(enclaveKey: try PersistentEnclaveKey.makeTransient())
+    do {
+        _ = try after.unwrap(strandedEntry)
+        Issue.record("an entry sealed to another Secure Enclave key opened")
+    } catch KeyWrappingError.authenticationFailed(_) {
+        // The Secure Enclave's own report for a stranded entry.
+    }
+    let replaced = try await KVCacheKEK(wrapper: after, storage: storage).loadOrCreate()
+    let raw = replaced.withUnsafeBytes { Data($0) }
+    #expect(raw != stranded.withUnsafeBytes { Data($0) })
+    let entry = try #require(try storage.load())
+    #expect(try after.unwrap(entry) == raw, "the replacement is sealed to the current key")
+}
+#endif
 
 @Test
 func saveIfAbsentDoesNotOverwriteExisting() async throws {

@@ -204,7 +204,9 @@ extension ProviderLoop {
             mode: backend.mtpMode,
             configuredConcurrency: explicit ? engineV2MaxConcurrent(forModel: modelID) : nil,
             kvBytesCapacity: kvBytesCapacity, pinned: nemotronSuperSlotLoader.pinned,
-            physicalBytes: nemotronSuperSlotLoader.physicalBytes)
+            physicalBytes: nemotronSuperSlotLoader.physicalBytes,
+            depthByRequests: NemotronSuperServingPolicy.defaultDepthByRequests(
+                chipFamily: loopConfig.hardware.chipFamily))
     }
 
     private func nemotronSuperMTPStatus(speculates: Bool) -> MTPActivationStatus {

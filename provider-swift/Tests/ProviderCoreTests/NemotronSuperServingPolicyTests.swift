@@ -132,6 +132,31 @@ struct NemotronSuperServingPolicyTests {
         #expect(grant > 25_926_570_879)
     }
 
+    /// The M5 Ultra drafts only while few requests decode: its measured table
+    /// ends target-only, and the owner's round reservation shrinks with it.
+    @Test func m5DefaultDepthTableDecodesTargetOnlyFromFiveRequests() throws {
+        #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5) == [3, 2, 1, 1, 0])
+        for family in [ChipFamily.m3, .m4, .m2, .unknown] {
+            #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: family) == [3, 2, 2, 2, 1])
+        }
+        let m5 = NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5)
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 << 30, physicalBytes: Self.machine, depthByRequests: m5)
+        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3,2,1,1,0")
+        let setting = try #require(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment))
+        #expect(setting == .init(depth: 3, verification: .rectangularExact, adaptive: false,
+                                 depthByRequests: [3, 2, 1, 1, 0]))
+        let config = NemotronSuperLocalMTP.config(setting, requests: 8)
+        #expect(config.fixedDraftTokens == 3 && config.fixedDraftTokensByDecodeRows == [3, 2, 1, 1, 0])
+        #expect(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8, environment: plan.environment)
+            <= NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8))
+        // An operator's table still wins over the chip default.
+        let pinned = NemotronSuperServingPolicy.loadPlan(
+            base: [NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 << 30, physicalBytes: Self.machine, depthByRequests: m5)
+        #expect(pinned.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
+    }
+
     /// The depth key takes one depth, `auto` or a width table; malformed or
     /// out-of-range tables fail the load.
     @Test func depthTablesResolveOrRefuse() throws {
@@ -142,7 +167,8 @@ struct NemotronSuperServingPolicyTests {
         }
         #expect(try resolve(" 3, 2 ,1") == .init(depth: 3, depthByRequests: [3, 2, 1]))
         #expect(try resolve("1,2") == .init(depth: 2, depthByRequests: [1, 2]))
-        for bad in ["3,0", "3,,1", "4,1", "3,x", "1,1,1,1,1,1,1,1,1"] {
+        #expect(try resolve("3,2,1,1,0") == .init(depth: 3, depthByRequests: [3, 2, 1, 1, 0]))
+        for bad in ["0,0", "3,,1", "4,1", "3,x", "3,-1", "1,1,1,1,1,1,1,1,1"] {
             #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve(bad) }
         }
         #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve("2,1", "serial") }

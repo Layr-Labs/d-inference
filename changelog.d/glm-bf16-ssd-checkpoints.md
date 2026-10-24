@@ -1,4 +1,5 @@
 ### Half-size GLM SSD checkpoints
 
 - GLM-5.3-Flash complete checkpoints now write the latent keys, the index/gate/validity rows and the KDA convolution history at their BF16 activation dtype instead of the FP32 copies the live pool keeps, and widen them back to the same FP32 bits on restore. The accumulated KDA recurrent state stays FP32. A 30,720-token checkpoint drops from 1.24 GB to 0.72 GB (per token 35.4 KB → 18.5 KB), so each donation queues, writes and charges the daily SSD write budget for 18-48 % fewer bytes, a restore stages about 25 % faster on an M5 Ultra, and prompts up to the full 262K context fit the large-memory staging cap.
+- Restores also validate the GLM validity flags by visiting only that column (one element in 257) instead of every element, about 50 ms less per 30,720-token restore.
 - The export refuses any value BF16 cannot represent exactly, so a restore is never lossy. The layout is now `native-paged-glm5next-full-state-v2`; existing v1 files sit in a different namespace and expire through the normal TTL sweep. Providers lose their warm GLM checkpoints once on upgrade.

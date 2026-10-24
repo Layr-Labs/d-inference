@@ -553,9 +553,9 @@ Either way the coordinator can send the slot a cache scope, and a request
 reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
 and its cache usage through the request's own usage signal, as on the generic
 engine. Image checkpoints have no durable layout, so only the bank reuses
-image turns. A
-cancelled stream bills delivered output and the reference prompt length, and
-reports cache usage only when the native terminal already recorded it. Inline JPEG and PNG images (`data:` URIs, within the
+image turns. A cancelled stream bills delivered output and the reference
+prompt length, and reports cache usage only when the native terminal already
+recorded it. Inline JPEG and PNG images (`data:` URIs, within the
 [image format reference](../reference/nemotron-super-image-formats.md) limits)
 run on the owner's image binding. On the default speculating owner every image
 request is target-only for its whole lifetime: the engine prefills and decodes

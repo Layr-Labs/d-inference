@@ -151,12 +151,12 @@ extension NemotronSuperManagedSlotTests {
         }
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         // The coordinator echoes the store's checkpoint boundary mode.
-        #expect(capability.readyBoundaryMode == PrefixCacheV2Capability.checkpointBoundaryMode)
-        let mode = PrefixCacheV2Capability.checkpointBoundaryMode
+        let boundaryMode = PrefixCacheV2Capability.checkpointBoundaryMode
+        #expect(capability.readyBoundaryMode == boundaryMode)
         // Fleet-novel: looked up, not written.
         let novel = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
             cacheReceiptNonce: "nonce-novel", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
-            cacheReceiptBoundaryMode: mode)
+            cacheReceiptBoundaryMode: boundaryMode)
         let novelUsage = try #require(Self.usage(novel.terminal))
         #expect(novelUsage.cacheOutcome == .missAbsent && novelUsage.cacheTier == .ssd)
         try await Task.sleep(for: .milliseconds(200))
@@ -165,7 +165,7 @@ extension NemotronSuperManagedSlotTests {
         // Its repeat on this provider is written.
         let repeated = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
             cacheReceiptNonce: "nonce-repeat", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
-            cacheReceiptBoundaryMode: mode)
+            cacheReceiptBoundaryMode: boundaryMode)
         #expect(Self.usage(repeated.terminal)?.cachedTokens == 0)
         let writeDeadline = ContinuousClock.now + .seconds(10)
         while Self.ready(recorder, nonce: "nonce-repeat") == nil, ContinuousClock.now < writeDeadline {
@@ -177,7 +177,7 @@ extension NemotronSuperManagedSlotTests {
 
         let warm = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
             cacheReceiptNonce: "nonce-warm", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
-            cacheReceiptBoundaryMode: mode)
+            cacheReceiptBoundaryMode: boundaryMode)
         let warmUsage = try #require(Self.usage(warm.terminal))
         #expect(warmUsage.cacheOutcome == .hit && warmUsage.cacheTier == .ssd)
         #expect(warmUsage.cachedTokens == 512 && warmUsage.prefillTokensSaved == 512)
@@ -188,7 +188,7 @@ extension NemotronSuperManagedSlotTests {
 
         let other = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
             scope: "tenant-b", cacheReceiptNonce: "nonce-other", prefixCacheProtocol: 2,
-            cacheRepeatedPrefixTokens: 0, cacheReceiptBoundaryMode: mode)
+            cacheRepeatedPrefixTokens: 0, cacheReceiptBoundaryMode: boundaryMode)
         #expect(Self.usage(other.terminal)?.cacheOutcome == .missAbsent)
         #expect(SuperSSE(other.sse).content == SuperSSE(novel.sse).content)
 

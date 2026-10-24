@@ -174,10 +174,6 @@ struct NemotronSuperDurablePrefixCacheTests {
 
     /// The store scans its root before it advertises or restores.
     static func ready(_ owner: NemotronSuperLocalBridgeBuilder.Owner) async -> Bool {
-        for _ in 0 ..< 500 {
-            if owner.bridge.prefixCacheModelStatus().state == .ready { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return owner.bridge.prefixCacheModelStatus().state == .ready
+        await Evidence.eventually { owner.bridge.prefixCacheModelStatus().state == .ready }
     }
 }

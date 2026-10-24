@@ -813,6 +813,7 @@ extension ProviderLoop {
                 logWarning: { slotLogger.warning($0) })
         }
         let bridge = bundle.bridge
+        reportPrefixCacheFailure(bridge.prefixCacheModelStatus())
 
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
@@ -834,5 +835,19 @@ extension ProviderLoop {
                     + "[kv=\(bridge.kvBackendKind.rawValue)]")
         }
         return bundle
+    }
+
+    /// A slot whose SSD store did not start serves uncached until it next
+    /// loads. Say so where operators look: a fixed public line for
+    /// `darkbloom logs`, and the model, cause and fix in `provider.log`.
+    func reportPrefixCacheFailure(_ status: PrefixCacheModelStatus) {
+        guard status.state == .error else { return }
+        logger.warning(.prefixCacheUnavailable)
+        let cause = status.reason.rawValue + (status.detail.map { ": \($0.rawValue)" } ?? "")
+        let fix = PrefixCacheDiagnosis.advice(
+            state: status.state.rawValue, reason: status.reason.rawValue, detail: status.detail?.rawValue
+        )?.fix.map { " Fix: \($0)" } ?? ""
+        FileHandle.standardError.write(Data(
+            "WARN: SSD prefix cache unavailable for \(status.modelId) (\(cause)); serving uncached until the model reloads.\(fix)\n".utf8))
     }
 }

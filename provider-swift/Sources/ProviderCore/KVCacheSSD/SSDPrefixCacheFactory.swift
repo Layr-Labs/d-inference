@@ -19,10 +19,11 @@ import MLXLMCommon
 import os
 #endif
 
-/// Typed SSD store construction refusal. Telemetry and the local `/metrics`
-/// `prefix_cache_status` `detail` label carry the raw value; the heartbeat
-/// status keeps the coordinator's closed `PrefixCacheStatusReason` vocabulary.
-public enum SSDPrefixCacheConstructionFailure: String, Sendable {
+/// Typed SSD store construction refusal. Telemetry, the local `/metrics`
+/// `prefix_cache_status` `detail` label and the heartbeat status's optional
+/// `detail` carry the raw value behind an error; the status `reason` keeps the
+/// coordinator's closed `PrefixCacheStatusReason` vocabulary.
+public enum SSDPrefixCacheConstructionFailure: String, Codable, Sendable, CaseIterable {
     case missingWeightHash = "missing_weight_hash"
     case unsupportedPlan = "unsupported_plan"
     case unsafePath = "unsafe_path"
@@ -34,6 +35,9 @@ public enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case identityUnavailable = "identity_unavailable"
     case layoutUnavailable = "layout_unavailable"
     case writeBudgetUnavailable = "write_budget_unavailable"
+    /// Not a refusal: a built store was closed with its slot (unload,
+    /// retirement or engine recovery) while the slot was still reported.
+    case cacheClosed = "cache_closed"
 }
 
 enum SSDPrefixCacheFactory {

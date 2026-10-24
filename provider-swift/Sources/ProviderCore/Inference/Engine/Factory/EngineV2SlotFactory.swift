@@ -444,7 +444,8 @@ enum EngineV2SlotFactory {
             replayStrategy: ssdHybridCheckpointStore == nil
                 ? PrefixCacheReplayStrategy(attentionPreparation.capability) : .direct,
             state: attentionPreparation.status.state,
-            reason: attentionPreparation.status.reason)
+            reason: attentionPreparation.status.reason,
+            detail: attentionPreparation.status.failure)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild

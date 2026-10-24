@@ -118,7 +118,8 @@ extension EngineV2Bridge {
             checkpointBackendLayout: ssdHybridCheckpointStore?.config.backendLayout,
             mtpEnabled: snapshot.configured,
             mtpActive: snapshot.active,
-            mtpInactiveReason: snapshot.fallbackReason?.rawValue)
+            mtpInactiveReason: snapshot.fallbackReason?.rawValue,
+            prefixCache: prefixCacheModelStatus())
     }
 
     /// The producer for the v0.8.0 MTP and paged-pool telemetry fields.

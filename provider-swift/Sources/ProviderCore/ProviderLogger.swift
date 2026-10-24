@@ -171,4 +171,5 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
 
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
+    case prefixCacheUnavailable = "SSD prefix cache did not start for a loaded model; it serves uncached. Run {cli} status."
 }

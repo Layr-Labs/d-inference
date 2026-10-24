@@ -42,19 +42,25 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
     public let replayStrategy: PrefixCacheReplayStrategy
     public let state: PrefixCacheStatusState
     public let reason: PrefixCacheStatusReason
+    /// The typed store refusal behind an `error` state, for example
+    /// `key_unavailable` behind `cache_init_failed`; nil otherwise. Optional
+    /// and omitted when nil, so coordinators that predate it ignore it.
+    public let detail: SSDPrefixCacheConstructionFailure?
 
     public init(
         modelId: String,
         backend: PrefixCacheStatusBackend,
         replayStrategy: PrefixCacheReplayStrategy,
         state: PrefixCacheStatusState,
-        reason: PrefixCacheStatusReason
+        reason: PrefixCacheStatusReason,
+        detail: SSDPrefixCacheConstructionFailure? = nil
     ) {
         self.modelId = modelId
         self.backend = backend
         self.replayStrategy = replayStrategy
         self.state = state
         self.reason = reason
+        self.detail = state == .error ? detail : nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +69,7 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case replayStrategy = "replay_strategy"
         case state
         case reason
+        case detail
     }
 }
 

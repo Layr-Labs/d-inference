@@ -144,7 +144,8 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
-GLM5-Next uses `native-paged-glm5next-full-state-v2`: asymmetric
+Without an effective checkpoint profile, GLM5-Next uses
+`native-paged-glm5next-full-state-v2`: asymmetric
 latent/index/gate/validity rows, the KDA convolution history and the exact FP32
 KDA recurrent state, plus the MTP prefix tensors at their own native dtypes. The
 live pool and state keep these rows in FP32, but the latent keys, the `[index
@@ -197,6 +198,7 @@ for bit; older latent rows are approximate
 A donation also writes the 2,048-token anchor, so a 30,720-token donation
 writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
 the 7 GiB large-memory staging cap.
+See the [GLM integration gates](../design/glm53-flash-native.md).
 
 The managed `nvidia-nemotron-3.5-super` slot writes
 `native-paged-affine-checkpoint-full-recurrent-mtp-v1` while it speculates and
@@ -212,7 +214,7 @@ MTP frontier, 173.9 MB) stay exact.
 | 8,192 tokens | 249.5 MB | 204.0 MB |
 | 30,720 tokens | 457.2 MB | 284.9 MB |
 | Per token | 9.2 KB | 3.6 KB |
-See the [GLM integration gates](../design/glm53-flash-native.md).
+
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.

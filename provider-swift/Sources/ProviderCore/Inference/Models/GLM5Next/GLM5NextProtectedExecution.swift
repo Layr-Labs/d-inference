@@ -78,10 +78,10 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
     /// / `no` / `off` selects the serial single-proposal profile instead.
     static let rectangularVerifyEnvironmentKey = "DARKBLOOM_GLM_RECTANGULAR_VERIFY"
     static let rectangularDepth = 3
-    /// Decode rows one rectangular window verifies together. Two speculating
-    /// rows decode about 20% faster than two target-only rows on an M5 Ultra;
-    /// at three or more rows the wider verify costs about as much as the
-    /// accepted drafts save, so wider steps decode target-only.
+    /// Decode rows one rectangular window verifies together. On an M5 Ultra two
+    /// speculating rows decode about 20% faster than two target-only rows, but
+    /// speculating three or four rows cost about 5% of aggregate throughput (the
+    /// wider verify outweighs the accepted drafts), so wider steps decode target-only.
     static let rectangularSpeculativeBatch = 2
 
     static func verification(

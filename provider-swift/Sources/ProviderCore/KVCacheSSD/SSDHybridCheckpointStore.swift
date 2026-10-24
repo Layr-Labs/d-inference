@@ -54,6 +54,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
     #endif
     let statsBox = SSDHybridCheckpointStatsBox()
+    let stageCost: SSDCheckpointStageCost
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
@@ -103,6 +104,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
+        self.stageCost = SSDCheckpointStageCost(
+            priorOverheadMilliseconds: SSDCheckpointStageCost.priorOverheadMilliseconds(
+                backendLayout: config.backendLayout))
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },

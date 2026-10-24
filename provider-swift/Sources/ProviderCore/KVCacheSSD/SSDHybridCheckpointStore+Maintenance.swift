@@ -235,7 +235,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return (proof, PrefixCacheReadyResult(
                 readyTokens: Int(latest.tokenCount), requiredRecomputeTokens: 0,
                 expectedPrefillTokensSaved: Int(latest.tokenCount), tier: .ssd,
-                stageMs: SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: maximumFileBytes),
+                stageMs: stageCost.estimatedMilliseconds(bytes: maximumFileBytes),
                 finalAnchor: latest, readyAnchors: proof.anchors))
         }
         if let delivery { delivery.0.callback(delivery.1) }

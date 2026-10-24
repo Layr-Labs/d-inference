@@ -1,0 +1,3 @@
+### Realistic GLM restore estimates in cache receipts
+
+- A complete-checkpoint ready receipt now advertises what a restore of the file actually costs on this provider, not only its read time at the 1.5 GB/s planning rate. GLM-5.3-Flash restores take about 0.9 s beyond their bytes on an M5 Ultra, so the old estimate was a third to a half of the measured stage (478 ms for a 716 MB checkpoint that restores in 1.1–1.4 s; 125 ms for a 187 MB one that takes 1.0–1.1 s). The estimate now adds a running average of the store's own measured restores beyond their byte price, starting from the measured GLM value, so the coordinator no longer overstates the saving of short cached GLM prompts.

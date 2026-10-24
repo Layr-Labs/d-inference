@@ -159,25 +159,22 @@ activations keeps every role FP32. The retired all-FP32
 `native-paged-glm5next-full-state-v1` spelling is refused, and its different
 layout epoch keeps v1 files outside a v2 store's namespace until the TTL sweep
 removes them. The shared narrowing/widening helper is
-`CheckpointHalfPrecision.swift`
+`CBv2CheckpointHalfPrecision`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHalfPrecision.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
 
-| GLM-5.3-Flash checkpoint at | v1 (all FP32) | v2 (BF16 activation roles) |
-|---|---:|---:|
-| 2,048 tokens | 228.5 MB | 187.1 MB (-18 %) |
-| 8,192 tokens | 445.8 MB | 300.5 MB (-33 %) |
-| 30,720 tokens | 1,242.8 MB | 716.4 MB (-42 %) |
-| Per token | 35.4 KB | 18.5 KB (-48 %) |
-| Fixed part (mostly the FP32 KDA recurrent state) | 156.0 MB | 149.3 MB |
+| `glm-5.3-flash` checkpoint (DBK3 file, measured on an M5 Ultra) | Size |
+|---|---:|
+| 2,048 tokens | 187.1 MB |
+| 8,192 tokens | 300.5 MB |
+| 30,720 tokens | 716.4 MB |
+| Per token | 18.5 KB |
+| Fixed part (mostly the FP32 KDA recurrent state) | 149.3 MB |
 
-Sizes are DBK3 files measured on an M5 Ultra (v1: 0.10.1; v2: the same build
-with this layout). A donation also writes the 2,048-token anchor, so a 30,720-token
-donation writes 1,471 MB at v1 and 904 MB at v2. Smaller files charge
-proportionally less of the daily write cap. A full 262,144-token context
-checkpoint is about 5.0 GB at v2, inside the 7 GiB large-memory staging cap; at
-v1 it was about 9.4 GB, so prompts above about 208,000 tokens could not stage.
+A donation also writes the 2,048-token anchor, so a 30,720-token donation
+writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
+the 7 GiB large-memory staging cap.
 See the [GLM integration gates](../design/glm53-flash-native.md).
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary

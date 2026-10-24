@@ -671,13 +671,12 @@ full-artifact qualification. Source lives under
 [in-progress integration contract](../design/glm53-flash-native.md) for the
 required paged, complete-prefix and trained-MTP gates.
 
-The target also declares which complete-checkpoint roles are FP32 copies of BF16
-activations: the latent keys, the `[index keys, pool gates, validity]` values
-row and the KDA convolution history (`GLM5NextTextModel.glm5NextPagedPayloadStorage`,
-derived from the loaded weights' dtypes with the forward's own promotion). The
-paged binding passes that to the checkpoint codec, which writes those roles at
-BF16 and widens them back to the same FP32 bits on import; the FP32 recurrent
-state is written as is
+The target also declares the activation dtype that the latent keys, the
+`[index keys, pool gates, validity]` values row and the KDA convolution history
+only widen to FP32 (`GLM5NextTextModel.glm5NextPagedPayloadStorage`, derived
+from the loaded weights' dtypes with the forward's own promotion). The paged
+binding passes it to the complete-checkpoint codec, which stores those roles at
+that dtype and widens them back exactly on import
 ([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 
 An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)

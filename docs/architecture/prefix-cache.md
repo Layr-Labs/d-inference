@@ -141,12 +141,10 @@ The full-state codec adds the distinct
 `native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
 and exact convolution/recurrence state
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
-The latent, index/gate/validity and convolution roles are written at the
-activation dtype they were widened from (BF16 for `glm-5.3-flash`) and widened
-back to the same FP32 bits on restore; the FP32 KDA recurrent state is written
-as is. This roughly halves the per-token payload. The retired all-FP32 v1 files
-fall outside the new layout epoch's namespace
-([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
+Roles that only widen an activation dtype are stored at that dtype and widened
+back exactly on restore; the
+[SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
+the roles, their wire dtypes and the retired v1 layout.
 Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,

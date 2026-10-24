@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-24
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -125,7 +125,13 @@ TTL limits ordinary cache reuse, not physical retention: detached or inaccessibl
 media can retain ciphertext and metadata indefinitely. TTL/LRU deletion requires the
 selected volume to be mounted and accessible. Destroying the installation KEK
 provides a cryptographic purge for retained encrypted copies; it does not erase
-their bytes or visible metadata.
+their bytes or visible metadata. A Keychain KEK sealed to a Secure Enclave key
+that no longer exists (the attestation key's self-repair re-mints it;
+`darkbloom unenroll` deletes it) can never be unwrapped again, so the provider
+replaces it with a fresh KEK sealed to the current key, and each store wipes
+the files it can no longer read when it next starts
+(`provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift`). A failure to
+reach the key, such as a locked keychain, leaves the entry untouched.
 Restart scanning seeds freshness from file modification times, so TTL is not
 an anti-rollback guarantee against a malicious disk replaying data and metadata.
 

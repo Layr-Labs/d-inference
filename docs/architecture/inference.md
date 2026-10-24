@@ -327,25 +327,25 @@ streaming split of the request and keeps the entries gathered so far only when
 that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
 
 The contract matches vLLM and SGLang: `logprobs.content` has one entry per
-generated token, in generation order, reasoning tokens included. Joined, the
-entry tokens spell the reasoning text and then the answer text, not the answer
-alone; they also include the `</think>` marker that ends the reasoning, which
-neither `reasoning_content` nor `content` shows. A stream's reasoning chunks
-carry their tokens' entries and its content chunks theirs. An entry rides the
-chunk that carries its token or a neighbouring one: a token that renders
-nothing, such as the marker, rides the next chunk that shows text, and the
-frames loop drains whatever the bridge has appended. Order and exactly-once are
-exact, so clients accumulate entries across chunks. A complete response carries
-the same entries as one list. A response that ends while reasoning (its
-`max_tokens` spent) carries an entry for every token. Tokens that no shown text
-follows carry none, such as the stop token that ends a `stop` finish and a tool
-call that ends the reply. Text after them carries their entries on every path:
-Super's own call turns end with a newline after `</tool_call>`, whose chunk
-carries the call's entries, and a held JSON answer, which shows only at the
-end, carries every entry before it, the stop token's included. On the
-coordinator relay `ProviderLoop.logprobsCoverReasoning` selects this contract
-for the Super owner and GLM5-Next; other models attach entries to content
-chunks only.
+generated token, in generation order, covering reasoning, answer and tool-call
+tokens. Joined, the entry tokens spell the reasoning text and then the answer
+text, not the answer alone; they also include the `</think>` marker that ends
+the reasoning, which neither `reasoning_content` nor `content` shows. A
+stream's reasoning chunks carry their tokens' entries and its content chunks
+theirs. An entry rides the chunk that carries its token or a neighbouring one:
+a token that renders nothing, such as the marker or a tool call's tokens, rides
+the next chunk that shows text, and the frames loop drains whatever the bridge
+has appended. Order and exactly-once are exact, so clients accumulate entries
+across chunks. A complete response carries the same entries as one list. A
+response that ends while reasoning (its `max_tokens` spent) carries an entry
+for every token. Tokens that no shown text follows carry none, such as the stop
+token that ends a `stop` finish. Super's tool-call tokens therefore lack
+entries only in the rare case that nothing follows the call: its own call turns
+end with a newline after `</tool_call>`, whose chunk carries the call's
+entries. A held JSON answer, which shows only at the end, carries every entry
+before it, the stop token's included. On the coordinator relay
+`ProviderLoop.logprobsCoverReasoning` selects this contract for the Super owner
+and GLM5-Next; other models attach entries to content chunks only.
 
 A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
 target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`

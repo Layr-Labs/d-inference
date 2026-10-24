@@ -48,6 +48,16 @@ build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundati
 # profile sampler below it. No Metal device is opened by these CPU checks.
 awk '/^\/\/\/ This Mac.s device profile v2/{exit} {print}' \
   "$task_sources/Coordinator/NativePairMemberRoster.swift" > "$task_build/NativePairMemberRoster.swift"
+# The plan step's run and the embedded tensor assistant's discovery need the
+# whole provider (the provider configuration's MTP mode, the speculative
+# decoding store); the full Provider suite compiles them.
+task_placement=()
+for task_source in "$task_sources"/Inference/Distributed/Placement/*.swift; do
+  case "$(basename "$task_source")" in
+    ClusterPlacementFlow+Run.swift|ClusterPlacementTensorAssistantSelection.swift) ;;
+    *) task_placement+=("$task_source") ;;
+  esac
+done
 build_module InstalledContract \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
@@ -75,7 +85,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
   "$task_sources/Inference/Distributed/Onboarding/DistributedAutomaticBatchAttempt.swift" \
-  "$task_sources"/Inference/Distributed/Placement/*.swift \
+  "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \

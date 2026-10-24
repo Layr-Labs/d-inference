@@ -244,8 +244,10 @@ private func reject(_ body: () throws -> Void) throws {
             && DistributedInstalledSpeculation(configuration: speculative.configuration, capability: speculative.capability).enabled,
             "a setup naming the speculative phase split does not report MTP on")
         try require(validation(speculative).first?.outcome == .passed, "the speculative phase split failed the doctor")
+        // The 27B is saved only in tensor parallel, the one mode that keeps its images, video and committed-token logprobs.
         let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
-            advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
+            generationMode: ClusterGenerationMode.tensorParallel.rawValue, advertisedModes: all + [.tensorParallel],
+            registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
         // The owner's serving (2026-10-14 08:45): any Apple silicon runs any rank of the 27B, and the doctor passes it.
         for chip in ["Apple M3 Ultra", "Apple M5 Max", "Apple M4 Max"] {
             let granted = validation(big, chip: chip)

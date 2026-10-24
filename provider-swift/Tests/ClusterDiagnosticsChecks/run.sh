@@ -45,6 +45,26 @@ build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterPro
 build_module DarkbloomClusterRemote "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
 build_module MLXLMCommon "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
 build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
+# The automatic batch setup's adoption transaction checks its replacement with
+# the supervisor handoff, which diagnostics never adopt; the installed-session
+# checks build both and exercise them.
+task_installed=()
+for task_source in "$task_sources"/Inference/Distributed/Installed/*.swift; do
+  case "$(basename "$task_source")" in
+    ClusterAutomaticBatchSetupTransaction.swift) ;;
+    *) task_installed+=("$task_source") ;;
+  esac
+done
+# The plan step's run and the embedded tensor assistant's discovery need the
+# whole provider (the provider configuration's MTP mode, the speculative
+# decoding store); the full Provider suite compiles them.
+task_placement=()
+for task_source in "$task_sources"/Inference/Distributed/Placement/*.swift; do
+  case "$(basename "$task_source")" in
+    ClusterPlacementFlow+Run.swift|ClusterPlacementTensorAssistantSelection.swift) ;;
+    *) task_placement+=("$task_source") ;;
+  esac
+done
 build_module InstalledContract \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
@@ -63,11 +83,11 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
-  "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "${task_installed[@]}" \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
-  "$task_sources"/Inference/Distributed/Placement/*.swift \
+  "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \

@@ -233,9 +233,12 @@ extension ClusterConsoleCheck {
         expect(nine?.plan?.fitsNow == true, "the 9B fits now on the captured memory")
         expect([4, 8, 12, 16].contains(nine?.plan?.cut ?? -1), "the 9B's cut is one the runtime admits: \(nine?.plan?.cut ?? -1)")
         expect(nine?.plan?.absolute == false, "without measurements the figures are relative and say so")
+        // The 27B keeps images, video and committed-token logprobs only in tensor parallel, which its captured worker
+        // does not describe: it is refused in those words, never offered a pipeline mode that would drop them.
         let big = options.first { $0.model.modelID == "EigenLabs/Qwen3.8-27B-4bit-mtp" }
-        expect(big?.blocker == nil && big?.plan?.leaderID == "mac-a", "the 27B is planned with this Mac leading")
-        // Every family the runtime serves is offered: each captured folder is planned with this Mac leading,
+        expect(big?.plan == nil && big?.blocker?.contains(ClusterModelFeaturePolicy.unavailable) == true,
+            "the 27B is refused for its features, not planned in a pipeline: \(big?.blocker ?? "planned")")
+        // Every other family the runtime serves is offered: each captured folder is planned with this Mac leading,
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
@@ -261,6 +264,12 @@ extension ClusterConsoleCheck {
             // A model the pair may not serve with this build is not offered at all (checked below).
             if let described = try? reading.capability.get(),
                ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: reading.model.modelID) { continue }
+            // Nor is a model whose worker describes no mode that keeps its features (the 27B, above).
+            if let described = try? reading.capability.get(), ClusterModelFeaturePolicy.admissibleModes(described.record).isEmpty {
+                expect(option?.plan == nil && option?.blocker?.contains(ClusterModelFeaturePolicy.unavailable) == true,
+                    "\(reading.model.modelID) is refused for its features: \(option?.blocker ?? "planned")")
+                continue
+            }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
@@ -288,8 +297,10 @@ extension ClusterConsoleCheck {
         expect(measuredNine?.absolute == true && measuredNine?.measured == true, "the 9B's figures are measured: \(String(describing: measuredNine))")
         expect((measuredNine?.firstTokenSeconds ?? 0) > 0.5 && (measuredNine?.firstTokenSeconds ?? 99) < 30, "a first-token time in seconds")
         expect((measuredNine?.decodeTokensPerSecond ?? 0) > 20, "a decode rate in tokens per second")
-        expect(measured.first { $0.option.model.modelID == "EigenLabs/Qwen3.8-27B-4bit-mtp" }?.option.plan?.absolute == false,
-            "the 27B, with no measurement of its own, shows no time")
+        // The 9B's measurement is its own: every other planned model, with no measurement of its own, shows no time.
+        let unmeasured = measured.filter { $0.option.model.modelID != "Qwen3.5-9B" }.compactMap(\.option.plan)
+        expect(!unmeasured.isEmpty && unmeasured.allSatisfy { !$0.absolute },
+            "a model with no measurement of its own shows no time: \(unmeasured.map(\.absolute))")
         var withSpeed = ClusterSetupState(size: .init(columns: 100, rows: 60))
         withSpeed.snapshot = F.snapshot(F.reportA(), record: F.confirmed())
         withSpeed.step = .model

@@ -794,21 +794,39 @@ final class EndpointBox: @unchecked Sendable {
     /// The owner's serving (2026-10-14 08:45): any model a cluster stage
     /// adapter runs is prepared on any Apple silicon, whatever its records; the
     /// records add only its public grant and the shapes that diverged. The 27B
-    /// prepares in every mode, whatever the public name; a model no adapter
-    /// runs is refused; an artifact no record ran is prepared with no public grant.
+    /// prepares in tensor parallel, whatever the public name: no other mode
+    /// keeps its images, video and committed-token logprobs, so a pipeline
+    /// setup is refused when saved and, saved before that rule, when planned.
+    /// A model no adapter runs is refused; an artifact no record ran is
+    /// prepared with no public grant.
     static func pairServingGrant(_ f:InstalledFixture) throws {
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
-        for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
-            let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
-                generationMode:mode,advertisedModes:allModes,registered:model)
-            let prepared=try big.prepare()
-            try require(prepared.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"))
-                && prepared.plan.serving.publicGrant != nil,"the 27B was prepared under another model's public grant")
-            // The fixture is the leader: rank 0 of two. Any Apple silicon runs it; a chip with no class does not.
-            for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
-            let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
-            try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
-                && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
+        let tensor=ClusterGenerationMode.tensorParallel.rawValue,advertised=allModes+[.tensorParallel]
+        let big=try InstalledFixture.make(root:f.root.appendingPathComponent("q27"),probe:f.probe,owner:f.owner,worker:f.worker,
+            generationMode:tensor,advertisedModes:advertised,registered:model)
+        let prepared=try big.prepare()
+        try require(prepared.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"))
+            && prepared.plan.serving.publicGrant != nil,"the 27B was prepared under another model's public grant")
+        // The fixture is the leader: rank 0 of two. Any Apple silicon runs it; a chip with no class does not.
+        for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
+        let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
+        try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
+            && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
+        // Every pipeline mode the worker advertises (the pipeline itself is the absence of the field).
+        let input=try JSONSerialization.jsonObject(with:Data(contentsOf:big.root.appendingPathComponent("input.json"))) as! [String:Any]
+        for mode in allModes {
+            let named:String?=mode == .pipeline ? nil : mode.rawValue
+            let unsaved=try refusal{_ = try InstalledFixture.make(root:f.root.appendingPathComponent("q27-"+mode.rawValue),probe:f.probe,
+                owner:f.owner,worker:f.worker,generationMode:named,advertisedModes:advertised,registered:model)}
+            var object=input
+            if let named { object["generationMode"]=named } else { object.removeValue(forKey:"generationMode") }
+            let configuration=try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:big.capability,
+                capabilitySHA256:big.configuration.capabilitySHA256)
+            let planned=try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:configuration,capability:big.capability),paths:big.paths)}
+            for message in [unsaved,planned] {
+                try require(message.contains("Qwen3.8 27B requires tensor parallel") && message.contains("replan this saved setup"),
+                    "the 27B's \(mode.rawValue) setup was not refused for its features: \(message)")
+            }
         }
         let nine=try f.prepare()
         try require(nine.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p")),"the 9B was prepared under another model's public grant")
@@ -822,7 +840,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(ungranted.contains("not yet qualified for public traffic") && ungranted.contains("registered_future"),"a model without records has no public grant: \(ungranted)")
         // An artifact no record ran (here the fixture's own files) is prepared for its owner, with no public grant.
         let foreign=try InstalledFixture.make(root:f.root.appendingPathComponent("q27-foreign"),probe:f.probe,owner:f.owner,worker:f.worker,
-            advertisedModes:allModes,registered:model,standsForRegisteredArtifact:false)
+            generationMode:tensor,advertisedModes:advertised,registered:model,standsForRegisteredArtifact:false)
         let other=try foreign.prepare()
         try require(other.plan.serving.publicGrant==nil && other.plan.serving.publicTrafficLine==ClusterPairOwnerServing.notYetQualified,
             "a capability whose artifact no record ran: \(other.plan.serving.publicTrafficLine)")

@@ -248,15 +248,16 @@ extension NemotronSuperManagedSlotTests {
     /// stopped at the relay's last served position, carries the relay's
     /// values, and at every step the relay served they match the last-position
     /// log-softmax of a cold prefill of the prompt and the tokens before it,
-    /// within decode-versus-prefill numerics (`NemotronSuperPagedLiveTests`
-    /// bounds the paged decode's logits): the served token's value within
-    /// 0.35 nats, and the same argmax unless the reference prefers another
-    /// token by at most twice that, a swing the bound allows. One-token
-    /// prefill chunks make the two bitwise equal. Loads
-    /// about 80 GB; run only with `DARKBLOOM_SUPER_MANAGED_LIVE=1` and
-    /// `NEMOTRON_SUPER_CHECKPOINT_DIR`. `DARKBLOOM_SUPER_LIVE_MTP=off` and
-    /// `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` vary the owner for numerics
-    /// experiments.
+    /// within decode-versus-prefill rounding (`NemotronSuperPagedLiveTests`
+    /// bounds the paged decode's logits; one-token prefill chunks make the
+    /// reference bitwise equal to the served values). Near-tie rule: each
+    /// served token's value is within `valueBound` (0.35 nats) of the
+    /// reference's, and the served token is the reference argmax unless the
+    /// reference prefers its argmax by at most twice the bound, the widest gap
+    /// two values within the bound can reverse. Loads about 80 GB; run only
+    /// with `DARKBLOOM_SUPER_MANAGED_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
+    /// `DARKBLOOM_SUPER_LIVE_MTP=off` and `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`
+    /// vary the owner for numerics experiments.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_SUPER_MANAGED_LIVE"] == "1"
         && ProcessInfo.processInfo.environment["NEMOTRON_SUPER_CHECKPOINT_DIR"] != nil),
         .timeLimit(.minutes(20)))
@@ -335,15 +336,15 @@ extension NemotronSuperManagedSlotTests {
                 let forced = try await greedy(prompt + served.tokens[..<step], id: base + 0x1000 + UInt64(step), maxTokens: 1)
                 let reference = try #require(forced.entries.first)
                 let entry = served.entries[step]
-                let referenceLogprob = reference.topLogprobs.first { $0.token == entry.token }?.logprob ?? -.infinity
-                deviations.append(abs(entry.logprob - referenceLogprob))
+                let referenceForServed = reference.topLogprobs.first { $0.token == entry.token }?.logprob ?? -.infinity
+                deviations.append(abs(entry.logprob - referenceForServed))
                 if reference.token != entry.token {
                     argmaxMismatches += 1
-                    mismatchGaps.append(reference.logprob - referenceLogprob)
+                    mismatchGaps.append(reference.logprob - referenceForServed)
                 }
                 if Set(entry.topLogprobs.map(\.token)) != Set(reference.topLogprobs.map(\.token)) { topSetMismatches += 1 }
                 print("SUPER_LOGPROBS_TEACHER thinking=\(thinking) step=\(step) token=\(entry.token) "
-                    + "served=\(entry.logprob) forced=\(referenceLogprob) forced_argmax=\(reference.token)")
+                    + "served=\(entry.logprob) forced=\(referenceForServed) forced_argmax=\(reference.token)")
             }
             let worst = deviations.max() ?? .infinity
             let median = deviations.sorted().dropFirst(deviations.count / 2).first ?? .infinity

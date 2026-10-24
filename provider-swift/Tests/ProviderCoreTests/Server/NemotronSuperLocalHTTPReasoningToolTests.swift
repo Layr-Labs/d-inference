@@ -248,7 +248,6 @@ struct SuperSSE {
             } else if frameContent.isEmpty {
                 textlessFrameLogprobs += entries.count
             }
-            guard choice["delta"] is [String: Any] else { continue }
             reasoning += frameReasoning
             content += frameContent
             for call in delta["tool_calls"] as? [[String: Any]] ?? [] {

@@ -1278,8 +1278,9 @@ extension ProviderLoop {
                         }
                     }
                     // Logprobs passthrough (v2 only): splice pending entries
-                    // into this frame if it carries content; otherwise keep
-                    // them pending. Runs AFTER the hash/usage bookkeeping
+                    // into this frame if it carries content (or reasoning,
+                    // where `logprobsCoverReasoning`); otherwise keep them
+                    // pending. Runs AFTER the hash/usage bookkeeping
                     // above, which reads the original `frame` — logprobs
                     // never alter `delta.content`, so the response hash and
                     // billing extraction are unaffected.

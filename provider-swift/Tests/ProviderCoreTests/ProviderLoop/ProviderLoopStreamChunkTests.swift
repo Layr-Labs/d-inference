@@ -481,7 +481,7 @@ func injectLogprobsSkipsNonContentFrames() throws {
     // Role-only preamble.
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(role: "assistant"), entries: entries) == nil)
-    // Reasoning-only delta (logprobs.content covers CONTENT tokens).
+    // Reasoning-only delta (without `includingReasoning`, entries wait for content).
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(reasoningContent: "thinking"), entries: entries) == nil)
     // Terminal/usage chunk.

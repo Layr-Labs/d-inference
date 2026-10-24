@@ -13,9 +13,9 @@ import Testing
 @Suite("GLM-5.3-Flash relay logprobs", .serialized)
 struct GLM5NextRelayLogprobsTests {
     static let modelID = "test/glm-relay-logprobs"
-    static let eos = 99
+    static let thinkEnd = 3, eos = 99
     /// GLM's template ends the prompt inside an open thought.
-    static let vocabulary: [Int: String] = [100: "<|assistant|><think>", 1: "Plan", 2: " it.", 3: "</think>",
+    static let vocabulary: [Int: String] = [100: "<|assistant|><think>", 1: "Plan", 2: " it.", thinkEnd: "</think>",
                                             4: "Hello", 5: " there.", 6: " More", eos: ""]
     static let tokenizer = TokenizerHandle(GLMRelayTokenizer())
 
@@ -27,7 +27,7 @@ struct GLM5NextRelayLogprobsTests {
 
     @Test func mixedReplyCarriesReasoningEntriesOnReasoningChunks() async throws {
         for stream in [true, false] {
-            let chunks = try await relay([1, 2, 3, 4, 5, Self.eos], finish: .stop, stream: stream)
+            let chunks = try await relay([1, 2, Self.thinkEnd, 4, 5, Self.eos], finish: .stop, stream: stream)
             #expect(chunks.map(\.reasoning).joined() == "Plan it." && chunks.map(\.content).joined() == "Hello there.")
             // Joined, the entries spell the reasoning, the marker and the
             // answer; the stop token that ends the turn carries none.
@@ -49,7 +49,7 @@ struct GLM5NextRelayLogprobsTests {
     }
 
     @Test func withoutLogprobsNoChunkCarriesEntries() async throws {
-        let chunks = try await relay([1, 2, 3, 4, Self.eos], finish: .stop, logprobs: false)
+        let chunks = try await relay([1, 2, Self.thinkEnd, 4, Self.eos], finish: .stop, logprobs: false)
         #expect(chunks.map(\.content).joined() == "Hello" && chunks.allSatisfy { $0.entries.isEmpty })
     }
 
@@ -58,7 +58,7 @@ struct GLM5NextRelayLogprobsTests {
     @Test func otherModelsKeepContentAttachment() async throws {
         let thinking = try await relay([1, 2, 6], finish: .length, modelType: "qwen3")
         #expect(thinking.map(\.reasoning).joined() == "Plan it. More" && thinking.allSatisfy { $0.entries.isEmpty })
-        let mixed = try await relay([1, 2, 3, 4, 5, Self.eos], finish: .stop, modelType: "qwen3")
+        let mixed = try await relay([1, 2, Self.thinkEnd, 4, 5, Self.eos], finish: .stop, modelType: "qwen3")
         #expect(mixed.filter { !$0.content.isEmpty }.flatMap(\.entries) == ["Plan", " it.", "</think>", "Hello", " there."])
     }
 
@@ -77,7 +77,7 @@ struct GLM5NextRelayLogprobsTests {
                 let text = Self.vocabulary[token] ?? ""
                 continuation.yield(.delta(text: token == Self.eos ? "" : text, tokens: [token],
                     logprobs: [.init(token: token, logprob: -0.5, topLogprobs: [(token: token, logprob: -0.5), (token: 6, logprob: -2)])]))
-                guard token != Self.eos, token != 3 else { continue }
+                guard token != Self.eos, token != Self.thinkEnd else { continue }
                 visible += text
                 try await progress.wait { frames in
                     Self.chunks(frames).map { $0.reasoning + $0.content }.joined() == visible

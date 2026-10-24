@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -124,9 +124,10 @@ text unchanged. Without a flag, `GLM5NextRelayLogprobsTests` replays scripted
 GLM tokens through the production coordinator handler and frames loop
 (`ScriptedCoordinatorRelay`): a mixed reply and a reply that ends while
 reasoning, requested streamed and not, must carry one entry per generated token
-in generation order, reasoning tokens on the reasoning chunks and the marker and
-answer tokens on the content chunks; a request without logprobs carries none, and
-another model type keeps content-chunk attachment. In the SDK,
+in generation order (none for the mixed reply's stop token), reasoning tokens on
+the reasoning chunks and the marker and answer tokens on the content chunks; a
+request without logprobs carries none, and another model type keeps
+content-chunk attachment. In the SDK,
 `GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
 `protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
 values with the target's own log-softmax for serial and rectangular

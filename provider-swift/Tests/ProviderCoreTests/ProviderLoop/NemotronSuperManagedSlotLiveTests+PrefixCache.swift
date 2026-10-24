@@ -5,11 +5,13 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Gated full-checkpoint prefix reuse of the managed Super slot through the
-/// production loader and the encrypted coordinator path. Loads about 80 GB;
-/// run only with exclusive GPU access, `DARKBLOOM_SUPER_MANAGED_LIVE=1`,
-/// `DARKBLOOM_SUPER_PREFIX_LIVE=1` and `NEMOTRON_SUPER_CHECKPOINT_DIR`.
-/// `DARKBLOOM_SUPER_LIVE_MTP=off` serves the plain owner;
+/// Gated full-checkpoint prefix reuse of the managed Super slot's resident
+/// bank through the production loader and the encrypted coordinator path.
+/// Loads about 80 GB; run only with exclusive GPU access,
+/// `DARKBLOOM_SUPER_MANAGED_LIVE=1`, `DARKBLOOM_SUPER_PREFIX_LIVE=1`,
+/// `NEMOTRON_SUPER_CHECKPOINT_DIR` and `DARKBLOOM_PREFIX_CACHE_MEMORY=1`, the
+/// operator's switch that selects the bank over the default complete SSD
+/// checkpoints. `DARKBLOOM_SUPER_LIVE_MTP=off` serves the plain owner;
 /// `DARKBLOOM_SUPER_PREFIX_OUT` receives the measurements as JSON.
 extension NemotronSuperManagedSlotTests {
     /// One coordinator request with its first-content time.
@@ -65,6 +67,9 @@ extension NemotronSuperManagedSlotTests {
         .timeLimit(.minutes(30)))
     func pinnedCheckpointReusesPrefixesExactly() async throws {
         let environment = ProcessInfo.processInfo.environment
+        // Refused before the load: without the switch the slot keeps no bank.
+        try #require(environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1",
+                     "the resident bank needs \(PrefixCachePolicy.memoryEnvironmentFlag)=1")
         let directory = URL(fileURLWithPath: try #require(environment["NEMOTRON_SUPER_CHECKPOINT_DIR"]),
                             isDirectory: true)
         let (loop, loadSeconds) = try await Self.liveLoop(name: "super-prefix-live")

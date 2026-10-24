@@ -42,8 +42,9 @@ struct SuperBytePromptTokenizer: MLXLMCommon.Tokenizer {
 }
 
 extension NemotronSuperManagedSlotTests {
-    /// A coordinator request on the managed slot reports what its bank
-    /// reused, on the plain and on the speculating owner. The slot
+    /// A coordinator request on the managed slot with the resident bank
+    /// (the operator's memory flag) reports what its bank reused, on the
+    /// plain and on the speculating owner. The slot
     /// advertises the published aggregate; a repeated prompt's lookup
     /// receipt hits the deepest 256-token chunk checkpoint the first request
     /// published, its terminal usage bills those cached tokens and its SSE
@@ -52,7 +53,7 @@ extension NemotronSuperManagedSlotTests {
     @Test(.timeLimit(.minutes(3)), arguments: [MTPMode.off, .auto])
     func coordinatorRequestsReportTheBanksReuse(mode: MTPMode) async throws {
         let fixture = try await Self.fixture(mode: mode,
-            environment: [NemotronSuperLocalPrefill.chunkKey: "256"],
+            environment: [NemotronSuperLocalPrefill.chunkKey: "256", PrefixCachePolicy.memoryEnvironmentFlag: "1"],
             tokenizer: { SuperBytePromptTokenizer(script: $0) })
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop, script = fixture.script
@@ -110,6 +111,86 @@ extension NemotronSuperManagedSlotTests {
         #expect(other.sse.contains(#""cached_tokens":0"#) && !other.sse.contains(#""cached_tokens":512"#))
         #expect(Self.lookup(recorder, nonce: "nonce-other")?.matchedAnchor == nil)
         #expect(SuperSSE(other.sse).content == SuperSSE(first.sse).content)
+
+        #expect(await loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.reservationBytesSnapshot().isEmpty)
+    }
+
+    /// The default reuse through the coordinator path: complete SSD
+    /// checkpoints. A fleet-novel prompt (the coordinator's repeat hint is 0)
+    /// is not written; its repeat on this provider is, and the next request
+    /// restores it from the store with SSD-tier receipts and usage and the
+    /// cold text. Another tenant's identical prompt is cold.
+    @Test(.timeLimit(.minutes(3)), arguments: [MTPMode.off, .auto])
+    func coordinatorRequestsWriteAndRestoreDurableCheckpoints(mode: MTPMode) async throws {
+        let fixture = try await Self.fixture(mode: mode,
+            environment: [NemotronSuperLocalPrefill.chunkKey: "256",
+                          SSDPrefixCachePolicy.minEffectiveTokensFlag: "512"],
+            tokenizer: { SuperBytePromptTokenizer(script: $0) })
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop, script = fixture.script
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
+        let store = try #require(owner.bridge.ssdHybridCheckpointStore)
+        #expect(owner.prefixBankBytes == 0 && owner.bridge.residentPrefixCacheEvidence == nil)
+        let readyDeadline = ContinuousClock.now + .seconds(5)
+        while owner.bridge.prefixCacheModelStatus().state != .ready, ContinuousClock.now < readyDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let capability = try #require(owner.bridge.durablePrefixCacheEvidenceSource?
+            .prefixCacheAdvertisement(base: owner.bridge.prefixCacheBaseStatus).capability)
+        #expect(capability.modelId == Self.modelID && capability.promptContractId == Self.fixturePromptContractID)
+
+        let question = String((0 ..< 560).map { index in
+            Character(UnicodeScalar(UInt8(97 + (index * 7) % 26)))
+        })
+        func body() throws -> Data {
+            try Self.body(["Sure", ", ", "here", "."], script: script,
+                ["messages": [["role": "system", "content": "Be brief."], ["role": "user", "content": question]]])
+        }
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        // The coordinator echoes the store's checkpoint boundary mode.
+        let boundaryMode = PrefixCacheV2Capability.checkpointBoundaryMode
+        #expect(capability.readyBoundaryMode == boundaryMode)
+        // Fleet-novel: looked up, not written.
+        let novel = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
+            cacheReceiptNonce: "nonce-novel", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
+            cacheReceiptBoundaryMode: boundaryMode)
+        let novelUsage = try #require(Self.usage(novel.terminal))
+        #expect(novelUsage.cacheOutcome == .missAbsent && novelUsage.cacheTier == .ssd)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(store.stats().filesWritten == 0)
+        #expect(Self.ready(recorder, nonce: "nonce-novel") == nil)
+        // Its repeat on this provider is written.
+        let repeated = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
+            cacheReceiptNonce: "nonce-repeat", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
+            cacheReceiptBoundaryMode: boundaryMode)
+        #expect(Self.usage(repeated.terminal)?.cachedTokens == 0)
+        let writeDeadline = ContinuousClock.now + .seconds(10)
+        while Self.ready(recorder, nonce: "nonce-repeat") == nil, ContinuousClock.now < writeDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let ready = try #require(Self.ready(recorder, nonce: "nonce-repeat"))
+        #expect(ready.tier == .ssd && ready.readyAnchors.last?.tokenCount == 512)
+        #expect(store.stats().filesWritten > 0)
+
+        let warm = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
+            cacheReceiptNonce: "nonce-warm", prefixCacheProtocol: 2, cacheRepeatedPrefixTokens: 0,
+            cacheReceiptBoundaryMode: boundaryMode)
+        let warmUsage = try #require(Self.usage(warm.terminal))
+        #expect(warmUsage.cacheOutcome == .hit && warmUsage.cacheTier == .ssd)
+        #expect(warmUsage.cachedTokens == 512 && warmUsage.prefillTokensSaved == 512)
+        #expect(warm.sse.contains(#""cached_tokens":512"#))
+        let hit = try #require(Self.lookup(recorder, nonce: "nonce-warm"))
+        #expect(hit.outcome == .hit && hit.tier == .ssd && hit.matchedAnchor == ready.readyAnchors.last)
+        #expect(SuperSSE(warm.sse).content == SuperSSE(novel.sse).content)
+
+        let other = try await Self.send(body(), to: loop, recorder: recorder, consumer: consumer,
+            scope: "tenant-b", cacheReceiptNonce: "nonce-other", prefixCacheProtocol: 2,
+            cacheRepeatedPrefixTokens: 0, cacheReceiptBoundaryMode: boundaryMode)
+        #expect(Self.usage(other.terminal)?.cacheOutcome == .missAbsent)
+        #expect(SuperSSE(other.sse).content == SuperSSE(novel.sse).content)
 
         #expect(await loop.unloadModel(Self.modelID))
         #expect(await fixture.budget.reservationBytesSnapshot().isEmpty)

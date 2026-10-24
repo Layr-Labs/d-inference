@@ -153,7 +153,8 @@ extension NemotronSuperManagedSlotTests {
         }
         let loop = fixture.loop
         let owner = try await Self.loadQuietOwner(fixture)
-        #expect(await Self.ownerReservations(fixture.budget).count == 3, "lane, decode rows and bank")
+        // Complete SSD checkpoints, the default reuse, reserve nothing.
+        #expect(await Self.ownerReservations(fixture.budget).count == 2, "lane and decode rows")
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         gate.close()
         let wedged = try await Self.send(Self.wedgingBody(fixture.script), to: loop, recorder: recorder,

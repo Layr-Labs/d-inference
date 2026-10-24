@@ -72,11 +72,12 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,
-                usageSignal: EngineV2RequestUsageSignal? = nil) -> any MLXServerEngine {
+                usageSignal: EngineV2RequestUsageSignal? = nil,
+                donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
-                               logprobs: logprobs, usageSignal: usageSignal)
+                               logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand)
     }
 }
 
@@ -98,6 +99,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     /// The caller's signal for this request's prefix-cache outcome; a text
     /// request without one submits under its own.
     let usageSignal: EngineV2RequestUsageSignal?
+    /// The coordinator's repeat hint for a text request's durable checkpoint write.
+    let donationDemand: SSDCheckpointDonationDemand?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -154,11 +157,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
                     logprobs: plan.topLogprobs > 0 ? true : nil,
                     topLogprobs: plan.topLogprobs > 0 ? plan.topLogprobs : nil)
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
+                let donationDemand = self.donationDemand
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          onEvent: onEvent)
+                                          donationDemand: donationDemand, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

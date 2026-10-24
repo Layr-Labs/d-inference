@@ -224,7 +224,7 @@ func vlmDecodeVideoDataURIStaysInMemory() async throws {
 func vlmDecodeVideoQuickTimeDataURI() async throws {
     let uri = "data:video/quicktime;base64,\(tinyMP4Base64)"
     let (video, framePixels) = try await MediaIngest.decodeVideo(uri)
-    guard case .memoryBacked = video else {
+    guard case .memoryBacked = video.source else {
         Issue.record("expected .memoryBacked, got \(video)")
         return
     }
@@ -530,7 +530,7 @@ func vlmDecodeImageRejectsOverPixelCap() async {
 @Test("decodeImage accepts an image within the per-image cap (no regression)")
 func vlmDecodeImageWithinPixelCapPasses() throws {
     let image = try MediaIngest.decodeImage(tinyPNGDataURI, maxImagePixels: 100)
-    guard case .ciImage = image else {
+    guard case .ciImage = image.source else {
         Issue.record("expected a decoded .ciImage")
         return
     }

@@ -232,8 +232,16 @@ enum SSDPrefixCachePolicy {
 
     /// Max donation jobs buffered behind the serial write-behind consumer
     /// (the CheckpointCapturePipeline in-flight cap pattern). Overflow
-    /// DROPS the donation — the engine is never back-pressured.
-    static let writeQueueMaxJobs = 2
+    /// DROPS the donation — the engine is never back-pressured. The
+    /// complete-checkpoint store applies the same bound to its unsettled
+    /// jobs, the one being written included. The count is not the memory
+    /// bound: attention jobs must also fit the queued-byte cap below, and a
+    /// queued complete checkpoint holds only donor state and I/O scratch
+    /// that stay charged to the admission or process memory ledger. The
+    /// engine delivers a donor's terminal after its checkpoint settles, so
+    /// under write backlog a deeper queue lengthens end-of-stream latency
+    /// instead of dropping the checkpoint.
+    static let writeQueueMaxJobs = 6
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
     /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB

@@ -103,8 +103,10 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
+        // Every buffered job is still in `writing`, so a buffer as deep as
+        // that gate never refuses a job it admitted; the gate alone bounds it.
         self.pipeline = BoundedSingleConsumerPipeline(
-            capacity: 1,
+            capacity: SSDPrefixCachePolicy.writeQueueMaxJobs,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
             consume: { [weak self] job in
                 guard let self else { job.finish([]); return }

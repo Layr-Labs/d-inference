@@ -348,6 +348,12 @@ The gate, pending-load claims and eviction still decide every load. Native MiMo
 keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
 every model.
 
+An unexpired Autopilot placement hold removes its slot from every eviction
+snapshot (`ProviderLoop.evictableModelSlots`), and `free_for_load_gb` gives the
+held weights no reclaim credit (`ProviderLoop.autopilotHeldWeightBytes`). A load
+that fits only by evicting a held slot fails with the ordinary slot or
+insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#placements-after-an-operation).
+
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
 is ordinary process heap with no claim or reserve in this gate: at most

@@ -1,0 +1,32 @@
+.section {
+  margin-top: 34px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.section-title p {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.memory-track {
+  height: 5px;
+  background: var(--raised-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 13px;
+}
+
+.memory-track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent-brand);
+  border-radius: 3px;
+}

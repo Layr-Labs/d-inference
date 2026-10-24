@@ -19,8 +19,14 @@ extension Start {
         guard !hosted.isEmpty else { throw ValidationError("No models selected.") }
         try Task.checkCancellation()
         let cached = autopilot ? try await inventory(hosted) : nil
-        if let cached, !Set(hosted).isSubset(of: Set(cached)) {
-            throw ValidationError("The selected startup models could not all be verified for Autopilot. Retry after any model update finishes, or use --no-autopilot.")
+        // The inventory holds only downloaded catalog models that verified, so a
+        // model found only on disk is missing here even when nothing failed.
+        // Name the models: blaming verification hides which one to drop.
+        if let cached {
+            let missing = hosted.filter { !cached.contains($0) }
+            guard missing.isEmpty else {
+                throw ValidationError("Autopilot can start only downloaded Darkbloom network models that pass verification. Not in the verified inventory: \(missing.joined(separator: ", ")). Choose network models, retry after any model update finishes, or use --no-autopilot.")
+            }
         }
         return StartModelSelection(hostedModels: hosted, autopilotModels: cached)
     }

@@ -851,6 +851,7 @@ Swift `ModelAutopilotStatus`
 | `command_id` | `string` / `String` | req | Identifies the immutable command on this provider session |
 | `status` | `string` / `State` | req | `started`, `succeeded`, `failed` |
 | `error` | `string` / `String?` | opt | Diagnostic failure text; not an authorization or capacity signal |
+| `detail` | — / `String?` | opt; Swift only; with consent | With `provider_busy`, the first [busy reason](#model_autopilot-state); `autopilot_operation` when another accepted command owns residency. Absent otherwise; older coordinators ignore it |
 | `model_autopilot` | `*ModelAutopilotState` / `ModelAutopilotSnapshot` | opt in Go; current Swift includes it | Provider command/residency state; status alone never changes scheduler capacity |
 
 `Registry.HandleAutopilotStatus` accepts only the matching current session and
@@ -873,6 +874,26 @@ Go `PrefetchModelStatusMessage` · Swift `PrefetchModelStatus`. `model_id`
 (req); `status` ∈ {`started`, `downloading`, `verified`, `failed`} — `verified`
 is the terminal success: on disk, hash-checked, **not** loaded; `bytes_done`,
 `bytes_total` (`int64`, opt; Swift omits 0); `error` (opt).
+
+For an Autopilot download (below), `verified` also means the build joined the
+Autopilot set, and `failed` carries a closed `error`
+(`provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownload.swift`,
+`AutopilotDownloadRefusal`). A refusal that needs no catalog arrives as the only
+reply; the others follow `started`:
+
+| `error` | Meaning |
+|---|---|
+| `model_not_selected` | No saved consent (or a `private_only` Mac), downloads turned off by the operator, or consent was revoked before the build joined; unchanged from earlier providers |
+| `autopilot_paused` | Saved consent, Autopilot paused |
+| `model_not_supported` | Not an active catalog build with a manifest that this Mac can run: unknown or inactive, RAM floor, runtime capabilities, engine family, load budget, unreportable ID, a failed self-test, or the 256-ID bound |
+| `model_limit_reached` | The operator's `max_models` cap is reached |
+| `storage_limit_reached` | The download would exceed the operator's `max_storage_gb` cap |
+| `insufficient_disk` | The download would leave less free disk than the reserve (`reserve_gb`, default `50` GiB) |
+| `catalog_unavailable` | The catalog or manifest could not be fetched; retryable |
+| `download_failed` | Transfer, verification, scan or hash failed, or the model was loaded when the download verified; retryable |
+
+Shutdown and drain refusals keep their existing text (`provider is shutting
+down`, `provider draining for update`).
 
 ### `models_update`
 
@@ -1206,6 +1227,7 @@ whole-device reservation. Shadow leases cannot authorize this message.
 | `expected_resident_models` | `[]string` / `[String]` | req | Complete unique resident set expected before mutation, at most32 |
 | `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#model-autopilot) |
 | `lease_seconds` | `int` / `Int` | req | `0...86400`; minimum hold lease on a newly loaded target, separate from provider residence/idle dwell |
+| `hold_seconds` | — / `Int?` | opt; Swift only | `0...86400` placement hold on the loaded target; absent or `0` records none and leaves an earlier hold; a positive value replaces it; without `load_model_id` it is `invalid_command`. A succeeded operation's hold keeps the target out of LRU eviction and idle unload after its lease ends; another operation may still unload it. Honoured only by providers reporting `placement_holds` |
 
 The provider rejects a changed resident set, busy device, pinned/young victim,
 active lease, unsupported hardware, missing local primary/assistant or infeasible
@@ -1254,8 +1276,22 @@ Active or explicitly paused Autopilot providers block this legacy residency path
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
-(`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+(`int`, opt, advisory). Download + verify only, no GPU load; for a build in
+ordinary serving the provider replies with `prefetch_model_status` and then
+`models_update`.
+
+With saved Autopilot consent and downloads not turned off by the operator
+(capability `inventory_downloads`; on by default), a build outside ordinary
+serving is an Autopilot
+download, even under a live lease: the provider downloads and
+verifies it through the same pipeline, adds it to `selected_models` and the
+registration inventory, and sends **no** `models_update`, because that would make
+it ordinary and publicly routable. It never loads or advertises the build; an
+Autopilot operation may load it. With consent but downloads off, such a request
+is refused `model_not_selected` and never takes the ordinary path. The provider then re-registers once when idle (no busy reason,
+operation, live lease or other download)
+so `register.autopilot_inventory` carries the build's `ModelInfo`
+([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 
 ### `desired_models`
 
@@ -1341,7 +1377,7 @@ support.
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
 | `session_id` | `string` / `String?` | opt | Acknowledged control connection; shadow acknowledgement is not live ownership |
 | `revision` | `string` / `String` | req | Approved consent configuration |
-| `selected_models` | `[]string` / `[String]` | req | Consent requires `1...256` exact verified cached network build IDs, each nonempty and at most `256` UTF-8 bytes; static until explicit inventory refresh, empty never grants permission |
+| `selected_models` | `[]string` / `[String]` | req | The Autopilot model set. Consent requires `1...256` IDs, each nonempty and at most `256` UTF-8 bytes. With saved consent: the persisted selection plus every verified catalog build in the local cache (`AutopilotModelSet`), at most `256`, persisted selection first, sorted. It grows when a download or prefetch verifies and shrinks when a build leaves the cache, under an unchanged `revision`. Without consent: the persisted selection, unchanged. Empty never grants permission |
 | `min_idle_seconds` | `int` / `Int` | req | Inactivity guard separate from minimum residence |
 | `load_history` | `[]ModelAutopilotLoadTiming` / `[ModelAutopilotLoadTiming]?` | opt | At most64 `{model_id, weight_hash, load_ms, measured_at_ms}` measurements; only recent matching bytes influence estimates |
 | `last_elapsed_ms`, `last_release_ms`, `last_load_ms` | `int64` / `Int64?` | opt | Measured last operation phases; no ETA guarantee |
@@ -1352,6 +1388,35 @@ support.
 | `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
 | `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
 | `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
+| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`, and `inventory_downloads` unless the operator turned downloads off. Absent on older providers, which do not adopt, hold or download |
+| `download_storage` | — / `ModelAutopilotDownloadStorage?` | opt; only with `inventory_downloads` | `{disk_free_bytes, reserve_bytes, used_bytes, used_models, limit_bytes?, limit_models?}`, int64 bytes. Free space on the model cache volume (0 when unknown), the reserve a download keeps, the builds Autopilot downloaded that are still on disk, and the operator's caps (absent = no cap). Measured at most once a minute and after each download |
+| `adopted_models` | — / `[String]?` | opt; with consent | Cached inventory targets of succeeded operations that keep serving without a lease; each is resident. Absent when none |
+| `held_models` | — / `[ModelAutopilotHold]?` | opt; with consent | Active holds `{model_id, expires_at_ms}` (Unix milliseconds); each held model is resident and is never evicted for an ordinary cold load. Absent when none |
+| `busy_reasons` | — / `[String]?` | opt; with consent | Every condition that would make the provider answer `provider_busy` now, in report order; absent when not busy |
+| `busy_reason` | — / `String?` | opt; with consent | The first of `busy_reasons` |
+| `busy_since_ms` | — / `Int64?` | opt; with consent | Unix milliseconds since `busy_reason` has been continuously observed |
+| `transition_stalls` | — / `[ModelAutopilotTransitionStall]?` | opt; with consent | Cumulative watchdog stalls in this process, `{transition, count, last_age_ms}`; absent before the first |
+
+The consent-gated fields above are additive: a provider without saved consent
+omits all of them, and coordinators that predate them ignore them because they
+decode provider frames without rejecting unknown keys
+([coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/protocol/messages.go),
+`ProviderMessage.UnmarshalJSON`). `protocol` stays `3`: the coordinator accepts
+inventory only from protocol `3`. A coordinator may rely on adoption or holds
+only after a provider reports the matching capability.
+
+Closed vocabularies (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilotBusyReason.swift`).
+Report order lists an owner before the work it owns:
+
+| Field | Values |
+|---|---|
+| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
+| `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
+| `capabilities` (`ModelAutopilotCapability`) | `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads` |
+| Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `model_limit_reached`, `storage_limit_reached`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |
+
+Bounds and the watchdog's cancellation rules are in the
+[Autopilot architecture](../architecture/model-autopilot.md#busy-reasons-and-stalled-transitions).
 
 Resident entries:
 
@@ -1369,9 +1434,10 @@ replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
 Provider `enabled` reports eligible scheduling participation, not activation.
-When an ordinary successor extends serving permission beyond cached consent,
-the provider reports `enabled=false` and local phase `waiting_inventory`
-until explicit inventory refresh, preserving ordinary serving with old peers.
+When an ordinary successor extends serving permission beyond the Autopilot
+set, the provider reports `enabled=false` and local phase `waiting_inventory`
+until the successor joins the set (its verified prefetch, or an explicit
+inventory refresh), preserving ordinary serving with old peers.
 Saved consent remains independently visible as `consent_enabled=true`.
 It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
@@ -1401,19 +1467,23 @@ See [history and payout limits](https://github.com/Layr-Labs/darkbloom-platform/
 This additive field does not change protocol-3 control negotiation; qualifying
 reward declarations require an updated provider build to be released separately.
 
-The `selected_models` allowlist is populated by verified active downloaded network
-inventory, not a model picker, arbitrary local/off-catalog discovery or a download
-request. It can be broader than saved `enabled_models`; its metadata is carried
+With saved consent, the `selected_models` set is the persisted selection plus
+every verified active catalog build in the local cache, including builds
+downloaded on the operator's behalf; never arbitrary local or off-catalog
+builds. The operator can turn downloads on their behalf off or limit them
+(`[backend.autopilot_downloads]`). It can be broader than saved `enabled_models`; its metadata is carried
 in optional `register.autopilot_inventory` (`[]ModelInfo`, at most 256 entries),
-not in ordinary `register.models`. Only consented IDs with a nonempty verified
+not in ordinary `register.models`. The inventory is built from the same
+snapshot as that frame's `selected_models`, and the provider records which IDs
+a registration carried. Only consented IDs with a nonempty verified
 weight hash are accepted. Ordinary models win duplicate IDs and weight identity.
 Observation-only models do not grant public/owner routing, capacity or legacy
 load permission until a matching live lease is acknowledged. Shadow planning
 can inspect that metadata without granting permission. Old coordinators ignore
 the additive field and cannot activate protocol 3. Both the ordinary JSON encoder
-and the raw-attestation registration encoder preserve this separation. Ordinary
-restarts reuse the recorded inventory rather than automatically consenting to
-new catalog builds. Implementation: [coordinator/registry/autopilot_inventory.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_inventory.go),
+and the raw-attestation registration encoder preserve this separation. A
+restart recomputes the set from the cache and the catalog under the same saved
+consent; no new consent step applies. Implementation: [coordinator/registry/autopilot_inventory.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_inventory.go),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift`.
 
 ### `EncryptedPayload`
@@ -1441,7 +1511,9 @@ There is no separate generic unload command. The provider's ordinary idle timer
 is paused during active control or an explicit pause. Recorded consent alone
 does not pause it during shadow, while waiting or after lease expiry. Commands cannot fall through to implicit LRU
 victims. Standalone surplus unloading follows the configured quiet window; load-driven replacement
-still requires all dwell, memory, pin and donor protections.
+still requires all dwell, memory, pin and donor protections. A succeeded operation's
+`hold_seconds` keeps its target out of the idle timer and LRU eviction until expiry, and its
+adopted inventory serves after the lease; see [placements](../architecture/model-autopilot.md#placements-after-an-operation).
 
 Non-enrolled providers keep their existing idle and legacy model lifecycle.
 `desired_models` release reconciliation remains independent, is deferred behind

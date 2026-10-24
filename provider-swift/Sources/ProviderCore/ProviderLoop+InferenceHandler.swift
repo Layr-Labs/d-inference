@@ -132,7 +132,7 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
-        if let modelId, !autopilotAllowsModel(modelId) {
+        if let modelId, !autopilotServesModel(modelId) {
             throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
         }
         if autopilotCommand != nil {
@@ -510,7 +510,7 @@ extension ProviderLoop {
         // Authoritative autopilot check after all admission suspensions and
         // before request ownership is registered. Managed network work may use
         // warm models only; owner-local work retains its own load path.
-        if !autopilotAllowsModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
+        if !autopilotServesModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId,
                     failure: InferenceFailure(code: .capacity, statusCode: 503), profile: profile),
@@ -1495,6 +1495,7 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            providerStats.addPromptTokensProcessed(UInt64(max(promptTokens, 0)))
 
             // Commit the TTFT sample (routing v2): completed real requests
             // only — a cancelled stream's first-token timing is still real,
@@ -1532,6 +1533,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            let localCachedTokens = min(usageInfo.promptTokens, usageInfo.cachedTokens ?? UInt64(max(0, v2UsageSignal.prefixCacheHitTokens ?? 0)))
+            providerStats.addCachedInputTokens(localCachedTokens)
+            providerStats.addReasoningTokens(min(usageInfo.reasoningTokens, usageInfo.completionTokens))
+            await me.recordLocalUsage(ProviderUsageRecord(
+                id: requestId, sessionStartedAt: me.startedAtEpoch, model: modelId,
+                inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
+                cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
+                exact: !usageRecovered))
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

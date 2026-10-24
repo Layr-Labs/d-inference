@@ -114,10 +114,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var requestsServed: UInt64
         public var tokensGenerated: UInt64
         public var usageGaps: UInt64
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0) {
+        /// Nil on older runtimes; all prompt tokens including prefix-cache hits.
+        public var promptTokensProcessed: UInt64?
+        public var cachedInputTokens: UInt64?
+        public var reasoningTokens: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
+            self.promptTokensProcessed = promptTokensProcessed
+            self.cachedInputTokens = cachedInputTokens
+            self.reasoningTokens = reasoningTokens
         }
     }
 
@@ -133,6 +140,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Capacity: Codable, Sendable, Equatable {
+        /// Absent on older daemons; never infer zero activity from absence.
+        public var modelActivity: [ModelActivity]?
+        public var activityObservedAt: Double?
         public var totalMemoryGb: Double
         public var gpuMemoryActiveGb: Double
         /// Live MLX GPU cache (buffer pool) memory. Optional for backward
@@ -151,7 +161,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var loadTransitionActive: Bool?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
                     loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
-                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil,
+                    modelActivity: [ModelActivity]? = nil, activityObservedAt: Double? = nil) {
+            self.modelActivity = modelActivity
+            self.activityObservedAt = activityObservedAt
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb

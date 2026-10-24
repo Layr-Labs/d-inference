@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,42 +23,65 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.0`. The candidate moves request
-normalization to v9 for every model, adds native Flint, Nemotron 3.5 Super and
-GLM-5.3-Flash serving, and updates the MLX pins, so its metallib changes. See
-the [`v0.10.0` changelog entry](../../CHANGELOG.md) for the full scope and its
-qualification limits.
+`ProviderCore.version` is prepared as `0.10.1`, a patch release over `v0.10.0`
+for OpenRouter readiness on GLM-5.3-Flash and Nemotron 3.5 Super.
+GLM-5.3-Flash serves `strict` tools, returned reasoning, JSON modes, forced tool
+choice and variable-frame-rate video, skips its second weight-hash pass at
+startup and explains its GPU wired-memory limit. Nemotron 3.5 Super accepts
+media bodies up to 40 MiB and JSON formats with tools. Every model counts page
+cache as available memory. Unsupported logprob requests on native engines get a
+typed 400 instead of a 500 that cooled every provider of the model; logprobs
+themselves are deferred to a later release. The provider CLI also gains the
+desktop control API from #1518; the provider release does not build, sign or
+publish the Electron desktop app. On Macs with saved Autopilot consent, Autopilot
+reports every verified cached build and can download on the operator's behalf
+(#1565); holds, adopted-model routing and downloads need darkbloom-platform#439.
+See the
+[`v0.10.1` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Tag `v0.10.0` only after production runs a `darkbloom-platform` coordinator
-that normalizes requests with v9, enforces the Nemotron 3.5 Super
-provider-version floor at `0.10.0`, gates GLM-5.3-Flash on the `glm5_next_v1`
-capability and serves a provider-contract snapshot pinned to the merged
-preparation commit. A v8 coordinator accepts the `0.10.0` registration and
-serves its providers, but without cache scopes and without the new models'
-gates. Then tag promptly: until providers update, a v9 coordinator serves
-0.9.22 providers without cache scopes. The platform owns the coordinator
-deployment and its cache-routing allowlist; model registration and promotion
-are separate approvals. This preparation does not tag, register, upload or
-deploy anything.
+Before tagging `v0.10.1`:
 
-Platform evidence, inspected on 2026-10-22 (recheck current `master` before
-tagging):
+- Deploy a `darkbloom-platform` coordinator that includes
+  [darkbloom-platform#411](https://github.com/Layr-Labs/darkbloom-platform/pull/411)
+  to production. It refuses `logprobs` on GLM-5.3-Flash, MiMo V2.6 and Nemotron
+  3.5 Super with 400 before reservation unless the model's catalog row lists
+  `logprobs`. Without that refusal, a logprob request can reach a `0.10.0` GLM
+  provider, whose native engine fails it with a 500 `generation_failure` that
+  cools every provider of the model. It also plans the GLM request shapes that
+  this release serves.
+- Do not add the `logprobs` catalog capability to any of those models for
+  `0.10.1`. GLM-5.3-Flash's logprob code ships as groundwork and stays disabled
+  while the capability is absent.
+- Confirm that the tagged commit pins `libs/mlx-swift-lm` to a commit on SDK
+  `main`. Before #1561 merged, its pin moved from `baca4acf`, the head of
+  [mlx-swift-lm#340](https://github.com/Layr-Labs/mlx-swift-lm/pull/340), to
+  #340's squash commit. That is a pin-only change.
+
+The Nemotron 3.5 Super provider-version floor can stay at `0.10.0`. Until they
+update, `0.10.0` providers refuse the newly served shapes with 400, and
+coordinators send forced tool choice only to providers that advertise it. After
+the preparation merges, the platform refreshes its provider-contract snapshot
+from that commit and sets `LatestProviderVersion` to `0.10.1` in the same change;
+that fallback constant does not gate publication. Catalog changes and model
+registration are separate approvals. This preparation does not tag, register,
+upload or deploy anything.
+
+Platform evidence, inspected on 2026-10-23 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Platform `master` normalizes with v9 | [`identity/contract.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
-| Production `74e9f989` normalizes with v8 | [`identity/contract.go` at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/blob/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/internal/promptcontract/identity/contract.go) (`NormalizationVersion`) |
-| A cache plan applies only to a matching prompt contract | [`registry/cache_tiers.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/cache_tiers.go) (`CapabilityMatchesPlan`) |
-| Super has a per-identity provider-version floor | [`registry/catalog_version_floor.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`, unset there; [darkbloom-platform#400](https://github.com/Layr-Labs/darkbloom-platform/pull/400) sets `0.10.0`) |
-| GLM-5.3-Flash requires `glm5_next_v1` | [`registry/provider_capabilities.go` at `45f6728f`](https://github.com/Layr-Labs/darkbloom-platform/blob/45f6728fa734bf9145660107664404d730ea5e47/coordinator/registry/provider_capabilities.go) (`ProviderCapabilityGLM5Next`, `embeddedRequiredProviderCapabilities`) |
-| Production `74e9f989` has neither gate | Neither symbol exists in the [platform registry package at `74e9f989`](https://github.com/Layr-Labs/darkbloom-platform/tree/74e9f9893d02f9d2ba67a501f8838665e1c25cba/coordinator/registry) |
+| Production runs platform `master` `f512258a`, which has no logprobs guard | `/health` `build_commit`; no `logprobs` source in the [`modelarch` package at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/tree/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/internal/modelarch) |
+| #411 refuses native-engine logprobs unless the catalog row lists them | [`logprobs_input.go` at `1692564a`](https://github.com/Layr-Labs/darkbloom-platform/blob/1692564aa5f632ec99f4043af5c2e9d0b92e5d3c/coordinator/api/inference/logprobs_input.go) (`logprobsFailFast`) and [`request/logprobs_input.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/1692564aa5f632ec99f4043af5c2e9d0b92e5d3c/coordinator/api/inference/request/logprobs_input.go) (`LogprobsAdvertised`) |
+| The Super floor is `0.10.0` | [`registry/catalog_version_floor.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`) |
+| Forced tool choice goes only to advertising providers | [`registry/request_traits.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/registry/request_traits.go) (`RequiresToolConstraint`, `providerSupportsToolConstraintLocked`) |
+| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.9.22` was [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
-from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, `v0.9.21` was
+`v0.10.0` was [published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
+from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, `v0.9.22` was
+[published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, and `v0.9.21` was
 [published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)
-from `9951a7db72d3db9a9cb0ec5e777969afe968c9b6`, and `v0.9.20` was
-[published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20)
-from `5dc5313e5201e8d84db15adc153ceaf56147cc71`. Publication does not establish
+from `9951a7db72d3db9a9cb0ec5e777969afe968c9b6`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -146,6 +169,9 @@ The pipeline takes its registered `changelog` from the annotated tag message,
 not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
 it to a short summary: the release API refuses registration bodies above
 64 KiB, and that refusal comes only after signing and notarization.
+`release_changelog` in `scripts/provider-release-publication.py` removes only
+Git's identified signature suffix and trims outer whitespace. Internal line
+breaks and paragraph spacing remain unchanged.
 
 ### 3. Merge And Verify Release Preparation
 
@@ -291,6 +317,11 @@ selects the same names from the version that `/v1/releases/latest` returns
 (`scripts/install.sh`, `select_provider_identity`). The installer must work as
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON.
+
+Right after selecting the identity, the installer refuses a **new** install on
+macOS 26 or earlier (`require_supported_macos`) before downloading the bundle, so a
+release never reaches a Mac that can't become a new provider. An existing install
+of the same identity can still be updated or repaired.
 
 These values are the same for both builds:
 
@@ -457,7 +488,7 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, annotated-tag notes and source/run provenance |
+| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
 | 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update

@@ -425,6 +425,29 @@ first, and a request for the loading model when a second copy would not fit.
 and the body decode on the CPU with only the tokenizer loaded and the background
 comparisons off; it exits 2 if any token ID or decoded field differs.
 
+## Desktop Control And Frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+Run `npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency
+while compiling Swift. `desktop-app/tests/previewRuntime.test.ts` exercises
+local-preview process startup, duplicate-start suppression, shutdown, persistent
+state, startup failure, and signature rejection using isolated executable
+fixtures; `desktop-app/tests/previewSigning.test.ts` covers propagation of the
+exact certificate fingerprint when electron-builder supplies its display name.
+Check the signed packaged app separately using the
+[desktop preview procedure](desktop-app.md#signed-local-preview).
+
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog
+(`scripts/test-desktop-api.py`). It checks that release reads share the existing
+latest-release API, earnings use the existing ledger window parameter, a
+credential change rejects an in-flight private response, authenticated insights
+are relayed, decimal strings are preserved, and account-session revisions change.
+The fixture never starts a serving provider or changes its credentials.
+`DesktopControlTests` and the `DeviceCodeLogin` suite cover native authentication
+and account separation. Activity and earnings checks are described in the
+[desktop verification guide](desktop-app.md#verify).
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and
@@ -619,6 +642,32 @@ each measured run, so an interrupted run keeps every completed run's samples,
 and its `failure` records contract violations, thrown errors and teardown
 errors alike. The test qualifies provider-staged imports only, so it refuses
 MiMo specifications, which load through the native engine.
+
+`ModelCheckpointConversationLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointConversationLiveTests.swift`)
+is the opt-in real-model observation of one growing conversation. It reads the
+same standalone specification (only its model, precision and `outputTokens`)
+and an isolated ephemeral cache, requires native live and checkpoint precision,
+and refuses MiMo. Six turns grow from 30,000 tokens by 5,000 tokens each. Each
+turn is served with the prompt it shares with the previous turn as the
+repeated-prefix hint, as an agent loop's next turn would be. Per turn the
+report records TTFT, restored tokens, the gap from the last token to the
+terminal (which waits for checkpoint publication) and the files and bytes the
+complete-checkpoint store wrote. It fails only when a turn after the first
+restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
+compare against the large-memory complete-checkpoint default. The timings need
+exclusive GPU use:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointConversationLiveTests
+```
 
 ## Runtime Generation Comparisons
 
@@ -914,6 +963,12 @@ checks reject unsafe members, changed inventories, wrong source and entitlements
 `ref` input, no tag path, no production environment, signing identity or secret,
 and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
 Apple runtime behavior.
+
+`scripts/test-provider-release-publication.py` creates isolated local Git tags
+with verbatim annotations, including multiline opening paragraphs, extra blank
+lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
+text and payload/provenance digest guards without invoking signing or live
+publication.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical

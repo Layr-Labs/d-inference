@@ -11,9 +11,9 @@ version `ProviderCore.version` in
 and defaults are the ArgumentParser declarations; `—` means required.
 
 `waiting_inventory` means a selected model's ordinary update introduced an ID
-outside cached Autopilot consent. Enrollment remains saved, ordinary serving
-continues, and `darkbloom autopilot models` refreshes inventory before control
-can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
+outside the Autopilot set. Enrollment remains saved, ordinary serving
+continues, and the update's verified prefetch or `darkbloom autopilot models`
+adds it to the set before control can resume. Waiting and shadow Autopilot preserve the normal picker and `--model` serving selection. Other verified cached models are reported separately for planning and cannot be loaded by ordinary routing. See [Autopilot architecture](../architecture/model-autopilot.md).
 
 ## Local GLM qualification
 
@@ -84,6 +84,28 @@ Invalid, missing or changed selected storage disables SSD caching; inference can
 continue cold. See [selecting cache storage](cache-storage.md) for disk preparation,
 limits and verification. These checks do not certify disk firmware.
 
+## Desktop frontend control
+
+`darkbloom desktop serve --config <path>` runs the authenticated loopback API.
+`darkbloom desktop ensure --config <path>` installs/starts its user LaunchAgent,
+reinstalling it when the plist changed and restarting it once when the running
+API reports a different version than the invoking CLI.
+The desktop frontend sends validated actions to existing CLI operations and
+keeps the provider independent of its window lifetime. Internal
+`desktop start-local --model <id>`, `stop-local`, and `restart-local` commands
+(each accepting `--config`) retain the native provider owner and termination handler. Cooling uses
+`desktop configure-cooling --enabled <bool> --speed <percent> --temperature <celsius>`
+to request macOS administrator authorization for the existing signed helper.
+`darkbloom desktop login [--config <path>]` signs into the account
+workspace through browser approval; `darkbloom desktop logout [--config <path>]`
+signs out without changing provider linkage or serving state. Both use the same
+CLI and native account store as Electron (`Desktop.Login`, `Desktop.Logout`).
+It prefers a scoped account session and supports existing coordinator device-code
+grants when the desktop scope is not reported. Dashboard credentials stay separate
+from the running provider (`DeviceLoginScope`, `DesktopAccountCredential`).
+See [desktop control](../reference/desktop-control.md) for the exact routes,
+credentials, outcomes, and limits (`Desktop`, `DesktopBackend`).
+
 ## Global options
 
 The hidden `--native-serve-qualification-v1 <ws-url> <private-directory>` entry
@@ -128,7 +150,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
-| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
@@ -436,6 +458,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
+| `--hardware` | flag | `false` | Print the desktop hardware-load document (topology, one sample, counter capabilities) as JSON, exit |
 
 Clearing restores model-aware `auto` on the next model load, not guaranteed
 paged service. It preserves explicit settings, the kill switch and capability
@@ -755,11 +778,13 @@ Every subcommand accepts `--config`.
 
 | Command / option | Effect |
 |---|---|
-| `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result |
+| `status`, `status --json` | Configured consent and fresh daemon state, including selected/ready models and transition result. `Also downloaded` lists the verified downloaded catalog builds the running provider adds to the Autopilot set; `Downloads` shows whether Autopilot downloads are on, their limits, the models and GiB Autopilot downloaded that are still on disk, and free disk (`downloads` and `download_usage` in JSON) |
 | `enable` | Discover/verify all eligible downloaded network builds and safely save experimental enrollment; normal startup selector, verification adds no downloads, default shadow mode is inactive, and an already-enrolled provider's pause is preserved |
 | `models` | Explicitly refresh the recorded cached network inventory through discovery, verification and safe drain/restart; normal startup selector and no implicit resume |
 | `pause`, `resume` | Runtime participation update; pause preserves ready models and blocks new demand-based changes. Resume follows the coordinator's current mode and never promotes shadow to live. Retired, unadvertised residents may still unload when unpinned and unused |
 | `pin MODEL_ID...`, `unpin MODEL_ID...` | Live unload protection during active control, explicit pause or an accepted operation; pins must belong to the selected set |
+| `downloads enable [--max-storage-gb N] [--max-models N]` | Turn Autopilot downloads of catalog models on your behalf back on and set limits (on by default while enrolled). Each run replaces both limits: an omitted flag means no limit; on an interactive terminal without flags it asks for both, and a blank answer means no limit. Writes `[backend.autopilot_downloads]` and never changes consent ([configuration](../reference/configuration.md#provider-model-selection)) |
+| `downloads disable` | Stop Autopilot downloads; models it downloaded stay on disk and in the Autopilot set |
 | `disable` | Revoke new commands and restore the saved idle policy after any accepted operation finishes |
 | `start --autopilot`, `start --autopilot --all` | Explicit scripted enrollment of all verified eligible downloaded network builds; `--all` cannot include arbitrary local/off-catalog models |
 | `start --no-autopilot` | Explicitly save the ordinary idle-policy mode |
@@ -793,8 +818,11 @@ bounds fail without stopping the existing daemon or installing a replacement.
 The recorded inventory is an exact-build allowlist. Ordinary starts with saved
 enrollment validate all recorded IDs or fail before persistence or drain: a
 missing, ineligible or unverified build, including a transient manifest error,
-cannot silently shrink consent. Newly discovered/downloaded models and
-coordinator-desired replacement builds do not enroll automatically.
+cannot silently shrink consent. The saved selection never grows by itself, but
+with saved consent the running provider adds every verified catalog build in
+the cache, including builds Autopilot downloads on the operator's behalf and
+verified coordinator-desired replacements, to the Autopilot set it reports
+([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 Explicit `--autopilot`, `enable` or `models` refreshes eligible cached inventory
 without downloading and may exclude/prune failed or ineligible builds.
 `saveAutopilotEnrollment` retains `paused` when consent already exists, including
@@ -881,7 +909,7 @@ darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 |---|---|---|---|
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
 | `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
-| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists and boot out and remove the desktop API agent (`io.darkbloom.desktop-api`, best effort) |
 
 The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
@@ -1012,7 +1040,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard] [--hardware]
 ```
 
 | Flag | Description |
@@ -1021,6 +1049,7 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
 | `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
+| `--hardware` | Print one whole-machine load sample and which counters this Mac exposes, as JSON ([format](../reference/desktop-control.md#hardware-load)), and exit |
 
 The report header prints `Build` (`prod` or `dev`, fixed at compile time),
 `Coordinator` (the `--coordinator` value, else `[coordinator] url`) and
@@ -1853,7 +1882,7 @@ Source: `provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.sw
 | `[backend.model_autopilot]` key | Default | Meaning |
 |---|---|---|
 | `consent_recorded` | `false` | An explicit startup decision was saved |
-| `selected_models` | `[]` | Exact approved cached network build IDs; explicit inventory refresh updates this set, ordinary restarts do not expand it; empty cannot enroll |
+| `selected_models` | `[]` | The saved selection: exact approved cached network build IDs; explicit inventory refresh updates it, ordinary restarts do not; empty cannot enroll. With saved consent the running provider adds every verified downloaded catalog build to the Autopilot set it reports ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)) |
 | `revision` | empty string | CLI-generated identity for the approved configuration |
 | `paused` | `false` | Suspend new automatic changes while retaining ready models |
 | `min_idle_seconds` | `60` | Inactivity guard, independent from minimum residence |

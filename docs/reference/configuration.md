@@ -98,6 +98,19 @@ The Settings API-example URL is a display preference, not an upstream routing
 override. Request headers, cookies and browser storage cannot choose the
 server's coordinator origin. See [console architecture](../architecture/components/console-ui.md#coordinator-url-resolution).
 
+## Desktop app
+
+| Setting | Default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_DESKTOP_DIR` | `~/.darkbloom/desktop` (the build's install directory, e.g. `~/.darkbloom-dev/desktop` for dev builds) | `DesktopStorage.directory` in `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift`; owner-only API discovery, operation journal, and coordinator-scoped dashboard credentials; useful for isolated tests |
+| `DARKBLOOM_CLI_PATH` | `~/.darkbloom/bin/darkbloom` | `Backend.binary` in `desktop-app/src/main/backend.ts`; development-only CLI override, ignored by packaged apps |
+| `DARKBLOOM_DESKTOP_ATTACH_ONLY` | unset | `Backend.connect` in `desktop-app/src/main/backend.ts`; when `1` in development, attach to an already-running isolated API without creating a LaunchAgent; ignored in packaged apps |
+| `DARKBLOOM_DEV_URL` | Packaged `darkbloom://app/index.html` | `desktop-app/src/main/index.ts`; development-only renderer URL, ignored by packaged apps |
+
+Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
+preloading retain their existing native configuration. The app writes them
+through the [versioned desktop API](desktop-control.md), using expected revisions.
+
 ## Runtime metallib snapshots
 
 The provider creates an anonymous snapshot before binding the runtime metallib.
@@ -164,7 +177,13 @@ mode or update configuration changes are part of this addition.
 | `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
-| later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
+| later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
+| `backend.model_autopilot.selected_models` | With saved consent, the persisted part of the Autopilot set. The running provider adds every verified catalog build in the cache this Mac can run, including builds Autopilot downloaded, without a new consent step or revision change ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotStartInventory.swift` (`AutopilotStartInventory`); `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotModelSet.swift` (`autopilotModelSet`) |
+| `[backend.autopilot_downloads] enabled` | `true` (table or key absent: on) | Let Autopilot download catalog builds on the operator's behalf; only with saved Autopilot consent. Provider configuration, not consent: changing any key here never changes the Autopilot revision. The running provider rereads it at its next policy refresh; `darkbloom autopilot downloads enable` and `disable` write it ([CLI](../provider/cli-reference.md#darkbloom-autopilot)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` (`AutopilotDownloadSettings`); `provider-swift/Sources/darkbloom/Autopilot/AutopilotDownloadCommands.swift` |
+| `[backend.autopilot_downloads] max_storage_gb` | absent: no cap | GiB the builds Autopilot downloaded and still on disk may use together; a download past it is refused `storage_limit_reached` | `AutopilotDownloadSettings`, `AutopilotDownloadBudget` in `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` |
+| `[backend.autopilot_downloads] max_models` | absent: no cap | Builds Autopilot downloaded and still on disk; a new download at the cap is refused `model_limit_reached` | Same |
+| `[backend.autopilot_downloads] reserve_gb` | absent: `50` GiB (`AutopilotDiskGuard.defaultReserveGiB`) | Free disk a download must leave on the model cache volume, or it is refused `insufficient_disk` | Same; `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownload.swift` (`AutopilotDiskGuard`) |
+| `autopilot-downloads.json` beside `provider.toml` | Written by the provider, owner-only from creation: the builds Autopilot downloaded (model, weight hash, size, time), at most 256. Usage against the caps counts those still on disk; it keeps them in the set across restarts when the catalog is unreachable; nothing deletes their files | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadLedger.swift` (`AutopilotDownloadLedger`) |
 
 Ordinary non-enrolled `start` saves its selected models under the lifecycle lease before disabling
 recovery or draining/stopping the current daemon; persistence failure leaves it

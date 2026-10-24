@@ -85,14 +85,11 @@ extension Start {
     /// Use the provider's cap, activation and minimum KV safeguards. Catalog
     /// estimates are conservative; the loader rechecks live memory before use.
     static func pickerLoadBudgetGiB(memoryGb: Double, modelIDs: [String]? = nil) -> Double {
-        guard memoryGb.isFinite, memoryGb > 0, memoryGb <= 4096 else { return 0 }
-        let gib = Double(1 << 30)
-        let cap = Double(UnifiedMemoryCap.hardCapBytes(physicalBytes: UInt64(memoryGb * gib))) / gib
-        return max(0, cap - Double(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: modelIDs)) / gib)
+        AutopilotBuildEligibility.loadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
     }
 
     static func modelFitsBudget(sizeGb: Double, memoryGb: Double, modelIDs: [String]? = nil) -> Bool {
-        sizeGb.isFinite && sizeGb > 0 && sizeGb <= pickerLoadBudgetGiB(memoryGb: memoryGb, modelIDs: modelIDs)
+        AutopilotBuildEligibility.fitsLoadBudget(sizeGb: sizeGb, memoryGb: memoryGb, modelIDs: modelIDs)
     }
 
     enum PickerReserveMode {

@@ -1,0 +1,212 @@
+.fleet {
+  display: grid;
+  gap: 22px;
+  padding-top: 30px;
+  border-top: 1px solid var(--line);
+}
+.heading h2 {
+  font-size: 22px;
+  letter-spacing: -0.5px;
+}
+.earnings {
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--panel-bg);
+}
+.earningsMetrics {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+.earningsMetrics span {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.earningsMetrics strong {
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -1px;
+}
+.earningsMetrics b {
+  display: block;
+  font-size: 20px;
+  font-weight: 500;
+}
+.earningsMetrics small {
+  margin-left: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chartHeading,
+.listHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.chartHeading {
+  margin-bottom: 18px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.chartHeading button {
+  font-size: 11px;
+}
+.caption,
+.emptyChart {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.caption {
+  margin-top: 16px;
+}
+.emptyChart {
+  padding: 8px 0;
+}
+.listHeading {
+  margin-bottom: 18px;
+}
+.listHeading h3 {
+  font-size: 17px;
+}
+.listHeading > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.filters > label {
+  flex: 1;
+  min-width: 0;
+}
+.filters input {
+  width: 100%;
+}
+.filters select {
+  min-width: 120px;
+}
+.table {
+  overflow-x: auto;
+}
+.tableLabels,
+.tableRow {
+  display: grid;
+  grid-template-columns: minmax(190px, 2fr) minmax(70px, 1fr) 50px minmax(120px, 1fr) 16px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+.tableLabels,
+.row {
+  min-width: 550px;
+  border-bottom: 1px solid var(--line);
+}
+.tableLabels {
+  padding: 0 12px 14px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.row {
+  padding: 6px 0;
+}
+/* Each Mac is a card that opens its overview: hover, press and focus read as a control. */
+.tableRow {
+  padding: 14px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  transition:
+    background var(--hover-duration),
+    transform 0.1s;
+}
+.tableRow:hover {
+  background: var(--panel-bg);
+}
+.tableRow:active {
+  background: var(--raised-bg);
+  transform: translateY(1px);
+}
+/* The list scrolls sideways, so an outset ring would be clipped. */
+.tableRow:focus-visible {
+  outline-offset: -2px;
+}
+.earned {
+  text-align: right;
+}
+.open {
+  justify-self: end;
+  color: var(--muted);
+  transition:
+    color var(--hover-duration),
+    transform var(--hover-duration);
+}
+.tableRow:hover .open,
+.tableRow:focus-visible .open {
+  color: var(--text-primary);
+  transform: translateX(2px);
+}
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 2px 0 8px;
+  padding: 12px 12px 12px 46px;
+  border-radius: 8px;
+  background: var(--blue-wash);
+}
+.rowAction p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.machineName {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.machineName > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.machineName strong {
+  font-weight: 500;
+}
+.machineName small {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+@media (max-width: 700px) {
+  .earnings {
+    padding: 18px;
+  }
+  .earningsMetrics {
+    grid-template-columns: 1fr 1fr;
+  }
+  .earningsMetrics > :first-child {
+    grid-column: 1 / -1;
+  }
+  .earningsMetrics strong {
+    font-size: 28px;
+  }
+  .chartHeading,
+  .rowAction {
+    flex-wrap: wrap;
+  }
+}
+
+/* The table scrolls horizontally, which clips an outside focus ring. */
+.tableRow:focus-visible {
+  outline-offset: -2px;
+}

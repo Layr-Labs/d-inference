@@ -18,8 +18,8 @@ func autopilotTestLoop(enabled: Bool, models: [ModelInfo] = [], activeControl: B
 }
 
 extension ProviderLoop {
-    func activateAutopilotForTesting() {
-        autopilotControl = .init(sessionId:"session", revision:"test", enabled:true,
+    func activateAutopilotForTesting(revision: String = "test") {
+        autopilotControl = .init(sessionId:"session", revision:revision, enabled:true,
             expiresAtMs:Int64(Date().timeIntervalSince1970*1000)+120000)
         publishModelAutopilotSnapshot()
     }
@@ -37,5 +37,8 @@ final class AutopilotRecorder: @unchecked Sendable {
     }
     var legacyStatuses: [ProviderMessage.LoadModelStatus.Status] {
         lock.withLock { messages.compactMap { if case .loadModelStatus(_, let status, _) = $0 { return status }; return nil } }
+    }
+    var legacyErrors: [String?] {
+        lock.withLock { messages.compactMap { if case .loadModelStatus(_, _, let error) = $0 { return .some(error) }; return nil } }
     }
 }

@@ -1,8 +1,11 @@
 import Foundation
 
 /// Opt-in only. One resident head serves request-local states at any admitted
-/// owner capacity, but only singleton scheduled decode sets speculate. Media
-/// keeps the ordinary target path, as the standalone contract requires.
+/// owner capacity. A singleton policy speculates only singleton decode sets; an
+/// admitted-cohort policy verifies up to its quoted width of rows in one
+/// rectangle, each row its own window (`verify-rows`). The width comes from the
+/// typed assistant policy, itself in the load agreement. Media keeps the
+/// ordinary target path, as the standalone contract requires.
 enum QwenTensorParallelMTPPolicy {
     static let agreement = "qwen27-tensor-mtp-resident-batch-v1"
     /// Trusted assistant history enters head K/V in blocks of at most this
@@ -31,7 +34,7 @@ enum QwenTensorParallelMTPPolicy {
         guard let inventory else { throw ProbeError("Tensor assistant inventory is missing") }
         return [agreement, "depth=\(terms.depth)", "inventory=\(inventory.fingerprint)",
             "target=captured-rectangle", "head=rank0-hidden-sharded-vocabulary", "draft-ids=rank0",
-            "assistant-kv=paged64", QwenTensorParallelMTPPrefixBudget.policy, "media=target-only", "maximum-speculative-batch=1", "decode-history=observed", "history-flush=\(historyFlushRows)", "request-ledger=rank-heads-v1", "verify-rows=single-window-v1", "accepted-credit=bounded-suffix-v1", "shortlist=off"]
+            "assistant-kv=paged64", QwenTensorParallelMTPPrefixBudget.policy, "media=target-only", "speculative-width=assistant-policy", "decode-history=observed", "history-flush=\(historyFlushRows)", "request-ledger=rank-heads-v1", "verify-rows=single-window-v1", "accepted-credit=bounded-suffix-v1", "shortlist=off"]
     }
 }
 

@@ -99,6 +99,9 @@ extension Cluster {
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
+        @Flag(name: .customLong("local-only"),
+              help: "Stop only this Mac, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
+        var localOnly = false
 
         func validate() throws {
             for path in [configOptions.config, worker].compactMap({ $0 }) where !path.hasPrefix("/") {
@@ -108,12 +111,13 @@ extension Cluster {
 
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            let config = configOptions.config, worker = worker
+            let config = configOptions.config, worker = worker, localOnly = localOnly
             let executable = URL(fileURLWithPath: Start.currentExecutablePath())
             let lines: [String] = try await Task.detached {
                 var stopped: Result<[String], ClusterOnboardingFailure>?
-                // The leader stops serving first, so its members stop their parts too.
-                if let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
+                // The leader stops serving first, so its members stop their parts too
+                // (unless asked to stop only this Mac: the other one is gone).
+                if !localOnly, let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
                    let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
                        serviceArguments: ClusterServiceAgentPlan.childArguments(
                            serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) {
@@ -124,7 +128,9 @@ extension Cluster {
                         stopped = operations.stop()
                     }
                 }
-                return try Self.finishStop(stopped) { try ClusterService.removeFromLogin(executable: executable) }
+                return try Self.finishStop(stopped, localOnly: localOnly) {
+                    try ClusterService.removeFromLogin(executable: executable)
+                }
             }.value
             for line in lines { print(line) }
         }
@@ -138,7 +144,7 @@ extension Cluster {
 
         /// Keep the supervisor and its custody intact when the pair could not
         /// drain or the member did not acknowledge the saved stop request.
-        static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?,
+        static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
                                removeFromLogin: () throws -> [String]) throws -> [String] {
             var lines: [String] = []
             if let stopped {
@@ -151,6 +157,9 @@ extension Cluster {
             lines.append(removed.isEmpty
                 ? "This Mac's cluster service is stopped (it was not set to start at login)."
                 : "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again.")
+            if localOnly {
+                lines.append("The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+            }
             return lines
         }
     }

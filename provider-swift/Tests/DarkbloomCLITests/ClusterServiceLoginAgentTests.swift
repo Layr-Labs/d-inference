@@ -54,6 +54,21 @@ struct ClusterServiceLoginAgentTests {
         }
     }
 
+    /// Review finding (a): a leader whose member is gone for good can still
+    /// stop locally: no pair stop is attempted, the login agent goes, and the
+    /// output says the other Mac was not asked.
+    @Test func localOnlyStopSkipsThePairAndSaysSo() throws {
+        #expect(try Cluster.Stop.parse(["--local-only"]).localOnly)
+        #expect(try !Cluster.Stop.parse([]).localOnly)
+        var removals = 0
+        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
+        #expect(removals == 1)
+        #expect(lines.contains { $0.contains("will not start at login") })
+        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
+        #expect(!ordinary.contains { $0.contains("not asked to stop") })
+    }
+
     @Test func theSupervisedServiceBeatsUntilItFinishes() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-service-beat-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

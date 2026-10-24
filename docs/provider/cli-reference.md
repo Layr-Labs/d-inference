@@ -1971,6 +1971,12 @@ and retains the login service and saved stopped intent. Run the command again af
 reported condition clears; retries repeat the drain/acknowledgement path. An
 already stopped local part does not require another model load.
 
+When the other Mac is gone for good (wiped, sold, or no longer cabled),
+`darkbloom cluster stop --local-only` stops only this Mac. It skips the drain and
+the member acknowledgement, removes the login service, and says that the other Mac
+was not asked to stop. If that Mac comes back, run `darkbloom cluster stop` there
+too.
+
 Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 (`Cluster.Stop.finishStop`). See [planned stop ordering](../architecture/inference.md#planned-cluster-stop-ordering)
 for the bounds and process custody rules.

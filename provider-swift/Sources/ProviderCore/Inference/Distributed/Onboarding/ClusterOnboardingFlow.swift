@@ -633,6 +633,13 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
 public protocol ClusterOnboardingConsole: AnyObject {
     func say(_ line: String)
     func heading(_ title: String)
+    /// The setup's opening: its name and the steps ahead.
+    func banner(_ title: String, _ subtitle: String)
+    /// Work that is still running, said again while it runs; the next said
+    /// line replaces it. A transcript shows nothing extra.
+    func working(_ text: String)
+    /// The work said by `working` finished.
+    func settle()
     /// One key, or nil when `milliseconds` passed with none. "\r" is enter.
     func key(milliseconds: Int) -> Character?
     /// A line typed after `prompt` (echoed as typed), or nil when the input closed.
@@ -644,6 +651,9 @@ public protocol ClusterOnboardingConsole: AnyObject {
 public extension ClusterOnboardingConsole {
     /// Scrollable sections also work in transcripts and non-terminal consoles.
     func heading(_ title: String) { say(""); say(title) }
+    func banner(_ title: String, _ subtitle: String) { heading(title); say(subtitle) }
+    func working(_ text: String) {}
+    func settle() {}
 }
 
 /// Runs the onboarding on a console with the operations given; returns the exit status.
@@ -679,7 +689,8 @@ public enum ClusterOnboardingDriver {
         func show() { for line in lines.take() where line != "Run `darkbloom cluster` on the other Mac too." { console.say("  " + line) } }
         while true {
             show()
-            if let result = finished.take().first { show(); return result }
+            if let result = finished.take().first { show(); console.settle(); return result }
+            console.working("Checking the cable")
             usleep(50_000)
         }
     }
@@ -687,8 +698,7 @@ public enum ClusterOnboardingDriver {
     /// No pairing yet: checks, then find a waiting leader or become one.
     static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                         request: ClusterOnboardingRequest = .init()) -> Int32 {
-        console.heading("Darkbloom cluster setup")
-        console.say("Connect / Pair / Choose / Start / Test")
+        console.banner("Darkbloom cluster setup", "Connect / Pair / Choose / Start / Test")
         console.heading("1 / 5  Connect the Macs")
         console.say("Checking this Mac's Thunderbolt cable…")
         var link = checkLink(operations, console)
@@ -906,7 +916,7 @@ public enum ClusterOnboardingDriver {
         console.heading("3 / 5  Choose a model")
         console.say("Reading both Macs over the cable…")
         let notes = ClusterOnboardingMailbox<String>()
-        let reached = operations.reachMembers { notes.post($0) }
+        let reached = busy(console, "Reading both Macs") { operations.reachMembers { notes.post($0) } }
         for line in notes.take() { console.say("  " + line) }
         let machines: [ClusterOnboardingMachine]
         switch reached {
@@ -922,7 +932,7 @@ public enum ClusterOnboardingDriver {
         console.say("Working out the fastest way to split each model across both Macs…")
         if let notice = operations.developerNotice() { console.say(notice) }
         let choices: [ClusterOnboardingModelChoice]
-        switch operations.planModels() {
+        switch busy(console, "Planning on both Macs' memory", operations.planModels) {
         case .success(let value): choices = value
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
@@ -1086,8 +1096,10 @@ public enum ClusterOnboardingDriver {
         while ready == nil {
             for line in progress.take() { console.say("  " + line) }
             if let value = finished.take().first { ready = value; break }
-            _ = console.key(milliseconds: 200)
+            console.working("Loading \(title) on both Macs")
+            _ = console.key(milliseconds: 120)
         }
+        console.settle()
         for line in progress.take() { console.say("  " + line) }
         switch ready! {
         case .success(let where_):
@@ -1210,10 +1222,23 @@ public enum ClusterOnboardingDriver {
         }
     }
 
+    /// Runs one blocking operation off the console's thread while the console
+    /// says `label` as live work, then clears it. Plain consoles see nothing extra.
+    static func busy<Value: Sendable>(_ console: ClusterOnboardingConsole, _ label: String,
+                                      _ work: @escaping @Sendable () -> Value) -> Value {
+        let finished = ClusterOnboardingMailbox<Value>()
+        Thread.detachNewThread { finished.post(work()) }
+        while true {
+            if let value = finished.take().first { console.settle(); return value }
+            console.working(label)
+            usleep(40_000)
+        }
+    }
+
     static func test(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole, setup: Bool = false) -> Bool {
         console.heading(setup ? "5 / 5  Test a response" : "Test a response")
         console.say("Sending one test request…")
-        switch operations.testRequest() {
+        switch busy(console, "Waiting for the first tokens", operations.testRequest) {
         case .success(let lines):
             for line in lines { console.say("  " + line) }
             return true

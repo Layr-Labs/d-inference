@@ -84,8 +84,7 @@ extension EngineV2SlotFactory {
             return .init(cache: cache, status: .scanPending,
                 checkpointQuantization: storage.checkpointQuantization)
         case .failure(let failure):
-            return .init(cache: nil,
-                status: .init(state: .error, reason: .cacheInitFailed, failure: failure.reason))
+            return .init(cache: nil, status: .init(refusal: failure.reason))
         }
     }
 

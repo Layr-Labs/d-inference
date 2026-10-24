@@ -19,21 +19,6 @@ enum SSDHybridCheckpointStoreFactory {
         subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
-    static func make(
-        modelId: String, identity: CBv2CompleteCheckpointIdentity,
-        backendLayout: String = CBv2CompleteCheckpointManifest.layout,
-        nativePrefillChunkSize: Int? = nil,
-        kvBudget: GlobalKVCacheBudget?,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil
-    ) async -> SSDHybridCheckpointStore? {
-        try? await build(
-            modelId: modelId, identity: identity, backendLayout: backendLayout,
-            nativePrefillChunkSize: nativePrefillChunkSize, kvBudget: kvBudget,
-            environment: environment, persistentTestNamespace: persistentTestNamespace
-        ).get()
-    }
-
     /// Builds the store, or returns the typed reason it was refused. Every
     /// refusal logs one public line naming the model and reason; the slot
     /// still loads and serves uncached.

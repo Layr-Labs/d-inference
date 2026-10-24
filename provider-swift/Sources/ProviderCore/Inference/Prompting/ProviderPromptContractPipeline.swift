@@ -15,6 +15,25 @@ enum ProviderPromptContractPipeline {
             try controls.rawGLM5Controls.validate()
         }
     }
+    /// Why `validateNativeControls` refuses `controls`, or nil when it accepts
+    /// them. MiMo and Flint refuse only reasoning controls.
+    static func nativeControlsRefusal(_ controls: ChatTemplateControls, modelType: String?) -> InferenceRefusalReason? {
+        do {
+            try validateNativeControls(controls, modelType: modelType)
+            return nil
+        } catch {
+            guard GLM5NextPromptPolicy.applies(modelType: modelType) else { return .unsupportedReasoningControl }
+            return controls.rawGLM5Controls.refusalReason ?? .unsupportedReasoningControl
+        }
+    }
+    /// The caller declined reasoning the model still generates. It is never
+    /// framed or returned as logprob entries, but it is counted as reasoning.
+    static func withholdsReasoning(
+        _ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, modelType: String?
+    ) -> Bool {
+        FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
+            || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+    }
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,

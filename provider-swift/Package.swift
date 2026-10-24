@@ -35,7 +35,11 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
-        .package(path: "../libs/mlx-swift-lm"),
+        // Without the SDK's default `FoundationModelsIntegration` trait. No
+        // provider code uses its Apple FoundationModels adapter, and the trait
+        // would link that adapter, a weak FoundationModels.framework load and
+        // the vendored xgrammar C++ (MLXGuidedGeneration) into the binary.
+        .package(path: "../libs/mlx-swift-lm", traits: []),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),

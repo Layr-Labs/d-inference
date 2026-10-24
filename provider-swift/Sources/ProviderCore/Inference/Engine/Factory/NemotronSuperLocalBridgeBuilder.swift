@@ -465,7 +465,8 @@ enum NemotronSuperLocalBridgeBuilder {
                     ? nil : routingIdentity?.evidence(modelID: modelID),
                 prefixCacheStatus: complete.map {
                     PrefixCacheModelStatus(modelId: modelID, backend: PrefixCacheStatusBackend(assembly.backend.kind),
-                        replayStrategy: .direct, state: $0.status.state, reason: $0.status.reason)
+                        replayStrategy: .direct, state: $0.status.state, reason: $0.status.reason,
+                        detail: $0.status.failure)
                 },
                 prefixCacheConstructionFailure: complete?.status.failure,
                 makeEngine: {

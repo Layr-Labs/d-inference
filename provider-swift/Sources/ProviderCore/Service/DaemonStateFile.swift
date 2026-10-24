@@ -236,6 +236,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// Verbatim `DaemonState.ModelLoadError.message` when this entry
         /// exists BECAUSE a load failed. Non-nil ⇒ the slot is not serving.
         public var loadError: String?
+        /// The slot's SSD prefix-cache status exactly as the heartbeat reports
+        /// it (`PrefixCacheModelStatus` raw values): state, closed reason and
+        /// the typed cause behind an error. Absent in older state files.
+        public var prefixCacheState: String?
+        public var prefixCacheReason: String?
+        public var prefixCacheDetail: String?
 
         public init(
             model: String,
@@ -248,7 +254,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
-            loadError: String? = nil
+            loadError: String? = nil,
+            prefixCache: PrefixCacheModelStatus? = nil
         ) {
             self.model = model
             self.kvBackend = kvBackend
@@ -261,6 +268,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
             self.loadError = loadError
+            self.prefixCacheState = prefixCache?.state.rawValue
+            self.prefixCacheReason = prefixCache?.reason.rawValue
+            self.prefixCacheDetail = prefixCache?.detail?.rawValue
         }
     }
 
@@ -381,6 +391,8 @@ public enum DaemonSlotPostureBuilder {
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
+        /// The heartbeat's SSD prefix-cache status for this slot.
+        public let prefixCache: PrefixCacheModelStatus?
 
         public init(
             model: String,
@@ -391,7 +403,8 @@ public enum DaemonSlotPostureBuilder {
             checkpointBackendLayout: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
-            mtpInactiveReason: String?
+            mtpInactiveReason: String?,
+            prefixCache: PrefixCacheModelStatus? = nil
         ) {
             self.model = model
             self.kvBackend = kvBackend
@@ -402,6 +415,7 @@ public enum DaemonSlotPostureBuilder {
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
+            self.prefixCache = prefixCache
         }
     }
 
@@ -483,7 +497,8 @@ public enum DaemonSlotPostureBuilder {
                 checkpointBackendLayout: $0.checkpointBackendLayout,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
-                mtpInactiveReason: $0.mtpInactiveReason)
+                mtpInactiveReason: $0.mtpInactiveReason,
+                prefixCache: $0.prefixCache)
         }
         if let failure = lastModelLoadError,
             !live.contains(where: { $0.model == failure.model }),

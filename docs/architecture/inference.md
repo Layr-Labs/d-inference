@@ -363,6 +363,8 @@ the whole step (`NemotronSuperMTPRequestControlsTests`). Sampled Super rows
 speculate: the assistant's greedy proposals are accepted only where they equal
 the token pre-sampled with the request's own sampler and seed (exact
 target-prefix acceptance), so sampled output equals target-only sampling.
+`NemotronSuperLocalMTPTests` checks both through the provider's local binding
+and bridge against the plain owner's tokens.
 Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,

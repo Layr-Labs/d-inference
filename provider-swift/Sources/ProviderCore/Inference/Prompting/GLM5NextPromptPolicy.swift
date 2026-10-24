@@ -80,7 +80,9 @@ enum GLM5NextPromptPolicy {
     /// never publish them in diagnostics, telemetry, or a model advertisement.
     /// A malformed shadowed alias must not disappear in permissive decoding.
     struct RawControls: Sendable, Equatable, Decodable {
-        var invalid = false
+        /// The first refused member; such controls never validate.
+        private(set) var invalidReason: InferenceRefusalReason?
+        var invalid: Bool { invalidReason != nil }
         /// A thinking-off switch or effort (`none`/`off`).
         var disablesThinking = false
         /// An explicit thinking-on switch (`true`), effort level or budget.
@@ -127,12 +129,28 @@ enum GLM5NextPromptPolicy {
             do {
                 let root = try decoder.container(keyedBy: Key.self)
                 result.hasOriginalTools = root.contains(Key("tools"))
-                if result.hasOriginalTools {
-                    _ = try root.decode(ExactSchemaValues.self, forKey: Key("tools"))
+                // Each tool step records its reason and still ends the capture.
+                do {
+                    if result.hasOriginalTools {
+                        _ = try root.decode(ExactSchemaValues.self, forKey: Key("tools"))
+                    }
+                } catch {
+                    result.refuse(.invalidToolSchema)
+                    throw error
                 }
-                result.originalTools = try root.decodeIfPresent([OpenAITool].self, forKey: Key("tools"))
-                try ToolConstraintValidation.rejectReservedSchemaMetadata(
-                    result.originalTools, allowInternalSchemaMetadata: false)
+                do {
+                    result.originalTools = try root.decodeIfPresent([OpenAITool].self, forKey: Key("tools"))
+                } catch {
+                    result.refuse(declaresNonFunctionTool(root) ? .unsupportedToolType : .invalidToolDeclaration)
+                    throw error
+                }
+                do {
+                    try ToolConstraintValidation.rejectReservedSchemaMetadata(
+                        result.originalTools, allowInternalSchemaMetadata: false)
+                } catch {
+                    result.refuse(.reservedToolSchemaMetadata)
+                    throw error
+                }
                 // History is not a control: an unreadable message is the SDK
                 // decoder's to refuse, never this capture's.
                 let returned = try? root.decodeIfPresent([ReturnedReasoning].self, forKey: Key("messages"))
@@ -196,7 +214,7 @@ enum GLM5NextPromptPolicy {
                         result.excludesReasoning = true
                     }
                 }
-                if root.contains(Key("preserve_thinking")) { result.invalid = true }
+                if root.contains(Key("preserve_thinking")) { result.refuse(.unsupportedReasoningControl) }
                 try thinkingSwitch(root, "enable_thinking")
                 try exclusionSwitch(root, "include_reasoning", excludingValue: false, nullable: true)
                 let topEffort = try effort(root, "reasoning_effort", nullable: true)
@@ -217,7 +235,7 @@ enum GLM5NextPromptPolicy {
                         if thinking.allKeys.contains(where: {
                             !["type", "clear_thinking", "budget_tokens", "display"].contains($0.stringValue)
                         }) {
-                            result.invalid = true
+                            result.refuse(.unsupportedReasoningControl)
                         }
                         if try present(thinking, "type") {
                             switch try thinking.decode(String.self, forKey: Key("type")) {
@@ -249,7 +267,7 @@ enum GLM5NextPromptPolicy {
                         guard let accepted = noOpReasoningMembers[key.stringValue],
                             try accepted.contains(reasoning.decode(String.self, forKey: key))
                         else {
-                            result.invalid = true
+                            result.refuse(.unsupportedReasoningControl)
                             break
                         }
                     }
@@ -275,7 +293,7 @@ enum GLM5NextPromptPolicy {
                     if kwargs.allKeys.contains(where: {
                         !["reasoning_effort", "clear_thinking", "enable_thinking", "thinking"]
                             .contains($0.stringValue)
-                    }) { result.invalid = true }
+                    }) { result.refuse(.unsupportedReasoningControl) }
                     kwargsEffort = try effort(kwargs, "reasoning_effort")
                     kwargsClear = try clear(kwargs)
                     try thinkingSwitch(kwargs, "enable_thinking")
@@ -285,9 +303,37 @@ enum GLM5NextPromptPolicy {
                 result.effort = nestedEffort ?? topEffort ?? kwargsEffort ?? budgetEffort ?? thinkingBudgetEffort
                 result.clearThinking = topClear ?? kwargsClear ?? thinkingClear
             } catch {
-                result.invalid = true
+                result.refuse(.unsupportedReasoningControl)
             }
             return result
+        }
+
+        private mutating func refuse(_ reason: InferenceRefusalReason) {
+            invalidReason = invalidReason ?? reason
+        }
+
+        /// Whether a declared tool names a type other than `function`, the
+        /// type `OpenAITool` assumes when none is given.
+        private static func declaresNonFunctionTool(_ root: KeyedDecodingContainer<Key>) -> Bool {
+            struct Declared: Decodable {
+                let type: String
+                init(from decoder: any Decoder) throws {
+                    let values = try decoder.container(keyedBy: Key.self)
+                    type = (try? values.decode(String.self, forKey: Key("type"))) ?? "function"
+                }
+            }
+            let declared = try? root.decode([Declared].self, forKey: Key("tools"))
+            return declared?.contains { $0.type != "function" } ?? false
+        }
+
+        /// Why `validate()` refuses these controls, or nil when it accepts them.
+        var refusalReason: InferenceRefusalReason? {
+            if let invalidReason { return invalidReason }
+            if disablesThinking && requestsThinking { return .contradictoryReasoningControls }
+            if let clearThinking, let contextClearThinking, clearThinking != contextClearThinking {
+                return .contradictoryReasoningControls
+            }
+            return nil
         }
 
         func validate() throws {

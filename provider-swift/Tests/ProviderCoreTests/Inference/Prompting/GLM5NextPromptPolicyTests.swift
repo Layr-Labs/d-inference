@@ -174,6 +174,7 @@ struct GLM5NextPromptPolicyTests {
                 #expect(
                     !evidence.invalid && !evidence.disablesThinking && !evidence.excludesReasoning,
                     "\(fixture.id) \(controls)")
+                #expect(evidence.refusalReason == nil, "\(fixture.id) \(controls)")
                 for input in try remoteAndLocalInputs(body) {
                     let context = MLXLMCommon.JSONValue.object(
                         (input.additionalContext ?? [:]).mapValues { .from($0) })
@@ -229,6 +230,7 @@ struct GLM5NextPromptPolicyTests {
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(!evidence.invalid, "\(controls)")
             #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .contradictoryReasoningControls, "\(controls)")
             #expect(throws: (any Error).self) { try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next") }
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
             #expect(throws: (any Error).self) {
@@ -322,6 +324,7 @@ struct GLM5NextPromptPolicyTests {
             let body = try body(controls)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(!evidence.invalid && evidence.disablesThinking && !evidence.requestsThinking, "\(controls)")
+            #expect(evidence.refusalReason == nil, "\(controls)")
             _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
             for input in try remoteAndLocalInputs(body) {
                 #expect(input.additionalContext?["enable_thinking"] as? Bool == false, "\(controls)")
@@ -356,6 +359,7 @@ struct GLM5NextPromptPolicyTests {
             let body = try body(excluded)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(!evidence.invalid && evidence.excludesReasoning, "\(excluded)")
+            #expect(evidence.refusalReason == nil, "\(excluded)")
             try evidence.validate()
             _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
             let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
@@ -382,6 +386,7 @@ struct GLM5NextPromptPolicyTests {
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(evidence.disablesThinking && evidence.requestsThinking, "\(controls)")
             #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .contradictoryReasoningControls, "\(controls)")
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
             #expect(throws: (any Error).self) {
                 try ProviderPromptContractPipeline.normalizedInput(
@@ -395,7 +400,8 @@ struct GLM5NextPromptPolicyTests {
         }
         // A malformed sibling remains the generic refusal.
         let malformed = Data(#"{"model":"m","messages":[],"reasoning":{"enabled":false,"mode":"pro"}}"#.utf8)
-        #expect(try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed).invalid)
+        let malformedEvidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed)
+        #expect(malformedEvidence.invalid && malformedEvidence.refusalReason == .unsupportedReasoningControl)
     }
 
     @Test func thinkingTokenizerClosesOnlyAnOpenGenerationPromptWhenThinkingIsOff() throws {
@@ -454,6 +460,7 @@ struct GLM5NextPromptPolicyTests {
             let body = try body(sent)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(!evidence.invalid && !evidence.excludesReasoning, "\(sent)")
+            #expect(evidence.refusalReason == nil, "\(sent)")
             try evidence.validate()
             let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
             let expected = try remoteAndLocalInputs(try self.body(unified)).map { try render($0, with: template) }
@@ -611,6 +618,7 @@ struct GLM5NextPromptPolicyTests {
                 from: JSONSerialization.data(withJSONObject: body))
             #expect(evidence.invalid)
             #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .unsupportedReasoningControl, "\(body)")
         }
     }
 
@@ -724,6 +732,7 @@ struct GLM5NextPromptPolicyTests {
         let body = Data(#"{"model":"not-a-native-grant","model_type":"glm5_next","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"string","x-darkbloom-original-boolean-schema":true}}}}}]}"#.utf8)
         let controls = ProviderLoop.extractChatTemplateControls(from: body)
         #expect(controls.rawGLM5Controls.invalid)
+        #expect(controls.rawGLM5Controls.refusalReason == .reservedToolSchemaMetadata)
         #expect(throws: (any Error).self) {
             try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
         }
@@ -1052,6 +1061,42 @@ struct GLM5NextPromptPolicyTests {
         #expect(rendered.contains("9223372036854775807"))
         let inexact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[18446744073709551615]}}}}}]}"#.utf8)
         #expect(throws: (any Error).self) { try normalized(inexact) }
+        let inexactControls = ProviderLoop.extractChatTemplateControls(from: inexact)
+        #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)
+    }
+
+    /// The reason `darkbloom logs` gives each native-control refusal: tool
+    /// declarations the GLM capture refuses, and every family's controls.
+    @Test func refusedDeclarationsAndControlsNameTheirReason() throws {
+        let declarations: [(String, InferenceRefusalReason)] = [
+            (#"[{"type":"web_search"}]"#, .unsupportedToolType),
+            (#"[{"type":"custom","custom":{"name":"f"}}]"#, .unsupportedToolType),
+            (#"[{"type":"function","function":{"description":"no name"}}]"#, .invalidToolDeclaration),
+        ]
+        for (tools, reason) in declarations {
+            let controls = ProviderLoop.extractChatTemplateControls(
+                from: Data(#"{"model":"m","messages":[],"tools":\#(tools)}"#.utf8))
+            #expect(controls.rawGLM5Controls.refusalReason == reason, "\(tools)")
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.validateNativeControls(controls, modelType: "glm5_next")
+            }
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(controls, modelType: "glm5_next") == reason)
+            // Other families keep their own handling of the same declarations.
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(controls, modelType: "llama") == nil)
+        }
+        // MiMo and Flint refuse only reasoning controls.
+        let kwargs = ProviderLoop.extractChatTemplateControls(
+            from: try body(["chat_template_kwargs": ["unrecognized": true]]))
+        for modelType in ["mimo_v2", "flint", "glm5_next"] {
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.validateNativeControls(kwargs, modelType: modelType)
+            }
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(kwargs, modelType: modelType)
+                == .unsupportedReasoningControl, "\(modelType)")
+        }
+        #expect(ProviderPromptContractPipeline.nativeControlsRefusal(kwargs, modelType: "llama") == nil)
+        let served = ProviderLoop.extractChatTemplateControls(from: try body(["reasoning": ["exclude": true]]))
+        #expect(ProviderPromptContractPipeline.nativeControlsRefusal(served, modelType: "glm5_next") == nil)
     }
 }
 

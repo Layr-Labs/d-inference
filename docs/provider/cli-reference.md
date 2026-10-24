@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1561,6 +1561,38 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--last <duration>` | Historical window, e.g. `1h`, `30m`, `24h` |
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
+
+### Refusal lines
+
+A request refused before its inference task writes one fixed public line: the
+failure category, then a reason from the closed `InferenceRefusalReason` set
+(`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`).
+A private line pairs the request ID with the same reason; neither contains
+request text. The `inference_error` frame sent to the coordinator is the same
+as without the line. Failures during generation keep the bare category, such
+as `Inference failure: invalid request`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`,
+`InferenceFailureLogger`).
+
+| Line | Refused because | Source |
+|---|---|---|
+| `Inference failure: invalid request (missing sender key)` | The sealed request has no 32-byte sender key | `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift` (`handleInferenceRequest`) |
+| `Inference failure: invalid request (undecryptable request)` | The body does not decrypt with this provider's key | same |
+| `Inference failure: invalid request (reserved tool schema metadata)` | Tools carry coordinator-only schema metadata without its authenticated protocol, or GLM-5.3-Flash tools carry it at all | same; `GLM5NextPromptPolicy.RawControls` |
+| `Inference failure: invalid request (malformed body)` | The body is not a JSON chat request object | `InferenceRefusalReason.init(chatDecodeFailure:)` |
+| `Inference failure: invalid request (invalid messages)` | A message does not decode, such as a content part without its URL | same |
+| `Inference failure: invalid request (unsupported message role)` | A role other than `system`, `user`, `assistant` or `tool` and their aliases `developer` and `function` | same; `InboundChatNormalization` |
+| `Inference failure: invalid request (invalid tool history)` | A history tool call or result does not decode, such as a call without `type` or a non-object legacy `function_call` | same |
+| `Inference failure: invalid request (invalid tool arguments)` | A history call's `arguments` is not a string | same |
+| `Inference failure: invalid request (invalid tool declaration)` | A declared tool does not decode, such as a function without a name | same; `GLM5NextPromptPolicy.RawControls` |
+| `Inference failure: invalid request (invalid tool choice)` | `tool_choice` does not decode, such as a named choice without a name | same |
+| `Inference failure: invalid request (unsupported response format)` | `response_format` does not decode, such as `json_schema` without `schema` | same |
+| `Inference failure: invalid request (invalid request field)` | Another field has the wrong type, such as a string `temperature` | same |
+| `Inference failure: invalid request (unsupported reasoning control)` | A reasoning or template control the model refuses: an unknown effort, a non-positive budget, `preserve_thinking`, an unknown `reasoning` member, `thinking` key or `chat_template_kwargs` key, or a non-Boolean switch | `ProviderPromptContractPipeline.nativeControlsRefusal` |
+| `Inference failure: invalid request (contradictory reasoning controls)` | Thinking-off beside a thinking-on switch, effort or budget, or a `reasoning.context` that contradicts `clear_thinking` | same |
+| `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
+| `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
+| `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
 
 Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
 

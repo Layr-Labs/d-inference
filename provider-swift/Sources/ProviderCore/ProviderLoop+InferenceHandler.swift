@@ -234,14 +234,17 @@ extension ProviderLoop {
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
             callback: receiptCallbacks.lookup)
-        func rejectInvalidRequest() {
+        // Each refusal before the inference task logs its fixed reason publicly,
+        // so `darkbloom logs` accounts for it; the frame carries no reason.
+        func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason) {
+            InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure, refusal: refusal)
             lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
+                .inferenceError(requestId: requestId, failure: failure, profile: profile),
                 fallbackFailure: .policy,
                 send: send)
+        }
+        func rejectInvalidRequest(_ refusal: InferenceRefusalReason) {
+            reject(InferenceFailure(code: .invalidRequest, statusCode: 400), refusal: refusal)
         }
         var receiptTransferredToTask = false
         defer {
@@ -291,8 +294,7 @@ extension ProviderLoop {
         // `senderPublicKey` are already base64-decoded by CoordinatorClient,
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
         guard let senderKey = senderPublicKey, senderKey.count == 32 else {
-            logger.error("[\(requestId)] missing or malformed sender public key")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.missingSenderKey)
             return
         }
 
@@ -303,8 +305,7 @@ extension ProviderLoop {
                 ciphertext: ciphertext
             )
         } catch {
-            logger.error("[\(requestId)] request decryption failed")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.undecryptableRequest)
             return
         }
         profile.mark(.decrypted)
@@ -321,9 +322,7 @@ extension ProviderLoop {
         if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
-            logger.warning(
-                "[\(requestId)] rejecting unauthenticated internal tool-schema metadata")
-            rejectInvalidRequest()
+            rejectInvalidRequest(.reservedToolSchemaMetadata)
             return
         }
 
@@ -350,16 +349,14 @@ extension ProviderLoop {
         do {
             inbound = try Self.decodeInboundChatRequest(decryptedData)
         } catch {
-            // Privacy: the provider logger renders the whole message `.public`, and
-            // reports collect this subsystem — so never interpolate the raw decode
+            // Privacy: reports collect this subsystem, so never log the raw decode
             // error, which on a malformed body can carry a fragment of the (now
-            // decrypted) request, i.e. user prompt content. Log only the error TYPE.
-            // The requester-facing string below is likewise kept generic: it transits
+            // decrypted) request, i.e. user prompt content. Log only its fixed
+            // reason. The requester-facing frame is likewise generic: it transits
             // the coordinator in plaintext and is logged server-side, so interpolating
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            logger.error("[\(requestId)] failed to parse chat request")
-            rejectInvalidRequest()
+            rejectInvalidRequest(InferenceRefusalReason(chatDecodeFailure: error))
             return
         }
         let chatRequest = inbound.request
@@ -373,13 +370,7 @@ extension ProviderLoop {
             try MediaIngest.rejectUnsupportedAudio(chatRequest,
                 modelType: localModelTypeForAudioAdmission(chatRequest.model))
         } catch {
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            reject(Self.sanitizedInferenceFailure(from: error, phase: .request), refusal: .unsupportedAudio)
             return
         }
 
@@ -429,11 +420,10 @@ extension ProviderLoop {
         let modelId = chatRequest.model
         // This metadata is provider-authored, never a caller model_type/name
         // heuristic. Revalidate against the actual acquired slot below.
-        do {
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls,
-                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
-        } catch {
-            rejectInvalidRequest() // Never publish raw decrypted validation details.
+        if let refusal = ProviderPromptContractPipeline.nativeControlsRefusal(templateControls,
+            modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+        {
+            rejectInvalidRequest(refusal) // Never publish raw decrypted validation details.
             return
         }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
@@ -650,11 +640,9 @@ extension ProviderLoop {
         // <think> tokens for a Gemma build. The slot carries the type captured at
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
-        do {
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
-        } catch {
+        if let refusal = ProviderPromptContractPipeline.nativeControlsRefusal(templateControls, modelType: modelType) {
             await finishAcceptedRequestWithoutTask(requestId: requestId)
-            rejectInvalidRequest()
+            rejectInvalidRequest(refusal)
             return
         }
         let slotContainer = slot.container

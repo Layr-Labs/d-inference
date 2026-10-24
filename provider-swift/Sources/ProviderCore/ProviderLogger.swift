@@ -169,6 +169,25 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
 
+    // Closed reasons for refusals before the inference task (`InferenceRefusalReason`).
+    case refusalMissingSenderKey = "Inference failure: invalid request (missing sender key)"
+    case refusalUndecryptableRequest = "Inference failure: invalid request (undecryptable request)"
+    case refusalReservedToolSchemaMetadata = "Inference failure: invalid request (reserved tool schema metadata)"
+    case refusalMalformedBody = "Inference failure: invalid request (malformed body)"
+    case refusalInvalidMessages = "Inference failure: invalid request (invalid messages)"
+    case refusalUnsupportedMessageRole = "Inference failure: invalid request (unsupported message role)"
+    case refusalInvalidToolHistory = "Inference failure: invalid request (invalid tool history)"
+    case refusalInvalidToolArguments = "Inference failure: invalid request (invalid tool arguments)"
+    case refusalInvalidToolDeclaration = "Inference failure: invalid request (invalid tool declaration)"
+    case refusalInvalidToolChoice = "Inference failure: invalid request (invalid tool choice)"
+    case refusalUnsupportedResponseFormat = "Inference failure: invalid request (unsupported response format)"
+    case refusalInvalidRequestField = "Inference failure: invalid request (invalid request field)"
+    case refusalUnsupportedReasoningControl = "Inference failure: invalid request (unsupported reasoning control)"
+    case refusalContradictoryReasoningControls = "Inference failure: invalid request (contradictory reasoning controls)"
+    case refusalUnsupportedToolType = "Inference failure: invalid request (unsupported tool type)"
+    case refusalInvalidToolSchema = "Inference failure: invalid request (invalid tool schema)"
+    case refusalUnsupportedAudio = "Inference failure: invalid media (unsupported audio)"
+
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
 }

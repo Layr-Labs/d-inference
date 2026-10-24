@@ -31,7 +31,7 @@ enum ScriptedCoordinatorRelay {
     static func run(
         modelID: String, modelType: String, tokenizer: TokenizerHandle,
         containerTokenizer: any MLXLMCommon.Tokenizer, eosTokenIds: Set<Int>, requestID: String,
-        fields: [String], deadline: FirstContentDeadline? = nil,
+        fields: [String], deadline: FirstContentDeadline? = nil, logSink: ProviderLogger.Sink? = nil,
         script: (AsyncStream<CBv2Event>.Continuation, Progress) async throws -> Void
     ) async throws -> Output {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -44,7 +44,7 @@ enum ScriptedCoordinatorRelay {
         let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: hardware, models: [], config: .init(provider: .init(name: "scripted-relay"),
                 backend: .init(), coordinator: .init(heartbeatIntervalSecs: 60))),
-            attestationSigner: nil, kvBudgetForTesting: budget)
+            attestationSigner: nil, kvBudgetForTesting: budget, logSinkForTesting: logSink)
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: tokenizer,
             eosTokenIds: eosTokenIds, kvBytesPerToken: 4_000, kvBudget: budget)

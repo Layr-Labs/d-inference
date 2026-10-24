@@ -118,7 +118,16 @@ opt-in refuses target-only GLM before any load state exists, and
 `GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
 from the same fixture: the relay channel must receive one entry per generated
 token with the requested alternatives, the row must not draft, and a later
-plain request must still speculate. In the SDK,
+plain request must still speculate. Beside a concurrent plain row, a ten-step
+logprob row must carry the entries it carries alone and leave the plain row's
+text unchanged. Without a flag, `GLM5NextRelayLogprobsTests` replays scripted
+GLM tokens through the production coordinator handler and frames loop
+(`ScriptedCoordinatorRelay`): a mixed reply and a reply that ends while
+reasoning, requested streamed and not, must carry one entry per generated token
+in generation order (none for the mixed reply's stop token), reasoning tokens on
+the reasoning chunks and the marker and answer tokens on the content chunks; a
+request without logprobs carries none, and another model type keeps
+content-chunk attachment. In the SDK,
 `GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
 `protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
 values with the target's own log-softmax for serial and rectangular
@@ -231,6 +240,34 @@ empty-string arguments and `reasoning.context`/`reasoning.mode`; the reasoning
 must render in the call's thinking block. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
+
+`GLM5NextRealLogprobsQualificationTests` qualifies logprobs on the real GLM
+checkpoint through the production bundle and the `EngineV2Bridge` relay channel
+(the standalone `--local` HTTP server never emits logprobs). It needs the
+`GLM5NextRealModelHarness` variables (`DARKBLOOM_TEST_GLM5_REAL_MODEL_DIR`,
+`DARKBLOOM_TEST_GLM5_REAL_RESULTS_DIR`, `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REPO`,
+`DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
+`DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
+`DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
+32-token `top_logprobs: 5` request at the template-default effort, which opens
+with reasoning tokens (`reasoningPositions`; at low effort GLM closes the thought
+at once), must return one entry per token, never draft, equal the same row submitted to the raw engine, and match a
+teacher-forced dense-cache log-softmax along its own tokens within the larger
+of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
+bf16 spacings of the step's largest logit. A logprob row decodes one-token
+target steps, so the MTP greedy stream may leave it only at a reference
+near-tie. Batched with a plain row on another prompt, the logprob row keeps
+its chosen values within the same bound and its alternatives within
+`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_BATCHED_TOLERANCE` nats (default `1.0`),
+every alternative is a reference top-8 token, and every plain token is the
+reference argmax up to a near-tie; the plain row drafts again after the
+logprobs row finishes. Batch width alone moves GLM's non-top logits: the run
+also scores the reference as two identical rows and records its drift from
+the one-row reference (`pairedReferenceMaxDrift`, 0.56 nats on an M3 Ultra).
+The engine must end without a native fault or retained load. Results go to
+`logprobs-qualification.json` in the results directory. The model directory
+must hold regular files; a Hugging Face snapshot of symlinks fails with
+`regular file required`.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
@@ -1200,15 +1237,40 @@ The managed slot is covered by `NemotronSuperServingPolicyTests` and
 plan, footprint, media charge and capacity quotes; CPU only) and
 `NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
 coordinator and local-endpoint text and image requests on the speculating
-owner, an image beside speculating text, media refusal before allocation,
-cancellation, admission refusal and retirement). Three gated cases need the
+owner, logprobs on both paths without a draft, and relayed thinking-on replies,
+mixed and ending while reasoning, with one entry per generated token on
+reasoning or content chunks; an image beside speculating text, media refusal
+before allocation, cancellation, admission refusal and retirement).
+`toolCallReplyCarriesTheSameLogprobsOnEveryPath` checks that the relay, the
+local stream and the local complete response carry identical entries for
+thinking-on replies that call a tool: only the reasoning and answer tokens'
+when the call ends the reply, and every entry before a newline that follows
+the call. `NemotronSuperLocalOutputTests` checks the same selection for a
+complete response without a model (`NemotronSuperCompleteLogprobs`). The local
+hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
+complete logprobs on the tiny installed fixture for a mixed reply and one that
+ends while reasoning, with entries on the stream's reasoning chunks, and none
+without `logprobs`, and the
+SDK's `NemotronSuperMTPMediaFallbackTests` checks a logprob row's tokens and
+logprobs against the plain owner's while a text row beside it speculates
+([logprob rows](../architecture/inference.md#nemotron-super-logprobs)). Three gated cases need the
 pinned checkpoint: `NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery
 and that the recorded LOAD constants equal the SDK quotes over every verified
 shard (hashes about 75 GB, loads no weights); adding
 `DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
 the production loader, once to serve an encrypted text request and once for PNG
-and JPEG questions and an image beside a text request. Run them only with
-exclusive GPU access.
+and JPEG questions and an image beside a text request.
+`pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
+against the engine's and, at every step the relay served, against a cold
+prefill of the prompt and the tokens before it, twice: with thinking off up to
+the end of turn, and with thinking on for a 48-token reply that ends inside
+reasoning, whose 48 entries must all ride reasoning chunks. Each served value
+must be within 0.35 nats of the reference, and the served token the reference
+argmax unless the reference prefers another token by at most 0.7 nats, a swap
+two values within the bound allow.
+`DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
+makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.
 
 `NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
 shapes, built from the captured tool request the platform's conformance fixture

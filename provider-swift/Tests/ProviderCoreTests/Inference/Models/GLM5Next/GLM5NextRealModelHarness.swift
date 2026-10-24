@@ -293,6 +293,8 @@ struct GLM5NextRealRun: Sendable {
     let stageDisposition: String
     let stopTokens: Set<Int>
     let mtp: GLM5NextRealMTPDelta?
+    /// The engine's own entries when the run asked for `topLogprobs`.
+    let logprobs: [CBv2TokenLogprob]
 }
 
 struct GLM5NextRealMTPDelta: Sendable {
@@ -315,7 +317,7 @@ extension GLM5NextRealModelHarness {
     /// attributable when no other request overlaps (`attributeMTP`).
     func run(_ prompt: [Int], id: UInt64, output: Int, cache: Bool = false,
         cancelAfterFirst: Bool = false, multimodal: CBv2MultimodalInput? = nil,
-        suppressEOS: Bool = false, attributeMTP: Bool = true) async throws -> GLM5NextRealRun {
+        suppressEOS: Bool = false, attributeMTP: Bool = true, topLogprobs: Int = 0) async throws -> GLM5NextRealRun {
         let session = try #require(session)
         try GLM5NextExecutionBound.validateRequest(promptTokens: prompt.count,
             maximumOutputTokens: output, limit: maximumContext)
@@ -327,18 +329,19 @@ extension GLM5NextRealModelHarness {
         let before = attributeMTP ? session.rawEngine.mtpMetricsSnapshot() : nil
         let start = DispatchTime.now().uptimeNanoseconds
         let submission = try await session.submit(.init(id: .init(id), promptTokens: prompt,
-            sampling: .init(temperature: 0), maxTokens: output, stopTokens: stopTokens,
+            sampling: .init(temperature: 0, topLogprobs: topLogprobs), maxTokens: output, stopTokens: stopTokens,
             cacheSalt: cache ? "isolated-real-model-tenant" : nil, prefixCacheEnabled: cache,
             multimodal: multimodal, prefixCheckpointTargetTokens: cache ? 1024 : nil))
         var tokens: [Int] = [], text = ""
+        var logprobs: [CBv2TokenLogprob] = []
         var first: UInt64?, last: UInt64?, finished: UInt64?
         var reason: CBv2FinishReason?, usage: CBv2Usage?
         for await event in submission.events {
             switch event {
-            case .delta(let delta, let ids, _):
+            case .delta(let delta, let ids, let entries):
                 if first == nil { first = DispatchTime.now().uptimeNanoseconds }
                 last = DispatchTime.now().uptimeNanoseconds
-                tokens += ids; text += delta
+                tokens += ids; text += delta; logprobs += entries ?? []
                 if cancelAfterFirst { session.rawEngine.cancel(.init(id)) }
             case .finished(let terminal, let count):
                 finished = DispatchTime.now().uptimeNanoseconds
@@ -360,7 +363,7 @@ extension GLM5NextRealModelHarness {
             lastDeltaSeconds: last.map { Double($0 - start) / 1e9 },
             finishedSeconds: finished.map { Double($0 - start) / 1e9 },
             wallSeconds: Double(end - start) / 1e9,
-            stageDisposition: submission.stageDisposition, stopTokens: stopTokens, mtp: delta)
+            stageDisposition: submission.stageDisposition, stopTokens: stopTokens, mtp: delta, logprobs: logprobs)
     }
 }
 

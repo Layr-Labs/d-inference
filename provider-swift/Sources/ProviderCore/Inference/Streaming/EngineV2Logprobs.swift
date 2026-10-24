@@ -24,10 +24,10 @@
 // before encryption. Ordering is safe because the pump appends BEFORE
 // yielding the text chunk that produced the entries.
 //
-// Scope: the coordinator serving path only. The standalone `--local` HTTP
-// path serves frames inside the upstream Hummingbird router (no provider
-// seam after SSE encoding), so it does not emit logprobs — same visible
-// behavior remains no logprobs there.
+// Scope: the coordinator serving path, and local chat requests to a raw-body
+// owner (Nemotron Super), whose frames and JSON pass through the provider's
+// `LocalChatUploadResponder`. Other local models are served by the upstream
+// service with no provider seam after SSE encoding, so they emit none.
 //
 // KNOWN DEVIATIONS from OpenAI semantics: entries are emitted for EVERY
 // sampled token, so when a
@@ -36,7 +36,10 @@
 // content chunk (OpenAI omits reasoning/tool tokens from
 // `logprobs.content`). Conversely, trailing entries whose text never
 // renders as content (stop-token holdback, end-of-stream) are dropped
-// with the request.
+// with the request. GLM5-Next and Nemotron Super entries also attach to the
+// reasoning chunks that carry their tokens, as vLLM-style servers attach them
+// (`ProviderLoop.logprobsCoverReasoning`), so their `logprobs.content` covers
+// reasoning tokens even when the response ends before any content.
 //
 // PRIVACY NOTE: entries carry token text — they are response content. They
 // ride only inside the E2E-encrypted SSE stream back to the consumer,

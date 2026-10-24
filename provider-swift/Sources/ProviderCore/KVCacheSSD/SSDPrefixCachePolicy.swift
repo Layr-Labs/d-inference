@@ -249,10 +249,10 @@ enum SSDPrefixCachePolicy {
     /// writing; more settle `write_queue_full`. A donor offers its checkpoints
     /// one at a time, so this bounds donors that finish together. Every GLM
     /// donor of a burst captures (the SDK capture-boundary partition), and on
-    /// an M5 Ultra two donors finishing in the same millisecond lost both of
-    /// one donor's files to a single slot. A queued GLM donation pins its
-    /// donor's pages and KDA copies, which stay charged to the admission
-    /// ledger until the write settles; a 32k donation writes in about 0.3 s.
+    /// an M5 Ultra two donors finishing within 27 ms lost both of one donor's
+    /// files to a single slot. A queued GLM donation pins its donor's pages
+    /// and KDA copies, which stay charged to the admission ledger until the
+    /// write settles; a 32k donation writes in about 0.3 s.
     static let glm5NextCompleteCheckpointWriteQueueJobs = 8
 
     static func completeCheckpointWriteQueueJobs(backendLayout: String) -> Int {

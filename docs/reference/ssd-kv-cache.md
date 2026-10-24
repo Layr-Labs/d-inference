@@ -179,6 +179,13 @@ for bit; older latent rows are approximate
 `CBv2GLM5NextCompleteCheckpointLayout.latentQuantization`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointStorageQuantization.swift`).
 
+| `glm-5.3-flash` checkpoint (DBK3 file, M5 Ultra, 2026-10-24) | `native` | `balanced` |
+|---|---:|---:|
+| 1,024 tokens (the donation anchor) | 168.2 MB | 161.3 MB |
+| 1,792 tokens | 182.4 MB | 169.5 MB |
+| 8,192 tokens | 300.5 MB | 238.1 MB |
+| 32,768 tokens | 754.2 MB | 501.5 MB |
+
 | `glm-5.3-flash` checkpoint (DBK3 file, measured on an M5 Ultra) | Size |
 |---|---:|
 | 2,048 tokens | 187.1 MB |

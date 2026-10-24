@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-24
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -141,14 +141,43 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
-The unregistered GLM prototype defines
-`native-paged-glm5next-full-state-v1`: asymmetric latent/index/gate/validity rows
-plus exact FP32 convolution and recurrent state. The provider store recognizes
-that format, but the protected native binding, MTP serialization and encrypted
-restore qualification remain separate gates. It is not permission to emit
-durable-ready routing evidence
+GLM5-Next uses `native-paged-glm5next-full-state-v2`: asymmetric
+latent/index/gate/validity rows, the KDA convolution history and the exact FP32
+KDA recurrent state, plus the MTP prefix tensors at their own native dtypes. The
+live pool and state keep these rows in FP32, but the latent keys, the `[index
+keys, pool gates, 0/1 validity]` values row and the convolution history only
+widen the model's activation dtype. The encrypted manifest's
+`glm5NextState.storage` records each of those three roles' wire dtype, and the
+export writes them at that dtype: BF16 for `glm-5.3-flash`, whose producing
+weights, norms and pool gates are all BF16. Narrowing refuses (the donation
+fails, no file is written) if any element is not exactly representable, and
+import widens back to the original FP32 bits, so restore stays lossless. The
+recurrent state is accumulated in FP32 and is always written in FP32. The
+loaded target declares the role dtypes by the same promotion its forward pass
+applies (`GLM5NextTextModel.glm5NextPagedPayloadStorage`); a target with FP32
+activations keeps every role FP32. The retired all-FP32
+`native-paged-glm5next-full-state-v1` spelling is refused, and its different
+layout epoch keeps v1 files outside a v2 store's namespace until the TTL sweep
+removes them. The shared narrowing/widening helper is
+`CheckpointHalfPrecision.swift`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHalfPrecision.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
+
+| GLM-5.3-Flash checkpoint at | v1 (all FP32) | v2 (BF16 activation roles) |
+|---|---:|---:|
+| 2,048 tokens | 228.5 MB | 187.1 MB (-18 %) |
+| 8,192 tokens | 445.8 MB | 300.5 MB (-33 %) |
+| 30,720 tokens | 1,242.8 MB | 716.4 MB (-42 %) |
+| Per token | 35.4 KB | 18.5 KB (-48 %) |
+| Fixed part (mostly the FP32 KDA recurrent state) | 156.0 MB | 149.3 MB |
+
+Sizes are DBK3 files measured on an M5 Ultra (v1: 0.10.1; v2: the same build
+with this layout). A donation also writes the 2,048-token anchor, so a 30,720-token
+donation writes 1,471 MB at v1 and 904 MB at v2. Smaller files charge
+proportionally less of the daily write cap. A full 262,144-token context
+checkpoint is about 5.0 GB at v2, inside the 7 GiB large-memory staging cap; at
+v1 it was about 9.4 GB, so prompts above about 208,000 tokens could not stage.
 See the [GLM integration gates](../design/glm53-flash-native.md).
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary

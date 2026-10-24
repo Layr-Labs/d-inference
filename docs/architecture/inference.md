@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -670,6 +670,15 @@ full-artifact qualification. Source lives under
 `libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
 [in-progress integration contract](../design/glm53-flash-native.md) for the
 required paged, complete-prefix and trained-MTP gates.
+
+The target also declares which complete-checkpoint roles are FP32 copies of BF16
+activations: the latent keys, the `[index keys, pool gates, validity]` values
+row and the KDA convolution history (`GLM5NextTextModel.glm5NextPagedPayloadStorage`,
+derived from the loaded weights' dtypes with the forward's own promotion). The
+paged binding passes that to the checkpoint codec, which writes those roles at
+BF16 and widens them back to the same FP32 bits on import; the FP32 recurrent
+state is written as is
+([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 
 An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
 can admit the exact pinned local artifact into standalone discovery without

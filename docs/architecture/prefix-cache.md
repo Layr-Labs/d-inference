@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-24
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -137,10 +137,16 @@ proof of paged execution
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
 
-The prototype full-state codec adds the distinct
-`native-paged-glm5next-full-state-v1` layout, preserving the asymmetric payload
+The full-state codec adds the distinct
+`native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
 and exact convolution/recurrence state
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+The latent, index/gate/validity and convolution roles are written at the
+activation dtype they were widened from (BF16 for `glm-5.3-flash`) and widened
+back to the same FP32 bits on restore; the FP32 KDA recurrent state is written
+as is. This roughly halves the per-token payload. The retired all-FP32 v1 files
+fall outside the new layout epoch's namespace
+([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,

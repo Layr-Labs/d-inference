@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-24
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -523,6 +523,9 @@ effective checkpoint encoder may compress older attention rows; native recent
 and recurrent/auxiliary state remain exact. Native checkpoint storage preserves
 all captured bytes. See the
 [payload reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload).
+On the native recurrent layouts a request that consumed a restore stores
+its later checkpoints as deltas of the restored file, and a restore reads that
+chain forward together ([delta checkpoints](../reference/ssd-kv-cache.md#delta-complete-checkpoints)).
 Checkpoint encoding does not change capture scheduling. Recurrent (Qwen,
 Nemotron, Bonsai) checkpoints exist at every contiguous computed-range end inside the
 prompt that is a multiple of 256 tokens

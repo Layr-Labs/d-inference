@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-24
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -62,6 +62,7 @@ header comment and `enum SSDBlockStore`).
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
+| Streaming read | `SSDBlockChunkCursor` returns one authenticated chunk per call in file order, or skips one unread, then checks EOF and file identity; `readStreaming` drives one cursor | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockChunkCursor.swift` |
 | Temp files | `tempMarker = "darkbloom-tmp"`, crash-orphan TTL `crashTempTTLSeconds = 3600` | `SSDBlockStore.swift` |
 | Path safety | Descriptor-relative no-follow traversal; nonblocking final read/touch opens followed by regular-file validation | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift` |
 
@@ -76,7 +77,9 @@ not a change to authentication, encryption, retention or cache identity
 
 A disk observer sees the lookup tag, the weight hash, the layout epoch, block
 shape descriptors and `createdAt`; never raw chain hashes, token ids or counts,
-scope values, or request ids (`SSDBlockStore.swift` header).
+scope values, or request ids (`SSDBlockStore.swift` header). A delta checkpoint
+adds `parentCommitment`, which only a holder of `K_lookup` can pair with its
+parent file ([delta checkpoints](#delta-complete-checkpoints)).
 
 A confirmed missing parent directory is file absence, not corruption. The
 resident-preflight regression creates actual malformed DBK3 files: equal or
@@ -180,6 +183,19 @@ Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
 Earlier resident-cache measurements do not establish SSD latency or restart reuse.
 
+### Delta complete checkpoints
+
+A request whose stage the engine consumed holds the restored file's rows byte
+for byte, so its later checkpoints store only the rows that file lacks.
+
+| Contract | Bound / behavior | Code |
+|---|---|---|
+| Eligible layout | `native-paged-full-recurrent-v1` and `native-contiguous-full-recurrent-v1`: K/V and Qwen MTP history store rows `[P, D)`; recurrent, convolution and frontier state are stored whole. Other layouts, cold requests and a negative `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` write complete files | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDeltaLayout.swift`, `SSDHybridCheckpointStore+Write.swift` (`deltaEnvelope`) |
+| Parent | The restored file, or its chain's root once the chain holds `maximumChainFiles = 8` files; a chain must also fit `maxReadBytes`, else the file is complete | `SSDHybridCheckpointStore+Write.swift` (`deltaEnvelope`) |
+| Binding | Public `parentCommitment = HMAC(K_lookup, "dbkv3-checkpoint-parent-v1" ‖ parent full tag ‖ parent file IV)`, in the AAD; the scan pairs it with each file's own tag and IV | `SSDLookupKeys.swift` (`checkpointParentCommitmentHex`), `SSDHybridCheckpointStore+Maintenance.swift` (`scanOnDisk`) |
+| Restore | A candidate is the whole chain, every link fresh and its bytes within the stage caps. The reader holds only the leaf: ancestors are read unlocked, their chunks authenticated and pinned by the commitment, so readers sharing a root never wait for each other. It checks every commitment and manifest, then streams the leaf's tensors with one forward cursor per file, skipping replaced tensors unread; each extra file adds one `maximumSegmentBytes` of IO scratch | `SSDHybridCheckpointStore+ChainRead.swift` (`openChain`, `streamChain`), `SSDBlockIndex.swift` (`chain`) |
+| Failure and recency | A failure retires the file in use; files built on a missing link are never candidates and age out. A hit or a new child refreshes the whole chain, and ready evidence prices a delta at its chain's bytes | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readAttempt`), `SSDHybridCheckpointStore+Maintenance.swift` (`publishReady`) |
+
 ### Bounded shorter complete-checkpoint fallback
 
 These rules apply to complete AR and native-block imports, not attention-block
@@ -242,6 +258,7 @@ list; the test-root and persistent-key benchmark controls are not.
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | Max estimated staging time; when set, also overrides the large-memory complete-checkpoint default | `SSDPrefixCachePolicy.swift` (`maxStageMillis`, `completeCheckpointMaxStageMillis`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | Enables writing window sidecar files (format only) | `SSDPrefixCachePolicy.swift` (`windowSidecarEnabled`) |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | fsync every block write (GCM auth otherwise catches torn writes) | `SSDPrefixCachePolicy.swift` (`strictFsync`) |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | A negative value writes complete checkpoints whole instead of as [deltas](#delta-complete-checkpoints) | `SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | Permit an in-memory KEK fallback and an isolated payload root; an accepted test root normally forces an ephemeral key | `SSDPrefixCacheFactory.swift` |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | Exactly `1` requests the normal persistent KEK within an accepted test root; benchmark-only, not forwarded to LaunchAgents | `SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) |
 | `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | DEBUG builds only: the persistent KEK source for qualification of an ad hoc signed build without a keychain access group; ignored by release builds, not forwarded to LaunchAgents | `SSDDebugCacheKeyFile.swift` (`load`), `SSDCacheKeyMaterial.swift` (`defaultPersistentLoader`) |

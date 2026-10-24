@@ -824,7 +824,7 @@ public actor ProviderLoop {
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
     internal var memoryPressureMonitor: MemoryPressureMonitor?
 
-    internal let logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
+    internal let logger: ProviderLogger
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
@@ -846,8 +846,11 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
         kvBudgetForTesting: GlobalKVCacheBudget? = nil,
-        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil,
+        logSinkForTesting: ProviderLogger.Sink? = nil
     ) throws {
+        self.logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop",
+            sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {

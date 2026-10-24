@@ -452,7 +452,7 @@ the qualification hook's keys, for speculation and width
 
 | Control | Default | Effect |
 |---|---|---|
-| `backend.mtp_mode` | `auto` | `auto` and `on` install exact rectangular speculation with the embedded head, depth 3 for one decoding request, 2 for two to four and 1 for more; `off`, or `DARKBLOOM_CBV2_MTP` negative, serves the plain owner |
+| `backend.mtp_mode` | `auto` | `auto` and `on` install exact rectangular speculation with the embedded head, depth 3 for one decoding request, 2 for two to four and 1 for more (on an M5: 2 for two, 1 for three or four and target-only for more); `off`, or `DARKBLOOM_CBV2_MTP` negative, serves the plain owner |
 | `backend.engine_v2_max_concurrent`, `engine_v2_max_concurrent_by_model` | absent: 8 requests | An explicit value bounds the owner's width (at most 8 with speculation, 64 plain) |
 | `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `_MTP_VERIFICATION`, `_PREFILL_CHUNK`, `_DECODE_STEPS_BETWEEN_CHUNKS`, `_KV_BACKEND`, `_VIDEO_PRUNING` | depth `3,2,2,2,1` (`3,2,1,1,0` on an M5); the [builder defaults](../architecture/inference.md#context) otherwise | Kept when set in the provider process |
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for either owner when the grant holds every request's fixed bytes and the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |

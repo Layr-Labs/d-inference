@@ -137,6 +137,38 @@ struct GLM5NextProtectedFactoryTests {
         }
     }
 
+    /// A fleet-wide resident opt-in (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) never
+    /// refuses a GLM load: its protected engine hosts no resident tier, so the
+    /// slot keeps its encrypted complete-checkpoint store and serves.
+    @Test func residentOptInKeepsCompletePrefixInsteadOfRefusing() async throws {
+        try await withFixture { fixture in
+            let container = try await fixture.load()
+            let tokenizer = await container.tokenizer
+            var environment = fixture.environment
+            environment[PrefixCachePolicy.memoryEnvironmentFlag] = "1"
+            #expect(PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+                modelId: fixture.plan.weights.catalog.id, modelType: "glm5_next", isVLM: false,
+                modelDirectory: fixture.directory, container: container,
+                tokenizer: TokenizerHandle(tokenizer),
+                sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity,
+                maxConcurrentRequests: 1, kvBudget: fixture.budget,
+                weightHash: fixture.plan.weights.manifest.aggregateSHA256,
+                specDecPreparation: fixture.mtpPreparation,
+                assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
+                environment: environment, startServingTelemetry: false)
+            fixture.bridges.append(bundle.bridge)
+            let store = try #require(bundle.bridge.ssdHybridCheckpointStore)
+            let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
+            #expect(engine.completePrefixCache === store)
+            #expect(engine.hybridPrefixCache == nil)
+            #expect(bundle.bridge.residentPrefixCacheEvidence == nil)
+            #expect(bundle.bridge.prefixCacheModelStatus().state != .error)
+            #expect(await bundle.bridge.canSubmitWithNativeOwner())
+            try await fixture.run(bundle.bridge, tokens: [3, 3], id: "resident-opt-in")
+        }
+    }
+
     /// The global flag opts the pinned identity out, and GLM never degrades
     /// to contiguous KV: the kill switch or an explicit contiguous selection
     /// refuses the load instead.

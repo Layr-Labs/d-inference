@@ -421,7 +421,7 @@ private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendab
     func finish(_ trailingHeaders: HTTPFields?) async throws {}
 }
 
-@Test func corsResponderNamesTheFixGLMReasoningRefusalNeedsWithoutEchoingRequests() async throws {
+@Test func corsResponderKeepsGLMPolicyRefusalsClosedAndContentFree() async throws {
     let context = BasicRequestContext(
         source: ApplicationRequestContextSource(
             channel: EmbeddedChannel(), logger: Logger(label: #function)))
@@ -437,16 +437,11 @@ private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendab
             JSONSerialization.jsonObject(with: Data(String(buffer: body.bytes).utf8)) as? [String: Any])
         return (response.status, try #require(envelope["error"] as? [String: Any]))
     }
-    let (status, refusal) = try await render(.reasoningExclusionUnsupported)
+    let (status, refusal) = try await render(.invalidToolPayload("GLM5: caller-detail"))
     #expect(status == .badRequest)
-    #expect(refusal["message"] as? String == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
-    #expect(refusal["code"] as? String == "unsupported_value")
+    #expect(refusal["message"] as? String == InferenceFailureCode.invalidRequest.message)
     #expect(refusal["type"] as? String == "invalid_request_error")
-    // Other GLM policy refusals keep the closed, content-free message.
-    let (otherStatus, other) = try await render(.invalidToolPayload("GLM5: caller-detail"))
-    #expect(otherStatus == .badRequest)
-    #expect(other["message"] as? String == InferenceFailureCode.invalidRequest.message)
-    #expect(other["code"] == nil)
+    #expect(refusal["code"] == nil)
 }
 
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {

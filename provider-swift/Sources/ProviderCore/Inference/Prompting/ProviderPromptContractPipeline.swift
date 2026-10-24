@@ -15,6 +15,14 @@ enum ProviderPromptContractPipeline {
             try controls.rawGLM5Controls.validate()
         }
     }
+    /// The caller declined reasoning the model still generates. It is never
+    /// framed or returned as logprob entries, but it is counted as reasoning.
+    static func withholdsReasoning(
+        _ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, modelType: String?
+    ) -> Bool {
+        FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
+            || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+    }
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,

@@ -692,9 +692,12 @@ extension ProviderLoop {
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
-        // Withheld Flint reasoning must not return as logprob entry tokens.
-        let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
+        // Withheld reasoning must not return as logprob entry tokens.
+        let filtersReasoningLogprobs = logprobsSpec != nil && ProviderPromptContractPipeline.withholdsReasoning(
             chatRequest, controls: templateControls, modelType: modelType)
+        let reasoningLogprobsStartInThought = filtersReasoningLogprobs
+            && GLM5NextPromptPolicy.applies(modelType: modelType)
+            && GLM5NextPromptPolicy.thinkingEnabled(request: chatRequest, controls: templateControls)
         let logprobsCoverReasoning = Self.logprobsCoverReasoning(
             modelType: modelType, nemotronSuper: superOwner != nil)
 
@@ -1144,7 +1147,8 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
-            var reasoningLogprobs = filtersReasoningLogprobs ? FlintReasoningLogprobsFilter() : nil
+            var reasoningLogprobs = filtersReasoningLogprobs
+                ? WithheldReasoningLogprobsFilter(startsInThought: reasoningLogprobsStartInThought) : nil
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.

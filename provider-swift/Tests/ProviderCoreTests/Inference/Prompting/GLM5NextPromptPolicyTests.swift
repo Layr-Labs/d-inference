@@ -288,11 +288,16 @@ struct GLM5NextPromptPolicyTests {
          "include_reasoning": true, "chat_template_kwargs": ["thinking": false]],
     ] }
 
-    /// Hidden reasoning: the provider cannot withhold reasoning it generates.
-    private static var reasoningExclusionControls: [[String: Any]] { [
-        ["reasoning": ["exclude": true]],
-        ["include_reasoning": false],
-        ["reasoning": ["enabled": false, "exclude": true]],
+    /// Hidden reasoning, each beside the same controls without the exclusion
+    /// and whether thinking stays on.
+    private static var reasoningExclusionControls:
+        [(excluded: [String: Any], visible: [String: Any], thinking: Bool)] { [
+        (["reasoning": ["exclude": true]], [:], true),
+        (["include_reasoning": false], [:], true),
+        (["reasoning": ["effort": "high", "exclude": true]], ["reasoning": ["effort": "high"]], true),
+        (["reasoning": ["enabled": false, "exclude": true]], ["reasoning": ["enabled": false]], false),
+        (["thinking": ["type": "enabled", "budget_tokens": 2048, "display": "omitted"]],
+         ["thinking": ["type": "enabled", "budget_tokens": 2048]], true),
     ] }
 
     /// Thinking-off beside a thinking-on switch, effort level or budget.
@@ -342,23 +347,36 @@ struct GLM5NextPromptPolicyTests {
         #expect(context["enable_thinking"] == nil)
     }
 
-    @Test func reasoningExclusionAndContradictionsAreRefusedOnBothPaths() throws {
-        for controls in Self.reasoningExclusionControls {
-            let body = try body(controls)
+    /// OpenRouter's hidden reasoning is served: the prompt is the one the same
+    /// request renders without the exclusion, and only the response withholds
+    /// the reasoning (`MultiModelBatchSchedulerEngine`).
+    @Test func reasoningExclusionIsServedWithTheUnchangedPromptOnBothPaths() throws {
+        let template = try shippedTemplate()
+        for (excluded, visible, thinking) in Self.reasoningExclusionControls {
+            let body = try body(excluded)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
-            #expect(!evidence.invalid && evidence.excludesReasoning, "\(controls)")
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
-                try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
-            }
+            #expect(!evidence.invalid && evidence.excludesReasoning, "\(excluded)")
+            try evidence.validate()
+            _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
+            let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
+            let expected = try remoteAndLocalInputs(try self.body(visible)).map { try render($0, with: template) }
+            #expect(rendered == expected, "\(excluded)")
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
-                try ProviderPromptContractPipeline.normalizedInput(
-                    prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
-                    request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
-            }
+            #expect(GLM5NextPromptPolicy.withholdsReasoning(local.templateControls, modelType: "glm5_next"))
+            #expect(ProviderPromptContractPipeline.withholdsReasoning(
+                local.request, controls: local.templateControls, modelType: "glm5_next"))
+            // Thinking-off generates no reasoning to withhold.
+            #expect(GLM5NextPromptPolicy.thinkingEnabled(request: local.request, controls: local.templateControls)
+                == thinking, "\(excluded)")
             // Other families keep their own handling of the same bodies.
             try ProviderPromptContractPipeline.validateNativeControls(local.templateControls, modelType: "llama")
+            #expect(!GLM5NextPromptPolicy.withholdsReasoning(local.templateControls, modelType: "llama"))
         }
+        let visible = try JSONDecoder().decode(LocalChatRequest.self, from: try body(["include_reasoning": true]))
+        #expect(!GLM5NextPromptPolicy.withholdsReasoning(visible.templateControls, modelType: "glm5_next"))
+    }
+
+    @Test func thinkingContradictionsAreRefusedOnBothPaths() throws {
         for controls in Self.contradictoryThinkingControls {
             let body = try body(controls)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
@@ -418,21 +436,33 @@ struct GLM5NextPromptPolicyTests {
         #expect(ReasoningPromptProbe.streamingPrefix(forPromptTail: rendered + "</think>") == "<think></think>")
     }
 
-    @Test func reasoningRefusalIsAClient400WithAFixedMessageThatNeverCrossesToTheCoordinator() throws {
-        let error = MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
-        #expect(error.errorDescription == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
-        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
-        let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
-        #expect(failure.statusCode == 400)
-        #expect(failure.code == .invalidRequest)
-        #expect(failure.errorReason == .clientError)
-        #expect(classifyInferenceErrorReason(error) == nil)
-        let wire = try ProviderProtocolCodec.encodeProviderMessage(
-            .inferenceError(.init(requestId: "glm-reasoning-fixture", failure: failure)))
-        let json = try #require(JSONSerialization.jsonObject(with: wire) as? [String: Any])
-        #expect(json["status_code"] as? Int == 400)
-        #expect(json["error_reason"] as? String == "client_error")
-        #expect(json["error"] as? String == InferenceFailureCode.invalidRequest.message)
+    /// The coordinator's Anthropic Messages lowering forwards Anthropic's
+    /// `thinking` object unchanged, and OpenAI documents `reasoning_effort` as
+    /// nullable. Both select the same render as their unified spellings.
+    @Test func anthropicThinkingAndNullReasoningEffortRenderLikeTheirUnifiedSpellings() throws {
+        let template = try shippedTemplate()
+        let pairs: [(sent: [String: Any], unified: [String: Any])] = [
+            (["thinking": ["type": "enabled", "budget_tokens": 1024]], ["reasoning": ["max_tokens": 1024]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 31999]], ["reasoning": ["max_tokens": 31999]]),
+            (["thinking": ["type": "adaptive"]], ["reasoning": ["enabled": true]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 4096, "display": "summarized"]],
+             ["reasoning": ["max_tokens": 4096]]),
+            (["reasoning_effort": NSNull()], [:]),
+            (["reasoning_effort": NSNull(), "reasoning": ["effort": "low"]], ["reasoning": ["effort": "low"]]),
+        ]
+        for (sent, unified) in pairs {
+            let body = try body(sent)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(!evidence.invalid && !evidence.excludesReasoning, "\(sent)")
+            try evidence.validate()
+            let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
+            let expected = try remoteAndLocalInputs(try self.body(unified)).map { try render($0, with: template) }
+            #expect(rendered == expected, "\(sent)")
+        }
+        // The budget picks the nearest rendered effort, as reasoning.max_tokens does.
+        let budget = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self,
+            from: try body(["thinking": ["type": "enabled", "budget_tokens": 1024]]))
+        #expect(budget.effort == .low && budget.requestsThinking)
     }
 
     @Test func additionalEffortAndImageMarkerGoldensMatchOfficial() throws {
@@ -550,14 +580,16 @@ struct GLM5NextPromptPolicyTests {
 
     @Test func malformedAndShadowedRawControlsFailClosed() throws {
         let controls: [[String: Any]] = [
-            ["reasoning_effort": NSNull()], ["reasoning_effort": false], ["reasoning_effort": "None"],
+            ["reasoning_effort": false], ["reasoning_effort": "None"],
             ["reasoning_effort": " none"], ["reasoning_effort": "0"],
             ["clear_thinking": NSNull()], ["clear_thinking": 0], ["clear_thinking": "false"],
             ["enable_thinking": NSNull()], ["enable_thinking": 1], ["enable_thinking": "true"],
             ["include_reasoning": "true"], ["include_reasoning": 0],
             ["preserve_thinking": true], ["preserve_thinking": NSNull()],
-            ["thinking": "enabled"], ["thinking": 1], ["thinking": ["type": "adaptive"]],
-            ["thinking": ["type": "enabled", "budget_tokens": 1024]], ["thinking": ["type": NSNull()]],
+            ["thinking": "enabled"], ["thinking": 1], ["thinking": ["type": "auto"]],
+            ["thinking": ["type": "enabled", "budget_tokens": 0]],
+            ["thinking": ["type": "enabled", "budget_tokens": "1024"]],
+            ["thinking": ["type": "enabled", "display": "full"]], ["thinking": ["type": NSNull()]],
             ["thinking": ["type": "enabled", "clear_thinking": "false"]],
             ["reasoning": true], ["reasoning": ["enabled": 1]], ["reasoning": ["exclude": "false"]],
             ["reasoning": ["max_tokens": 0]], ["reasoning": ["max_tokens": -1]],

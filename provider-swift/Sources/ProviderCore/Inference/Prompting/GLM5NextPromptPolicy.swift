@@ -25,10 +25,20 @@ enum GLM5NextPromptPolicy {
         prepared.glmResponseFormat != nil || (applies(modelType: modelType) && prepared.requiresToolCall)
     }
 
-    /// Fixed client text for every reasoning-exclusion request. It never
-    /// echoes request content.
-    static let reasoningExclusionUnsupportedMessage =
-        "GLM-5.3-Flash returns the reasoning it generates; reasoning.exclude true and include_reasoning false are unsupported. To turn thinking off, send reasoning.enabled false, enable_thinking false or reasoning_effort none."
+    /// The caller declined the reasoning GLM still generates while thinking is
+    /// on, as OpenRouter's `reasoning.exclude` documents: it is withheld from
+    /// every frame and still counted as reasoning tokens. The prompt is
+    /// unchanged.
+    static func withholdsReasoning(_ controls: ChatTemplateControls, modelType: String?) -> Bool {
+        applies(modelType: modelType) && controls.rawGLM5Controls.excludesReasoning
+    }
+
+    /// Whether generation starts inside the template's open `<think>` block.
+    /// Controls the render would refuse report thinking on; such a request
+    /// never generates.
+    static func thinkingEnabled(request: OpenAIChatCompletionRequest, controls: ChatTemplateControls) -> Bool {
+        (try? additionalContext(request: request, controls: controls))?[thinkingOffContextKey] == nil
+    }
 
     /// Render-context key marking thinking-off (present only as `false`). The
     /// pinned template ignores it and always opens `<think>`;
@@ -75,8 +85,8 @@ enum GLM5NextPromptPolicy {
         var disablesThinking = false
         /// An explicit thinking-on switch (`true`), effort level or budget.
         var requestsThinking = false
-        /// `reasoning.exclude: true` or `include_reasoning: false`. Kept apart
-        /// from `invalid` so its refusal can tell the caller what to send.
+        /// `reasoning.exclude: true`, `include_reasoning: false` or Anthropic's
+        /// `thinking.display: "omitted"`: generate the reasoning, withhold it.
         var excludesReasoning = false
         var effort: Effort?
         var clearThinking: Bool?
@@ -130,7 +140,8 @@ enum GLM5NextPromptPolicy {
                     messages.contains { $0.text != nil } ? messages.map(\.text) : nil
                 }
                 // OpenRouter's own fields (`reasoning`, its members,
-                // `include_reasoning`, `thinking`) may carry null for unset.
+                // `include_reasoning`, `thinking`) and OpenAI's
+                // `reasoning_effort` may carry null for unset.
                 func present(
                     _ values: KeyedDecodingContainer<Key>, _ key: String, nullable: Bool = false
                 ) throws -> Bool {
@@ -156,6 +167,14 @@ enum GLM5NextPromptPolicy {
                     guard values.contains(Key("clear_thinking")) else { return nil }
                     return try values.decode(Bool.self, forKey: Key("clear_thinking"))
                 }
+                func budget(_ values: KeyedDecodingContainer<Key>, _ key: String) throws -> Effort {
+                    let tokens = try values.decode(Int.self, forKey: Key(key))
+                    guard tokens > 0 else {
+                        throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive")
+                    }
+                    result.requestsThinking = true
+                    return Effort(reasoningBudget: tokens)
+                }
                 // OpenRouter and template-kwargs thinking switches.
                 func thinkingSwitch(
                     _ values: KeyedDecodingContainer<Key>, _ key: String, nullable: Bool = false
@@ -180,24 +199,41 @@ enum GLM5NextPromptPolicy {
                 if root.contains(Key("preserve_thinking")) { result.invalid = true }
                 try thinkingSwitch(root, "enable_thinking")
                 try exclusionSwitch(root, "include_reasoning", excludingValue: false, nullable: true)
-                let topEffort = try effort(root, "reasoning_effort")
+                let topEffort = try effort(root, "reasoning_effort", nullable: true)
                 let topClear = try clear(root)
                 // GLM's own API spelling, `{"type": "enabled"|"disabled",
-                // "clear_thinking": Bool}`; a Boolean is the kwargs alias.
+                // "clear_thinking": Bool}`; a Boolean is the kwargs alias. The
+                // coordinator's Anthropic Messages lowering forwards Anthropic's
+                // object unchanged: `adaptive` enables thinking, `budget_tokens`
+                // is OpenRouter's `reasoning.max_tokens`, and a `display` of
+                // `omitted` hides the reasoning.
                 var thinkingClear: Bool?
+                var thinkingBudgetEffort: Effort?
                 if try present(root, "thinking", nullable: true) {
                     if (try? root.decode(Bool.self, forKey: Key("thinking"))) != nil {
                         try thinkingSwitch(root, "thinking")
                     } else {
                         let thinking = try root.nestedContainer(keyedBy: Key.self, forKey: Key("thinking"))
-                        if thinking.allKeys.contains(where: { !["type", "clear_thinking"].contains($0.stringValue) }) {
+                        if thinking.allKeys.contains(where: {
+                            !["type", "clear_thinking", "budget_tokens", "display"].contains($0.stringValue)
+                        }) {
                             result.invalid = true
                         }
                         if try present(thinking, "type") {
                             switch try thinking.decode(String.self, forKey: Key("type")) {
-                            case "enabled": result.requestsThinking = true
+                            case "enabled", "adaptive": result.requestsThinking = true
                             case "disabled": result.disablesThinking = true
                             default: throw GLM5NextPromptPolicy.invalid("unsupported thinking type")
+                            }
+                        }
+                        if try present(thinking, "budget_tokens") {
+                            thinkingBudgetEffort = try budget(thinking, "budget_tokens")
+                        }
+                        if try present(thinking, "display") {
+                            switch try thinking.decode(String.self, forKey: Key("display")) {
+                            case "summarized": break
+                            case "omitted": result.excludesReasoning = true
+                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking display")
                             }
                         }
                         thinkingClear = try clear(thinking)
@@ -229,12 +265,7 @@ enum GLM5NextPromptPolicy {
                         }
                     }
                     if try present(reasoning, "max_tokens", nullable: true) {
-                        let budget = try reasoning.decode(Int.self, forKey: Key("max_tokens"))
-                        guard budget > 0 else {
-                            throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive")
-                        }
-                        budgetEffort = Effort(reasoningBudget: budget)
-                        result.requestsThinking = true
+                        budgetEffort = try budget(reasoning, "max_tokens")
                     }
                 }
                 var kwargsEffort: Effort?
@@ -251,7 +282,7 @@ enum GLM5NextPromptPolicy {
                     try thinkingSwitch(kwargs, "thinking")
                 }
                 // An explicit effort, under any alias, wins over a budget.
-                result.effort = nestedEffort ?? topEffort ?? kwargsEffort ?? budgetEffort
+                result.effort = nestedEffort ?? topEffort ?? kwargsEffort ?? budgetEffort ?? thinkingBudgetEffort
                 result.clearThinking = topClear ?? kwargsClear ?? thinkingClear
             } catch {
                 result.invalid = true
@@ -263,9 +294,6 @@ enum GLM5NextPromptPolicy {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
                     "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, reasoning.context auto/all_turns/current_turn, reasoning.mode standard, and Boolean clear_thinking and reasoning switches")
-            }
-            guard !excludesReasoning else {
-                throw MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
             }
             // Contradictory spellings are refused, never reconciled.
             guard !(disablesThinking && requestsThinking) else {

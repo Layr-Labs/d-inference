@@ -30,20 +30,20 @@ struct FlintReasoningVisibilityTests {
             tokens.map { SSETokenLogprob(token: $0, logprob: -1, bytes: Array($0.utf8).map(Int.init), topLogprobs: []) }
         }
         // Markers assembled from ordinary tokens, split across drains.
-        var split = FlintReasoningLogprobsFilter()
+        var split = WithheldReasoningLogprobsFilter()
         #expect(split.visible(entries(["<th", "ink>", "plan"])).isEmpty)
         #expect(split.visible(entries([" </thi", "nk>"])).isEmpty)
         #expect(split.visible(entries(["Answer", "."])).map(\.token) == ["Answer", "."])
         // Dedicated marker tokens.
-        var dedicated = FlintReasoningLogprobsFilter()
+        var dedicated = WithheldReasoningLogprobsFilter()
         #expect(dedicated.visible(entries(["<think>", "a", "</think>", "B"])).map(\.token) == ["B"])
         // A direct answer keeps every entry, including a held "<" prefix.
-        var direct = FlintReasoningLogprobsFilter()
+        var direct = WithheldReasoningLogprobsFilter()
         #expect(direct.visible(entries(["<", "Hi"])).map(\.token) == ["<", "Hi"])
         // An undecided prefix is never released early, and an unclosed thought never.
-        var pending = FlintReasoningLogprobsFilter()
+        var pending = WithheldReasoningLogprobsFilter()
         #expect(pending.visible(entries(["<thi"])).isEmpty)
-        var unclosed = FlintReasoningLogprobsFilter()
+        var unclosed = WithheldReasoningLogprobsFilter()
         #expect(unclosed.visible(entries(["<think>", "</thin", "k"])).isEmpty)
     }
 

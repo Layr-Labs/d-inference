@@ -65,6 +65,45 @@ private final class GLMScriptedEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
+/// Replays fixed chunks, one engine token each.
+private final class GLMReasoningScriptedEngine: CBv2Engine, @unchecked Sendable {
+    let chunks: [String]
+    init(chunks: [String]) { self.chunks = chunks }
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        AsyncStream { continuation in
+            for chunk in chunks { continuation.yield(.delta(text: chunk, tokens: [5], logprobs: nil)) }
+            continuation.yield(.finished(reason: .stop,
+                usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: chunks.count)))
+            continuation.finish()
+        }
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0, kvBytesCapacity: 0,
+            activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
+/// Decodes GLM's assistant and think markers, so the prompt-tail probe sees
+/// the media prompt's open `<think>`.
+private struct GLMThinkMarkerTokenizer: MLXLMCommon.Tokenizer {
+    private static let markers = ["<|assistant|>": 154828, "<think>": 154841, "</think>": 154842]
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { Array(repeating: 0, count: text.count) }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { id in Self.markers.first { $0.value == id }?.key ?? "t" }.joined()
+    }
+    func convertTokenToId(_ token: String) -> Int? { Self.markers[token] ?? (token == "</s>" ? 2 : nil) }
+    func convertIdToToken(_ id: Int) -> String? { Self.markers.first { $0.value == id }?.key }
+    var bosToken: String? { nil }
+    var eosToken: String? { "</s>" }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [1, 154828, 154841] }
+}
+
 private struct GLMStubTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { Array(repeating: 0, count: text.count) }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { tokenIds.map { "t\($0)" }.joined() }
@@ -263,6 +302,51 @@ struct GLM5NextMediaRoutingTests {
             _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
         }
         #expect(capture.requests.isEmpty && engine.submitted.isEmpty)
+    }
+
+    /// Hidden reasoning is honored on the media path too: the reasoning after
+    /// the prompt's open `<think>` is withheld from every event and recorded
+    /// as generated reasoning for billing.
+    @Test func hiddenReasoningWithMediaIsWithheldButCounted() async throws {
+        let engine = GLMReasoningScriptedEngine(chunks: ["Look ", "closely.", "</think>", "red"])
+        let tokenizer = TokenizerHandle(GLMThinkMarkerTokenizer())
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "test/glm-stub", tokenizer: tokenizer, eosTokenIds: [2], kvBytesPerToken: 0)
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in
+                .init(promptTokens: [1, 154854, 154854, 154828, 154841], spans: [.init(tokenOffset: 1, length: 2)],
+                    embeddings: [MLXArray.zeros([1, 2, 4])], spanKinds: [.image], attention: .causal,
+                    positionState: nil, mediaKind: .image)
+            }, emitTelemetry: { _ in })
+        for (control, withheld) in [(#"{"reasoning":{"exclude":true}}"#, true), (#"{}"#, false)] {
+            let usage = EngineV2RequestUsageSignal()
+            let scheduler = MultiModelBatchSchedulerEngine(
+                registryProvider: { @Sendable in
+                    ["test/glm-stub": .init(tokenizer: tokenizer, modelType: "glm5_next",
+                        container: stubContainer(), isVLM: true, engineV2Bridge: bridge)]
+                },
+                defaultMaxTokens: 64,
+                templateControls: ProviderLoop.extractChatTemplateControls(from: Data(control.utf8)),
+                engineV2Vision: plumbing, engineV2Usage: usage)
+            var content = "", reasoning = ""
+            for try await event in try await scheduler.streamChatCompletion(request: imageRequest()) {
+                switch event {
+                case .content(let text): content += text
+                case .parsed(let parsed):
+                    content += parsed.content
+                    reasoning += parsed.reasoningContent ?? ""
+                default: break
+                }
+            }
+            if withheld {
+                #expect(content == "red" && reasoning.isEmpty, "\(control): \(content)")
+                #expect(usage.withheldReasoning == "Look closely.", "\(control)")
+            } else {
+                // Visible reasoning reaches the service's own think parser.
+                #expect(content.contains("closely") && content.hasSuffix("red"), "\(control): \(content)")
+                #expect(usage.withheldReasoning.isEmpty, "\(control)")
+            }
+        }
     }
 
     @Test func videoIsDecodedAndHandedToTheProcessorRatherThanRefused() async throws {

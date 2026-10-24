@@ -18,9 +18,8 @@ import MLXLMCommon
 /// sweeps the cache (the peer may hold something else now).
 ///
 /// Memory: entries give way first (`yieldingMemory`) before a reservation or
-/// a running request is refused, oldest first. The SSD tier is not wired for
-/// tensor parallel yet (each rank would keep its own shard's records under
-/// the same scope; see STATUS).
+/// a running request is refused, oldest first. This singleton cache has no
+/// SSD tier; the batch owner's has one (`QwenTensorParallelPrefixDisk`).
 final class QwenTensorParallelPrefixCache {
     private struct Entry {
         let key: String

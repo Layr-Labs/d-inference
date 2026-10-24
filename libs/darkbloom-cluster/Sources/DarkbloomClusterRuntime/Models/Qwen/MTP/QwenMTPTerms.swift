@@ -34,7 +34,7 @@ public struct QwenMTPTerms: Equatable, Sendable, Encodable {
     static func standard(for model: QwenRegisteredDenseModel) -> QwenMTPTerms {
         switch model {
         case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B: return QwenMTPTerms(uncheckedDepth: 3)
-        case .qwen35NineB, .qwen38TwentySevenB, .ternaryBonsai2TwentySevenB, .nemotron35Lightning: return standard
+        case .qwen35NineB, .qwen38TwentySevenB, .ternaryBonsai2TwentySevenB, .ternaryBonsai2NineB, .nemotron35Lightning: return standard
         }
     }
 

@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -469,3 +469,38 @@ accounting and publication behavior are unchanged.
 | Bounded GLM cluster still image | No restore or capture; cold prompt on both ranks | `agreeGLM5NextStagePrefixPlan` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift` |
 
 See [image prefix isolation](../architecture/prefix-cache.md#glm-cluster-image-prefix-isolation).
+
+## Cluster resident sliding restore
+
+| Operation | SSD effect | Implementation |
+|---|---|---|
+| Bounded chronological restoration of a cluster sliding prefix | None; resident request rows only, no DBK3 format or persistent identity change | `CBv2PagedPrefixRestore.write` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift` |
+
+See [cluster sliding prefix adoption](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).
+
+## Nemotron prefix frontier compatibility
+
+Registered Nemotron SSD prefix reuse accepts only original global prefill
+chunk boundaries. The `nemotron-prefix-chunk-grid-v1` numerical receipt changes
+its cache scope, so records created under the former final-token split are not
+offered in that scope. Authentication, rank ownership, storage limits, restore
+confirmation and retirement remain unchanged. See the
+[chunk-grid reuse policy](../architecture/prefix-cache.md#nemotron-chunk-grid-reuse).
+
+## Gemma prefix frontier compatibility
+
+Gemma 4's `gemma4-original-chunk-grid-v1` numerical receipt separates the
+registered rows' new existing-chunk prefix scope from prior final-token-split
+records. Resident and SSD hits obey identical frontier filtering and bilateral
+restore confirmation. See [Gemma reuse](../architecture/prefix-cache.md#gemma-chunk-grid-reuse).
+
+MiMo cluster independent page histories are not eligible for the contiguous
+trained-head COMPLETE checkpoint codec. Plain, compact, MTP and phase page
+paths disable cluster prefix reuse; the standalone contiguous row above keeps
+its existing contract. See [the cluster boundary](../architecture/prefix-cache.md#mimo-cluster-paged-mode-boundary)
+and `MiMoV26MTPHistoryStorage` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26MTP.swift`.
+
+The Qwen27 TP batch prefix cache is resident memory only. It does not read,
+write or reinterpret an encrypted SSD checkpoint. Its keys, bounded storage
+and bilateral lifetime are described in the [prefix architecture](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).

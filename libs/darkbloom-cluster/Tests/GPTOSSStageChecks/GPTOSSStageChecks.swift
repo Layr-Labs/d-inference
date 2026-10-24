@@ -36,6 +36,16 @@ import Foundation
         expect(GPTOSSRegisteredSpecification.all.count == 1 && spec.model.rawValue == "registered_gpt_oss_20b"
                && spec.supportedCuts == Array(1...23), "registered row")
         expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode], "phase split is not in the row")
+        let nativeProfile = try spec.profile()
+        expect(nativeProfile.activationDType == "bfloat16" && GPTOSSRegisteredSpecification.residualElementBytes == 2,
+               "the profile declares the pinned SDK's BF16 native residual")
+        let obsoleteProfile = try QwenLayerStageGenerationProfile(identifier: nativeProfile.identifier,
+            vocabularySize: nativeProfile.vocabularySize, hiddenSize: nativeProfile.hiddenSize,
+            activationDType: "float32", maximumPromptTokens: nativeProfile.maximumPromptTokens,
+            maximumChunkTokens: nativeProfile.maximumChunkTokens, maximumOutputTokens: nativeProfile.maximumOutputTokens,
+            maximumContextTokens: nativeProfile.maximumContextTokens)
+        expect(nativeProfile.fingerprint != obsoleteProfile.fingerprint, "the stale promoted dtype cannot retain the peer profile identity")
+        expect(GPTOSSRequestStateBudget.activationBytes == 4, "native dtype correction keeps conservative memory charges")
         refuses("an unregistered model ID") { _ = try GPTOSSRegisteredSpecification.specification(runtimeModelID: "registered_qwen35_9b") }
         refuses("a configuration with one changed byte") {
             var edited = configuration; edited[edited.count - 2] ^= 1
@@ -164,13 +174,34 @@ import Foundation
                    && (large.rowBytes > 0) == (rank == 1), "rank \(rank) ledger")
             expect(large.reservedBytes == large.fullAttentionStateBytes + large.slidingStateBytes + large.boundaryBytes
                    + large.rowBytes + large.workspaceBytes, "rank \(rank) ledger sums its terms")
+            // A per-buffer allocator overhead cannot be charged once for a
+            // whole layer: every fixed page is a distinct allocation.
+            let padded = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[rank].layers,
+                rank: rank, maximumTokens: 8320, chunkSize: 512, bound: { $0 + 1_048_576 })
+            let page = GPTOSSPagedKVLayout.pageTokens
+            let rowBytes = spec.keyValueHeads * spec.headDimension * 4
+            let fullPages = (8320 + page - 1) / page
+            let slidingTokens = spec.slidingWindow + 512
+            let slidingPages = (slidingTokens + page - 1) / page
+            let perPage = rowBytes * page + 1_048_576
+            expect(padded.fullAttentionStateBytes >= ((fullPages + 1) * 2 * perPage
+                + 2 * (rowBytes * 8320 + 1_048_576)) * padded.fullAttentionLayers,
+                "rank \(rank) full pages charge each allocator overhead")
+            expect(padded.slidingStateBytes >= ((slidingPages + 1) * 6 * perPage
+                + 2 * (rowBytes * slidingTokens + 1_048_576)) * padded.slidingLayers,
+                "rank \(rank) sliding pages charge repack and gather buffers")
         }
-        // The ledger takes the derived context (32,768 of the declared 131,072) and nothing beyond it.
-        expect(try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[0].layers, rank: 0,
-            maximumTokens: 32_768, chunkSize: 512, bound: { $0 }).reservedBytes > 0, "the derived context is admitted")
-        refuses("a request beyond the profile") {
-            _ = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[0].layers, rank: 0,
-                maximumTokens: 32_769, chunkSize: 512, bound: { $0 })
+        // The standard context is smaller than the artifact's declared 131,072.
+        let limits = try spec.contextLimits()
+        expect(limits.maximumContextTokens == 65_536, "the standard GPT-OSS context")
+        for rank in 0...1 {
+            expect(try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[rank].layers, rank: rank,
+                maximumTokens: limits.maximumContextTokens, chunkSize: 512, bound: { $0 }).reservedBytes > 0,
+                "rank \(rank) admits the derived context")
+            refuses("rank \(rank) request beyond the profile") {
+                _ = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[rank].layers, rank: rank,
+                    maximumTokens: limits.maximumContextTokens + 1, chunkSize: 512, bound: { $0 })
+            }
         }
 
         // The capability record names this adapter, model, profile, partitions and policy.

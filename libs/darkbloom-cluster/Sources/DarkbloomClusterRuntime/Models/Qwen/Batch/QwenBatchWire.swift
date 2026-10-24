@@ -6,6 +6,8 @@ import Foundation
 /// damaged one stops both ranks instead of desynchronizing them.
 enum QwenBatchWire {
     static let maximumLanes = 8
+    /// v2 adds a distinct cancelled leave and follower cancellation feedback.
+    static let version: Int32 = 2
     static let headerWords = 16 + maximumLanes * slotWords + 1
     static let slotWords = 28
     /// Prefix frontiers rank 0 offers for a joining lane, deepest first.
@@ -79,7 +81,7 @@ enum QwenBatchWire {
 
         var words: [Int32] {
             var w = [Int32](repeating: 0, count: openingWords)
-            w[0] = openingMagic; w[1] = 1; w[2] = Int32(lanes); w[3] = pagedKV ? 1 : 0
+            w[0] = openingMagic; w[1] = version; w[2] = Int32(lanes); w[3] = pagedKV ? 1 : 0
             w[4] = prefixCacheEnabled ? 1 : 0; w[5] = Int32(vocabularySize); w[6] = Int32(hiddenSize)
             w[openingWords - 1] = checksum(w[0..<(openingWords - 1)])
             return w
@@ -91,7 +93,7 @@ enum QwenBatchWire {
         }
 
         init(words w: [Int32]) throws {
-            guard w.count == openingWords, w[0] == openingMagic, w[1] == 1,
+            guard w.count == openingWords, w[0] == openingMagic, w[1] == version,
                   w[openingWords - 1] == checksum(w[0..<(openingWords - 1)]),
                   (1...maximumLanes).contains(Int(w[2])), [0, 1].contains(w[3]), [0, 1].contains(w[4]) else {
                 throw ProbeError("Batch opening from the peer is malformed")
@@ -117,6 +119,8 @@ enum QwenBatchWire {
         var finalChunk = false
         /// For a leaving slot: how its request finished.
         var leaveReason: QwenLayerStageGenerationFinishReason?
+        /// Cancellation/deadline retirement is never a clean finish reason.
+        var leaveCancelled = false
         /// For a joining slot: the first 16 bytes of the request fingerprint,
         /// which rank 1 compares with the request its own owner gave it.
         var fingerprintWords: [Int32] = [0, 0, 0, 0]
@@ -149,7 +153,7 @@ enum QwenBatchWire {
         var words: [Int32] {
             var w = [Int32](repeating: 0, count: headerWords)
             w[0] = headerMagic; w[1] = Int32(truncatingIfNeeded: step); w[2] = Int32(truncatingIfNeeded: step >> 31)
-            w[3] = stop ? 1 : 0; w[4] = Int32(slots.count)
+            w[3] = stop ? 1 : 0; w[4] = Int32(slots.count); w[5] = version
             for (index, slot) in slots.enumerated() {
                 let base = 16 + index * slotWords
                 w[base] = slot.state.rawValue
@@ -158,7 +162,7 @@ enum QwenBatchWire {
                 w[base + 6] = Int32(slot.committedTokens); w[base + 7] = Int32(slot.selectedTokens)
                 w[base + 8] = Int32(slot.inputToken); w[base + 9] = Int32(slot.frameOffset)
                 w[base + 10] = Int32(slot.frameCount) | (slot.finalChunk ? Int32(1 << 30) : 0)
-                w[base + 11] = reasonCode(slot.leaveReason)
+                w[base + 11] = slot.leaveCancelled ? 4 : reasonCode(slot.leaveReason)
                 w.replaceSubrange((base + 12)...(base + 15), with: slot.fingerprintWords)
                 w[base + 16] = Int32(min(slot.offers.count, maximumOffers))
                 for (i, offer) in slot.offers.prefix(maximumOffers).enumerated() { w[base + 17 + i] = Int32(offer) }
@@ -172,7 +176,7 @@ enum QwenBatchWire {
         init(step: Int, stop: Bool, slots: [Slot]) { self.step = step; self.stop = stop; self.slots = slots }
 
         init(words w: [Int32], expectedStep: Int, lanes: Int) throws {
-            guard w.count == headerWords, w[0] == headerMagic, w[headerWords - 1] == checksum(w[0..<(headerWords - 1)]),
+            guard w.count == headerWords, w[0] == headerMagic, w[5] == version, w[headerWords - 1] == checksum(w[0..<(headerWords - 1)]),
                   Int(w[1]) | (Int(w[2]) << 31) == expectedStep, [0, 1].contains(w[3]), Int(w[4]) == lanes else {
                 throw ProbeError("Batch header from rank 0 is malformed or from another step")
             }
@@ -186,7 +190,14 @@ enum QwenBatchWire {
                 slot.committedTokens = Int(w[base + 6]); slot.selectedTokens = Int(w[base + 7])
                 slot.inputToken = Int(w[base + 8]); slot.frameOffset = Int(w[base + 9])
                 slot.frameCount = Int(w[base + 10] & 0x3FFF_FFFF); slot.finalChunk = w[base + 10] & Int32(1 << 30) != 0
-                slot.leaveReason = state == .leaving ? try reason(w[base + 11]) : nil
+                guard state == .leaving || w[base + 11] == 0 else {
+                    throw ProbeError("Batch header gives a leave disposition to a running slot")
+                }
+                slot.leaveCancelled = state == .leaving && w[base + 11] == 4
+                slot.leaveReason = state == .leaving && !slot.leaveCancelled ? try reason(w[base + 11]) : nil
+                guard state != .leaving || role == .none else {
+                    throw ProbeError("Batch header asks a leaving lane to run another forward")
+                }
                 slot.fingerprintWords = Array(w[(base + 12)...(base + 15)])
                 let offered = Int(w[base + 16])
                 guard (0...maximumOffers).contains(offered), [0, 1].contains(w[base + 25]), w[base + 26] >= 0 else {
@@ -206,11 +217,13 @@ enum QwenBatchWire {
         /// Per slot: for a lane that joined in this step, the prefix frontier
         /// rank 1 restored (0 for none).
         var restored: [Int]
+        /// Slots whose local cancellation/deadline arrived before this reply.
+        var cancelledMask: Int
 
         var words: [Int32] {
             var w = [Int32](repeating: 0, count: replyWords)
             w[0] = replyMagic; w[1] = Int32(truncatingIfNeeded: step); w[2] = Int32(truncatingIfNeeded: step >> 31)
-            w[3] = Int32(tokens.count)
+            w[3] = Int32(tokens.count); w[4] = Int32(cancelledMask); w[5] = version
             for (index, token) in tokens.enumerated() {
                 w[8 + 2 * index] = Int32(token); w[9 + 2 * index] = Int32(restored[index])
             }
@@ -218,16 +231,18 @@ enum QwenBatchWire {
             return w
         }
 
-        init(step: Int, tokens: [Int], restored: [Int]? = nil) {
+        init(step: Int, tokens: [Int], restored: [Int]? = nil, cancelledMask: Int = 0) {
             self.step = step; self.tokens = tokens; self.restored = restored ?? tokens.map { _ in 0 }
+            self.cancelledMask = cancelledMask
         }
 
         init(words w: [Int32], expectedStep: Int, lanes: Int) throws {
-            guard w.count == replyWords, w[0] == replyMagic, w[replyWords - 1] == checksum(w[0..<(replyWords - 1)]),
-                  Int(w[1]) | (Int(w[2]) << 31) == expectedStep, Int(w[3]) == lanes else {
+            guard w.count == replyWords, w[0] == replyMagic, w[5] == version, w[replyWords - 1] == checksum(w[0..<(replyWords - 1)]),
+                  Int(w[1]) | (Int(w[2]) << 31) == expectedStep, Int(w[3]) == lanes,
+                  (1...maximumLanes).contains(lanes), w[4] >= 0, Int(w[4]) < (1 << lanes) else {
                 throw ProbeError("Batch reply from rank 1 is malformed or from another step")
             }
-            step = expectedStep; tokens = (0..<lanes).map { Int(w[8 + 2 * $0]) }
+            step = expectedStep; cancelledMask = Int(w[4]); tokens = (0..<lanes).map { Int(w[8 + 2 * $0]) }
             restored = (0..<lanes).map { Int(w[9 + 2 * $0]) }
             guard restored.allSatisfy({ $0 >= 0 }) else { throw ProbeError("Batch reply restore fields are malformed") }
         }

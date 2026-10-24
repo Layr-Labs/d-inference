@@ -123,7 +123,8 @@ struct MiMoResidentRequestAllowance {
     /// the allocator's bound (`MiMoMTPHead.requestBytes`); 0 otherwise.
     var speculativeBytes = 0
     var imageBytes = 0
-    var reservedBytes: Int { budget.reservedBytes + speculativeBytes + imageBytes }
+    var pagedBytes = 0
+    var reservedBytes: Int { budget.reservedBytes + speculativeBytes + imageBytes + pagedBytes }
     let watch = QwenDenseStageLoadWatch("Resident request")
 
     /// `phaseSplit`: rank 1 holds the state of every layer (its own range and
@@ -131,33 +132,44 @@ struct MiMoResidentRequestAllowance {
     /// exists on both sides while it moves (`handoffBytes`, on each rank).
     static func derive(specification: MiMoRegisteredSpecification, plan: MiMoLayerStagePlan, rank: Int,
                        maximumTokens: Int, chunkSize: Int, phaseSplit: Bool = false,
-                       speculativeBytes: Int = 0,imageCandidate: Bool = false) throws -> Self {
-        guard plan.stages.count == 2, (0...1).contains(rank) else {
+                       speculativeBytes: Int = 0, imageCandidate: Bool = false, independentHistory: Bool = false,
+                       verificationTokens: Int = 1,
+                       bound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound) throws -> Self {
+        guard plan.stages.count == 2, (0...1).contains(rank),
+              (1...(try specification.contextLimits().maximumChunkTokens)).contains(chunkSize) else {
             throw ProbeError("Resident MiMo request allowance requires an admitted two-stage Plan")
         }
-        guard speculativeBytes >= 0, speculativeBytes == 0 || (rank == 1 && !phaseSplit) else {
-            throw ProbeError("Only the last rank of a speculative pipeline holds a speculative head's request state")
+        guard (1...(MiMoMTPTerms.maximumDepth + 1)).contains(verificationTokens),
+              !phaseSplit || verificationTokens == 1,
+              !independentHistory || !imageCandidate,
+              speculativeBytes >= 0, speculativeBytes == 0 || (rank == 1 && !phaseSplit) else {
+            throw ProbeError("MiMo request allowance has invalid verification, image, or speculative-head terms")
         }
+        // Both target ranks verify the selected token plus the admitted draft
+        // window, even when the prompt was prefilled one token at a time.
+        let forwardTokens = max(chunkSize, verificationTokens)
         let layers = phaseSplit && rank == 1 ? 0..<plan.stages[1].sourceRange.upperBound : plan.stages[rank].sourceRange
         let own = try MiMoRequestStateBudget.estimate(specification: specification, layers: layers,
-            rank: rank, maximumTokens: maximumTokens, chunkSize: chunkSize,
-            bound: QwenResidentResourceEnvironment.allocationBound)
+            rank: rank, maximumTokens: maximumTokens, chunkSize: forwardTokens, bound: bound)
+        let pages = independentHistory ? try MiMoPagedKVAllowance.pages(spec: specification, layers: layers,
+            maximumTokens: maximumTokens, chunkSize: forwardTokens, bound: bound) : 0
+        _ = try QwenLongPrefillCheckedBytes.sum([own.reservedBytes, speculativeBytes, pages])
         guard phaseSplit else { return .init(budget: own, speculativeBytes: speculativeBytes,
-            imageBytes:imageCandidate ? (rank == 0 ? ClusterMiMoImageCandidate.activationFloorBytes : ClusterMiMoImageCandidate.wireWorkingReserveBytes) : 0) }
+            imageBytes:imageCandidate ? (rank == 0 ? ClusterMiMoImageCandidate.activationFloorBytes : ClusterMiMoImageCandidate.wireWorkingReserveBytes) : 0, pagedBytes: pages) }
         let moving = try MiMoRequestStateBudget.estimate(specification: specification, layers: plan.stages[0].sourceRange,
-            rank: 0, maximumTokens: maximumTokens, chunkSize: chunkSize, bound: QwenResidentResourceEnvironment.allocationBound)
+            rank: 0, maximumTokens: maximumTokens, chunkSize: forwardTokens, bound: bound)
         return .init(budget: try own.adding(handoffBytes: try QwenLongPrefillCheckedBytes.sum([
-            moving.fullAttentionStateBytes, moving.slidingStateBytes])))
+            moving.fullAttentionStateBytes, moving.slidingStateBytes])), pagedBytes: pages)
     }
 
     /// `additionalNativeBytes`: what the request may add beyond its state
     /// (its prompt-prefix capture), charged in both checks.
-    func requireLive(additionalNativeBytes: Int = 0) throws {
+    func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
         try QwenResidentResourceEnvironment.require()
-        guard additionalNativeBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
+        guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
         let os = try QwenDenseStageLoadResources.observeOS()
         let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes,
+            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([QwenDenseStageLoadResources.observeNative().activeBytes,
             QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes, additionalNativeBytes,

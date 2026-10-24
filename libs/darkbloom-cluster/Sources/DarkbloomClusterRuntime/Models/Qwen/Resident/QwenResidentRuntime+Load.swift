@@ -154,7 +154,8 @@ extension QwenResidentRuntime {
             let probesLink = transport != .localSocketTest
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
-                + kvKind.loadAgreementFields + batch.loadAgreementFields
+                + kvKind.loadAgreementFields + batch.loadAgreementFields(runtimeModelID: admission.runtimeModelID)
+                + Gemma4BatchArithmeticAgreement.fields(runtimeModelID: admission.runtimeModelID, lanes: batch.lanes)
                 + (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common

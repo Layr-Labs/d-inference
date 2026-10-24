@@ -1,11 +1,11 @@
 import Foundation
 
-/// The streaming responses of one installed pipeline: those being generated
+/// Listener-owned streaming responses, independent of a native generation:
+/// those being generated
 /// (at most its batch lanes) and those queued behind them
 /// (`DistributedRequestQueue.Limits.maximumWaiting`). Each response hold is separate
 /// from the model acquisition and native ownership.
 final class DistributedHTTPResponses: @unchecked Sendable {
-    let generationID: UUID
     /// At most this many responses at once: the most lanes a pair runs and the
     /// queue behind them.
     let limit: Int
@@ -14,8 +14,8 @@ final class DistributedHTTPResponses: @unchecked Sendable {
     private var accepting = true
     private var deliveryDeadline: ContinuousClock.Instant?
 
-    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.Limits.standard.responseLimit) {
-        self.generationID = generationID; self.limit = max(1, limit)
+    init(limit: Int = DistributedRequestQueue.Limits.standard.responseLimit) {
+        self.limit = max(1, limit)
     }
 
     func begin() throws -> DistributedHTTPResponse {
@@ -28,7 +28,7 @@ final class DistributedHTTPResponses: @unchecked Sendable {
                 throw MultiModelBatchSchedulerEngineError.queueFull(DistributedRequestQueue.fullMessage)
             }
             let id = UUID()
-            let response = DistributedHTTPResponse(generationID: generationID) { [weak self] in self?.complete(id) }
+            let response = DistributedHTTPResponse() { [weak self] in self?.complete(id) }
             active[id] = response
             return response
         }
@@ -36,6 +36,10 @@ final class DistributedHTTPResponses: @unchecked Sendable {
 
     private func complete(_ id: UUID) {
         lock.withLock { _ = active.removeValue(forKey: id) }
+    }
+
+    func owns(_ response: DistributedHTTPResponse) -> Bool {
+        lock.withLock { active.values.contains { $0 === response } }
     }
 
     func closeAdmissions() { lock.withLock { accepting = false } }

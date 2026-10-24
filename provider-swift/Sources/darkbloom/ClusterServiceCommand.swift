@@ -99,6 +99,9 @@ extension Cluster {
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
+        @Flag(name: .customLong("local-only"),
+              help: "Stop only this Mac, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
+        var localOnly = false
 
         func validate() throws {
             for path in [configOptions.config, worker].compactMap({ $0 }) where !path.hasPrefix("/") {
@@ -108,30 +111,56 @@ extension Cluster {
 
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            let config = configOptions.config, worker = worker
+            let config = configOptions.config, worker = worker, localOnly = localOnly
             let executable = URL(fileURLWithPath: Start.currentExecutablePath())
             let lines: [String] = try await Task.detached {
-                var lines: [String] = []
-                // The leader stops serving first, so its members stop their parts too.
-                if let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
+                var stopped: Result<[String], ClusterOnboardingFailure>?
+                // The leader stops serving first, so its members stop their parts too
+                // (unless asked to stop only this Mac: the other one is gone).
+                if !localOnly, let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
                    let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
                        serviceArguments: ClusterServiceAgentPlan.childArguments(
                            serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) {
                     let resume = operations.resume()
-                    if resume.role == .leader, resume.serving {
-                        switch operations.stop() {
-                        case .success(let said): lines += said
-                        case .failure(let failure): lines += failure.lines
-                        }
+                    // A previous bounded failure already saved serving=false;
+                    // retry must still finish its drain/peer acknowledgement.
+                    if resume.role == .leader {
+                        stopped = operations.stop()
                     }
                 }
-                let removed = try ClusterService.removeFromLogin(executable: executable)
-                lines.append(removed.isEmpty
-                    ? "This Mac's cluster service is stopped (it was not set to start at login)."
-                    : "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again.")
-                return lines
+                return try Self.finishStop(stopped, localOnly: localOnly) {
+                    try ClusterService.removeFromLogin(executable: executable)
+                }
             }.value
             for line in lines { print(line) }
+        }
+
+        /// A pair stop that could not finish: the pair's own reason lines, as a
+        /// runtime failure (exit 1). It is not a usage mistake, so no usage banner.
+        struct Failure: Error, CustomStringConvertible {
+            let lines: [String]
+            var description: String { lines.joined(separator: "\n") }
+        }
+
+        /// Keep the supervisor and its custody intact when the pair could not
+        /// drain or the member did not acknowledge the saved stop request.
+        static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
+                               removeFromLogin: () throws -> [String]) throws -> [String] {
+            var lines: [String] = []
+            if let stopped {
+                switch stopped {
+                case .success(let said): lines = said
+                case .failure(let failure): throw Failure(lines: failure.lines)
+                }
+            }
+            let removed = try removeFromLogin()
+            lines.append(removed.isEmpty
+                ? "This Mac's cluster service is stopped (it was not set to start at login)."
+                : "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again.")
+            if localOnly {
+                lines.append("The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+            }
+            return lines
         }
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXLLM
 
 /// The cross-rank sum a tensor-parallel layer needs. `allSum` builds the
 /// reduction into the graph (it runs when the graph is evaluated); it never
@@ -26,7 +27,7 @@ public enum QwenTensorParallelReductionTiming: String, Sendable, CaseIterable {
 /// all-sum of the partials in float32, then one rounding to the activation
 /// type. Slice 0 measured this to be bit-exact against the CPU float32 sum on
 /// the M3 Ultra and the M5 Max, and the same on both ranks.
-final class QwenTensorParallelRowLinear: QuantizedLinear {
+final class QwenTensorParallelRowLinear: QuantizedLinear, Qwen35BatchDecodeProjecting {
     private let reduction: Box
     private let timing: QwenTensorParallelReductionTiming
     private let partialDType: DType
@@ -47,39 +48,44 @@ final class QwenTensorParallelRowLinear: QuantizedLinear {
         freeze()
     }
 
-    override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // float32 (default): the partial is not rounded before the sum. bfloat16
-        // (diagnostic): half the bytes on the link, one more rounding.
-        let partial = super.callAsFunction(partialDType == .float32 ? x.asType(.float32) : x)
+    /// One actual batched partial, with the singleton M=1 affine kernel for
+    /// each independent row. The collective sees the whole [B,1,H] tensor;
+    /// it is not repeated once per row. Ordinary/prefill dispatch is unchanged.
+    /// A scoped verify rectangle [B,S,H] takes each row's partial exactly as
+    /// that row's own [1,S,H] window computes it, then one collective. Rows
+    /// share a quantized call while their B·S vectors stay below MLX's vector
+    /// limit (`Qwen35QuantizedVectorLimit`), so they share its weight pass.
+    func qwen35BatchDecode(_ x: MLXArray) -> MLXArray {
+        if x.ndim == 3, (2...8).contains(x.dim(0)), (2...5).contains(x.dim(1)) {
+            let input = partialDType == .float32 ? x.asType(.float32) : x
+            let shared = Qwen35QuantizedVectorLimit.sharedWindows(input, outputs: weight.dim(0), mode: mode)
+            let partial = Qwen35QuantizedVectorLimit.rows(input, by: shared) { super.callAsFunction($0) }
+            if timing == .explicit {
+                eval(partial)
+                Stream.gpu.synchronize()
+            }
+            return reduction.value.allSum(partial).asType(x.dtype)
+        }
+        guard x.ndim == 3, (2...8).contains(x.dim(0)), x.dim(1) == 1,
+              partialDType == .float32, mode == .affine,
+              [4, 8].contains(bits), [64, 128].contains(groupSize), bias == nil else {
+            return concatenated((0..<x.dim(0)).map { callAsFunction(x[$0..<$0 + 1]) }, axis: 0)
+        }
+        let partial = quantizedMM(x.asType(.float32), weight.expandedDimensions(axis: 0),
+            scales: scales.expandedDimensions(axis: 0),
+            biases: biases?.expandedDimensions(axis: 0), transpose: true,
+            groupSize: groupSize, bits: bits, mode: mode)
         if timing == .explicit {
             eval(partial)
             Stream.gpu.synchronize()
         }
         return reduction.value.allSum(partial).asType(x.dtype)
     }
-}
 
-/// A routed-expert block on one rank: its experts' and shared expert's
-/// combined output is this rank's partial (every expert divided by channels,
-/// the router replicated), widened to float32, all-summed, rounded once.
-final class QwenTensorParallelBlockReduction: Module, UnaryLayer {
-    @ModuleInfo(key: "inner") var inner: Module
-    private let reduction: QwenTensorParallelRowLinear.Box
-    private let timing: QwenTensorParallelReductionTiming
-    private let partialDType: DType
-
-    init(_ inner: Module, reduction: QwenTensorParallelReduction, timing: QwenTensorParallelReductionTiming,
-         partialDType: DType) {
-        self.reduction = QwenTensorParallelRowLinear.Box(reduction)
-        self.timing = timing
-        self.partialDType = partialDType
-        self._inner.wrappedValue = inner
-        super.init()
-        freeze()
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let partial = (inner as! UnaryLayer)(x).asType(partialDType)
+    override func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // float32 (default): the partial is not rounded before the sum. bfloat16
+        // (diagnostic): half the bytes on the link, one more rounding.
+        let partial = super.callAsFunction(partialDType == .float32 ? x.asType(.float32) : x)
         if timing == .explicit {
             eval(partial)
             Stream.gpu.synchronize()
@@ -214,6 +220,14 @@ enum QwenTensorParallelSlicer {
                 throw ProbeError("Tensor parallel slice: expert rows \(range) do not fit \(value.shape)")
             }
             return take(value, MLXArray(range.map { Int32($0) }), axis: 1)
+        case .expertRowRanges(let ranges):
+            guard value.ndim == 3, ranges.count == 2,
+                  ranges.allSatisfy({ $0.lowerBound >= 0 && $0.upperBound <= value.dim(1) && !$0.isEmpty }),
+                  ranges[0].count == ranges[1].count,
+                  ranges[0].upperBound <= ranges[1].lowerBound else {
+                throw ProbeError("Tensor parallel slice: fused expert rows \(ranges) do not fit \(value.shape)")
+            }
+            return take(value, MLXArray(ranges.flatMap { $0.map { Int32($0) } }), axis: 1)
         case .expertInputColumns(let logical):
             guard value.ndim == 3 else { throw ProbeError("Tensor parallel slice: expert input columns of \(value.shape)") }
             let divisor: Int

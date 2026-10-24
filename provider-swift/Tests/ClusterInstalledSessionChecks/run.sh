@@ -5,9 +5,11 @@ task_repo="$(cd "$task_provider/.." && pwd)"
 task_cluster="$task_repo/libs/darkbloom-cluster"
 task_sources="$task_provider/Sources/ProviderCore"
 task_fixtures="$task_provider/Tests/ClusterInstalledSessionChecks"
-# The real installed-file policy rejects symlinked path components, including
-# /var aliases. Keep the test-owned binaries and files in the checkout tree.
-task_build="$(mktemp -d "$task_provider/.cluster-installed-session.XXXXXXXX")"
+# The installed-file policy rejects symlinked path components. Resolve the
+# temporary root instead of using the checkout, where file-sync services may
+# change a fixture's metadata after its identity has been verified.
+task_temporary="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+task_build="$(mktemp -d "$task_temporary/cluster-installed-session.XXXXXXXX")"
 trap 'rm -rf "$task_build"' EXIT
 task_target="$(uname -m)-apple-macos14.0"
 task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
@@ -42,6 +44,10 @@ build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterPro
 build_module DarkbloomClusterRemote "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
 build_module MLXLMCommon "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
 build_module ProviderCoreFoundation "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
+# Include the real roster value and credential code, not the unrelated hardware
+# profile sampler below it. No Metal device is opened by these CPU checks.
+awk '/^\/\/\/ This Mac.s device profile v2/{exit} {print}' \
+  "$task_sources/Coordinator/NativePairMemberRoster.swift" > "$task_build/NativePairMemberRoster.swift"
 build_module InstalledContract \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
@@ -53,6 +59,9 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
+  "$task_sources/Coordinator/NativePairMemberInstallation.swift" \
+  "$task_build/NativePairMemberRoster.swift" \
+  "$task_sources/Protocol/ClusterMembership.swift" \
   "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
   "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
@@ -64,6 +73,8 @@ build_module InstalledContract \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/DistributedAutomaticBatchAttempt.swift" \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
@@ -74,15 +85,16 @@ build_module InstalledContract \
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
-for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures InstalledFakeOwner InstalledFakeWorker InstalledSessionCheck; do
+for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures InstalledFakeOwner InstalledFakeWorker InstalledOwnerEnvironmentProbe InstalledSessionCheck; do
   task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     # The same stand-in built as a worker that predates the progress guard.
     InstalledProbeFixtureWithoutFeatures) task_inputs=("$task_fixtures/InstalledProbeFixture.swift"); task_defines=(-D FIXTURE_WITHOUT_WORKER_FEATURES) ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
-    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE -D INSTALLED_FIXTURE_DATA_PLANE) ;;
+    InstalledOwnerEnvironmentProbe) task_inputs=("$task_fixtures/InstalledOwnerEnvironmentProbe.swift") ;;
+    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledDataPlaneCheck.swift" "$task_fixtures/InstalledBatchLanesCheck.swift" "$task_fixtures/InstalledTensorQualificationCheck.swift" "$task_fixtures/AutomaticSetupHandoffCheck.swift" "$task_fixtures/AutomaticSetupTransactionCheck.swift") ;;
   esac
   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"

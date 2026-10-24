@@ -292,6 +292,7 @@ private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAI
 
 /// Collect a server-engine event stream into a comparable shape.
 private enum RecordedServerEvent: Equatable {
+    case logprobs([SSETokenLogprob])
     case content(String)
     case parsed(ParsedReasoning)
     case info(prompt: Int, completion: Int)
@@ -303,6 +304,7 @@ private func recordServerStream(
     var events: [RecordedServerEvent] = []
     for try await event in stream {
         switch event {
+        case .logprobs(let entries): events.append(.logprobs(entries))
         case .content(let text):
             events.append(.content(text))
         case .parsed(let parsed):
@@ -391,6 +393,7 @@ struct EngineV2SlotBuildTests {
                 messages: [ChatMessage(role: "user", content: "hi")]))
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let text):
                 #expect(text == "Hello")
                 sawChunk = true
@@ -1705,7 +1708,6 @@ struct EngineV2RequestRoutingTests {
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
         let bridge = makeBridge(engine: engine)
-        let channel = EngineV2LogprobsChannel()
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
@@ -1716,10 +1718,10 @@ struct EngineV2RequestRoutingTests {
                 ]
             },
             cacheScope: "tenant-hash",
-            engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 3, channel: channel)
+            engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 3)
         )
         let stream = try await providerEngine.streamChatCompletion(request: makeOpenAIRequest())
-        _ = try await recordServerStream(stream)
+        let events = try await recordServerStream(stream)
         #expect(engine.submitted.count == 1)
         // TB-007: the tenant scope rode through as the per-request cache
         // salt (inert — production builds the v2 engine with the prefix
@@ -1727,8 +1729,11 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].cacheSalt == "tenant-hash")
         // The logprobs plumbing flipped the sampling translation on.
         #expect(engine.submitted[0].sampling.topLogprobs == 3)
-        // Entries reached the per-request channel in OpenAI shape.
-        let entries = channel.drain()
+        // Metadata is in the same ordered stream as visible content.
+        let entries = events.flatMap { event -> [SSETokenLogprob] in
+            if case .logprobs(let captured) = event { return captured }
+            return []
+        }
         #expect(entries.count == 1)
         #expect(entries[0].token == "t10")
         #expect(entries[0].logprob == -0.25)

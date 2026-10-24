@@ -1,12 +1,71 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
 
+`ClusterAPIParityTests` runs real loopback standalone and distributed HTTP
+handlers over fabricated engines for seven model-family fixtures. It compares
+all stable JSON/SSE fields and translated engine requests, including scalar
+stops, `min_p`, captured logprobs and reasoning usage. Only generated IDs and
+timestamps are normalized; no capability fields are removed. The capture-capable
+fixture supplies fixed logprob events explicitly. Strict streaming comparison
+covers multiple content tokens and every frame field. SDK `EventBoundLogprobsTests`
+queues the producer's entire output before consumption, checks event-to-frame
+association, empty-text holdback, parser flushes, terminal failures, cancellation,
+collected completeness and the 4096-entry pending bound. Reasoning/tool source
+spans remain unclassified; those entries retain the existing next-content policy.
+A separate unsupported-profile case requires HTTP 400 before reservation and
+successful text afterward. Run
+`swift test --package-path provider-swift --filter ClusterAPIParityTests` with
+the [provider build prerequisites](build.md). These CPU checks prove API wiring,
+not native model capabilities, numerical parity or hardware qualification.
+
+The placement checks also cover exact family request scopes, completion-heavy
+and long-prompt helper plans, overflow refusal, conservative memory refusal and
+unchanged GLM adapter bounds. Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+and `provider-swift/Tests/ClusterPlacementChecks/run.sh`; then run
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh` for the real child-process
+provider path with a fake installed helper. These checks use recorded metadata
+and CPU arithmetic; they do not load models or run the real device index.
+
+
+`MeasuredShardRateChecks.swift` in the same placement suite covers exact measured
+half/quarter points, severe served slowdowns through calibration and replanning,
+unchanged ordinary/unmeasured predictions, and invalid speed-record refusal.
+Its rates are constructed CPU test inputs; they make no hardware speed claim.
+
+The Bonsai 9B qualification CLI accepts the exact base-r2 manifest and uses its
+artifact's Qwen chat template with thinking disabled. Run
+`python3 libs/darkbloom-cluster-worker/Tests/PromptChecks/check_bonsai9.py /ABS/darkbloom-cluster-pair-check /ABS/MODEL_METADATA`
+with the built pair tool and verified tokenizer metadata. It generates real
+requests, checks literal wrapper and artifact-template token parity, preserves
+the wrapper at exact lengths through 32,768 tokens, and refuses crossed model
+IDs or changed manifest/tokenizer files. It reads no model weights and runs no
+GPU work. `QualificationChecks/run.sh` also covers Bonsai 9B's own profile,
+structural cuts, arithmetic environment, context limits and lane cancellation.
+Its timeout row uses conservative estimates until hardware rates are measured.
+
+Automatic local batching's CPU checks run with
+`provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and
+`provider-swift/Tests/ClusterConfigurationChecks/run.sh`. They cover persisted
+lane widths through real sanitized child launches, exact setup hashes,
+supervisor PID/start/expiry fencing, stale follower refusal, actual canonical
+store adoption and byte-exact partial-write compensation. The placement suite
+also checks whole-model state multiplication, overflow and unchanged singleton
+plans. These checks do not establish reload latency or hardware batch speed.
+
 ## Prerequisites
+
+For the Bonsai 9B cluster adapter, select `ResidentAdmissionBonsai9Tests` and
+`Bonsai9StagePreparationTests` together with the existing
+`ResidentAdmissionBonsaiTests`. They bind the public configuration, manifest,
+header and transform metadata, cover every cut and crossed-identity refusal,
+and prepare both SDK stage models as CPU lazy shells. They never read model
+weight payloads or prove hardware arithmetic; file-backed numerical comparison
+and paired-worker runs remain separate qualification gates.
 
 Use the [source-matched build](build.md), Apple Silicon and the documented Xcode
 toolchain for MLX execution. GPU/native tests need exclusive device access and
@@ -718,13 +777,97 @@ native-pair member control tests over the real owner pipe and key prelude. It is
 not a product and no release ships it.
 
 Cluster logic that needs no model or GPU is covered by check runners compiled
-with plain `swiftc`: each `provider-swift/Tests/Cluster*Checks/run.sh`,
+with isolated fixture runners: each `provider-swift/Tests/Cluster*Checks/run.sh`,
 `libs/darkbloom-cluster/Tests/*Checks/run.sh` and
 `libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
 exits non-zero on a failure. The library's XCTest targets
 (`swift test --package-path libs/darkbloom-cluster`) and the worker package's
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.
+
+Most runners compile a model-free source closure with `swiftc`. Worker
+`CapabilityChecks` and the worker argument portion of `PrefillScheduleChecks`
+link the actual runtime catalog, including MLXLLM metadata dependencies. These
+entrypoints describe pinned metadata and parse arguments only; MLX being linked
+does not mean a model or GPU was executed. The [build guide](build.md#cluster-metadata-check-builds)
+describes their isolated scratch directory and optional reuse.
+
+`ClusterConsoleChecks`, `ClusterDiagnosticsChecks` and
+`ClusterInstalledSessionChecks` resolve `TMPDIR` to its physical path and keep
+fixtures there. A checkout in a synced Desktop folder can have file metadata
+changed after verification. Keep fixture scratch outside synced folders;
+never relax the installed input identity check to accommodate those changes.
+
+`ClusterInstalledSessionChecks` also covers keyed selection and credential
+refusal across the registered profiles, then exercises installed startup with
+real CPU owners and synthetic worker readiness. Plaintext, unverified and
+mismatched reports must remain unroutable and release both owners; matching
+verified reports may become ready. These reports do not prove native encryption
+or a model load. Run the real two-Mac qualification separately.
+
+The optional pair batch diagnostics use `--batch-trace yes` and
+`--batch-logit-directory /private/tmp/<private-run-directory>` with the plain
+Qwen pipeline lane path and `--evidence none`. Native rows are captured only on
+rank 1 at output ordinals 0, 1, 30, 37, 78 and 88 after normal selection. The
+metadata binds each file to the timing report's actual request UUID, output
+ordinal, native dtype/shape, batch step, slot, row width and preceding-token
+hash. Compare rows only when prompt and preceding-history hashes match; a row
+after divergent history cannot classify the original difference. Apply the
+existing near-tie predicate unchanged. Missing capture at a first divergence
+is unclassified evidence, and diagnostic timings are not performance results.
+
+`QwenBatchDiagnosticsTests` exercises native-byte preservation, history binding,
+private paths, collisions, writer locking, capture limits and disabled defaults
+with CPU data only. `PairBatchDiagnosticsTests` checks exact worker launch
+routing in both rank orders and mode/lane/recording refusals. These checks do
+not load a model or qualify its output. Sources:
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenBatchDiagnosticsTests.swift`,
+`libs/darkbloom-cluster-worker/Tests/DarkbloomClusterQualificationTests/PairBatchDiagnosticsTests.swift`.
+
+## Focused Qwen3.5 MoE tensor-parallel checks
+
+1. Run the isolated CPU metadata checks from the repository root:
+
+   ```bash
+   bash libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh
+   bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+   ```
+
+   The plan check reads the pinned Qwen3.5 and Qwen3.6 configurations, covers
+   stored and canonical fused expert banks on both ranks, verifies divided
+   tensor coverage and Qwen3.6's replicated affine8 routing gates, and refuses
+   unequal candidates and malformed overrides. The capability check verifies
+   the registered modes for both routed rows.
+
+2. With the native runtime package built, run the CPU tensor and admission tests:
+
+   ```bash
+   swift test --package-path libs/darkbloom-cluster --filter QwenMoETensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter ResidentAdmissionA3BTests
+   swift test --package-path libs/darkbloom-cluster --filter QwenMixedRouterTensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter ResidentAdmissionQwen36A3BTests
+   ```
+
+   `QwenMoETensorParallelTests` compares canonical cuts against separate halves
+   for weights, scales and biases, rejects malformed ranges, and checks the
+   exact product-row/share gate. `QwenMixedRouterTensorParallelTests` constructs
+   tiny CPU models with independently quantized affine4 experts and affine8
+   routing gates, loads both stored and canonical banks, and compares native
+   BF16 full-model outputs exactly. Both rank loaders must construct without
+   executing collectives, and malformed divided overrides must fail before
+   reading tensors. These fixtures do not establish cross-rank numerics or
+   execute the registered weight payload.
+
+3. Qualify the installed pair using numerical `ReferenceReport` output from
+   `darkbloom-cluster-reference` and product pair-check runs with
+   `--mode tensor-parallel --tensor-shares 1:1 --evidence none`. Use pair-check
+   `record` for the existing acceptance rules. Pair-check `solo` emits timing
+   data and cannot replace a numerical reference. Preserve both rank orders,
+   long-context, cancellation and memory-release checks. CPU metadata success
+   does not establish this hardware gate or a speed improvement.
+
+The [routed-expert TP architecture](../architecture/inference.md#qwen35-routed-expert-tensor-parallel)
+states the arithmetic descriptor and supported scope.
 
 ## Focused Tooling Checks
 
@@ -1152,3 +1295,559 @@ of older unassociated jobs, symlinked CLI entry points and unbundled tools.
 Live qualification must close both setup terminals and check lease stability
 and follower connections in both role orientations; a foreground SSH success
 alone does not qualify detached background serving.
+
+
+## GPT-OSS cluster paged KV checks
+
+Run the metadata budget check and the CPU cache parity tests from the repository
+root. The latter use real SDK cache objects and CPU MLX arrays; no model weights,
+GPU inference or pair are required:
+
+```sh
+bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
+swift test --package-path libs/darkbloom-cluster -c release \
+  --filter GPTOSSPagedKVTests
+```
+
+`GPTOSSPagedKVTests` compares exact rows, masks, offsets and learned-sink SDPA
+results with `StandardKVCache` and `RotatingKVCache`. It also checks demand
+allocation, bounded sliding retention, copy/trim isolation and owner release.
+`GPTOSSStageChecks` checks each page's allocator overhead and sliding repack
+charge. These are CPU correctness checks, not native transport, MXFP4 model
+parity or performance evidence. Retain the existing two-Mac reference comparator
+and retirement checks for hardware qualification; see
+[the cache mechanism](../architecture/inference.md#gpt-oss-cluster-paged-kv).
+
+## GPT-OSS native dtype checks
+
+Run `swift test --package-path libs/darkbloom-cluster -c release --filter GPTOSSNativeDTypeTests`
+and `bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh` from the repository root.
+The CPU tests construct small deterministic models with MXFP4 experts, affine
+8-bit projections and learned sinks, compare split forwards with the whole
+model in BF16 and float32, and check prefill/decode cache types across a sliding
+window. They also bind the registered BF16 profile and actual wire bytes while
+preserving conservative memory charges. These tests do not load the registered
+weight payload or establish hardware numerical qualification. See the
+[native dtype contract](../architecture/inference.md#gpt-oss-native-residual-dtype).
+
+## Qwen batch projection arithmetic
+
+`libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Qwen/Qwen35BatchDecodeProjectionTests.swift`
+checks the actual Qwen-owned helper on the CPU: logical native bytes against
+individual forwards, linear biases, tied heads, Hadamard transforms/layout,
+custom overrides, supported packing, and explicit decode scope restoration.
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenBatchArithmeticAgreementTests.swift`
+checks the unchanged singleton/default agreement and the multi-lane arithmetic
+marker. These checks establish no model, GPU, transport or throughput result.
+
+Numerical qualification must separately compare native bytes across one and
+multiple rows on each target GPU, then compare model logits/recurrent state
+and paired tokens with distinct histories and row permutations. Keep private
+row capture disabled in speed runs. A projection-only sweep cannot replace
+full-model artifact qualification or justify changing the installed lane
+default.
+
+## Installed batch-lane propagation checks
+
+Run `bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh`. The CPU
+runner compiles the actual local-owner launcher, installed plan/session and
+member-installation code. `InstalledBatchLanesCheck.swift` launches a real child
+with the fixed owner arguments and checks its exact environment, supported
+lane widths, out-of-range rejection, malformed-override parity even with an
+eight-lane family default, admission/owner/native parity, unsupported
+mode and image gates, and both member ranks. No model, GPU or real service is
+started. The checks preserve the singleton and GLM tensor-parallel defaults;
+actual multi-lane output, encrypted transport and retirement still require
+qualification on both Macs. The same real-child checks pass canonical local
+`MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
+reject free-text spellings from forwarding, preserve unrelated native guards,
+and keep absent/default and non-TP behavior unchanged. They do not establish
+Metal progress; require fresh bilateral native startup markers and completed
+batch retirement in the installed synchronization comparison.
+
+The actual-child and final-native tests also exercise canonical local
+`MLX_EAGER_FENCE_COMMIT=0|1`, malformed values, combined fast/eager choices,
+unchanged GLM defaults and exclusion from pipeline launches.
+`WorkerEagerFenceCommitTests` checks that the startup reporter describes only
+explicit canonical TP choices and does not mutate the environment. The real
+worker StartupChecks cover the marker against a missing model directory. These
+checks prove propagation only; they do not establish a faster or stall-free
+collective path.
+
+Run `swift test --package-path libs/darkbloom-cluster-worker --filter WorkerCollectiveSynchronizationTests`
+for the startup policy checks. `WorkerCollectiveSynchronizationTests` exercises the actual startup policy and
+runtime lane parser without loading a model or opening a Metal device. It checks
+Qwen27 capacities 2...8, omitted/single capacity, malformed lanes, launcher
+precedence and every other catalog entry and generation mode. The actual worker
+checks in `libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh` verify startup
+markers and malformed-lane refusal against a missing model directory. These
+checks do not prove native progress or output equality: the installed product
+must still complete concurrent two-row TP decoding and clean retirement on both
+Macs, followed by the unchanged full capability and output checks.
+
+### Gemma per-request decode equality
+
+With the pinned native dependencies built as in [build](build.md), run the
+`Gemma4BatchDecodeTests` and `Gemma4BatchArithmeticAgreementTests` filters in
+`libs/darkbloom-cluster`, and `Gemma4BatchDecodeProjectionTests` in
+`libs/mlx-swift-lm`. The model fixture explicitly runs on CPU and compares
+logical native bytes, without tolerance, for every logit and live KV value.
+It uses widths 2/4/8, both registered quantization patterns, distinct histories,
+ring wrap, reordered rows, leaving/rejoining requests, and token/embedding
+entry points. It also rejects nonfinite output or state. Projection tests
+cover bias, tied heads, custom-module dispatch, unsupported packing fallback,
+and disabled/prefill/singleton scopes. Agreement tests preserve other-family
+and singleton bytes.
+
+`Gemma4StagePagedSyntheticTests` additionally requires batched stage logits
+to equal each request's solo logits. That larger native fixture and actual
+artifact GPU/pair throughput validation are separate from the tiny CPU suite.
+
+### Qualification bundle alias checks
+
+Run `python3 -I scripts/tests/test_cluster_bundle_pair_qualifications.py`.
+The temporary-directory checks use explicitly synthetic input records and
+verify that the exact registered Gemma plain/8-bit alias pair retains both
+original identities and lines, regardless of ordering or duplicate input.
+Wrong aggregates, unrelated or additional IDs remain refused without changing
+the previous output. These tests grant nothing and do not replace real
+cross-cable records for each runtime identity.
+
+
+## GPT-OSS native batch prerequisite checks
+
+Use the SDK revision containing `GPTOSSPerRowAttentionCache`, then run from the
+repository root with a source-matched metallib available to the test bundle:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release \
+  --filter 'GPTOSS(BatchForward|NativeDType|PagedKV)Tests'
+```
+
+The batch CPU fixture uses the registered native BF16 contract, MXFP4 experts
+and affine8 projections; non-BF16 batches refuse before advancing any cache.
+The ordinary scalar dtype suite retains both BF16 and F32 coverage. The batch
+fixture compares different prompt chunk grids, unequal absolute
+positions, wrapped sliding windows and changing decode membership against
+independent ordinary SDK executions, including exact cache bytes and inactive
+request state. Refusal cases must leave caches unallocated and unadvanced.
+These checks cover the SDK hook and the native batch primitive, not live worker
+lanes, GPU batch arithmetic, aggregate memory admission, cancellation or useful
+throughput. Follow [the architecture boundary](../architecture/inference.md#gpt-oss-independent-history-batch-forward)
+before enabling concurrency.
+
+## GPT-OSS batch owner checks
+
+Run the actual two-rank scheduling driver and native primitive on CPU, then the
+worker policy and fixed installed-child environment checks:
+
+```bash
+swift test --package-path libs/darkbloom-cluster -c release \
+  --filter 'GPTOSSBatch(Driver|Settings|Forward)Tests|QwenBatchSelectionTests'
+swift test --package-path libs/darkbloom-cluster-worker -c release \
+  --filter 'GPTOSSWorkerBatchSettingsTests|WorkerLaneTests|WorkerLaneJoinReproductionTests|WorkerQwenCancellationTests|PairBatchCancellationTests|PairBatchDiagnosticsTests'
+bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+```
+
+`GPTOSSBatchDriverTests` uses the production driver, request frames, lane book
+and serialized headers/replies on both ranks. Deterministic native/data-link
+substitutes cover mixed histories, delayed joins with pending token credit,
+accepted-start cancellation, follower cancellation, deadlines, clean stops and
+cleanup-failure charge retention. `GPTOSSBatchSettingsTests` checks LOAD binding,
+mode bounds and whole per-lane accounting including retained lookahead terms.
+The installed check launches a real fixed-environment child for the GPT-OSS
+plan and compares provider/child/native widths, paging policy and cancellation.
+These checks do not replace native GPU or full-artifact owner/throughput proof.
+Use the source-matched GPU fixture and installed candidate on both target Macs
+before treating an explicitly selected multi-lane configuration as qualified.
+
+### Tensor-parallel failed-shape checks
+
+Run `bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh`.
+`InstalledTensorQualificationCheck.swift` decodes immutable metadata from the
+2026-10-23 Qwen3.6 16K cross-cable failure and its passing reverse orientation.
+It checks TP-only decision construction, planner/start refusal, both local rank
+guards using actual installed Plan objects, and preservation of pipeline/hybrid
+cuts. Existing installed checks retain GLM default behavior. These CPU checks
+exercise refusal logic and do not rerun or replace the model qualification.
+
+
+### Pending HTTP requests across native mode replacement
+
+`DistributedAutomaticBatchPlannerTests` exercises the replacement planner's
+actual decision with owner-only recorded link and served-speed files. It checks
+that a measured keyed reduction reaches TP selection, foreign/stale/non-private
+measurements retain fallback, served costs reach calibration, and the real
+helper child receives `device --json --index`. These are CPU metadata checks;
+they do not execute models or claim measured batch throughput.
+
+The current-fit case prices descending widths 8, 4 and 2 with constructed
+bilateral pressure and checks that a hardware-possible width cannot pass the
+current admission predicate. `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh`
+also checks complete simultaneous LOAD/request coexistence and a smaller
+allocator ceiling independently of OS memory. These checks preserve the native
+thresholds; an installed automatic two-Mac run must separately prove successful
+replacement, actual batch widths and recovery.
+
+```bash
+cd provider-swift
+swift test --filter DistributedAutomaticBatchPlannerTests
+```
+
+`DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
+also reproduces a short burst draining before its proposal returns: the next
+real burst consumes the retained intent without a second planning call. Tests
+cover expiry and fresh planning, no reload with an empty queue, disconnected
+pending work, stop during planning, teardown of a ready intent, generation
+binding and unchanged cleanup-before-load. Run it with `DistributedLocalServerTests` and `DistributedRequestQueueTests`; none loads model payloads. Native two-Mac mode switching and throughput require separate hardware evidence.
+
+### GPT-OSS registered projection arithmetic
+
+Run the SDK integration suite on CPU and the native batch suite against the
+same SDK revision:
+
+```bash
+swift test --package-path libs/mlx-swift-lm -c release \
+  --filter GPTOSSBatchDecodeProjectionTests
+swift test --package-path libs/darkbloom-cluster -c release \
+  --filter 'GPTOSSBatch(Forward|Settings)Tests'
+```
+
+The projection fixture constructs deterministic packed affine8/group64 BF16
+arrays with the registered Q, KV, output, router and full vocabulary-head
+shapes. Widths 1, 2, 4 and 8 compare candidate bytes to original singleton
+forwards and also count ordinary wide-forward differences. Custom modules,
+unsupported packing, singleton calls and prefill retain their original entry
+points. The agreement test rejects the former wide-projection arithmetic
+binding while preserving single-lane binding. CPU equality does not prove GPU
+kernel equality: execute the same frozen fixture on each target GPU, then
+repeat full-artifact paired output, cancellation and throughput qualification.
+
+### Native stage observation policy
+
+`StageBatchObservationTests` covers both ranks' shared scope, bounded increasing
+width evidence, pre-work and out-of-capacity rejection, suppressed counter reads,
+reservation versus materialized backing, unavailable contiguous allocation, and
+truthful failed or non-drained retirement. Per-width step tests cover repeated and
+decreasing widths, zero-work and failed scopes, exclusion outside a live valid scope,
+and exactly one final summary with unchanged bounded logs and memory reads. These CPU tests verify the reporting
+policy; two-Mac full-model qualification must still show actual completed native
+width and paged growth followed by retirement counters for each worker generation.
+
+## MiMo independent-history batch checks
+
+Build with the SDK's explicit `MiMoV26IndependentHistoryCache` and
+`decodeIndependentHistories` seam, then run:
+
+```bash
+swift test --package-path libs/mlx-swift-lm -c release \
+  --filter MiMoV26IndependentHistoryTests
+swift test --package-path libs/darkbloom-cluster -c release \
+  --filter 'MiMoBatch(Driver|Settings)Tests|GPTOSSBatchDriverTests'
+swift test --package-path libs/darkbloom-cluster-worker -c release \
+  --filter PairBatchCancellationTests
+bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+```
+
+The SDK CPU suite compares page/ring order, chunk masks, wrapped-copy isolation,
+actual BF16 affine8/MXFP4 logits, residual boundaries and every live KV byte
+against ordinary singleton forwards. It covers widths 1, 2, 4 and 8, distinct
+histories, membership reorder/removal, tied and untied heads, split stages and
+refusal before mutation. Ordinary SDK cache validation remains unchanged.
+
+The shared model-free owner fixture retains all seven GPT-OSS scheduling cases
+and adds actual MiMo reservation specializations for mixed histories,
+cancellation, deadlines and failed-cleanup charge retention. Accounting checks
+include unequal K/V widths, per-page allocator rounding, every lane's complete
+state plus host history, and bounded shared workspace. The installed check
+launches a real child and compares effective provider/lease/native width across
+plain and unsupported modes. These are separate from model execution.
+
+Synthetic GPU parity on each host does not establish full-artifact paired
+output equality or performance. Validate encrypted widths, survivor equality
+after cancellation, live page growth, synchronized retirement and useful
+throughput with the exact candidate and catalog artifact before qualification.
+The new page path applies to every normal plain-pipeline owner, including a
+single lane. MTP, phase handoff and media paging remain separate qualification
+work; automatic normal serving must use the proven paged plain-pipeline mode
+until their rollback/handoff paging has its own proof. Ordinary SDK reference
+execution remains available for diagnostic contiguous-versus-paged comparisons.
+
+### Native family batch quote checks
+
+Run `bash libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` and
+`bash provider-swift/Tests/ClusterConfigurationChecks/run.sh`.
+`NativeBatchQuoteChecks.swift` uses authentic GPT-OSS/MiMo configurations and
+the real metadata budgets to compare every admitted stage against the quote,
+including paged supplements and shared workspace. It tests typed width/chunk
+binding, full-envelope growth, hostile bounds before allocator work, underbound
+refusal and actual planner charges on both ranks. Existing singleton golden
+plans and unpriced/GLM refusal checks remain. Configuration fixtures exercise
+persisted widths 2/4/8 for both ranks of these families. These are CPU metadata
+checks, not native arithmetic, paged ownership or throughput passes.
+
+### Gemma paged prefix and prompt checks
+
+Run the `CBv2PagedPrefixRestoreTests` native test filter with a matching
+metallib on each Mac. It restores sliding tails at frontiers 511, 575, 1100
+and 4095 with a 512-token write bound, compares exact KV bytes before and
+after continuation, and checks release and invalid-input refusal. The
+installed-session fixture in `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh`
+checks actual sanitized child settings for Gemma widths 1/2/4/8 and the
+explicit contiguous diagnostic. These do not replace full-model pair tests.
+
+Run `python3 libs/darkbloom-cluster-worker/Tests/PromptChecks/check_gemma4.py
+/ABS/darkbloom-cluster-pair-check /ABS/TOKENIZER_FIXTURES` as one command
+against exact catalog tokenizer metadata. It checks all three Gemma aliases,
+actual artifact chat-template parity and fixed 1K/4K/16K/32K request boundaries.
+The qualification wrapper includes the artifact's newline after `<bos>`;
+existing request files must be regenerated into a fresh evidence directory.
+
+## Bonsai packed FP32 row checks
+
+`HadamardLayerTests.testBonsaiFloat32RowsMatchSingletonPackedArithmetic` in
+`libs/mlx-swift/Tests/MLXTests/HadamardLayerTests.swift` compares multi-row
+FP32 calls with independently evaluated singleton calls, including grouped
+gated-delta layouts, optional bias, and prefill widths 511 and 512.
+`Float16ConstantCastTests` covers repeated calls, parameter and descriptor
+replacement, compiled state replacement and ineligible policies.
+`BonsaiRowArithmeticTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiRowArithmeticTests.swift`
+binds the registered 27B receipt change while retaining the 9B receipt exactly.
+
+Run the MLX suites with CPU as the explicit default device for a bounded
+arithmetic check, and with GPU only in an exclusive hardware window. Run
+registered-artifact projection diagnostics on both architectures under the
+unchanged product environment, retaining output bytes, source/binary hashes
+and warmed cost measurements. The candidate must match independent singleton
+outputs; full-model solo/pair qualification still uses the original numeric
+comparator, original schedules and retained pre-change reports. Projection
+checks alone establish neither full-model equivalence nor performance.
+
+## Nemotron prefix chunk checks
+
+`NemotronPrefixChunkTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/NemotronPrefixChunkTests.swift`
+checks cold prefix-on frame equality with the original request across chunk
+and prompt boundaries, exact restored suffix shapes, off-grid refusal,
+existing-grid capture, other-family framing, and the changed numerical receipt.
+`PrefixCacheContractTests` adds actual bilateral choice/confirmation coverage
+for resident and SSD grid hits, empty caches and restore failure. These CPU
+checks execute no weights or transport. Hardware qualification must retain
+old failures and rerun the affected pair and solo reports with the original
+comparator; frame equality alone is not numeric full-model proof.
+
+## Gemma prefix chunk checks
+
+`GemmaPrefixChunkTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/GemmaPrefixChunkTests.swift`
+executes the shared production request policy for all three registered Gemma
+profiles, including final-layer tail thresholds and chunk boundaries through
+32K prompts. It checks original cold frames, restored suffixes, grid captures,
+off-grid refusal, the changed Gemma receipt and unchanged Qwen/Bonsai/GLM
+framing. CPU checks do not establish model-level agreement: rerun prefix-on
+full-artifact qualification and keep the separate cross-chip negative evidence.
+
+## MiMo paged speculative and phase checks
+
+Run `MiMoV26MTPPagedHistoryTests` and `MiMoV26IndependentHistoryTests` in the
+SDK integration suites, then `MiMoPagedPhaseStateTests`,
+`MiMoPagedModelHandoffTests`, `MiMoPagedAdmissionTests` and
+`MiMoBatchSettingsTests` in the cluster runtime. The runtime tests live in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/`; the SDK tests live
+in `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/MiMo/`.
+
+Use an explicit CPU device for the bounded fixtures. Actual packed BF16
+model forwards cover a producer with both full and sliding attention, byte
+transfer into fresh pages, original/kept/adopted continuation rows and every
+cache byte. Cache tests cover wrapped rings, rollback 0...3, malformed late
+layers and refusal before recipient mutation. The trained-head tests compare
+accepted draft counts 0...3 and subsequent drafts against contiguous replay,
+including compaction, measured page ownership and release. Admission tests
+retain the prior envelopes, every page bound, phase handoff, and the target's
+verification width on both ranks even with a one-token prompt chunk.
+
+The unchanged unquantized BF16 routed-target legacy cases require GPU GatherMM;
+CPU-only runs must identify those excluded cases explicitly. Packed BF16
+fixtures execute on CPU. Source-matched both-host GPU and full-artifact MTP,
+compact and phase runs remain separate gates, with existing references and
+numeric tolerances unchanged. The CPU checks do not prove transport, installed
+worker loading or artifact throughput.
+
+The SDK integration suite `Gemma4PrefillProjectionTests` compares BF16 affine4/8
+prompt projections with actual singleton calls at chunk boundaries, checks
+explicit scope restoration and unsupported/custom fallbacks, and verifies the
+unchanged tied head. `Gemma4PrefillExpertTests` executes the actual Gemma decoder, router,
+shared MLP and sparse expert block with the attention output isolated to zero;
+it assembles an independent projection/expert oracle while preserving the
+original rectangular normalization and elementwise operations, and compares
+selected routes across prompt boundaries. A separate expert-only composition
+check compares complete singleton calls with the shared branch isolated to
+zero. Ordinary and verification paths remain covered. These checks do not
+claim whole-layer singleton equivalence: existing normalization can depend on
+rectangle shape on CPU.
+`GemmaPrefillArithmeticTests` in the runtime target verifies that both exact
+policies change the receipt while the family environment and chunk policy
+remain bound. These CPU checks do not establish full-model cross-chip qualification
+or throughput.
+
+The placement suite retains the exact Qwen3.8 27B visual header fixture in
+`libs/darkbloom-cluster/Tests/PlacementChecks/Inputs/qwen27-vision-budget.json`.
+`QwenVisionResidencyChecks` verifies all 333 independently bounded allocations,
+inventory and configuration corruption, decoded invalid charges, strictly
+additive TP rank memory, working-set refusal, and unchanged pipeline/legacy
+behavior. It uses metadata only and is not a model or media execution test.
+
+### Qwen media carrier checks
+
+Run `bash libs/darkbloom-cluster/Tests/QwenMediaChecks/run.sh` for the actual
+Foundation-only protocol/codec checks, then
+`bash libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh` for existing text and
+worker-message regressions. The media suite verifies round trips, metadata-only
+peer identity, nil omission, prompt/span and geometry identity, byte/raster
+bounds, malformed/duplicate fields, and checked memory arithmetic. These checks
+do not decode media, load a model, run MLX or establish visual capability.
+
+Qwen native media coverage includes `QwenNativeMediaSeamTests` and
+`QwenNativeMediaForwardTests` in SDK Integration/Qwen, plus native
+`QwenMediaStateTests`, `QwenMediaPreparationTests` and
+`WorkerQwenMediaAdmissionTests`. They check processor precedence and preallocation
+grids, request-local axes/deltas, vision-only tiny wrapper parity, serial loading,
+malformed-cache refusal, live producer custody, memory overflow and fail-closed
+worker dispatch. CPU tensor execution does not prove CoreImage/AVFoundation
+rasterization, the full registered tower, cross-Mac feature transfer, or endpoint
+media concurrency. Those require separate paired hardware evidence.
+
+Qwen media forwarding is covered by `ClusterQwenMediaForwardingTests`, which
+round-trips both encoded and metadata-only envelopes through owner and peer-link
+clock translation. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+--owner-only` runs the actual child/owner checks, including rank-specific media
+bytes, cancellation before start, early-release refusal and idempotent release
+after retirement. It runs no model or MLX code; it does not replace the full
+provider contract or hardware suites.
+
+### Qwen27 tensor-parallel native batch checks
+
+Run `QwenTensorParallelBatchDriverTests`, `QwenTensorParallelBatchBudgetTests`
+and `QwenTensorParallelBatchSettingsTests` in the Runtime test target for
+bilateral scheduling/retirement, canonical inventory pricing and exact keyed
+model admission. The real paired-driver fixtures stagger owner token credits to
+require a two-row decode rectangle, bound a silent owner's delay, and interrupt
+credit coalescing for cancellation or deadline retirement. Existing fixtures
+keep later joins and prefills moving while an older token credit is withheld.
+These CPU scheduling checks do not establish installed native batch width. Run `QwenTensorParallelBatchSessionTests` with the matching SDK
+for physically sliced native attention, greedy ties, seeded mixed sampling,
+raw logprobs, reordered histories, nonfinite refusal and resource-release retry.
+The default execution is CPU; the production hybrid recurrence requires Metal.
+
+For its tiny attention/hybrid fixture, set `QWEN_TP_BATCH_GPU=1` and run separately
+with `QWEN_TP_BATCH_KV=contiguous` and `QWEN_TP_BATCH_KV=paged` on both chips.
+Keep source, binary and Metal resources identical and retain negative logs.
+These tests use local ordered reductions, synthetic tensors and synthetic
+media positions/features. They do not exercise RDMA, the registered tower or
+actual artifact, installed owner capacity, warm prefixes or TP speculation.
+Full model/reference, media, concurrency, throughput and logical-retirement
+checks remain required.
+
+### Qwen cluster media provider ingress checks
+
+`DistributedQwenMediaIngressTests` runs the actual ImageIO/AVFoundation and Qwen
+processor path on deterministic red/blue PNG and short MP4 fixtures. It checks
+single/multiple images, video, repeat isolation, expanded prompt bounds, metadata
+identity and refusal before native reservation. It also drives the real scheduler,
+bridge and distributed engine with explicitly fabricated native leases, proving
+routing, usage and independent completion/cancellation cleanup without claiming
+physical peers or model answers. The JSON/schema regression traverses the actual
+scheduler, media preprocessing and bridge into `MLXOpenAIService`; fabricated
+native tokens prove positive JSON responses, schema rejection and unchanged
+retirement. It observes the shared format instruction reaching the tokenizer.
+These results establish response plumbing, not model-generated schema accuracy.
+
+`DistributedQwenMediaLifetimeTests` and `DistributedQwenMediaHostMemoryTests`
+cover the two ownership fences, stale generation/request identity, cancellation,
+failed cleanup retention, bounded arithmetic and process-ledger reservations.
+The SDK's `CBv2QwenClusterCarrierTests` proves an opaque cluster envelope cannot
+fall through to a local model or allocate KV state. Run the focused provider
+classes with the repository provider test runner, and the SDK integration class
+with `xcodebuild test -scheme mlx-swift-lm-Package -destination 'platform=macOS'`.
+Stage the matching Metal library even for MLX CPU-device execution. These checks
+load no language-model weights; full-artifact TP image/video and concurrent
+capability acceptance remain separate.
+
+### Automatic Qwen27 TP width checks
+
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` for exact-width ledger
+validation, unchanged measured mode ranking, keyed-link and failed-shape gates,
+and per-rank memory refusal. Run
+`provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for saved widths,
+actual sanitized child propagation, cancellation policy, raw-logprob support,
+other-model refusal and unchanged GLM defaults.
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/QwenTensorParallelBatchQuoteTests.swift`
+uses actual registered headers with a sparse zero payload to compare the public
+metadata helper against native owner budgets at every admitted share and width.
+It proves metadata accounting without reading or qualifying weight payloads.
+Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
+separate hardware gates.
+
+### Qwen27 TP warm-prefix checks
+
+`QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
+misses, media/key isolation, allocator rounding and bounded LRU eviction. The
+real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
+outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
+reordered decode and one-sided cache loss. Run it with both contiguous and
+paged backends; production recurrent kernels require the Metal invocation
+listed above. `QwenTensorParallelBatchDriverTests` checks that donation follows
+both ranks' cleanup while the lane charge is still held, and that cancelled or
+failed lanes cannot donate. The registered-header quote test must continue
+matching the exact native LOAD budget. Full-artifact warm reuse and speed are
+separate paired-hardware gates.
+
+### Qwen27 feature-preserving placement
+
+Run `cd provider-swift && swift test --filter DistributedAutomaticBatchPlannerTests` for the actual provider mode-policy boundary. Constructed CPU profiles compare a cheaper pipeline against identical TP cost inputs, require explicit refusal on absent/unkeyed/stale/foreign link records, missing shard geometry or memory, and retain the other dense-model and GLM behavior. A real temporary configuration store loads an old pipeline record, refuses its startup/resave, then replans and saves TP without rewriting the old record. Actual bridge-factory tests reject missing/mismatched READY and absent logprob support before model-metadata reads. These tests run no models and establish no hardware speed or native TP concurrency result.
+
+### Metal cross-stream fence chains
+
+The pinned core's `metal_fence_chain` CTest target checks exact GPU-to-CPU-to-GPU
+chains and released request arrays at command-buffer limits 8, 50 and 1024.
+Each process has a 60-second timeout. Run the core's configured Metal tests
+with `ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure --no-tests=error`.
+This component check does not reproduce or qualify an installed RDMA model;
+repeat the installed provider's automatic cluster flow and concurrent API
+requests on both Macs after a native pin change.
+
+### Qwen27 TP speculative ownership tests
+
+Run SDK `QwenMTPPagedHistoryTests` for paged assistant append/trim/copy/restore and failed-constructor custody. Native `QwenTensorParallelMTPPolicyTests`, `QwenTensorParallelMTPBudgetTests`, `QwenTensorParallelBatchMTPBudgetTests` and `QwenTensorParallelAssistantQuoteTests` check exact inventory, complete singleton/cohort reservations and metadata/native quote equality. `QwenTensorAssistantStartupTests` exercises real bilateral worker arguments; Process `TensorAssistantReadinessCheck` checks real child READY mismatch rejection. Provider `DistributedAutomaticBatchPlannerTests` covers automatic inline discovery, malformed/off cases, complete initial quote and saved-policy preservation through wider replans.
+
+Set `QWEN_TP_MTP_GPU=1` only in an isolated native test run with the matching Metal resource. Run `QwenTensorParallelBatchMTPWindowTests` and `QwenTensorParallelBatchMTPTransitionTests` with `--no-parallel` so suites do not race global MLX state. Actual tiny targets test unequal histories/keep counts, rejected-suffix settlement, greedy target-column continuation, singleton/wider transitions, independent accepted-token credits, survivor retirement, mixed ordinary rows and poisoned-cohort cleanup. The trained head remains single-row; the decoder creates the target cohort. Tied-head transition fixtures do not establish full-model acceptance behavior or sampled equivalence.
+
+Retain the exact executable, imported module/object/resource hashes and all fixtures resolved relative to compiled `#filePath` on each host. These fixtures use an in-process paired reduction and establish neither RDMA nor installed-product qualification. Run full-artifact automatic setup, bilateral READY, ordinary/media/logprob/history requests, prefix reuse, concurrent MTP, cancellation and retirement before a release claim. Compile ProviderCore tests against the actual final product module built with `-enable-testing`; do not reuse a pre-policy test binary with changed contract modules.
+
+### Cluster service stop ordering
+
+`ClusterServiceRecoveryTests.plannedStopWaitsForOwnedServiceChildBeforePeerAndRetainsFailureIntent`
+runs the actual service loop with an owned process held after SIGTERM. It checks
+that the peer stop is withheld until exit and idle publication, including local
+timeout/retry and missing-peer failure. Additional cases cover a recycled PID,
+an unavailable live-service publication, and a replacement process that must
+not inherit the old stop's authority. `ClusterServiceLoginAgentTests` exercises
+the actual CLI completion gate: failed pair retirement cannot uninstall the
+service or return success. These are isolated CPU/process tests; native graceful
+shutdown still requires a fresh installed two-Mac run.
+
+Focused checks: `swift test --filter ClusterServiceRecoveryTests` and
+`swift test --filter ClusterServiceLoginAgentTests` from `provider-swift`.
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServiceRecoveryTests.swift`
+and `provider-swift/Tests/DarkbloomCLITests/ClusterServiceLoginAgentTests.swift`.
+
+The planned-stop lifecycle suite also pauses the actual service immediately before Process.run, then requests stop against its stale idle publication. Rewriting ordinary status with a fresh inode must not release the peer. Only a subsequent real supervision-cycle acknowledgement after child retirement permits success. The private initializer callback is nil in production.
+
+Planned-stop lifecycle checks exercise the actual peerLeaseState projection, accepted ClusterControlNode follower lease, ClusterControlIntent recording and follower part selection while the real owned child is retained after TERM, while start is paused, and after retirement. A held outbound lease custody flag must block final peer stop after local child exit. Optional-record compatibility and an already-idle peer are checked separately. No physical peer transport or installed native shutdown is claimed by these CPU cases.
+
+### Qwen27 capacity consistency checks
+
+Run `swift test --filter QwenTensorParallelBatchSettingsTests`, `swift test --filter QwenTensorParallelBatchBudgetTests`, `swift test --filter QwenTensorParallelAssistantQuoteTests` and `swift test --filter QwenTensorParallelSingletonHostTests` from `libs/darkbloom-cluster`. These CPU checks cover keyed singleton routing, complete plain/assistant quotations, token credit and the bilateral-retirement completion boundary. Run `swift test --filter DistributedAutomaticBatchPlannerTests` from `provider-swift` for retained-share placement, current-memory refusal and handoff compatibility.
+
+With exclusive GPU custody, run `QWEN_TP_BATCH_GPU=1 QWEN_TP_BATCH_KV=paged swift test --filter QwenTensorParallelBatchSessionTests.capacityOneAndTwoKeepExactPagedLogitsAndHistory` from `libs/darkbloom-cluster`. This synthetic two-rank test compares raw logits and attention/conv/SSM state at capacities one and two. It also prints whether the former scalar paged path differs; at this tiny geometry it matched byte-for-byte, so the fixture does not reproduce the installed divergence and is not a negative control. It does not establish full-model installed parity or physical peer transport. The installed run must retain the original singleton output and require exact equality after automatic widening, then verify media, tools, logprobs, cancellation and native retirement on both Macs.

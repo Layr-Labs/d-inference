@@ -169,6 +169,7 @@ public struct ClusterWorkerLaunch: Sendable {
 public final class ClusterWorkerProcess: @unchecked Sendable {
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
+    public let expectedTensorAssistant: ClusterQwenTensorAssistantReady?
     public let rank: Int
     public let executionPlanSHA256: String
     /// The latest deadline this owner has granted the child: the launch
@@ -236,6 +237,7 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     public init(launch: ClusterWorkerLaunch, expectedIdentity: ClusterWorkerIdentity, rank: Int,
                 profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64,
                 initialLeaseDeadline lifetimeDeadline: UInt64,
+                expectedTensorAssistant: ClusterQwenTensorAssistantReady? = nil,
                 retirement: ClusterWorkerSignalPolicy = .standard) throws {
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
             executionPlanSHA256: executionPlanSHA256)
@@ -250,6 +252,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
               lifetimeDeadline - now <= ClusterWorkerLease.maximumNanoseconds else {
             throw ClusterWorkerOwnerError.invalid("Invalid worker launch")
         }
+        try expectedTensorAssistant?.validate()
+        self.expectedTensorAssistant = expectedTensorAssistant
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.startupDeadline = startupDeadline
         leaseDeadline = lifetimeDeadline; self.retirement = retirement
@@ -381,7 +385,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             }
             if case .ready(let ready) = frame.event {
                 guard nextEvent == 0, ready.identity == expectedIdentity, ready.rank == rank,
-                      ready.profile == expectedProfile, ready.executionPlanSHA256 == executionPlanSHA256 else {
+                      ready.profile == expectedProfile, ready.executionPlanSHA256 == executionPlanSHA256,
+                      ready.tensorAssistant == expectedTensorAssistant else {
                     throw ClusterWorkerOwnerError.invalid("Worker readiness differs")
                 }
                 readyValue = ready; readyObserved = true

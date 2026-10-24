@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-23
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -32,8 +32,19 @@ handles commands afterwards is worked out by the cluster itself (see
 
 The screen follows five stages: **Connect**, **Pair**, **Choose**, **Start** and
 **Test**. The model list names the choice that Enter selects and explains why
-any unavailable model cannot be selected. Headings use color on supported
-terminals; `NO_COLOR` and redirected output remain plain text.
+any unavailable model cannot be selected.
+
+On a color terminal with a UTF-8 locale and at least 40 columns, setup opens
+with the Darkbloom mark, which blooms in pixel by pixel. Each stage's heading
+carries a step meter (`●●○○○`). Long work (checking the cable, reading both Macs,
+planning, loading the model, waiting for the first tokens) shows a live line
+with a turning petal; the next line of the transcript replaces it.
+`DARKBLOOM_NO_ANIMATION=1` or `CI` keeps the mark and meter but stops the motion.
+A narrower window or a non-UTF-8 locale (an SSH session in a split pane, say)
+keeps colored headings only. `NO_COLOR`, `TERM=dumb` and redirected output print
+the plain transcript, byte for byte. Nothing clears the screen, so trust codes and
+recovery steps stay in scrollback, and no credential is printed: the API key line
+names `darkbloom local`, which shows it.
 
 Setup reports completion only after the test response succeeds. If that request
 fails, the saved setup remains available: run `darkbloom cluster`, check its
@@ -138,6 +149,10 @@ reads Darkbloom's catalog when the network is up (to download a model neither
 Mac has); with no network, it lists the models already on the Macs. Only
 catalog models are served. Qualification records never gate local-only
 serving.
+
+If startup reports that both ranks need the same keyed native worker, install
+one Darkbloom build on both Macs and retry. Paired-link startup refuses a
+plaintext fallback; see the [cluster encryption contract](../architecture/security/encryption.md#two-mac-cluster-experimental).
 
 ## Models
 
@@ -349,6 +364,9 @@ network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
 a pairing. Run on the leader, it first tells the other Mac over the cable, which
 removes the pair's prompt-cache records (its own single-Mac cache stays) and
 stops its part; each Mac also removes its own pair records when it unpairs.
+`darkbloom cluster stop` stops a Mac's cluster service and keeps it from starting
+at login. On the leader it stops the pair first. When the other Mac is gone for
+good, `darkbloom cluster stop --local-only` stops only this one.
 
 ## Cache settings
 

@@ -684,12 +684,6 @@ extension ProviderLoop {
         // The managed Super owner renders, parses and validates through its
         // pinned prompt contract and output parsers, never the generic engine.
         let superOwner = slot.modelContainer.nemotronSuper
-        // Logprobs passthrough: a per-request channel the bridge pump fills
-        // with OpenAI-shaped entries and the frames loop below drains into
-        // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
-        // pass through untouched.
-        let logprobsChannel: EngineV2LogprobsChannel? =
-            logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -893,9 +887,8 @@ extension ProviderLoop {
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
-                engineV2Logprobs: logprobsChannel.map {
-                    EngineV2LogprobsPlumbing(
-                        topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
+                engineV2Logprobs: logprobsSpec.map {
+                    EngineV2LogprobsPlumbing(topLogprobs: $0.topLogprobs)
                 },
                 engineV2Sampling: samplingOverrides,
                 engineV2Usage: v2UsageSignal,
@@ -1105,22 +1098,6 @@ extension ProviderLoop {
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
             var cancelledMidStream = false
-            // Logprobs entries drained from the v2 bridge but not yet
-            // attached to a frame. Entries attach to the NEXT content-
-            // bearing chunk (role preambles / reasoning-only deltas /
-            // usage chunks are skipped); consumers accumulate
-            // `logprobs.content` across chunks, so chunk-boundary
-            // alignment is not load-bearing — order and exactly-once are.
-            //
-            // BOUNDED (round-3 PR#499 P2): a long reasoning-only/tool-only
-            // prefix (GPT-OSS) drains the capped channel here every frame
-            // without ever clearing, so this buffer is re-capped after each
-            // drain with the SAME drop-oldest policy as the channel
-            // (`EngineV2LogprobsChannel.capPending`); the freshest window —
-            // the entries nearest the content that eventually renders — is
-            // kept and the dropped count is logged (never token text).
-            var pendingLogprobs: [SSETokenLogprob] = []
-            var pendingLogprobsDropped = 0
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
@@ -1239,36 +1216,6 @@ extension ProviderLoop {
                             }
                         }
                     }
-                    // Logprobs passthrough (v2 only): splice pending entries
-                    // into this frame if it carries content; otherwise keep
-                    // them pending. Runs AFTER the hash/usage bookkeeping
-                    // above, which reads the original `frame` — logprobs
-                    // never alter `delta.content`, so the response hash and
-                    // billing extraction are unaffected.
-                    if let logprobsChannel {
-                        pendingLogprobs += logprobsChannel.drain()
-                        // Re-cap after every drain: without a content-bearing
-                        // frame this buffer would grow unbounded past the
-                        // channel's own cap (see the declaration comment).
-                        let dropped = EngineV2LogprobsChannel.capPending(&pendingLogprobs)
-                        if dropped > 0 {
-                            if pendingLogprobsDropped == 0 {
-                                log.warning(
-                                    "[\(requestId)] pending logprobs hit the "
-                                    + "\(EngineV2LogprobsChannel.maxEntries)-entry cap before a "
-                                    + "content-bearing frame; dropping oldest entries (count only)"
-                                )
-                            }
-                            pendingLogprobsDropped += dropped
-                        }
-                        if !pendingLogprobs.isEmpty,
-                            let injected = Self.injectLogprobs(
-                                into: frameToEmit, entries: pendingLogprobs)
-                        {
-                            frameToEmit = injected
-                            pendingLogprobs = []
-                        }
-                    }
                     if !emitSSE(frameToEmit) { return }
                     framesEmitted += 1
                     bytesEmitted += frameToEmit.utf8.count
@@ -1315,15 +1262,6 @@ extension ProviderLoop {
             if token.isCancelled {
                 cancelledMidStream = true
                 profile.mark(.cancelAborted)
-            }
-
-            if pendingLogprobsDropped > 0 {
-                // Surface the request's TOTAL evicted-entry count once at
-                // stream end (the in-loop WARN fires only on the first drop).
-                log.warning(
-                    "[\(requestId)] dropped \(pendingLogprobsDropped) pending logprob "
-                    + "entries in total (buffer cap \(EngineV2LogprobsChannel.maxEntries))"
-                )
             }
 
             if cancelledMidStream {

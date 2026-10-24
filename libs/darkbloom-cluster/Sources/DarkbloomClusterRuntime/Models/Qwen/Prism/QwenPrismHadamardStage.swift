@@ -50,7 +50,8 @@ struct QwenPrismHadamardSource {
         let names = declaration.modules.map { namespace + $0.path }
         let forward = Set(declaration.modules.filter { !$0.embedding }.map { namespace + $0.path + ".weight" })
         let inverse = Set(declaration.modules.filter(\.embedding).map { namespace + $0.path + ".weight" })
-        guard transforms.gdnVGrouped, transforms.blockSize == QwenPrismStageConfiguration.blockSize,
+        guard transforms.gdnVGrouped, QwenPrismStageConfiguration.supportedBlockSizes.contains(transforms.blockSize),
+              !declaration.modules.isEmpty, declaration.modules.allSatisfy({ $0.block == transforms.blockSize }),
               Set(transforms.weightNames) == forward, Set(transforms.inverseWeightNames) == inverse,
               Set(descriptors.keys.filter { $0.hasSuffix(suffix) }) == Set(names.map { $0 + suffix }),
               !descriptors.keys.contains(where: { $0.contains(".mtp.") || $0.hasPrefix("mtp.") }) else {
@@ -81,7 +82,7 @@ struct QwenPrismHadamardSource {
             let stored = try signs.file.data(offset: signs.offset, count: signs.byteCount).withUnsafeBytes { bytes in
                 (0..<width).map { Float(bitPattern: UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self))) }
             }
-            guard transform.blockSize == QwenPrismStageConfiguration.blockSize, transform.width == width,
+            guard transform.blockSize == record.block, transform.width == width,
                   transform.matches(signs: stored) else {
                 throw ProbeError("Prism stored signs differ from the transform file: \(name)")
             }

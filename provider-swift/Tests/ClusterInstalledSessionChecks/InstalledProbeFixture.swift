@@ -11,7 +11,9 @@ import CryptoKit
         if args == ["--fixture-features"] {
             print(ProcessInfo.processInfo.environment["JACCL_PROGRESS_TIMEOUT_MS"] ?? "unset", "--startup-deadline-uptime-nanoseconds",
                 // and the prefix-SSD key's input scheme (ClusterWorkerPrefixSSDKey.argument)
-                "darkbloom/prefix-ssd-key/input-line/v1")
+                "darkbloom/prefix-ssd-key/input-line/v1",
+                // Fabricated feature support for the CPU keyed-owner fixture.
+                "darkbloom/data-plane/hello/v1")
             return
         }
         #endif

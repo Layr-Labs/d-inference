@@ -59,6 +59,9 @@ struct QwenResidentModelDefinition {
             // The 27B's geometry, so the 27B's cuts: 4, 8, ... 60.
             profileID = "registered_ternary_bonsai_2_27b_greedy_generation_v1"
             supportedCuts = structural
+        case .ternaryBonsai2NineB:
+            profileID = "registered_ternary_bonsai_2_9b_greedy_generation_v1"
+            supportedCuts = structural
         case .nemotron35Lightning:
             // A closed list of its structural cuts, not all 32 of them: a
             // capability carries at most sixteen partitions.
@@ -72,6 +75,7 @@ struct QwenResidentModelDefinition {
         // its own contract and the adapter that names it too; so does Nemotron.
         let arithmetic: QwenResidentArithmeticPolicy = model == .nemotron35Lightning ? .nemotronHybrid
             : specification.routedExperts != nil ? .routedExperts
+            : model == .ternaryBonsai2TwentySevenB ? .prismHadamardRows
             : model.pack == .prismHadamard ? .prismHadamard : .dense
         let registered = (runtimeModelID: model.rawValue, profileID: profileID)
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
@@ -95,14 +99,19 @@ struct QwenResidentModelDefinition {
             // tensor parallel on them (`QwenTensorParallelResidentRuntime`).
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel,
                                         .pipelineMTP]
-        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
-            // Both artifacts ship the product's inline head too (one routed-
-            // expert decoder layer under `mtp.`, split gate and up as the SDK's
-            // `Qwen35MTPDecoderLayer` keys them); the decoding rank runs it the
-            // same way, and so does the last rank of a speculative pipeline.
-            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP]
-        case .ternaryBonsai2TwentySevenB:
-            // The Prism pack's state has the 27B's shapes in F32; the hand-off
+        case .qwen35ThirtyFiveBA3B:
+            // Uniform affine target weights also load as equal head/channel
+            // shards. The inline head remains specific to the existing MTP modes.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP,
+                                        .tensorParallel, .pipelineMTP]
+        case .qwen36ThirtyFiveBA3B:
+            // Text experts remain affine4; only the replicated routing gates
+            // use affine8. Equal TP shards keep that packing exactly. The
+            // inline head remains specific to the existing MTP modes.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP,
+                                        .tensorParallel, .pipelineMTP]
+        case .ternaryBonsai2TwentySevenB, .ternaryBonsai2NineB:
+            // Each Prism pack's state has its registered shapes in F32; the hand-off
             // carries each component in the profile's activation dtype. Its
             // artifact ships no head (`mtp_num_hidden_layers` 0).
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
@@ -130,7 +139,7 @@ struct QwenResidentModelDefinition {
         case .qwen35NineB: 1.44
         case .qwen38TwentySevenB: 1.56
         case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B: 1.44
-        case .ternaryBonsai2TwentySevenB, .nemotron35Lightning: nil
+        case .ternaryBonsai2TwentySevenB, .ternaryBonsai2NineB, .nemotron35Lightning: nil
         }
         speculativeDecodeFactor = supportedGenerationModes.contains(.phaseSplitMTP) ? measuredSpeculativeSpeedup : nil
         self.specification = specification

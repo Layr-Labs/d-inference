@@ -73,6 +73,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let promptTokenIDs: [Int]
     let mimoImages: ClusterMiMoImages?
     let stillImages: ClusterStillImages?
+    let qwenMedia: ClusterQwenMedia?
     let stopTokenIDs: Set<Int>
     let chunkSize: Int
     let outputCount: Int
@@ -98,17 +99,41 @@ struct QwenLayerStageGenerationRequest: Equatable {
     /// End offsets of the prefill frames, in order. Nil keeps the original
     /// fixed-chunk plan from offset zero.
     private var prefillFrameEnds: [Int]?
+    /// Registered Nemotron and Gemma prefill arithmetic depends on the original
+    /// chunk boundaries. Prefix reuse removes whole chunks, never splits one.
+    var preservesPrefixChunkGrid: Bool {
+        [ClusterRuntimeAdapter.nemotronH, .gemma4LayerStage].contains { adapter in
+            adapter.registeredProfiles.contains { $0.profileID == profile.identifier }
+        }
+    }
+
+    func admittedPrefixFrontiers(_ frontiers: [Int]) -> [Int] {
+        frontiers.filter { (1..<promptCount).contains($0)
+            && (!preservesPrefixChunkGrid || $0 % chunkSize == 0) }
+    }
+
     var promptCount: Int { promptTokenIDs.count }
     var forwardCount: Int { prefillFrameCount + outputCount - 1 }
     var finalCommittedTokens: Int { promptCount + outputCount - 1 }
 
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
          chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
-         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) throws {
+         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+         qwenMedia: ClusterQwenMedia? = nil) throws {
         try mimoImages?.validate(prompt:promptTokenIDs)
         try stillImages?.validateStructure(promptCount: promptTokenIDs.count)
         guard stillImages == nil || (mimoImages == nil && route == nil
             && profile.identifier == ClusterStillImages.glmProfileID) else { throw ProbeError("Foreign still-image request") }
+        if let qwenMedia {
+            try qwenMedia.validateStructure()
+            guard mimoImages == nil, stillImages == nil, route == nil,
+                qwenMedia.promptLength == promptTokenIDs.count,
+                promptTokenIDs.allSatisfy({ (0...Int(Int32.max)).contains($0) }),
+                qwenMedia.promptSHA256 == ClusterQwenMedia.int32SHA256(promptTokenIDs.map(Int32.init)) else {
+                throw ProbeError("Foreign or mismatched Qwen media generation request")
+            }
+        }
+        self.qwenMedia = qwenMedia
         self.stillImages = stillImages
         self.mimoImages = mimoImages
         guard (1...profile.maximumPromptTokens).contains(promptTokenIDs.count),
@@ -145,6 +170,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
         // request agreement. Absent media preserves every legacy hash byte.
         if let mimoImages { fields.append("mimo-images=" + mimoImages.fingerprint) }
         if let stillImages { fields.append("still-images=" + stillImages.fingerprint) }
+        if let qwenMedia { fields.append("qwen-media=" + qwenMedia.fingerprint) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 
@@ -152,15 +178,18 @@ struct QwenLayerStageGenerationRequest: Equatable {
     /// `reusedPrefix` and end on the global chunk grid (multiples of the chunk
     /// size), so a suffix after a grid-aligned hit runs exactly the frames a
     /// cold request runs there; with `splitFinalToken` the last prompt token
-    /// runs alone. The fingerprint is the request's own and does not change.
+    /// runs alone except for registered Nemotron/Gemma, which preserve whole
+    /// chunks and refuses off-grid restore. The request fingerprint is unchanged;
+    /// the model's numerical-policy receipt binds this scheduling rule.
     func planned(reusedPrefix: Int, splitFinalToken: Bool) throws -> QwenLayerStageGenerationRequest {
         guard reusedPrefix >= 0, reusedPrefix < promptCount,
+              !preservesPrefixChunkGrid || reusedPrefix % chunkSize == 0,
               !splitFinalToken || promptCount >= 2 || reusedPrefix == 0 else {
             throw ProbeError("A prefix plan must leave at least one prompt token to compute")
         }
         var copy = self
         copy.reusedPrefixTokens = reusedPrefix
-        copy.splitsFinalPromptToken = splitFinalToken && promptCount >= 2
+        copy.splitsFinalPromptToken = splitFinalToken && promptCount >= 2 && !preservesPrefixChunkGrid
         copy.prefillFrameEnds = Self.frameEnds(promptCount: promptCount, chunkSize: chunkSize,
             start: reusedPrefix, splitFinalToken: copy.splitsFinalPromptToken)
         copy.prefillFrameCount = copy.prefillFrameEnds!.count
@@ -182,9 +211,16 @@ struct QwenLayerStageGenerationRequest: Equatable {
 
     /// Prompt frontiers at which a stage can keep its committed state: grid
     /// multiples of `stride` and the split frontier `promptCount - 1`, all
-    /// after the reused prefix. Empty unless the last token is split off.
+    /// after the reused prefix. Nemotron/Gemma retain existing chunk-grid ends
+    /// without a final-token split; other profiles capture only with a split.
     func prefixCaptureFrontiers(stride: Int) -> Set<Int> {
-        guard splitsFinalPromptToken, stride > 0, let ends = prefillFrameEnds else { return [] }
+        guard stride > 0, let ends = prefillFrameEnds else { return [] }
+        if preservesPrefixChunkGrid {
+            // Keep only existing grid boundaries strictly before the prompt
+            // end. A repeat recomputes its final complete/partial chunk.
+            return Set(ends.filter { $0 < promptCount && $0 % stride == 0 })
+        }
+        guard splitsFinalPromptToken else { return [] }
         return Set(ends.filter { $0 == promptCount - 1 || ($0 < promptCount - 1 && $0 % stride == 0) })
     }
 

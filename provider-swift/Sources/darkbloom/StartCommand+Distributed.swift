@@ -43,9 +43,10 @@ extension Start {
         let token = try noAuth ? nil : noCoordinator ? LocalEndpoint.loadOrCreateClusterToken() : LocalEndpoint.loadOrCreateToken()
         // From the selected registered model's row, like the stop allowance.
         let budget = try session.firstTokenBudgetPolicy()
+        let batching = try DistributedAutomaticBatchFactory(providerConfiguration: configPath, stopNotice: announce)
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token),
-            firstTokenBudgetPolicy: budget)
+            firstTokenBudgetPolicy: budget, batchReplacement: { try await batching.replacement(for: $0) })
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The
         // cluster leader never takes the native device gate from its own child.

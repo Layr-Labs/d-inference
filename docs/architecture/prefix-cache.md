@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -912,3 +912,130 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 (`agreeGLM5NextStagePrefixPlan`) and
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
 (`submitTokenized`).
+
+## Cluster sliding prefix adoption
+
+`CBv2OwnedRequestState.adopt` allocates fresh request rows for an agreed
+checkpoint. A sliding tail is positioned at `committed - retainedTokens` and
+restored in chronological writes no larger than
+`PagedKVBackend.pool.config.maxPrefillChunk` by `CBv2PagedPrefixRestore.write`
+in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2PagedPrefixRestore.swift`.
+This permits a retained window larger than a legal individual write without
+changing its absolute position or dropping tail tokens. Adoption releases its
+new rows when restoration throws. Contiguous rows keep their existing update
+path. This is resident stage restoration; it adds no SSD format, persistent
+cache identity or cross-host KV-transfer contract.
+
+## Nemotron chunk-grid reuse
+
+Registered Nemotron retains states only at existing global chunk boundaries
+strictly before the prompt end. A repeated prompt recomputes its last complete
+or partial chunk; it does not create a new singleton final-token frame. A
+grid-aligned restore executes the same suffix chunk shapes as the cold request.
+Both resident and SSD offers are filtered before selection, and the request
+constructor refuses an off-grid restore. The batch lane path uses the same
+request policy and filter.
+
+`QwenStagePrefixChoice.choose` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixAgreement.swift`
+still requires both ranks to confirm the same frontier, key and successful
+restore. Failure falls back to cold original chunking. Capture remains subject
+to the existing byte allowance, pressure withdrawal and clean-retirement gate.
+The numerical-policy SHA changes the prefix namespace, excluding older
+final-token-split entries. Other registered families retain their existing
+final-token capture policy.
+
+## Gemma chunk-grid reuse
+
+All three registered Gemma 4 rows use the same
+[existing-chunk frontier rule](#nemotron-chunk-grid-reuse): capture and restore
+only original global chunk ends before the prompt end, and recompute the last
+chunk on repeat. The serial resident/SSD and batch paths apply the shared
+request policy, offer filtering and bilateral confirmation. Gemma's own
+`gemma4-original-chunk-grid-v1` receipt field changes its cache namespace;
+Qwen, Bonsai, MiMo and GLM retain their existing prefix framing.
+
+### MiMo cluster paged mode boundary
+
+Cluster MiMo text plain, compact, MTP and phase modes keep prefix reuse disabled
+when using their independent page histories. The trained-head COMPLETE codec
+accepts only its explicit contiguous storage policy; it cannot reinterpret
+page metadata as an older prefix checkpoint. Standalone native contiguous
+MiMo COMPLETE-prefix behavior is unchanged. See `MiMoBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/MiMo/Batch/MiMoBatchSettings.swift`
+and `MiMoV26MTPPrefixCheckpoint.swift` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/`.
+
+Qwen27 TP media prefixes bind `QwenMediaRequestState.prefixIdentity`, including
+authenticated source/processor/position metadata, in addition to the existing
+text request identity. Request-owned positions and feature roots are not model
+globals. Native retirement releases them only after preparation completion and
+checked drain. This preserves identity separation; it is not a full-artifact
+media-prefix performance qualification. Source:
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
+
+The exact27 multi-lane TP owner retains one compact snapshot per completed
+request at an original chunk boundary, at most 4,096 prompt tokens. The resident
+LRU holds at most 32 entries and two maximum-sized snapshot banks. A sealed
+vote selects the longest boundary both ranks hold; a one-sided miss computes
+cold on both ranks. Restoration writes fresh request-owned attention storage
+and adopts immutable confirmed conv/SSM state. It never splits the final chunk.
+
+Keys bind the loaded agreement, backend, chunk size, prompt prefix and media
+identity. The native owner completes media preparation before reuse, so cached
+history cannot substitute another request's positions or features. Both ranks
+must prove native and media retirement before a clean capture enters the cache;
+cancelled or failed requests donate nothing. Reused/stored counts are published
+through the existing prompt-cache report. Cache entries are separate from live
+paged rows, swept on failure and shutdown, and explicitly charged beside them.
+The existing prefix disable switch offers and captures nothing. Singleton TP
+and other models retain their existing behavior; the SSD tier is described
+below.
+
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
+(`QwenTensorParallelBatchPrefixCache`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelNativeBatchExecutor.swift`
+(`open`, `confirmedRetirement`). Tiny fixtures do not qualify full-artifact
+warm-prefix correctness, media parity, RDMA or useful speed.
+
+### Qwen27 TP assistant prefix ownership
+
+The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.
+
+### Qwen27 TP prefix SSD tier
+
+Both ranks of the Qwen27 TP batch owner also keep their prefix snapshots in the
+pipeline's encrypted SSD tier (`QwenStagePrefixDiskTier`), so a repeated long
+prompt restores its prefix after both Macs restart. Each rank writes only its
+own shard: its heads' attention rows and its recurrent state at the captured
+boundary, and for a speculating owner the assistant's trusted history at that
+boundary as the record's speculative history. Records are written behind
+serving after bilateral clean retirement, and only for a capture the resident
+tier accepted, so a restore fits that tier again. The record directory is
+named by the plan and shares, the verified artifact, this rank's storage
+commitment, both builds and the assistant policy, never by the membership
+epoch. A restarted pair finds what the last one kept; a re-split, a reinstall
+or another assistant starts a new directory.
+
+The sealed vote counts a boundary held in memory or as a complete SSD record.
+Each rank restores the agreed boundary from its own tiers, memory first. It
+checks that an SSD shard adopts into its request geometry before any page is
+written, and charges the shard to the resident tier at once. A second sealed
+exchange confirms that both ranks restored. Otherwise both prefill from zero,
+and a rank that did read its record keeps it resident, so the next offer finds
+it in memory. An unreadable or unadoptable record is deleted. The load
+agreement carries `qwen-tensor-parallel-prefix-v2`.
+
+The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
+`restore-confirmed`, `restore-declined`, `close`); the
+`darkbloom-tp-batch-prefix-v1` events are unchanged. Shutdown closes the tier
+(queued writes finish, bounded) before the model is released. Singleton TP
+keeps the resident tier only.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixDisk.swift`,
+`QwenTensorParallelNativeBatchExecutor.swift` (`agreePrefix`, `confirmedRetirement`) and
+`QwenTensorParallelResidentRuntime.swift` (load and shutdown) in the same directory.
+Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`) and
+`QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head).

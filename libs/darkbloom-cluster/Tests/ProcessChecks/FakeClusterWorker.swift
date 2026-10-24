@@ -86,9 +86,15 @@ import DarkbloomClusterSecurity
             try session.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
             try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(frame)); sequence += 1
         }
+        #if INSTALLED_FIXTURE_DATA_PLANE
+        // CPU installed-session checks inject reports, never a native handshake.
+        let reportedDataPlane = fixtureReady.dataPlane
+        #else
+        let reportedDataPlane: ClusterWorkerDataPlane? = nil
+        #endif
         try emit(.ready(.init(identity: fixtureIdentity, rank: rank, profile: fixtureProfile,
             executionPlanSHA256: fixturePlan, requestCapacityBytes: behavior == "larger" ? 2048 : 1024,
-            servingContextTokens: contexts.first)))
+            dataPlane: reportedDataPlane, servingContextTokens: contexts.first)))
         // Neither reads its command stream again; "deaf" also ignores SIGTERM.
         if behavior == "deaf" { signal(SIGTERM, SIG_IGN) }
         if behavior == "deaf" || behavior == "deaf-term" { while true { pause() } }
@@ -111,6 +117,13 @@ import DarkbloomClusterSecurity
                 switch command.command {
                 case .reserve(let value):
                     requestID = command.requestID; reservation = value; selected = 0; reservationCount += 1
+                    if behavior == "qwen-media" {
+                        guard let media = value.qwenMedia,
+                              media.carriesEncodedBytes == (rank == 0),
+                              media.artifactSHA256 == fixtureIdentity.artifactSHA256,
+                              media.configurationSHA256 == fixtureIdentity.configurationSHA256 else { exit(69) }
+                        if rank == 0 { try media.verifyEncodedBytes() }
+                    }
                     // The owner must hand both ranks the request's sampling (the
                     // selecting rank draws with it): from this reservation on, each
                     // must carry the test's resolved seed.

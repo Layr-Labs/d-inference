@@ -53,7 +53,7 @@ enum QwenRegisteredPack: Equatable {
 extension QwenRegisteredDenseModel {
     var pack: QwenRegisteredPack {
         switch self {
-        case .ternaryBonsai2TwentySevenB: .prismHadamard
+        case .ternaryBonsai2TwentySevenB, .ternaryBonsai2NineB: .prismHadamard
         default: .affineBFloat16
         }
     }
@@ -82,4 +82,10 @@ enum QwenPrismArithmeticContract {
         quantizedConstantCacheName: "source default on; required absent so the reuse above cannot be turned off process-wide",
         "DARKBLOOM_BF16_WEIGHTS (Prism Hadamard pack)": "the pack's stored Float16 scales and biases stay Float16: the pinned loader skips the BFloat16 conversion for a packed Hadamard model whatever this variable says, and so does this runtime's",
     ]
+    /// The family policy name remains stable; this source-bound addition
+    /// changes the exact arithmetic receipt/hash only for the block1024 row.
+    static let rowExactBindings = bindings.merging([
+        "bonsai-fp32-row-arithmetic-v2": "affine2/group128/block1024 with stored F16 scales uses broadcast M=1 per FP32 row; singleton calls, signed transforms, grouped GDN layout and every other packed policy are unchanged",
+    ]) { current, _ in current }
+
 }

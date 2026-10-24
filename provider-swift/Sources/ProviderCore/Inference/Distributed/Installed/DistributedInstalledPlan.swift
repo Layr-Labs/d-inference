@@ -64,6 +64,7 @@ struct DistributedInstalledPlan: Sendable {
             publicGrant:nil,records:observedServing.records)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
         (budgets, budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition, artifactBytes: nil)
+        try ClusterModelFeaturePolicy.requireSelectedMode(configuration.selectedGenerationMode, capability: capability)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
         try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
         // The record's adapter must register this model, name its one
@@ -109,10 +110,16 @@ struct DistributedInstalledPlan: Sendable {
     /// record this rank must not be a rank-shape that diverged (its class at
     /// its rank, the placement's cuts from the selected Plan).
     /// A capability record, a saved setup or a peer never supplies the class.
-    func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
+    func requireLocalRankGranted(chipClass: ClusterChipClass?,
+                                 decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws {
+        // Capability partitions retain a layer cut even for a tensor load.
+        // Qualification/planner shapes have no layer cut when every rank
+        // shards every layer for both prefill and decode.
+        let mode = configuration.selectedGenerationMode
+        let cuts = mode.usesTensorParallelPrefill ? [] : partition.stages.dropLast().map(\.sourceLayerEnd)
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
             chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID,
-            artifactSHA256: capability.artifactSHA256, cuts: partition.stages.dropLast().map(\.sourceLayerEnd), mode: configuration.selectedGenerationMode)
+            artifactSHA256: capability.artifactSHA256, cuts: cuts, mode: mode, decisions: decisions)
     }
 
     /// How this build's native ranks find each other; see the type.
@@ -147,9 +154,26 @@ struct DistributedInstalledPlan: Sendable {
         return result
     }
 
+    /// The local leader and link follower pass their own effective lane count
+    /// and optional typed synchronization choice to the fixed owner child.
+    /// No peer-supplied environment is used.
+    func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
+        throws -> ClusterLocalOwnerConfiguration {
+        try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
+            batchLanes: batchLanes(ownerEnvironment),
+            fastSynchronization: fastSynchronization(ownerEnvironment),
+            eagerFenceCommit: eagerFenceCommit(ownerEnvironment))
+    }
+
     func nativeEnvironment(matrix: URL,
                            ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var environment = baseNativeEnvironment(matrix: matrix)
+        if let fast = fastSynchronization(ownerEnvironment) {
+            environment[Self.fastSynchronizationSwitch] = fast ? "1" : "0"
+        }
+        if let eager = eagerFenceCommit(ownerEnvironment) {
+            environment[Self.eagerFenceCommitSwitch] = eager ? "1" : "0"
+        }
         let prefixCacheOff = prefixCacheOff(ownerEnvironment)
         if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
         // The prefix cache's SSD tier (on with the cache; see the type). Its
@@ -158,15 +182,12 @@ struct DistributedInstalledPlan: Sendable {
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
-        // Continuous batching (the pipeline's lane adapters, and GLM tensor
+        // Continuous batching (the pipeline's lane adapters, Qwen27 and GLM tensor
         // parallel): both owners must give their workers the same lane count
         // (the workers' load agreement refuses a mismatch). A setup in any
         // other mode keeps one request at a time.
         if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
             environment[Self.batchLanesSwitch] = String(lanes)
-            if let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID), Self.contiguousLaneAdapters.contains(adapter) {
-                environment[Self.kvBackendSwitch] = "contiguous"
-            }
         }
         // Diagnosis only: the stages' KV storage (paged unless contiguous is named).
         if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
@@ -199,6 +220,27 @@ struct DistributedInstalledPlan: Sendable {
         ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
             || !DistributedInstalledPrefixSSD.productSettings(home: paths.homeDirectory).prefixCacheEnabled
     }
+    /// Only an explicit local binary choice reaches a TP rank; absence and
+    /// malformed values retain the worker's synchronization default.
+    private func fastSynchronization(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.fastSynchronizationSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    /// A local diagnostic choice only. No value means MLX's existing default.
+    private func eagerFenceCommit(_ environment: [String: String]) -> Bool? {
+        guard configuration.selectedGenerationMode == .tensorParallel else { return nil }
+        switch environment[Self.eagerFenceCommitSwitch] {
+        case "0": return false
+        case "1": return true
+        default: return nil
+        }
+    }
+    static let eagerFenceCommitSwitch = "MLX_EAGER_FENCE_COMMIT"
+    static let fastSynchronizationSwitch = "MLX_METAL_FAST_SYNCH"
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
     static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
@@ -209,47 +251,69 @@ struct DistributedInstalledPlan: Sendable {
 
     /// The pair's batch lanes: the adapter's default in the selected mode
     /// (`defaultBatchLanes(adapter:mode:hasPrivateImages:)`), unless the owner's
-    /// environment names 1...8 (1 serves one request at a time). Nil where the
+    /// environment names 1...8 (1 serves one request at a time). A malformed
+    /// override explicitly keeps one lane, so a sanitized child cannot restore
+    /// a wider family default. Nil where the
     /// workers serve one request at a time (a phase-split or speculative
     /// pipeline mode, pipeline media, or a family without lanes there), so no
     /// worker is asked for lanes it refuses. Both owners derive it from the
-    /// same saved setup; the installed owner runs with a fixed environment, so
-    /// the default is what a user's pair serves.
+    /// same saved setup. Each member forwards its locally resolved count through
+    /// the fixed owner launch; arbitrary environment values are not inherited.
     func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
         guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
               let lanes = Self.defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
-                  hasPrivateImages: capability.hasPrivateImages) else {
+                  hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID) else {
             return nil
         }
-        guard let raw = environment[Self.batchLanesSwitch] else { return lanes }
-        guard let value = Int(raw), (1...8).contains(value) else { return nil }
+        // The assistant quote admits exactly this capacity. A diagnostic
+        // environment override cannot enlarge its resident histories.
+        if configuration.tensorAssistant != nil { return configuration.batchLanes ?? 1 }
+        guard let raw = environment[Self.batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
+        guard let value = Int(raw), (1...8).contains(value) else { return 1 }
         return value
     }
 
     /// True when the pair's workers retire a cancelled started lane alone (a
-    /// cancel or a deadline ends that request, not the pair): GLM tensor
-    /// parallel's lane loop. Bound to the same plan both owners derive.
+    /// cancel or a deadline ends that request, not the pair): Qwen-family
+    /// pipeline lanes and exact Qwen27/GLM tensor parallel. Bound to both owners' plan.
     func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let lanes = batchLanes(environment), lanes > 1,
               let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
-        return configuration.selectedGenerationMode == .tensorParallel && Self.tensorParallelLaneAdapters.contains(adapter)
+        return Self.lanesRetireAlone(adapter: adapter, mode: configuration.selectedGenerationMode,
+            hasPrivateImages: capability.hasPrivateImages, lanes: lanes, runtimeModelID: capability.runtimeModelID)
+    }
+
+    static func lanesRetireAlone(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
+                                hasPrivateImages: Bool, lanes: Int, runtimeModelID: String? = nil) -> Bool {
+        guard (2...8).contains(lanes) else { return false }
+        switch mode {
+        case .tensorParallel:
+            return tensorParallelLaneAdapters.contains(adapter)
+                || (adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages)
+        case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
+        default: return false
+        }
     }
 
     /// The lanes a pair of `adapter` serves by default in `mode`, or nil when
     /// its workers serve one request at a time there.
     /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
     ///   `defaultBatchLanes`.
-    /// - Tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
+    /// - Exact Qwen27 tensor parallel: one by default; a priced saved width
+    ///   or explicit local diagnostic may select its native 2...8 lane owner.
+    /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
     ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
     ///   own arithmetic, so a request's tokens are those it gets alone. A
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
     ///   capability's image candidate does not change the lanes.
     static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
-                                  hasPrivateImages: Bool) -> Int? {
+                                  hasPrivateImages: Bool, runtimeModelID: String? = nil) -> Int? {
         switch mode {
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
         case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
+        case .tensorParallel where adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages:
+            defaultBatchLanes
         default: nil
         }
     }
@@ -257,11 +321,10 @@ struct DistributedInstalledPlan: Sendable {
     /// Concurrent requests a lane-serving pair batches by default. Both
     /// owners serve them (`ClusterOwnerLeaseState.lanes`), and the leader's
     /// session, bridge and local API admit as many; more requests wait in the
-    /// API's queue. One until a lane can join a batch that is already
-    /// decoding: measured on the pair (Qwen 3.5 35B A3B, 2026-10-19), two
-    /// requests that start together batch at 1.7x one's aggregate, but a
-    /// request that arrives while another decodes, or a third at once, ends
-    /// the pair.
+    /// API's queue. The default stays one while the repaired joining and
+    /// cancellation paths undergo model-specific multi-lane qualification.
+    /// Earlier pair measurements (Qwen 3.5 35B A3B, 2026-10-19) preceded
+    /// those repairs and do not qualify the current loop.
     static let defaultBatchLanes = 1
     /// Concurrent requests GLM tensor parallel serves by default: the
     /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).
@@ -272,11 +335,9 @@ struct DistributedInstalledPlan: Sendable {
     /// The adapters whose tensor-parallel workers serve batch lanes.
     static let tensorParallelLaneAdapters: Set<ClusterRuntimeAdapter> = [.glm5NextLayerStage]
 
-    /// The adapters whose workers serve batch lanes (`CBv2StageKVHost.supports`).
+    /// The adapters whose workers serve batch lanes (Qwen CBv2 or GPT-OSS independent histories).
     static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,
-                                                           .gemma4LayerStage]
-    /// Lanes whose stages keep contiguous KV storage (sliding-window rings).
-    static let contiguousLaneAdapters: Set<ClusterRuntimeAdapter> = [.gemma4LayerStage]
+                                                           .gemma4LayerStage, .gptossLayerStage, .nemotronH, .mimoV26LayerStage]
 
     private func baseNativeEnvironment(matrix: URL) -> [String: String] {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
@@ -309,6 +370,9 @@ struct DistributedInstalledPlan: Sendable {
                   && $0 - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds }) ?? true,
               attachment?.profile == bootstrap.ownerProfile else {
             throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
+        }
+        guard configuration.tensorAssistant == nil || (dataPlane && startupDeadline != nil) else {
+            throw ClusterConfigurationError.invalid("A saved tensor assistant requires keyed transport and a bounded startup")
         }
         let mediaArguments = try ClusterMiMoPrivateImagePolicy.launchArguments(capability,keyed:dataPlane,startupGuard:startupDeadline != nil)
         let id = binding.identity

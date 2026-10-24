@@ -16,6 +16,13 @@ public struct ClusterSetupPaths: Sendable, Equatable {
     }
 }
 
+/// Local-only planned-stop custody. Saved atomically with stopped intent so
+/// lease renewal cannot stop the peer ahead of this Mac's owned retirement.
+struct ClusterLocalStopDrain: Codable, Sendable, Equatable {
+    var id: UUID
+    var keepPeerRunning: Bool
+}
+
 /// The wizard's persisted progress. It records what a person did on the
 /// screen (confirmed a code) and what the wizard did (sent a setup, saw a
 /// check pass), so that running `darkbloom cluster` again resumes at the
@@ -73,6 +80,8 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Who leads this cluster, as `darkbloom cluster` settled it at pairing:
     /// the Mac where onboarding started leads. Nil before pairing.
     public var leadership: ClusterOnboardingLeadership? = nil
+    /// Nil in older records. Never sent as a new wire field.
+    var stopDrain: ClusterLocalStopDrain? = nil
     /// The derived control leader as this Mac's cluster service last knew it (claim and term, the members' facts,
     /// the plan's rank order), so a restart re-forms the same way. Nil until the service first derives it.
     public var control: ClusterControlRecord? = nil

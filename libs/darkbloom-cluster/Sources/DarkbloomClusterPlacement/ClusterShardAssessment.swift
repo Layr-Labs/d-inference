@@ -298,18 +298,28 @@ extension ClusterPlacementPlanner {
                         tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
                     }
                 }
-                let load = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let textLoad = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let additional = tp.family.additionalResidentBytes ?? 0
+                let assistant = k > 1 ? context.policy.tensorParallelBatchQuote?.assistant : nil
+                let load = (need: textLoad.need + 3 * additional + (assistant?.loadBytes ?? 0),
+                            held: textLoad.held + additional + (assistant?.residentBytes ?? 0),
+                            largest: max(textLoad.largest, additional, assistant?.largestAllocationBytes ?? 0))
                 func part(_ bytes: Int) -> Int { k > 1 && tp.family.stateDividesByHeads ? (bytes + k - 1) / k : bytes }
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))
-                let request = max(memory.minimumAdmissibleBytes, state + part(range.requestWorkBytes)
+                let components = state + part(range.requestWorkBytes)
                     + part(range.transientBytes(chunk: memoryChunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
-                    + memory.loadingHeadroomBytes)
-                let need = max(load.need, load.held + request)
-                let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                let batchFloor = k > 1 ? context.policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0 : 0
+                let request = max(memory.minimumAdmissibleBytes, max(components, batchFloor) + memory.loadingHeadroomBytes)
+                // The native batch reservation remains future live memory
+                // throughout shard loading, including its host read buffers.
+                let need = max(load.need + batchFloor, load.held + request)
+                let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
+                let allocatorHeld = load.held + batchFloor + assistantTransient
+                let fit = device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 tier = max(tier, fit.tier)
                 hardwareFits = hardwareFits
-                    && device.profile.hardwareFits(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                    && device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 members.append(.init(device: device.label, firstLayer: range.layers.lowerBound, endLayer: range.layers.upperBound,
                     share: k > 1 ? 1 / Double(k) : nil, weightsBytes: load.held, needBytes: need, tier: fit.tier))
                 let split = ClusterDecodeSplit(rates: rates)

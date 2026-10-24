@@ -49,7 +49,9 @@ let package = Package(
             .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             .product(name: "Cmlx", package: "mlx-swift"),
         ]),
-        .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime", "DarkbloomClusterProtocol", "DarkbloomClusterPlacement"]),
+        // `Inputs` holds fixtures the tests read by path (`#filePath`), not bundle resources.
+        .testTarget(name: "DarkbloomClusterRuntimeTests", dependencies: ["DarkbloomClusterRuntime", "DarkbloomClusterProtocol", "DarkbloomClusterPlacement"],
+                    exclude: ["Inputs"]),
         // Transport discovery + contract check (single process). Run manually:
         //   swift run cluster-loopback-check
         .executableTarget(name: "cluster-loopback-check", dependencies: [

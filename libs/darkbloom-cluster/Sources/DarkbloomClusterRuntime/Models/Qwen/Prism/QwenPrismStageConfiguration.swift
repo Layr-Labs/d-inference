@@ -21,6 +21,8 @@ enum QwenPrismStageConfiguration {
     static let planAdapter = "qwen35-prism-hadamard-two-layer-stages-v1"
     static let transformFile = "hadamard.json"
     static let blockSize = 1024, bits = 2, groupSize = 128
+    /// The two registered packs declare these distinct transform blocks.
+    static let supportedBlockSizes: Set<Int> = [blockSize, 4096]
     static let embeddingPath = "model.embed_tokens"
     /// The pack is always the wrapped model: its tensors and modules live
     /// under the wrapper's text model.
@@ -95,15 +97,18 @@ enum QwenPrismStageConfiguration {
                           (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 95
                       }
                   }),
-                  BoundedProbeInput.integer(record["block"]) == blockSize,
+                  let block = BoundedProbeInput.integer(record["block"]), supportedBlockSizes.contains(block),
                   let embedding = boolean(record["embedding"]), embedding == (path == embeddingPath),
                   record["dtype"] as? String == "float16" else {
                 throw ProbeError("Prism pack has an invalid packed module declaration")
             }
-            return PackedModule(path: path, block: blockSize, embedding: embedding)
+            return PackedModule(path: path, block: block, embedding: embedding)
         }
         guard Set(modules.map(\.path)).count == modules.count else {
             throw ProbeError("Prism pack declares a packed module twice")
+        }
+        guard Set(modules.map(\.block)).count <= 1 else {
+            throw ProbeError("Prism pack declares mixed transform block sizes")
         }
         return modules
     }

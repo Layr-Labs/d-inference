@@ -68,11 +68,16 @@ import DarkbloomClusterProtocol
                                                           cuts: [], mode: .tensorParallel)
             #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27, mode: .tensorParallel)
                 .hasPrefix("qualified for public traffic in tensor parallel mode"))
-            // A family no check of the model passed (the 35B A3B has no pipeline_mtp_v1 record) is served for the
-            // owner on every chip, and not qualified for public traffic.
+            // The bundled 35B A3B pipeline-MTP records now qualify that family.
             try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: "registered_qwen35_35b_a3b", publicModelID: "p",
                                                           cuts: [20], mode: .pipelineMTP)
             #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen35_35b_a3b", mode: .pipelineMTP)
+                .hasPrefix("qualified for public traffic in pipeline with speculative rounds mode"))
+            // This Gemma alias has no record of its own. Owner serving remains
+            // available without turning another artifact's evidence into a grant.
+            try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: "registered_gemma4_26b", publicModelID: "p",
+                                                          cuts: [20], mode: .pipeline)
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_gemma4_26b", mode: .pipeline)
                 == ClusterPairOwnerServing.notYetQualified)
         }
         // The rank order is free too: the M5 Ultra leads the 9B and the 27B.
@@ -182,7 +187,7 @@ import DarkbloomClusterProtocol
         // cuts and passed at others, so they are granted and restricted on the chips that diverged. Gemma 4 8-bit's one pass is
         // contradicted by a divergence of the same shape: withheld.
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
-                                 "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd",
+                                 "registered_ternary_bonsai_2_9b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd",
                                  "registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit", "registered_glm53_flash"])
         // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
         #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gemma4_26b_8bit"])

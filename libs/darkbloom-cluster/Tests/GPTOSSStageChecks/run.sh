@@ -33,6 +33,7 @@ task_sources=(
   Models/GPTOSS/Metadata/GPTOSSLayerStagePlan
   Models/GPTOSS/Metadata/GPTOSSStageMetadata
   Models/GPTOSS/Metadata/GPTOSSArithmeticEnvironment
+  Models/GPTOSS/Metadata/GPTOSSPagedKVLayout
   Models/GPTOSS/Metadata/GPTOSSRequestStateBudget
   Models/GPTOSS/Resident/GPTOSSResidentCapabilityMetadata
 )

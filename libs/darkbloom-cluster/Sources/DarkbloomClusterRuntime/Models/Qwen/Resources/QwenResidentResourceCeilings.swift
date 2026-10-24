@@ -65,6 +65,12 @@ struct QwenResidentResourceCeilings: Equatable {
             maximumManifestPayloadBytes = specification.manifestBytes
             namedStateByteCeiling = 1_616_248_896
             pinnedMaximumNamedStateBytes = 1_616_248_896
+        case .ternaryBonsai2NineB:
+            // The pack's own manifest bound and F32 state geometry; the dense
+            // 9B's legacy 8 GiB allowance is not inherited by this pack.
+            maximumManifestPayloadBytes = specification.manifestBytes
+            namedStateByteCeiling = 754_188_320
+            pinnedMaximumNamedStateBytes = 754_188_320
         case .nemotron35Lightning:
             // The registered manifest total (19,059,595,830 bytes) and this
             // model's own estimate at the largest request: 23 Mamba blocks'

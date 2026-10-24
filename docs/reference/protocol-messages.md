@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -43,6 +43,14 @@ An over-limit attempt uses the existing `cancel` frame; no provider wire field
 or failure-code vocabulary changes. The internal `response_limit` cause has
 `json:"-"` and cannot be claimed by provider JSON. See the
 [API limits](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#limits-and-validation).
+
+Chat-completion SSE `choices[].logprobs.content` is encoded from ordered generation
+metadata inside the canonical SDK service before provider relay/encryption.
+Optional fields remain omitted when capture is absent. No WebSocket envelope,
+billing, telemetry, token-capture grant or platform enum changes. Parser-held
+metadata follows the [inference contract](../architecture/inference.md).
+Source: `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIChatLogprobs.swift`.
 
 ## App Attest endpoint resumption candidate
 
@@ -1519,3 +1527,24 @@ its bytes and spans before execution.
 Each worker independently checks actual PNG metadata and SDK resize geometry.
 Video, animation, unknown fields, overlapping/unowned spans and foreign model
 admission refuse. Payloads and token IDs are not telemetry.
+
+## Private paired batch setup adoption
+
+This pair-control addition is separate from coordinator WebSocket contracts.
+The existing keyed pairing authenticates the sender; the receiver independently
+requires its saved serving rank 0, unchanged capability/model/peer/trust/request
+identity and an empty local native lease before replacing setup pointers.
+
+| Field | Contract | Source |
+|---|---|---|
+| `ClusterServiceCommand.op = batchSetup` | Carries `batchSetup.previousSHA256` and canonical configuration bytes. Exact current-target retry is idempotent; another selected digest refuses. No key or environment is carried. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetup.swift`, `ClusterServiceWire.swift` in the same directory |
+| `ClusterServiceStatus.child.configurationSHA256` | Optional full digest of the setup the running child actually launched for or the leader supervisor acknowledged. Selected-pointer changes alone never set it. The new leader waits for this exact follower digest before opening a new epoch. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift` (`status`) |
+
+An older receiver refuses the unknown operation. No fallback bypasses the
+saved setup checks or starts a worker alongside an unreleased owner.
+
+### Qwen27 TP assistant READY observation
+
+The local cluster worker's optional `tensorAssistant` observation binds the actually loaded assistant policy, admitted `capacity`, and `maximumSpeculativeWidth`. An admitted-cohort policy requires the width field even at capacity one and requires it to equal capacity. Legacy singleton policy omits the width and resolves it to one. Missing, unexpected or unequal observations refuse the installed pair before publication; policy markers in a binary are compatibility checks rather than READY evidence. This remains the local installed cluster contract and introduces no coordinator telemetry field.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantReady.swift` (`ClusterQwenTensorAssistantReady`), `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`.

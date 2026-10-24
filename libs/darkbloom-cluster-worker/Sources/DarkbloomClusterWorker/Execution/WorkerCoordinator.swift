@@ -176,6 +176,12 @@ final class WorkerCoordinator: @unchecked Sendable {
             ready = value; session = fresh; laneSession = freshLanes
             condition.unlock()
             try publish(.ready(value), requestID: nil)
+            if let assistant = value.tensorAssistant {
+                let line = "darkbloom-tensor-parallel-mtp-ready-v1 rank=\(value.rank) capacity=\(assistant.capacity)"
+                    + " depth=\(assistant.policy.depth) maximum_speculative_width=\(assistant.maximumSpeculativeWidth)"
+                    + " inventory_sha256=\(assistant.policy.inventorySHA256) verification=\(assistant.policy.verification.rawValue)"
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             startReading()
             if lanes > 1 {
                 // Continuous batching: control is applied as it arrives, and
@@ -209,6 +215,10 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .reserve(let value):
                     do {
                         try Self.requireLogprobCapture(value, runtime: runtime)
+                        guard WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) else {
+                            throw ClusterResidentRequestRefusal(reason: .unsupported,
+                                message: "This loaded worker does not serve the bound Qwen media request")
+                        }
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
                         admittedNotStarted = command.requestID
@@ -552,7 +562,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
         switch command.command {
         case .reserve(let value):
-            if value.sampling?.capturedLogprobs != nil, !runtime.capturesLogprobs {
+            if (value.sampling?.capturedLogprobs != nil && !runtime.capturesLogprobs)
+                || !WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) {
                 try publish(.refused(.unsupported), requestID: command.requestID)
                 return false
             }

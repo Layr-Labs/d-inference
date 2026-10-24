@@ -17,9 +17,13 @@ struct WorkerConfiguration {
     let generationMode: ClusterGenerationMode
     /// `--mtp-depth N` (1...4): the speculative head's fixed draft depth under
     /// `phase_split_mtp_v1` or `pipeline_mtp_v1` (MiMo: 1...3); nil means the
-    /// product drafter's maximum. Both ranks
+    /// product drafter's maximum. Exact keyed Qwen27 TP accepts an explicit depth
+    /// at width one; nil keeps ordinary target decoding. Both ranks
     /// bind it into their load agreement, so they must be given the same value.
     let speculativeTerms: QwenMTPTerms?
+    /// Installed policy pins the header inventory before payload reads. Nil
+    /// retains the explicit diagnostic depth path without claiming saved policy.
+    let tensorAssistantPolicy: ClusterQwenTensorAssistantPolicy?
     /// `--qualification-switches yes`: the explicit test flag without which a
     /// qualification switch in the environment stops the worker at startup.
     /// A private unqualified media owner passes it with its exact profile.
@@ -57,7 +61,8 @@ struct WorkerConfiguration {
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
             "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane",
-            "--prefix-ssd-key", "--tensor-shares", "--glm-qualification", "--runtime-profile"]
+            "--prefix-ssd-key", "--tensor-shares", "--glm-qualification", "--runtime-profile",
+            ClusterQwenTensorAssistantPolicy.inventoryArgument, ClusterQwenTensorAssistantPolicy.verificationArgument]
         let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
         let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
@@ -170,13 +175,39 @@ struct WorkerConfiguration {
             generationMode = mode
         } else { generationMode = .pipeline }
         if let text = fields["--mtp-depth"] {
-            guard generationMode.usesSpeculativeHead, let depth = Int(text), String(depth) == text,
+            let tensorAssistant = generationMode == .tensorParallel && fields["--model-id"] == "registered_qwen38_27b"
+                && dataPlaneEncrypted && fields["--runtime-profile"] == nil
+            guard generationMode.usesSpeculativeHead || tensorAssistant,
+                  let depth = Int(text), String(depth) == text,
                   let terms = try? QwenMTPTerms(depth: depth) else {
-                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with a speculative generation mode ("
+                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with exact keyed Qwen27 TP or a speculative generation mode ("
                     + ClusterGenerationMode.allCases.filter(\.usesSpeculativeHead).map(\.rawValue).joined(separator: ", ") + ")")
             }
             speculativeTerms = terms
         } else { speculativeTerms = nil }
+        if let inventory = fields[ClusterQwenTensorAssistantPolicy.inventoryArgument] {
+            guard generationMode == .tensorParallel,
+                  fields["--model-id"] == ClusterQwenTensorAssistantPolicy.runtimeModelID,
+                  dataPlaneEncrypted, prefillSchedule == .serial,
+                  fields["--runtime-profile"] == nil, fields["--evidence-directory"] == nil,
+                  fields["--startup-deadline-uptime-nanoseconds"] != nil,
+                  let terms = speculativeTerms else {
+                throw WorkerFailure.invalid("A pinned tensor assistant requires exact keyed Qwen27 TP, explicit depth, serial prefill, startup guard and the native runtime")
+            }
+            let verification: ClusterQwenTensorAssistantPolicy.Verification
+            if let text = fields[ClusterQwenTensorAssistantPolicy.verificationArgument] {
+                guard let value = ClusterQwenTensorAssistantPolicy.Verification(rawValue: text) else {
+                    throw WorkerFailure.invalid("Unknown tensor assistant verification policy")
+                }
+                verification = value
+            } else { verification = .singleton }
+            tensorAssistantPolicy = try .init(depth: terms.depth, inventorySHA256: inventory, verification: verification)
+        } else {
+            guard fields[ClusterQwenTensorAssistantPolicy.verificationArgument] == nil else {
+                throw WorkerFailure.invalid("Tensor assistant verification requires its pinned inventory")
+            }
+            tensorAssistantPolicy = nil
+        }
         if let text = fields["--tensor-shares"] {
             let weights = text.split(separator: ":", omittingEmptySubsequences: false).compactMap { Int($0) }
             guard generationMode == .tensorParallel, weights.count == 2, weights.allSatisfy({ (1...64).contains($0) }),

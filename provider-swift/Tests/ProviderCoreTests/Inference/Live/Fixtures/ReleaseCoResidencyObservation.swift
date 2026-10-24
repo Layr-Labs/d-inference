@@ -15,6 +15,7 @@ actor ReleaseCoResidencyStreamProbe {
     func consume(_ stream: AsyncStream<GenerationEvent>) async -> ReleaseCoResidencyStreamResult {
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let text): result.text += text
             case .info(_, let count, _, let finish):
                 result.completionTokens = count; result.finishReason = finish

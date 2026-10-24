@@ -99,6 +99,32 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixConfirmation.settle(local: ok, peer: nil) == .init(reusedPrefix: 0, splitFinalToken: false))
     }
 
+    @Test func nemotronBothRanksChooseOnlyOriginalGridEndsAndNeverSplitTheTail() throws {
+        let profile = try QwenLayerStageGenerationProfile(identifier: NemotronRegisteredLightning.profileID,
+            vocabularySize: 64, hiddenSize: 32, activationDType: "bfloat16", maximumPromptTokens: 2048,
+            maximumChunkTokens: 512, maximumOutputTokens: 8, maximumContextTokens: 4096)
+        let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+            promptTokenIDs: Array(repeating: 3, count: 1536), chunkSize: 512, outputCount: 3, stopTokenIDs: [])
+        let a = QwenStagePrefixOffer(enabled: true, frontiers: [1535, 1024, 1023, 512])
+        let b = QwenStagePrefixOffer(enabled: true, frontiers: [1535, 1023, 512], onDisk: [512])
+        let choice = QwenStagePrefixChoice.choose(local: a, peer: b, promptCount: 1536, request: request)
+        #expect(choice == .init(reusedPrefix: 512, splitFinalToken: false))
+        #expect(QwenStagePrefixChoice.choose(local: b, peer: a, promptCount: 1536, request: request) == choice)
+        let cold = QwenStagePrefixOffer(enabled: true, frontiers: [])
+        #expect(QwenStagePrefixChoice.choose(local: cold, peer: cold, promptCount: 1536, request: request)
+            == .init(reusedPrefix: 0, splitFinalToken: false))
+        let ok = QwenStagePrefixConfirmation(choice: choice, restored: true, key: String(repeating: "ab", count: 32))
+        let failed = QwenStagePrefixConfirmation(choice: choice, restored: false, key: String(repeating: "ab", count: 32))
+        #expect(QwenStagePrefixConfirmation.settle(local: ok, peer: ok) == choice)
+        #expect(QwenStagePrefixConfirmation.settle(local: ok, peer: failed)
+            == .init(reusedPrefix: 0, splitFinalToken: false))
+        #expect(QwenStagePrefixConfirmation.settle(local: failed, peer: ok)
+            == .init(reusedPrefix: 0, splitFinalToken: false))
+        let off = QwenStagePrefixOffer(enabled: false, frontiers: [])
+        #expect(QwenStagePrefixChoice.choose(local: a, peer: off, promptCount: 1536, request: request)
+            == .init(reusedPrefix: 0, splitFinalToken: false))
+    }
+
     @Test func entriesAreKeyedByScopeAndPromptAndEvictedByCount() {
         let cache = QwenStagePrefixCache(entryLimit: 3)
         let prompt = Array(0..<100), scope = "plan|artifact"

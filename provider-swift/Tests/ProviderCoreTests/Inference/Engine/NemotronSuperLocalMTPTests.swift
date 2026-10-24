@@ -32,6 +32,7 @@ private actor SuperMTPRun {
     var errors: [String] = []
     func record(_ event: GenerationEvent) {
         switch event {
+        case .logprobs: break
         case .chunk(let chunk): text += chunk
         case .info(_, let completion, _, _): completions.append(completion)
         case .error(let message): errors.append(message)

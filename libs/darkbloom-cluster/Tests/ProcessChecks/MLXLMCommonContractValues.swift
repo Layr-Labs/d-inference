@@ -24,6 +24,7 @@ public struct CBv2Request: Sendable {
     public var mimoClusterImages: Data? = nil
     public var clusterStillImages: Data? = nil
     public var clusterGLMMedia: Data? = nil
+    public var clusterQwenMedia: Data? = nil
     public init(id: CBv2RequestID, promptTokens: [Int], sampling: CBv2SamplingParams, maxTokens: Int) {
         self.id = id; self.promptTokens = promptTokens; self.sampling = sampling; self.maxTokens = maxTokens
     }

@@ -1,6 +1,6 @@
 import Darwin
 import DarkbloomClusterProtocol
-import DarkbloomClusterRuntime
+@testable import DarkbloomClusterRuntime
 import Foundation
 @testable import DarkbloomClusterWorker
 
@@ -13,9 +13,13 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     /// (or that rank 0 drops, `leaveOnStart`) leaves alone and the others go
     /// on; otherwise (the Qwen loop) cancelling a started lane ends the batch.
     let retiresCancelledLanes: Bool
+    private let pollsBatchDecisions: Bool
     /// Lanes this rank leaves at once when they start, as rank 1 does when
     /// rank 0 drops a lane whose cancel has not reached this rank yet.
     var leaveOnStart = Set<UUID>()
+    /// Deterministic test barrier after the first fabricated polling token.
+    var afterPollingToken: (() -> Void)?
+    var observedCancel: ((UUID) -> Void)?
     private let lock = NSLock()
     private var reservations: [UUID: ClusterWorkerReservation] = [:]
     private var pending: [UUID] = []
@@ -24,8 +28,9 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     private var withdrawals: [UUID] = []
     private var closed = false
 
-    init(rank: Int = 0, retiresCancelledLanes: Bool = false) {
+    init(rank: Int = 0, retiresCancelledLanes: Bool = false, pollsBatchDecisions: Bool = false) {
         self.retiresCancelledLanes = retiresCancelledLanes
+        self.pollsBatchDecisions = pollsBatchDecisions
         ready = .init(identity: .init(membershipEpoch: UUID(), modelID: "registered_qwen35_9b",
             artifactSHA256: String(repeating: "a", count: 64), configurationSHA256: String(repeating: "b", count: 64),
             peers: [.init(id: "a", buildSHA256: String(repeating: "c", count: 64)),
@@ -71,13 +76,17 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
         }
     }
     func cancel(_ id: UUID) { cancelLane(id) }
-    func cancelLane(_ id: UUID) { lock.withLock { _ = cancelled.insert(id) } }
+    func cancelLane(_ id: UUID) {
+        lock.withLock { _ = cancelled.insert(id) }
+        observedCancel?(id)
+    }
     func serveBatch(host: QwenBatchServingHost) throws {
+        if pollsBatchDecisions { return try servePollingBatch(host: host) }
         if retiresCancelledLanes { return try serveRetiringBatch(host: host) }
         while true {
             try host.serviceControl()
             let next: (UUID, ClusterWorkerReservation)? = try lock.withLock {
-                guard cancelled.isEmpty else { throw WorkerFailure.invalid("Test batch cancelled") }
+                guard retiresCancelledLanes || cancelled.isEmpty else { throw WorkerFailure.invalid("Test batch cancelled") }
                 guard !pending.isEmpty else { return nil }
                 let id = pending.removeFirst()
                 return (id, reservations[id]!)
@@ -91,6 +100,50 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
             lock.withLock { reservations[id] = nil; started.remove(id) }
         }
     }
+    /// Uses the production Qwen token-credit policy with fabricated forwards.
+    /// The native two-rank header/reply path still requires integration proof.
+    private func servePollingBatch(host: QwenBatchServingHost) throws {
+        var progress = QwenBatchDecisionProgress()
+        var awaiting = Set<UUID>()
+        while true {
+            let answers = try progress.serviceAndPoll(host)
+            if retiresCancelledLanes {
+                let leaving = lock.withLock {
+                    reservations.keys.filter { cancelled.contains($0) || leaveOnStart.contains($0)
+                        || reservations[$0]!.deadlineUptimeNanoseconds <= DispatchTime.now().uptimeNanoseconds }
+                }
+                for id in leaving {
+                    try QwenBatchCancellation.retire(sessions: [], release: {
+                        lock.withLock {
+                            reservations[id] = nil; started.remove(id); cancelled.remove(id)
+                            pending.removeAll { $0 == id }
+                        }
+                        awaiting.remove(id); progress.retired(id)
+                    }, publish: { try host.publishLeft(requestID: id) })
+                }
+            }
+            for id in answers.keys where lock.withLock({ reservations[id] != nil }) {
+                try host.publishFinished(requestID: id, reason: .length)
+                lock.withLock { reservations[id] = nil; started.remove(id) }
+                awaiting.remove(id)
+            }
+            let next: (UUID, ClusterWorkerReservation)? = try lock.withLock {
+                guard retiresCancelledLanes || cancelled.isEmpty else { throw WorkerFailure.invalid("Test batch cancelled") }
+                guard !pending.isEmpty else { return nil }
+                let id = pending.removeFirst()
+                return (id, reservations[id]!)
+            }
+            if let (id, value) = next {
+                try progress.published(id)
+                awaiting.insert(id)
+                try host.publishToken(requestID: id, ordinal: 0, tokenID: 7, committedTokens: value.promptTokenIDs.count)
+                let after = afterPollingToken; afterPollingToken = nil; after?()
+            }
+            if awaiting.isEmpty { return }
+            Thread.sleep(forTimeInterval: 0.0005)
+        }
+    }
+
     /// One lane after another; each publishes one token (rank 0) and
     /// finishes, unless it is cancelled or dropped, when it leaves alone.
     private func serveRetiringBatch(host: QwenBatchServingHost) throws {
@@ -135,8 +188,9 @@ final class LanePipeHarness {
     private let output: Int32
     private var sequence: UInt64 = 0
 
-    init(rank: Int = 0, retiresCancelledLanes: Bool = false) throws {
-        runtime = LaneTestRuntime(rank: rank, retiresCancelledLanes: retiresCancelledLanes)
+    init(rank: Int = 0, retiresCancelledLanes: Bool = false, pollsBatchDecisions: Bool = false) throws {
+        runtime = LaneTestRuntime(rank: rank, retiresCancelledLanes: retiresCancelledLanes,
+            pollsBatchDecisions: pollsBatchDecisions)
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
         guard pipe(&a) == 0 else { throw WorkerFailure.invalid("Test input pipe failed") }
         guard pipe(&b) == 0 else {

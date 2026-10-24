@@ -78,7 +78,7 @@ struct GPTOSSResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue, configuration.prefillSchedule.rawValue,
             mode.rawValue, transport.rawValue,
-        ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
+        ] + GPTOSSPagedKVLayout.agreementFields + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
     }
 
     var wireProfile: ClusterWorkerProfile {

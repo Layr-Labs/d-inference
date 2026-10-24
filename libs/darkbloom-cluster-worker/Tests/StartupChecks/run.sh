@@ -78,6 +78,20 @@ check tensor-shares-reach-the-model 1 "" "tensor-shares" -- --generation-mode te
 check tensor-parallel-turns-fast-synch-on 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=0 source=launcher" "" MLX_METAL_FAST_SYNCH=0 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
+# Eager commit is a local diagnostic only; absent settings do not enable it.
+check tensor-parallel-eager-default-absent 1 "" "darkbloom-eager-fence-commit-v1" -- --generation-mode tensor_parallel_v1
+for enabled in 0 1; do
+  check tensor-parallel-eager-explicit-$enabled 1 "darkbloom-eager-fence-commit-v1 enabled=$enabled source=launcher" "" MLX_EAGER_FENCE_COMMIT=$enabled -- --generation-mode tensor_parallel_v1
+done
+check pipeline-eager-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=1 --
+check tensor-parallel-eager-malformed-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=true -- --generation-mode tensor_parallel_v1
+# A fixed Qwen27 batch capacity uses event synchronization while retaining native batching.
+for lanes in 2 4 8; do
+  CHECK_MODEL=registered_qwen38_27b check qwen27-batched-event-synch-$lanes 1 "darkbloom-collective-sync-v1 fast_synch=0 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=$lanes -- --generation-mode tensor_parallel_v1
+done
+CHECK_MODEL=registered_qwen38_27b check qwen27-single-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=1 -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-batch-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=launcher" "" DARKBLOOM_CLUSTER_BATCH_LANES=2 MLX_METAL_FAST_SYNCH=1 -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-batch-invalid-lanes 1 "outside 1...8" "darkbloom-collective-sync-v1" DARKBLOOM_CLUSTER_BATCH_LANES=9 -- --generation-mode tensor_parallel_v1
 # Tensor parallel lifts MLX's per-command-buffer input-size bound (whole expert banks tripped it every MoE launch);
 # the operation bound stays, numerics are unchanged, and a launcher value is kept.
 check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1

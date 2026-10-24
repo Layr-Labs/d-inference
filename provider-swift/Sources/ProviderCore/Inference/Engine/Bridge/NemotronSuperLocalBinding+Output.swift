@@ -40,6 +40,7 @@ actor NemotronSuperOutputCollector {
         guard failure == nil else { return }
         do {
             switch event {
+        case .logprobs: break
             case .chunk(let text):
                 guard !terminal else { throw Failure.invalidTerminal }
                 _ = try output.append(text)

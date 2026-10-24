@@ -193,6 +193,15 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
         return true
     }
 
+    /// A long-lived owner judges harm per piece of work: the next sample
+    /// becomes the baseline that compression and swap-out are measured from.
+    /// Measured from the first sample of an owner that serves for hours,
+    /// ordinary background compression on a busy Mac eventually withdraws all
+    /// file cache from every later admission. The limits are unchanged.
+    func restartWindow() {
+        lock.lock(); baseline = nil; lock.unlock()
+    }
+
     var summary: QwenDenseStageLoadAdmissionSummary {
         lock.lock(); defer { lock.unlock() }
         return .init(policy: QwenDenseStageLoadPolicy.identifier, purpose: purpose, decisions: decisions,

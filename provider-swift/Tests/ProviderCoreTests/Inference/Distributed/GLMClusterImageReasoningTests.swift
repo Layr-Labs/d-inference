@@ -65,6 +65,7 @@ struct GLMClusterImageReasoningTests {
         var finish: String?
         for try await event in stream {
             switch event {
+            case .logprobs: break
             case .content(let chunk): parsed += parser.parse(chunk)
             case .parsed(let value): parsed.append(value)
             case .info(let info): finish = info.stopReason

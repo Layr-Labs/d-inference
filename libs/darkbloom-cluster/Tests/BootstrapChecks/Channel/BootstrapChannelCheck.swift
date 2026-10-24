@@ -93,7 +93,12 @@ final class Completion: @unchecked Sendable {
             if mode == "partial" || mode == "slow" { header = Data(header.prefix(7)) }
             // Exercise fragmented header delivery, not a single write assumption.
             for byte in header { try channel.write(Data([byte])) }
+            // Retain the peer until the parser refuses it. Closing before accept
+            // races the accepted socket's setup on macOS. The partial header
+            // still delivers EOF, but its read half stays alive until refusal.
+            if mode == "partial" { try require(shutdown(fd, SHUT_WR) == 0, "fixture half-close") }
             if mode == "slow" { usleep(350_000) }
+            try reject("invalid stream received a reply: \(mode)") { _ = try channel.readExactly(1) }
             return
         }
         let connection = try ClusterBootstrapConnection.connect(path: path, ownerProcessID: owner,

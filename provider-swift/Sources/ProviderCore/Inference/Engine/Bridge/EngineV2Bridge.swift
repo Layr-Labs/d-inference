@@ -32,6 +32,11 @@ public actor EngineV2Bridge {
     /// GLM images and video on the tensor-parallel pair (`ClusterGLMMedia`):
     /// present only when both ranks serve the media contract.
     let clusterGLMMediaIngress: DistributedGLMMediaIngress?
+    let clusterQwenMediaIngress: DistributedQwenMediaIngress?
+    let clusterQwenMediaHostBudget: GlobalKVCacheBudget?
+    /// Entries survive terminal HTTP events and are removed only by refused
+    /// admission cleanup or definitive generation retirement.
+    var qwenMediaHostResources: [String: (DistributedQwenMediaLifetime, DistributedQwenMediaLifetime.Submission)] = [:]
     var ownedEngine: (any CBv2Engine)?
     struct NativeShutdownIdentity: Equatable {
         let engineID: UUID
@@ -406,6 +411,8 @@ public actor EngineV2Bridge {
         draftMiMoImageConfiguration: Data? = nil,
         clusterGLMImageConfiguration: Data? = nil,
         clusterGLMMediaIngress: DistributedGLMMediaIngress? = nil,
+        clusterQwenMediaIngress: DistributedQwenMediaIngress? = nil,
+        clusterQwenMediaHostBudget: GlobalKVCacheBudget? = nil,
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
@@ -415,6 +422,8 @@ public actor EngineV2Bridge {
         self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
         self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
         self.clusterGLMMediaIngress = clusterGLMMediaIngress
+        self.clusterQwenMediaIngress = clusterQwenMediaIngress
+        self.clusterQwenMediaHostBudget = clusterQwenMediaHostBudget
         self.ownedEngine = engine
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId

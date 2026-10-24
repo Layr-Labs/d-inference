@@ -114,6 +114,30 @@ private func reject(_ body: () throws -> Void) throws {
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedGenerationMode"] = "phase_split_v1"; $0["session"] = s }) }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s.removeValue(forKey: "observedGenerationMode"); $0["session"] = s }) }
         try reject { _ = try decode(changed { var b = $0["binding"] as! [String: Any]; b["generationMode"] = "phase_split_v1"; $0["binding"] = b }) }
+        // A resident tensor assistant runs under the tensor-parallel mode, which names no head: the saved
+        // setup's binding carries its speculation, so the session reports MTP on and the leader reads it.
+        try require(!binding.speculationEnabled && binding.speculationOffReason
+            == DistributedInstalledSpeculation(configuration: f.configuration, capability: f.capability).offReason,
+            "the binding's speculation is not the session's")
+        func assisted(_ object: [String: Any]) -> [String: Any] {
+            var object = object; object["speculationEnabled"] = true; object["speculationOffReason"] = "none"
+            object["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue; return object
+        }
+        let assistedBinding = try JSONDecoder().decode(ClusterStatusBinding.self, from: JSONSerialization.data(withJSONObject:
+            assisted(try JSONSerialization.jsonObject(with: JSONEncoder().encode(binding)) as! [String: Any])))
+        func assistedStatus(mtp: Bool) throws -> Data {
+            try changed { object in
+                object["binding"] = assisted(object["binding"] as! [String: Any])
+                var s = object["session"] as! [String: Any]
+                s["binding"] = assisted(s["binding"] as! [String: Any]); s["observedGenerationMode"] = ClusterGenerationMode.tensorParallel.rawValue
+                s["mtpEnabled"] = mtp; s["mtpOffReason"] = mtp ? "none" : "generationModeRunsNoHead"; object["session"] = s
+            }
+        }
+        try require(try ClusterStatusCodec.decode(assistedStatus(mtp: true), nonce: nonce, binding: assistedBinding,
+            authenticationConfigured: true, port: 8000).session.mtpEnabled, "a running tensor assistant is refused as stale")
+        try reject { _ = try ClusterStatusCodec.decode(assistedStatus(mtp: false), nonce: nonce, binding: assistedBinding,
+            authenticationConfigured: true, port: 8000) }
+        try reject { _ = try decode(assistedStatus(mtp: true)) }
         // The direct native bootstrap cannot be reported as owner-authenticated.
         try require(!sample.session.nativeBootstrapOwnerAuthenticated && String(decoding: encoded, as: UTF8.self).contains("\"nativeBootstrap\":\"directNative\""), "bootstrap honesty missing from status")
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["nativeBootstrapOwnerAuthenticated"] = true; $0["session"] = s }) }

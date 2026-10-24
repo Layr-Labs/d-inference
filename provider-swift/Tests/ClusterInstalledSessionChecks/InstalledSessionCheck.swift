@@ -223,13 +223,20 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try logprobModeAdmission(fixture)
+        try installedDataPlanePolicy(fixture.capability)
+        try await installedDataPlaneReadiness(fixture, prepared)
         try linkProbeHistory()
         try tensorParallelSessionCut()
+        try tensorQualificationShapes(fixture)
         try localOnlyServing()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
+        try installedBatchLanePropagation(fixture)
+        try automaticSetupHandoff(fixture)
+        try automaticSetupTransaction(fixture)
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
         try generationModeSelection(fixture,prepared)
@@ -569,7 +576,7 @@ final class EndpointBox: @unchecked Sendable {
     /// A pin names whatever binary was installed. The installed path also
     /// requires that binary to carry the collective progress guard.
     static func progressGuardIsRequired(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,unguarded:URL) throws {
-        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true,acceptsPrefixSSDKeyInput:true),
+        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true,acceptsDataPlane:true,acceptsPrefixSSDKeyInput:true),
             "guarded worker features were not read from its bytes")
         let bare=try InstalledFixture.make(root:f.root.appendingPathComponent("unguarded"),probe:unguarded,owner:f.owner,worker:f.worker)
         var refusal=""
@@ -668,6 +675,42 @@ final class EndpointBox: @unchecked Sendable {
         let foreign=try refusal{try ClusterGenerationSelection.requireSupport(for:.pipeline,peers:[other],capability:split.capability)}
         try require(foreign.contains("member peer-9") && foreign.contains("nothing in the saved record"),"foreign worker refusal: \(foreign)")
     }
+    /// Both installed and member serving derive their profile through the same
+    /// selected-mode initializer; a pipeline must not inherit GLM TP capture.
+    static func logprobModeAdmission(_ f: InstalledFixture) throws {
+        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage] {
+            let registered = adapter.registeredProfiles[0]
+            for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
+                let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("logprobs-\(adapter.rawValue)-\(mode.rawValue)"),
+                    probe: f.probe, owner: f.owner, worker: f.worker, generationMode: mode.rawValue,
+                    advertisedModes: [.pipeline, .tensorParallel],
+                    registered: (registered.runtimeModelID, registered.profileID, "fixture/logprobs"), adapter: adapter)
+                let prepared = try fixture.prepare()
+                let installed = try DistributedInstalledSession(prepared: prepared, keyedEndpointFactory: { _, _, _, _, _, _, _ in
+                    throw CheckFailure(message: "admission check must not launch either owner")
+                }, keysDataPlane: true)
+                let memberProfile = try DistributedResidentExecutionProfile(capability: prepared.plan.capability,
+                    generationMode: prepared.plan.configuration.selectedGenerationMode,
+                    requestTimeout: .seconds(prepared.plan.configuration.requestTimeoutSeconds))
+                let supported = adapter == .glm5NextLayerStage && mode == .tensorParallel
+                try require(installed.profile.supportsLogprobs == supported && memberProfile.supportsLogprobs == supported,
+                    "logprob support did not follow the installed adapter and selected mode")
+                for profile in [installed.profile, memberProfile] {
+                    var request = CBv2Request(id: .init(1), promptTokens: [1], sampling: .init(temperature: 0), maxTokens: 1)
+                    try require(profile.refusal(for: request) == nil, "ordinary request refused by capture policy")
+                    request.sampling.topLogprobs = 1
+                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                        "unsupported capture reached worker admission")
+                    request.sampling.topLogprobs = ClusterWorkerSampling.maximumTopLogprobs
+                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                        "valid upper logprob limit changed")
+                    request.sampling.topLogprobs += 1
+                    try require(profile.refusal(for: request) == .logprobsUnsupported, "numeric logprob limit changed")
+                }
+            }
+        }
+    }
+
     /// The waits come from the setup and the verified artifact, not a per-model
     /// row (owner, 2026-10-14): the request deadline the planner derived, the
     /// longest prompt the worker admits, the artifact's size and the largest
@@ -923,23 +966,28 @@ final class EndpointBox: @unchecked Sendable {
     }
     typealias RankOne=@Sendable (DistributedInstalledPlan,ClusterWorkerIdentity,UInt64,(any ClusterOwnerBootstrapExchange)?) throws->any ClusterOwnedWorkerEndpoint
     static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false,
-                        rankOne:RankOne?=nil) throws->(DistributedInstalledSession,EndpointBox) {
+                        rankOne:RankOne?=nil, keyed:Bool=false,
+                        dataPlanes:[ClusterWorkerDataPlane?]=[nil,nil]) throws->(DistributedInstalledSession,EndpointBox) {
         let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let box=EndpointBox()
-        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay,_ in
+        let session=try DistributedInstalledSession(prepared:prepared,keyedEndpointFactory:{ plan,id,rank,lifetime,relay,_,trust in
+            if keyed {
+                let value = try ClusterWorkerCodec.decodeDataPlaneTrust(require(trust,"keyed factory received no credential"))
+                try require(value.membershipEpoch == id.membershipEpoch && value.rank == rank,"factory received another rank/epoch credential")
+            } else { try require(trust == nil,"plaintext fixture unexpectedly received a credential") }
             if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
             if rank==1, let rankOne { return try rankOne(plan,id,lifetime,relay) }
             let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
             let ready=base.appendingPathComponent("ready-\(rank).json")
             let frame=ClusterWorkerEventFrame(membershipEpoch:id.membershipEpoch,sequence:0,requestID:nil,
-                event:.ready(.init(identity:id,rank:rank,profile:plan.capability.profile,executionPlanSHA256:plan.partition.planSHA256,requestCapacityBytes:1024)))
+                event:.ready(.init(identity:id,rank:rank,profile:plan.capability.profile,executionPlanSHA256:plan.partition.planSHA256,requestCapacityBytes:1024,dataPlane:dataPlanes[rank])))
             try ClusterWorkerCodec.encode(frame).write(to:ready)
             let endpoint=try ClusterRemoteWorkerEndpoint(transport:.init(executable:f.owner,
                 arguments:[f.worker.path,directory.path,String(rank),behavior],environment:["FIXTURE_READY_PATH":ready.path]),
                 clusterID:plan.configuration.clusterID,expectedIdentity:id,profile:plan.capability.profile,rank:rank,
-                executionPlanSHA256:plan.partition.planSHA256,lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay)
+                executionPlanSHA256:plan.partition.planSHA256,lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay,dataPlaneTrust:trust)
             box.add(endpoint);return endpoint
-        })
+        },keysDataPlane:keyed)
         return(session,box)
     }
     static func request(_ session:DistributedInstalledSession,_ id:UInt64) throws->any DistributedResidentRequestLease {

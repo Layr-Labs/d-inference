@@ -42,13 +42,13 @@ public struct NativePairMemberInstallation: Sendable {
                 identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
                 installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
                 metallib: URL, resourceLibrary: URL, chip: String, meshOverLink: Bool = false,
-                roster: NativePairMemberRoster? = nil) throws {
+                roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil) throws {
         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
             chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory,
             ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart && meshOverLink,
-            bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude, roster: roster)
+            bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude, roster: roster, batchLanes: batchLanes)
     }
     // Same existing canonical-style private directory checks; only fixtures
     // select a temporary scope and their own owner. Production uses
@@ -58,7 +58,7 @@ public struct NativePairMemberInstallation: Sendable {
          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
          metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
          ownerServesCommittedStart: Bool = true, bootstrap: Bootstrap = .nativeKeyPrelude,
-         roster: NativePairMemberRoster? = nil) throws {
+         roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil) throws {
         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
         // A pair approval lists the chips it covers; a cluster approval the
         // numerics classes (none listed: any class) and the usable memory a
@@ -82,7 +82,7 @@ public struct NativePairMemberInstallation: Sendable {
             executionPlanSHA256: roster?.plan.planSHA256 ?? Self.hex(policy.hashes[0]))
         self.policy = policy; self.rank = rank; self.clusterID = clusterID
         self.identity = identity; self.profile = profile
-        localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
+        localOwner = try .init(installedDarkbloom: installedOwner, batchLanes: batchLanes); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
         self.ownerServesCommittedStart = ownerServesCommittedStart; self.bootstrap = bootstrap
         self.roster = roster

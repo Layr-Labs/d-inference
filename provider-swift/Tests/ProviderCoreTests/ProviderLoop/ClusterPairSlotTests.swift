@@ -322,6 +322,7 @@ struct ClusterPairSlotTests {
         var text = "", reasons: [String] = []
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk): text += chunk
             case .info(_, let completion, _, let reason): reasons.append("\(completion):\(reason)")
             case .error, .terminal: reasons.append("failure")

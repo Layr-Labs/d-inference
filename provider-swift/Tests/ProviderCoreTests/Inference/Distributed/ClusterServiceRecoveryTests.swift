@@ -170,6 +170,266 @@ struct ClusterServiceRecoveryTests {
         }
         completed = true
     }
+    @Test func plannedStopWaitsForOwnedServiceChildBeforePeerAndRetainsFailureIntent() throws {
+        for outcome in ["success", "missing-peer", "timeout"] {
+            let home = try NativePairMemberFixture.privateRoot()
+            let helper = home.appendingPathComponent("service-part-fixture")
+            try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+            let directory = home.appendingPathComponent("part", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            let paths = try ClusterUserPaths(homeDirectory: home)
+            let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: home.appendingPathComponent("provider.toml"),
+                darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
+            let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
+                soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: paths)
+            var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "fixture-local",
+                peerPin: "fixture-peer", peerName: "fixture peer", since: "fixture")
+            leadership.serving = true; leadership.modelName = "fixture-model"
+            _ = try service.store.updateRecord { $0.leadership = leadership }
+            let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
+            let now = ClusterService.monotonicSeconds()
+            let node = ClusterControlNode(localID: local,
+                members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1, holdsModelAlone: true)],
+                claim: .init(term: 1, leaderID: local, members: [local, peer], reason: "fixture"),
+                rankOrder: [local, peer], now: now - 2, ttl: 1, soloGrace: 0)
+            service.lock.withLock { service.control = node }
+            let live = service.controlLive
+            let run = ServiceRecoveryRun(service: service)
+            let stopped = ServiceStopRun()
+            let statusFile = service.store.paths.directory.appendingPathComponent("service-status.json")
+            var completed = false
+            defer {
+                try? Data().write(to: directory.appendingPathComponent("release-replacement"))
+                service.lock.withLock { service.leaseInFlight = false }
+                run.requestStop()
+                #expect(stopped.join(seconds: 12))
+                #expect(run.join(seconds: 12), "owned service must finish; retain \(home.path) on failure")
+                if completed { try? FileManager.default.removeItem(at: home) }
+            }
+            run.start()
+            try #require(waitForRecovery { ClusterService.recordedPart(readRecoveryStatus(statusFile)) != nil })
+            let part = try #require(ClusterService.recordedPart(readRecoveryStatus(statusFile)))
+            try #require(waitForRecovery { readyPIDs(in: directory, role: "replacement") == [part.pid] })
+            stopped.start(live: live, part: part, seconds: outcome == "timeout" ? 0.2 : 10,
+                          missingPeer: outcome == "missing-peer")
+            let requested = directory.appendingPathComponent("replacement-\(part.pid).term")
+            try #require(waitForRecovery { FileManager.default.fileExists(atPath: requested.path) })
+            #expect(ClusterService.runningPart(part) != nil, "TERM is not a retirement acknowledgement")
+            #expect(stopped.peerCalls == 0, "the peer cannot stop while this owned child is still alive")
+            let draining = try service.store.readRecord()
+            #expect(draining.leadership?.serving == false && draining.stopDrain?.keepPeerRunning == true)
+            requireFollowerLease(record: draining, running: true)
+            if case .success = live.localServe() { Issue.record("a pending stop must refuse a fresh start") }
+            if outcome == "timeout" {
+                try #require(stopped.join(seconds: 3), "the local retirement wait is bounded")
+                #expect(!stopped.succeeded && stopped.peerCalls == 0)
+                #expect(ClusterService.runningPart(part) != nil, "a timeout neither kills nor claims release")
+            }
+            // Hold the actual outbound-lease custody flag after the local
+            // child retires. A final stale running=true lease must settle too.
+            if outcome == "success" { service.lock.withLock { service.leaseInFlight = true } }
+            try Data().write(to: directory.appendingPathComponent("release-replacement"))
+            try #require(waitForRecovery { ClusterService.runningPart(part) == nil })
+            if outcome == "success" {
+                #expect(!stopped.join(seconds: 0.3) && stopped.peerCalls == 0)
+                #expect(try service.store.readRecord().stopDrain != nil)
+                service.lock.withLock { service.leaseInFlight = false }
+            }
+            try #require(waitForRecovery { readRecoveryStatus(statusFile)?.child.running == false })
+            try #require(stopped.join(seconds: 12))
+            if outcome == "timeout" {
+                let retry = ServiceStopRun()
+                retry.start(live: live, part: part, seconds: 3, missingPeer: false)
+                try #require(retry.join(seconds: 5))
+                #expect(retry.succeeded && retry.peerCalls == 1 && !retry.liveAtPeer)
+            } else {
+                #expect(stopped.peerCalls == 1 && !stopped.liveAtPeer)
+                #expect(stopped.succeeded == (outcome == "success"))
+            }
+            let retired = try service.store.readRecord()
+            #expect(retired.stopDrain == nil)
+            requireFollowerLease(record: retired, running: false)
+            #expect(retired.leadership?.serving == false,
+                    "missing peer and local timeout preserve stopped intent for later reconciliation")
+            run.requestStop()
+            try #require(run.join(seconds: 10))
+            #expect(try run.result())
+            completed = true
+        }
+    }
+
+    @Test func plannedStopRejectsStaleIdleWhileActualServiceStartsItsChild() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        let helper = home.appendingPathComponent("service-part-fixture")
+        try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let directory = home.appendingPathComponent("part", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let paths = try ClusterUserPaths(homeDirectory: home)
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: home.appendingPathComponent("provider.toml"),
+            darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
+            soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: paths,
+            beforePartStart: { entered.signal(); release.wait() })
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "fixture-local",
+            peerPin: "fixture-peer", peerName: "fixture peer", since: "fixture")
+        leadership.serving = false; leadership.modelName = "fixture-model"
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
+        let node = ClusterControlNode(localID: local,
+            members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1, holdsModelAlone: true)],
+            claim: .init(term: 1, leaderID: local, members: [local, peer], reason: "fixture"),
+            rankOrder: [local, peer], now: ClusterService.monotonicSeconds() - 2, ttl: 1, soloGrace: 0)
+        service.lock.withLock { service.control = node }
+        let live = service.controlLive
+        let run = ServiceRecoveryRun(service: service), stopped = ServiceStopRun()
+        let statusFile = service.store.paths.directory.appendingPathComponent("service-status.json")
+        let acknowledgement = service.store.paths.directory.appendingPathComponent("service-supervision.json")
+        var completed = false
+        defer {
+            release.signal()
+            try? Data().write(to: directory.appendingPathComponent("release-replacement"))
+            run.requestStop()
+            #expect(stopped.join(seconds: 12))
+            #expect(run.join(seconds: 12), "retain owned service directory on failure: \(home.path)")
+            if completed { try? FileManager.default.removeItem(at: home) }
+        }
+        run.start()
+        try #require(waitForRecovery { FileManager.default.fileExists(atPath: acknowledgement.path) })
+        let staleIdle = try Data(contentsOf: statusFile)
+        let previousAcknowledgement = try Data(contentsOf: acknowledgement)
+        try #require(readRecoveryStatus(statusFile)?.child.running == false)
+        _ = try service.store.updateRecord { $0.leadership?.serving = true }
+        try #require(entered.wait(timeout: .now() + 10) == .success,
+                     "the real supervisor has read serving=true and reached Process.run")
+        stopped.start(live: live, part: nil, seconds: 10, missingPeer: false)
+        try #require(waitForRecovery { (try? service.store.readRecord().leadership?.serving) == false })
+        // Rewriting ordinary idle status must not acknowledge the blocked
+        // supervision cycle, even with a fresh inode and matching service PID.
+        try staleIdle.write(to: statusFile, options: .atomic)
+        requireFollowerLease(record: try service.store.readRecord(), running: true)
+        #expect(!stopped.join(seconds: 0.3), "stale idle must not release the peer while a start is in flight")
+        #expect(stopped.peerCalls == 0)
+        #expect(try Data(contentsOf: acknowledgement) == previousAcknowledgement)
+        try Data().write(to: directory.appendingPathComponent("release-replacement"))
+        release.signal()
+        try #require(stopped.join(seconds: 12))
+        #expect(stopped.succeeded && stopped.peerCalls == 1)
+        let final = try #require(readRecoveryStatus(statusFile))
+        #expect(!final.serving && !final.child.running && final.child.starts == 1)
+        requireFollowerLease(record: try service.store.readRecord(), running: false)
+        #expect(try Data(contentsOf: acknowledgement) != previousAcknowledgement)
+        run.requestStop()
+        try #require(run.join(seconds: 10))
+        #expect(try run.result())
+        completed = true
+    }
+
+    @Test func stopDrainRecordIsOptionalAndNeverStartsAnAlreadyIdlePeer() throws {
+        var record = ClusterSetupRecord()
+        let legacyBytes = try JSONEncoder().encode(record)
+        #expect(!String(decoding: legacyBytes, as: UTF8.self).contains("stopDrain"))
+        #expect(try JSONDecoder().decode(ClusterSetupRecord.self, from: legacyBytes).stopDrain == nil)
+        record.leadership = .init(role: "leader", leaderPin: "fixture-local", peerPin: "fixture-peer",
+            peerName: "fixture", since: "fixture")
+        record.stopDrain = .init(id: UUID(), keepPeerRunning: false)
+        let roundTrip = try JSONDecoder().decode(ClusterSetupRecord.self, from: JSONEncoder().encode(record))
+        #expect(roundTrip == record)
+        requireFollowerLease(record: roundTrip, running: false)
+        let missing = ClusterService.peerLeaseState(record: nil, mode: .cluster, leads: true)
+        #expect(!missing.running && missing.serving == nil)
+        record.stopDrain?.keepPeerRunning = true
+        let notLeader = ClusterService.peerLeaseState(record: record, mode: .cluster, leads: false)
+        #expect(!notLeader.running)
+    }
+
+    @Test func plannedStopRejectsUnknownLiveServiceAndDoesNotSignalRecycledIdentity() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = try ClusterUserPaths(homeDirectory: home)
+        let store = ClusterSetupStore(paths: .init(paths: paths))
+        try ClusterConfigurationFiles.ensureDirectory(store.paths.directory, create: true, privateMode: true)
+        #expect(ClusterService.stopLocalPart(in: store.paths.directory, seconds: 0), "no service or part is already idle")
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep"); sleeper.arguments = ["30"]
+        sleeper.standardInput = FileHandle.nullDevice; sleeper.standardOutput = FileHandle.nullDevice
+        sleeper.standardError = FileHandle.nullDevice
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() }; sleeper.waitUntilExit() }
+        let start = try #require(ClusterProcessTable.startTime(of: sleeper.processIdentifier))
+        let stale = ClusterServiceStatus(role: "leader", serving: false, modelName: "fixture-model",
+            sessionLeader: true, localRank: 0, setup: nil,
+            child: .init(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil,
+                         pid: sleeper.processIdentifier, startedAt: start - 5, solo: false),
+            session: nil, control: nil, servicePID: -1)
+        let statusFile = store.paths.directory.appendingPathComponent("service-status.json")
+        try JSONEncoder().encode(stale).write(to: statusFile, options: .atomic)
+        #expect(ClusterService.stopLocalPart(in: store.paths.directory, seconds: 0))
+        #expect(sleeper.isRunning, "a recycled PID does not confer stop authority")
+        try FileManager.default.removeItem(at: statusFile)
+        let lockFile = store.paths.directory.appendingPathComponent("service.lock")
+        let fd = open(lockFile.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        try #require(fd >= 0)
+        defer { _ = flock(fd, LOCK_UN); close(fd) }
+        try #require(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        #expect(!ClusterService.stopLocalPart(in: store.paths.directory, seconds: 0),
+                "a live service with no trustworthy publication is not idle")
+        #expect(sleeper.isRunning)
+    }
+
+    @Test func plannedStopDoesNotFollowAReplacementProcess() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        let helper = home.appendingPathComponent("service-part-fixture")
+        try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let paths = try ClusterUserPaths(homeDirectory: home)
+        let store = ClusterSetupStore(paths: .init(paths: paths))
+        try ClusterConfigurationFiles.ensureDirectory(store.paths.directory, create: true, privateMode: true)
+        let statusFile = store.paths.directory.appendingPathComponent("service-status.json")
+        var children: [Process] = []
+        var completed = false
+        let waiting = LocalPartStopRun()
+        defer {
+            for role in ["leftover", "replacement"] { try? Data().write(to: home.appendingPathComponent("release-\(role)")) }
+            for child in children where child.isRunning { child.terminate() }
+            #expect(waiting.join(seconds: 12))
+            let ended = waitForRecovery { children.allSatisfy { !$0.isRunning } }
+            #expect(ended, "retain owned fixture directory on failed cleanup: \(home.path)")
+            if ended { children.forEach { $0.waitUntilExit() }; if completed { try? FileManager.default.removeItem(at: home) } }
+        }
+        for role in ["leftover", "replacement"] {
+            let child = Process(); child.executableURL = helper
+            child.arguments = ["--service-part-fixture", home.path, role]
+            child.standardInput = FileHandle.nullDevice; child.standardOutput = FileHandle.nullDevice
+            child.standardError = FileHandle.nullDevice
+            try child.run(); children.append(child)
+            try #require(waitForRecovery { readyPIDs(in: home, role: role) == [child.processIdentifier] })
+        }
+        func publish(_ child: Process) throws {
+            let start = try #require(ClusterProcessTable.startTime(of: child.processIdentifier))
+            let status = ClusterServiceStatus(role: "leader", serving: false, modelName: "fixture",
+                sessionLeader: true, localRank: 0, setup: nil,
+                child: .init(running: true, starts: 1, lastEnd: nil, restartInSeconds: nil, lastError: nil,
+                             pid: child.processIdentifier, startedAt: start, solo: false),
+                session: nil, control: nil, servicePID: -1)
+            try JSONEncoder().encode(status).write(to: statusFile, options: .atomic)
+        }
+        try publish(children[0])
+        waiting.start(directory: store.paths.directory)
+        try #require(waitForRecovery { FileManager.default.fileExists(atPath: home.appendingPathComponent("leftover-\(children[0].processIdentifier).term").path) })
+        try publish(children[1])
+        try Data().write(to: home.appendingPathComponent("release-leftover"))
+        try #require(waiting.join(seconds: 12))
+        #expect(!waiting.succeeded, "a new identity must not inherit this stop operation")
+        #expect(children[1].isRunning)
+        #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent("replacement-\(children[1].processIdentifier).term").path))
+        completed = true
+    }
+
 }
 
 private final class ServiceRecoveryRun: @unchecked Sendable {
@@ -235,4 +495,65 @@ private func serviceAssertionTypes() throws -> [String] {
         guard $0[kIOPMAssertionNameKey] as? String == "Darkbloom cluster: serving deployment" else { return nil }
         return $0[kIOPMAssertionTypeKey] as? String
     }.sorted()
+}
+
+
+private final class ServiceStopRun: @unchecked Sendable {
+    private let done = DispatchGroup()
+    private let lock = NSLock()
+    private var calls = 0
+    private var observedLive = false
+    private var success = false
+    func start(live: OnboardingLive, part: ClusterService.RecordedPart?, seconds: Double, missingPeer: Bool) {
+        done.enter()
+        Thread.detachNewThread { [self] in
+            defer { done.leave() }
+            let result = live.localStop(seconds: seconds) {
+                lock.withLock { calls += 1; observedLive = ClusterService.runningPart(part) != nil }
+                if missingPeer { throw ClusterSetupFailure("fixture peer unavailable") }
+            }
+            if case .success = result { lock.withLock { success = true } }
+        }
+    }
+    func join(seconds: Double) -> Bool { done.wait(timeout: .now() + seconds) == .success }
+    var peerCalls: Int { lock.withLock { calls } }
+    var liveAtPeer: Bool { lock.withLock { observedLive } }
+    var succeeded: Bool { lock.withLock { success } }
+}
+
+
+private final class LocalPartStopRun: @unchecked Sendable {
+    private let done = DispatchGroup()
+    private let lock = NSLock()
+    private var success = false
+    func start(directory: URL) {
+        done.enter()
+        Thread.detachNewThread { [self] in
+            defer { done.leave() }
+            let result = ClusterService.stopLocalPart(in: directory, seconds: 10)
+            lock.withLock { success = result }
+        }
+    }
+    func join(seconds: Double) -> Bool { done.wait(timeout: .now() + seconds) == .success }
+    var succeeded: Bool { lock.withLock { success } }
+}
+
+/// Runs the actual outbound projection, accepted follower lease, saved-intent
+/// decision and follower part selection. Only the physical transport is absent.
+private func requireFollowerLease(record: ClusterSetupRecord, running: Bool) {
+    let leader = "mac-aaaaaaaaaaaa", member = "mac-bbbbbbbbbbbb"
+    let claim = ClusterControlClaim(term: 1, leaderID: leader, members: [leader, member], reason: "fixture")
+    let facts = [leader, member].map { ClusterControlMember(memberID: $0, name: "fixture", memoryBytes: 1, gpuCores: 1) }
+    var follower = ClusterControlNode(localID: member, members: facts, claim: claim,
+        rankOrder: [leader, member], now: 0, ttl: 10)
+    let projected = ClusterService.peerLeaseState(record: record, mode: .cluster, leads: true)
+    #expect(projected.running == running && projected.serving == running)
+    let received = follower.receiveLease(from: leader, offered: claim, running: projected.running, facts: facts, now: 1)
+    var savedServing = true
+    if let intent = ClusterControlIntent.toRecord(answer: received.answer, leaderServing: projected.serving, recorded: savedServing) {
+        savedServing = intent
+    }
+    let wanted = ClusterControlPartChoice.want(mode: follower.mode(now: 1), serving: savedServing,
+        hasSetup: true, leaderRunsCluster: follower.leaderRunsCluster, runningSolo: false, model: "fixture")
+    #expect(wanted == (running ? .cluster : .none))
 }

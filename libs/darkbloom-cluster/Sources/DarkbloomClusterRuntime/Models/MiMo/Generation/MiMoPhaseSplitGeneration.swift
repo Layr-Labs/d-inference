@@ -67,7 +67,9 @@ enum MiMoPhaseSplitGeneration {
               session.committedTokens == 0 else {
             throw ProbeError("A request served alone starts at the empty frontier on the decoding rank")
         }
-        let producer = try MiMoLayerStageSession(stage: producerStage, plan: plan, generationRequest: request)
+        let producer = try MiMoLayerStageSession(stage: producerStage, plan: plan, generationRequest: request,
+            independentHistory: session.usesPagedHistory)
+        if session.usesPagedHistory { producer.bindBatchMemoryObservation(scope: request.requestID) }
         do {
             var payloads: [String] = []
             var first: (token: Int, payload: String)?
@@ -217,7 +219,8 @@ enum MiMoPhaseSplitGeneration {
             // Every digest is checked here, before any array reaches a model.
             let state = try intake.adoptedState(check: handoffCheck)
             adopted = try MiMoLayerStageSession(stage: producerStage, plan: plan, generationRequest: request,
-                                                adopting: state, split: split)
+                                                adopting: state, split: split, independentHistory: session.usesPagedHistory)
+            if session.usesPagedHistory { adopted.bindBatchMemoryObservation(scope: request.requestID) }
             try handoffCheck()
         } catch {
             intake.discard()

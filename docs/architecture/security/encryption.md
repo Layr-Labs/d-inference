@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-23
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -192,6 +192,30 @@ across the Thunderbolt cable:
   authenticated with rekeying, and tampered records are refused. The control
   lease runs on a listener and epoch label of its own; no key material crosses
   Macs when control fails over.
+  Every installed paired-link text session requires the same keyed worker build
+  on both Macs; unsupported or different builds are refused before launch.
+  The leader issues fresh session credentials, sends each rank only its own
+  credential over its authenticated owner route, and the follower checks the
+  epoch and rank before opening its local owner. The native worker verifies
+  the certificate and pinned peer. Serving begins only after both workers
+  report one matching encrypted, peer-verified data plane. Authenticated
+  control/bootstrap status alone cannot satisfy that condition
+  (`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift`,
+  `keysDataPlane`, `followerDataPlaneTrust`;
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+  `launch`; `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterDataPlaneLaunch.swift`).
+- **Qwen batch records.** Both ranks derive one batch identity from their
+  pinned membership epoch, execution plan, lane count and increasing batch
+  ordinal. Control records bind the phase, direction and step. Residual records
+  also bind the ordered local request identities, fingerprints and frontiers;
+  prefill binds its frame bounds. The producer captures these facts before
+  forward computation advances its state, and the consumer before receiving.
+  The array codec additionally binds shape, dtype, chunk index and byte length.
+  Directional record sequences continue across batches and rekeys: replay,
+  wrong scope or authentication failure fences the session without a plaintext
+  retry (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchRecordBinding.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+  `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Transport/CollectiveAuthenticatedRecords.swift`).
 - **Model copies.** A Mac accepts a model from its paired Mac only when this
   build's qualification records pin the manifest's aggregate digest, verifies
   every file as it arrives, has its own worker check the staged files before
@@ -223,3 +247,54 @@ across the Thunderbolt cable:
 - [Cache format](../../reference/ssd-kv-cache.md)
 - [Attestation](attestation.md)
 - [Identity binding](identity-binding.md)
+
+### Drained batch setup adoption
+
+The private `batchSetup` command uses the existing authenticated pair-control
+channel. The receiver authorizes its saved serving rank 0 and checks unchanged
+model, capability, peers, trust, ranks and request limits before publishing a
+new setup under the ordinary empty-device lease gate. A compare-and-swap on
+the previous full digest refuses an unrelated later choice; retrying the exact
+already-selected target is idempotent. The running follower's full setup digest
+fences a stale control client before a new native epoch opens. These checks
+grant neither coordinator membership nor worker ownership. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetupTransaction.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`.
+
+### Qwen media reservation identity
+
+The optional `qwen35_tp_media_v1` carrier uses at most 16 images, eight videos and
+32 MiB of encoded input, with bounded source-raster totals and checked grid/span
+arithmetic. Its fingerprint binds all immutable identity and geometry fields but
+not encoded-byte presence, so the local payload and peer metadata agree. Rank
+zero must separately verify encoded and prepared-patch digests before execution;
+a supplied digest is not a decoded-feature authorization. The carrier cannot be
+combined with another media contract or request route. Existing record sealing,
+worker trust and actual memory admission remain required; this codec change does
+not advertise a media-capable runtime or endpoint.
+
+The Qwen27 native media seam sends rank-zero vision features through the
+existing authenticated TP collective records. The receiver copies rank-zero
+values without a numerical sum, and both ranks verify the same media fingerprint
+and recomputed three-axis position identity. Encoded source media is retained
+only on its declared rank. `WorkerQwenMediaAdmission` rejects an unsupported
+runtime, missing verified data plane, wrong rank payload or mismatched artifact
+before reservation. These checks do not grant provider ingress or qualify media
+numerics. Source:
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerQwenMediaAdmission.swift`.
+
+Qwen media transport preserves the typed envelope through owner and peer-link
+clock translation. The pair sends encoded inputs to rank 0 only; rank 1 receives
+metadata and the same content-bound fingerprint. A caller cancellation or early
+resource-release attempt cannot release the owner's encoded alias before the
+request has retired. Other model media contracts retain their existing behavior.
+
+Provider Qwen media ingress binds encoded bytes to the loaded artifact, model
+configuration, resolved processor, expanded prompt, prepared patches and
+three-axis position digest. The bridge checks this binding before submission;
+local SDK engines refuse the opaque cluster carrier before allocating KV state.
+The process-wide host reservation follows an explicit generation/request owner
+through submission and definitive native retirement. Cancellation or HTTP stream
+termination is not an encoded-buffer release receipt. No media, token IDs or
+prompt content is added to telemetry by this path. The lifetime implementation is
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaLifetime.swift`.

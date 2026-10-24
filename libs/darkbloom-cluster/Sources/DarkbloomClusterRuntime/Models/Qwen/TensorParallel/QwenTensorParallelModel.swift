@@ -44,7 +44,7 @@ public final class QwenTensorParallelModel {
     public let loadSeconds: Double
     public let loadedActiveBytes: Int
     public let loadedParameterBytes: Int
-    private let model: Qwen35Model
+    let model: Qwen35Model
     private let reduction: QwenTensorParallelReduction?
 
     /// `reduction` is required for `shard` and refused otherwise. Reads the
@@ -114,6 +114,9 @@ public final class QwenTensorParallelModel {
             guard let reduction, reduction.size == size, reduction.rank == rank else {
                 throw ProbeError("Tensor parallel load: a shard needs the reduction of its own rank and group size")
             }
+            guard !plan.routedExperts || partialDType == .float32 else {
+                throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+            }
         } else if reduction != nil {
             throw ProbeError("Tensor parallel load: only a shard takes a reduction")
         }
@@ -152,7 +155,8 @@ public final class QwenTensorParallelModel {
         // fused gate_up the SDK constructs (per rank, after the cut).
         if plan.routedExperts { weights = model.sanitize(weights: weights) }
         quantize(model: model) { path, _ in
-            weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits, .affine) : nil
+            let packing = plan.affineQuantization(forModule: path)
+            return weights[path + ".scales"] != nil ? (packing.groupSize, packing.bits, .affine) : nil
         }
         if case .shard = role {
             // The constructed head has the whole vocabulary; this rank's has its rows.
@@ -167,18 +171,31 @@ public final class QwenTensorParallelModel {
 
         // Row-parallel projections.
         let leaves = Dictionary(uniqueKeysWithValues: model.leafModules().flattened())
-        let blocks = Dictionary(model.namedModules(), uniquingKeysWith: { first, _ in first })
         var replacements: [(String, Module)] = []
         var extra: [MLXArray] = []
         for path in plan.rowParallelModulePaths() {
-            if plan.routedExperts, path.hasSuffix(".mlp") {
-                // The whole routed-expert block's output is this rank's partial.
-                guard case .shard = role, let block = blocks[path], block is UnaryLayer else {
-                    if case .full = role { continue }
-                    throw ProbeError("Tensor parallel load: \(path) is not a routed-expert block")
+            if plan.routedExperts, path.hasSuffix(".mlp.switch_mlp.down_proj") {
+                guard let source = leaves[path] as? QuantizedSwitchLinear else {
+                    throw ProbeError("Tensor parallel load: \(path) is not a quantized expert projection")
                 }
-                replacements.append((path, QwenTensorParallelBlockReduction(block, reduction: reduction!, timing: timing,
-                                                                            partialDType: partialDType)))
+                switch role {
+                case .full:
+                    break
+                case .simulated:
+                    throw ProbeError("Tensor parallel load: routed-expert split-sum oracle is not implemented")
+                case .shard:
+                    guard partialDType == .float32, let reduction else {
+                        throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+                    }
+                    let projection = try Qwen35TensorParallelSwitchLinear(source) { partial in
+                        if timing == .explicit {
+                            eval(partial)
+                            Stream.gpu.synchronize()
+                        }
+                        return reduction.allSum(partial)
+                    }
+                    replacements.append((path, projection))
+                }
                 continue
             }
             guard let source = leaves[path] as? QuantizedLinear else {
@@ -390,6 +407,18 @@ public final class QwenTensorParallelModel {
 
     /// The model over `input` `[1, T]` with `cache`: logits `[1, T, V or V/size]`, not evaluated.
     func forwardForRuntime(_ input: MLXArray, cache: [KVCache]) -> MLXArray { model(input, cache: cache) }
+
+    /// Preserve the replicated text embedding before authenticated rank-zero
+    /// vision features replace the request's placeholder rows.
+    func embeddingsForMedia(_ input: MLXArray) -> MLXArray { model.scaledInputEmbeddings(input) }
+
+    /// Media uses the same sharded model and reductions, with request-owned
+    /// three-axis positions. No mutable position delta lives on the model.
+    func forwardMediaForRuntime(_ input: MLXArray, cache: [KVCache],
+        embeddings: MLXArray?, positions: MLXArray) throws -> MLXArray {
+        try model.forwardWithMedia(input, inputEmbeddings: embeddings,
+            positionIds: positions, cache: cache)
+    }
 
     /// One decode step's logits `[1, V or V/size]` for `token` (`[1]` int32,
     /// possibly not evaluated), not evaluated.

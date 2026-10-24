@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-23
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -714,6 +714,49 @@ and `clusterMember`); both are control-only and refuse solo serving options
 when parsed. No environment variable selects one, so ordinary
 solo serving is unchanged and the whole surface stays default-off.
 
+### Persisted native batch width
+
+| Field | Meaning and bounds | Source |
+|---|---|---|
+| `batchLanes` | Optional integer 2, 4 or 8; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`) |
+| `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
+
+The normal cluster API can persist a wider setup after queued demand, conservative
+memory planning and full release. No environment setting is needed for that
+path. See [automatic local cluster batching](../architecture/inference.md#automatic-local-cluster-batching)
+for exclusions, rollback and the unchanged singleton preference at initial setup.
+
+### Installed tensor-parallel synchronization
+
+| Variable | Installed behavior | Source |
+|---|---|---|
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: event synchronization for exact Qwen3.8 27B TP capacity above one, fast synchronization for single-lane Qwen27 and other TP models. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_EAGER_FENCE_COMMIT` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values are not forwarded; MLX keeps its existing off default. Explicit values are reported before MLX initializes. | `DistributedInstalledPlan.eagerFenceCommit`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerEagerFenceCommit.report` |
+
+These settings are read from each Mac's own cluster service process; they are not taken
+from its peer or an API request. A terminal export does not update an installed
+service job. Restart jobs with the intended environment, confirm fresh native
+`fast_synch=0 source=launcher` or `fast_synch=1 source=launcher` markers on both
+Macs, and restore/restart the original jobs after the comparison. This does not
+add general environment inheritance or change automatic placement. Native
+progress, width and retirement remain independent validation requirements.
+
+### Private batch qualification diagnostics
+
+`DARKBLOOM_CLUSTER_BATCH_TRACE=1` and
+`DARKBLOOM_CLUSTER_BATCH_LOGIT_DIRECTORY=<absolute-path>` are disabled unless
+explicitly supplied. The runtime and worker refuse either without
+`--qualification-switches yes`. The pair-check helper supplies that permission
+only when its explicit diagnostic options are selected; the installed owner
+does not forward them. Trace contains aggregate scheduling counts only. The
+logit directory is rank 1's private qualification output, never normal telemetry:
+mode 0700, owned by the current user, exclusively locked, with newly created
+0600 files and a cap of 256 native rows of at most 1 MiB each. Existing raw rows
+count toward the cap across batches. Bad permissions, collisions, concurrent
+writers or exhausted capacity fail the diagnostic run. See
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchDiagnostics.swift`
+(`QwenBatchRowCapture`) and the [pair helper options](../provider/cli-reference.md#native-pair-batch-diagnostics).
+
 ### Experimental cluster pairs
 
 The coordinator side of two-Mac cluster pairs, including the settings that
@@ -776,6 +819,13 @@ and it is predicted at least 5 % faster than every pipeline.
 |---|---|---|
 | `DARKBLOOM_CLUSTER_HANDOFF_MODES` | unset (off) | `1` (or `on`) is the one explicit opt-in for the hand-off modes kept in the code: phase split, phase split + MTP, the pipeline-prefill/tensor-decode hybrid, and the per-request "alone" route. Read by the process that plans (`darkbloom cluster`, `darkbloom cluster plan`) and by each Mac's serving owner: a setup saved with a hand-off mode (for example by an earlier release, whose default was phase split + MTP) is refused at start without it, with the way back (`darkbloom cluster`, select the model again), and the alone route is taken only by a leader that has it. `0`, `off` or unset plan sharded deployments only; any other value is refused. Never offered in the onboarding. (`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift`) |
 | `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB` | unset | Developer bench only, debug builds only (a release build refuses to plan while it is set): caps what the planner believes each Mac can give a model, in whole GiB, so a pair of large bench Macs is planned as smaller Macs would be. The load gates never see it. (`ClusterPlannerBenchCap.swift`) |
+
+Explicit `--prompt-tokens` and `--output-tokens` select the planning request,
+not new runtime limits. Either axis exceeding the layout reference requires a
+family quote matching the pinned capability; see
+[placement request metadata](../provider/cli-reference.md#cluster-placement-request-metadata)
+and `ClusterPlacementFlow.decide` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift`.
 
 The developer plan tool takes `--hand-off-modes` for the same opt-in.
 
@@ -1231,3 +1281,73 @@ enclosing app's `CFBundleIdentifier` and matching `CFBundleExecutable` in
 borrow an app identity. See
 `provider-swift/Sources/ProviderCore/Service/ClusterServiceAgent.swift`
 (`ClusterServiceAgent.job`) and [background cluster setup](../provider/cluster-always-on.md).
+
+## GPT-OSS cluster batch lanes
+
+`DARKBLOOM_CLUSTER_BATCH_LANES` selects 1...8 for the GPT-OSS plain-pipeline
+owner; without a persisted automatic width or explicit override it defaults to
+one. Other generation modes retain one lane, and the
+recording worker rejects widths above one before model load. Both ranks bind
+the effective width into LOAD agreement. Installed launch carries only the
+locally resolved typed width, not arbitrary caller environment. A malformed
+installed override resolves conservatively to one; a direct native worker
+rejects malformed input. Source: `GPTOSSBatchSettings` in
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GPTOSS/Batch/GPTOSSBatchSettings.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+See [lane ownership and accounting](../architecture/inference.md#gpt-oss-pipeline-lane-owner).
+
+### Native automatic batch quote
+
+The private placement helper's `batch-scope` command requires `--model-dir`,
+`--prompt-tokens`, `--output-tokens`, `--batch-lanes` and `--chunk-size`.
+Its `darkbloom_cluster_placement_batch_quote_v1` response contains the registered
+request scope, lanes (2, 4 or 8), original chunk, and a positive shared workspace
+charge for each rank. GPT-OSS and MiMo text are the supported quote families.
+The provider rejects a response for another width/chunk and binds the request
+to the same model, artifact and configuration before planning. This metadata
+neither grants native capacity nor admits images, speculative modes or GLM.
+See `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchQuote.swift`.
+
+The private `tensor-batch-scope` helper takes the same five arguments for exact
+Qwen3.8 27B. Its `darkbloom_cluster_placement_tensor_batch_quote_v1` response
+binds the original chunk and width to the complete native LOAD allowance,
+per-lane state and shared workspace. `ClusterPlacementTensorBatchQuote` rejects
+other models, shortened LOAD scope and inconsistent ledger totals. It reads
+registered headers and requires the native allocator metadata bound. Saved
+`batchLanes` may select 2, 4 or 8 in exact Qwen27 `tensor_parallel_v1`; omission
+keeps one. Other Qwen TP rows and GLM defaults remain unchanged.
+Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
+
+### Qwen27 saved mode compatibility
+
+For the existing `qwen35-dense-layer-stage` / `registered_qwen38_27b` / `registered_qwen38_27b_greedy_generation_v1` tuple, new configuration saves and installed startup require `tensor_parallel_v1` to preserve the model's images, video and committed-token logprobs. Old pipeline records remain readable and immutable; rerun `darkbloom cluster` to replan them under current link and memory facts. An inadmissible TP plan produces no reduced-feature replacement. This is a provider mode restriction, not a new configuration field or evidence of native readiness. Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift`, `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`.
+
+### Qwen27 TP assistant policy
+
+Normal setup discovers the embedded assistant from the native quote; the saved fields below bind that decision through both workers' actual READY.
+
+| Setting | Bound and behavior | Source |
+|---|---|---|
+| `[backend] mtp_mode` | Existing `auto`/`on` allow exact Qwen27 embedded-assistant discovery; `off` retains the ordinary fully quoted target. Automatic discovery selects depth `2` and admitted-cohort verification. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `automaticCandidate`, `automaticDepth` |
+| Saved `tensorAssistant` | Optional `qwen27_tensor_assistant_v1` object containing `depth` 1...4 and native `inventorySHA256`; omitted policy preserves legacy ordinary setup bytes. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `ClusterQwenTensorAssistantPolicy` |
+| Saved `tensorAssistant.verification` | `singleton_ready_set_v1` is the omitted legacy value; `admitted_target_cohort_v1` verifies eligible rows together up to the completely priced capacity. Unknown/null values are refused. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `Verification` |
+| Native worker `--mtp-depth`, `--tp-mtp-inventory-sha256`, `--tp-mtp-verification` | Installed launch arguments derived from saved policy, bilaterally bound at LOAD. Normal setup does not ask the user to choose them. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledGenerationSelection.swift`; `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` |
+| `DARKBLOOM_QWEN_MTP_SERIAL`, `DARKBLOOM_QWEN_MTP_DOUBLE_FORWARD`, `DARKBLOOM_QWEN_MTP_SHORTLIST` | True serial/double-forward overrides and any shortlist setting other than `0` conflict with this TP policy and are refused; complete vocabulary scores and captured target settlement remain authoritative. | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPolicy.swift`, `require` |
+
+### Qwen27 TP capacity replacement
+
+For authenticated Qwen3.8 27B tensor-parallel setups, effective `batchLanes` one uses the same request-owned native cache and execution contract as larger capacities. Capacity-only replacement preserves the ordered `tensorShares` (omitted means equal shares), and retains the existing `tensorAssistant` policy. Complete native LOAD quotations apply at every capacity. Sources: `ClusterPlacementTensorBatchQuote`, `QwenTensorParallelBatchSettings` and `ClusterAutomaticSetupHandoff`.
+
+## Cluster stopped intent and retirement
+
+The existing saved `leadership.serving = false` intent remains set when local
+retirement or a peer stop acknowledgement fails; no new configuration field is
+introduced. The login service is retained on a failed leader stop, and a retry
+still runs the stop path even though serving intent is already false. Local
+retirement is bounded at 300 seconds, with 330 seconds allowed for a forwarded
+stop. See [planned cluster stop ordering](../architecture/inference.md#planned-cluster-stop-ordering).
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
+(`OnboardingLive.localStop`, `stop`) and
+`provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop`).
+
+The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.

@@ -6,10 +6,24 @@ import Darwin
 /// y, n and q, and one typed line for the model number. Keys are read with
 /// line editing and echo off; ^C still ends the command, and the terminal's
 /// mode is put back on every way out, a signal included.
+///
+/// With colour on a UTF-8 terminal at least 40 columns wide, the setup opens
+/// with the Darkbloom mark, headings carry a step meter and long work shows a
+/// live line that the next said line replaces. The mark blooms and the live
+/// line turns unless DARKBLOOM_NO_ANIMATION or CI is set. Without colour
+/// (NO_COLOR, TERM=dumb, a pipe) every byte is the plain transcript.
 public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let input: Int32
     private let output: Int32
     private let usesColor: Bool
+    /// Colour plus block glyphs and room for the mark.
+    private let decorates: Bool
+    /// The mark blooms and live work turns (never in a transcript).
+    private let animates: Bool
+    private let brand: String
+    /// The live work line on screen, if any; the next said line replaces it.
+    private var working: String?
+    private var drawnFrame = -1
     private let echoesInput: Bool
     private var saved = termios()
     private var configured = false
@@ -24,6 +38,11 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         echoesInput = isatty(input) == 1 && isatty(output) == 1
         usesColor = Self.supportsColor(inputIsTerminal: isatty(input) == 1,
             outputIsTerminal: isatty(output) == 1, environment: environment)
+        var window = winsize()
+        let columns = ioctl(output, TIOCGWINSZ, &window) == 0 ? Int(window.ws_col) : 0
+        decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
+        animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
+        brand = ClusterOnboardingBrand.colour(environment)
         guard isatty(input) == 1, tcgetattr(input, &saved) == 0 else { return }
         var mode = saved
         mode.c_lflag &= ~tcflag_t(ICANON | ECHO)
@@ -56,7 +75,55 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public func say(_ line: String) {
-        write(line + "\n")
+        guard let live = working else { write(line + "\n"); return }
+        // The said line takes the live line's row; the live line moves below it.
+        write("\r\u{1B}[K" + line + "\n")
+        drawWorking(live, force: true)
+    }
+
+    /// The setup's opening: the mark beside its name where the terminal can
+    /// draw it (blooming when it animates), else the plain heading lines.
+    public func banner(_ title: String, _ subtitle: String) {
+        guard decorates else { heading(title); say(subtitle); return }
+        let words = title.split(separator: " ", maxSplits: 1).map(String.init)
+        let beside = ["\u{1B}[1m\(words.first ?? title)\u{1B}[0m",
+                      "\u{1B}[2m\(words.count > 1 ? words[1] : "")\u{1B}[0m",
+                      "\u{1B}[2m\(subtitle)\u{1B}[0m", ""]
+        func draw(_ revealed: Int) {
+            let rows = ClusterOnboardingBrand.rows(revealed: revealed)
+            write(zip(rows, beside).map { "  \u{1B}[\(brand)m\($0)\u{1B}[0m   \($1)" }.joined(separator: "\n") + "\n")
+        }
+        write("\n")
+        guard animates else { draw(Int.max); return }
+        for (index, revealed) in ClusterOnboardingBrand.frames.enumerated() {
+            if index > 0 { write("\u{1B}[\(ClusterOnboardingBrand.height)A") }
+            draw(revealed)
+            usleep(55_000)
+        }
+    }
+
+    /// Live work under the last said line: a turning petal and what runs.
+    /// Plain transcripts show nothing extra.
+    public func working(_ text: String) {
+        guard decorates else { return }
+        drawWorking(text, force: text != working)
+    }
+
+    /// Clears the live work line, leaving the cursor where it was.
+    public func settle() {
+        guard working != nil else { return }
+        working = nil; drawnFrame = -1
+        write("\r\u{1B}[K")
+    }
+
+    private func drawWorking(_ text: String, force: Bool) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let frame = animates ? Int((now / 125_000_000) % 4) : 0
+        working = text
+        guard force || frame != drawnFrame else { return }
+        drawnFrame = frame
+        let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
+        write("\r\u{1B}[K  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(text)\u{2026}\u{1B}[0m")
     }
 
     static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,
@@ -68,9 +135,12 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     public func heading(_ title: String) {
         say("")
-        // No cursor movement or screen clearing: trust codes and recovery steps
-        // stay in scrollback. Color never carries status by itself.
-        say(usesColor ? "\u{1B}[1;36m" + title + "\u{1B}[0m" : title)
+        // No screen clearing: trust codes and recovery steps stay in
+        // scrollback. Color never carries status by itself.
+        guard usesColor else { say(title); return }
+        guard decorates else { say("\u{1B}[1;36m" + title + "\u{1B}[0m"); return }
+        let meter = ClusterOnboardingBrand.meter(title).map { "   \u{1B}[\(brand)m\($0)\u{1B}[0m" } ?? ""
+        say("\u{1B}[\(brand)m\u{25C6}\u{1B}[0m \u{1B}[1m" + title + "\u{1B}[0m" + meter)
     }
 
     private func write(_ text: String) {
@@ -105,6 +175,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public func line(prompt: String) -> String? {
+        settle()
         write(prompt)
         var typed = ""
         while true {

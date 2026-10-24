@@ -214,11 +214,11 @@ public enum DistributedInstalledLinkFollower {
             box.handle(event)
         }
         box.lock.withLock { box.client = client }
-        let owner = try ClusterLocalOwnerConfiguration(installedDarkbloom: URL(fileURLWithPath: plan.localPeer.ownerExecutable))
+        let owner = try plan.localOwnerConfiguration()
         let server = ClusterLinkWorkerServer(transport: ClusterLinkPeerWorkerTransport(peer: client.peer),
             clusterID: plan.configuration.clusterID, rank: plan.configuration.localRank,
             bootstrapProfile: plan.bootstrap.ownerProfile, linkLimits: edge.limits,
-            acceptsDataPlaneTrust: ClusterMiMoPrivateImagePolicy.requiresKeyedDataPlane(plan.capability), admit: { open in
+            acceptsDataPlaneTrust: true, admit: { open in
                 guard open.executionPlanSHA256 == plan.partition.planSHA256 else {
                     throw ClusterConfigurationError.invalid("The leader opened another plan")
                 }

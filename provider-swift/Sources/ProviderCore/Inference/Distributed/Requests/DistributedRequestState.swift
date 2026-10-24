@@ -59,7 +59,7 @@ final class DistributedAdmissionCancellation: @unchecked Sendable {
 /// All mutable fields except the acknowledgement latch belong to engine.queue.
 final class DistributedRequestState: @unchecked Sendable {
     let generation = UUID()
-    let request: CBv2Request
+    var request: CBv2Request
     let lease: any DistributedResidentRequestLease
     let continuation: AsyncStream<CBv2Event>.Continuation
     let detokenizer: any CBv2IncrementalDetokenizer

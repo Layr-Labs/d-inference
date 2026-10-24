@@ -36,8 +36,8 @@ public final class MiMoResidentRuntime {
     public let prefixCache: QwenStagePrefixCache
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private let lifecycle: QwenLayerStageResidentLifecycle
-    private var stage: LoadedMiMoLayerStage?
+    let lifecycle: QwenLayerStageResidentLifecycle
+    var stage: LoadedMiMoLayerStage?
     private weak var model: Module?
     /// A phase split's decoding rank (rank 1) also holds the producer stage,
     /// so that it can adopt rank 0's state and decode alone, or serve a
@@ -46,6 +46,22 @@ public final class MiMoResidentRuntime {
     private weak var producerModel: Module?
     private var residency: ClusterStageResidency?
     private var reservation: Reservation?
+    public let batchLanes: Int
+    private let usesPagedHistory: Bool
+    let laneBook = ClusterBatchLaneBook<MiMoBatchReservation>()
+    var batchServing = false
+    var batchRecordOrdinal: UInt64 = 0
+    var batchDriver: IndependentHistoryBatchDriver<MiMoNativeBatchExecutor, MiMoBatchReservation>?
+
+    func withBatchOperation<T>(_ body: () throws -> T) throws -> T {
+        // Called only by the worker's serial native executor, including its
+        // reentrant serviceControl callback during an active batch.
+        if batchServing { return try body() }
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        return try body()
+    }
+
     private var processLeaseOwned = true
     private var recordsSteps = false
     /// `pipeline_mtp_v1`: the agreed terms, and on rank 1 the loaded head.
@@ -57,6 +73,7 @@ public final class MiMoResidentRuntime {
         let request: QwenLayerStageGenerationRequest
         let allowance: MiMoResidentRequestAllowance
         let deadline: UInt64
+        let hostBytes: Int
         /// What this request's prefix capture may add (0: it captures nothing).
         var prefixCaptureBytes = 0
     }
@@ -64,11 +81,12 @@ public final class MiMoResidentRuntime {
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
                  stage: LoadedMiMoLayerStage, producer: LoadedMiMoLayerStage?, residency: ClusterStageResidency?, capacity: Int,
                  lifecycle: QwenLayerStageResidentLifecycle, generationMode: QwenResidentGenerationMode,
-                 prefixCache: QwenStagePrefixCache, linkProbe: ClusterWorkerLinkProbe? = nil) {
+                 prefixCache: QwenStagePrefixCache, batchLanes: Int = 1, usesPagedHistory: Bool = false, linkProbe: ClusterWorkerLinkProbe? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.model; self.residency = residency; self.lifecycle = lifecycle
         self.producer = producer; producerModel = producer?.model
-        self.generationMode = generationMode; self.prefixCache = prefixCache
+        self.generationMode = generationMode; self.prefixCache = prefixCache; self.batchLanes = batchLanes
+        self.usesPagedHistory = usesPagedHistory
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe)
@@ -118,6 +136,8 @@ public final class MiMoResidentRuntime {
                             prefixSSDKey: Data? = nil) throws -> MiMoResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        let batch = try MiMoBatchSettings.fromEnvironment(environment, mode: mode,
+            images: configuration.runtimeProfile == ClusterMiMoImageCandidate.profileID)
         // Image opt-in authorizes this candidate, never the broader experiment
         // that waives an admissible-memory refusal. Check before shared enable,
         // transport setup, checkpoint reads, model construction or GPU work.
@@ -158,6 +178,7 @@ public final class MiMoResidentRuntime {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(QwenResidentQualificationSwitches.permittingArgument) yes; it is refused, not ignored")
         }
+        guard batch.lanes == 1 || !recordsSteps else { throw ProbeError("MiMo step evidence requires one batch lane") }
         let handoffFault = try MiMoQualificationFault.admit(environment: environment, qualification: qualification, mode: mode)
         // Recording alone changes no decision, so it is not part of what the ranks agree.
         let measuredGate = QwenDenseStageLoadMeasurement.shared.waivesRefusals
@@ -190,7 +211,7 @@ public final class MiMoResidentRuntime {
         let holdsProducer = mode.isPhaseSplit && configuration.rank == 1
         // A MiMo phase split (a hand-off mode, off by default) hands over state
         // computed from frame 0 and refuses a restored prefix: no cache under it.
-        let prefixCache = mode.isPhaseSplit ? QwenStagePrefixCache(enabled: false)
+        let prefixCache = mode.isPhaseSplit || batch.usesPagedHistory ? QwenStagePrefixCache(enabled: false)
             : QwenStagePrefixCache.fromEnvironment(environment)
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
@@ -220,8 +241,8 @@ public final class MiMoResidentRuntime {
                 try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                                                        transport: collective.transport)
             }
-            let plainAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport,
-                residency: keepsResidency, measuredGate: measuredGate, speculative: speculativeTerms)
+            let plainAgreement = try batch.binding(admission.loadAgreementFingerprint(mode: mode, transport: transport,
+                residency: keepsResidency, measuredGate: measuredGate, speculative: speculativeTerms))
             // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`),
             // so the planner can choose tensor parallel for this pair; bound here so both ranks measure it.
             let probesLink = transport != .localSocketTest
@@ -262,7 +283,7 @@ public final class MiMoResidentRuntime {
                             // Both ranks name the head's tensors; the last rank reads them.
                             headInventorySHA256 = try MiMoMTPHead.inventory(source: source).0.sha256
                             if configuration.rank == 1, let consumer = stage {
-                                head = try MiMoMTPHead(source: source, consumer: consumer, check: checked)
+                                head = try MiMoMTPHead(source: source, consumer: consumer, pagedHistory: batch.usesPagedHistory, check: checked)
                             }
                         }
                         // A phase split's decoding rank loads the producer stage after
@@ -296,7 +317,8 @@ public final class MiMoResidentRuntime {
                         plan: admission.plan, rank: collective.rank,
                         maximumTokens: admission.profile.maximumContextTokens,
                         chunkSize: admission.profile.maximumChunkTokens, phaseSplit: mode.isPhaseSplit,
-                        speculativeBytes: try speculativeBytes(admission.profile.maximumChunkTokens),imageCandidate:admission.plan.visionEnabled)
+                        speculativeBytes: try speculativeBytes(admission.profile.maximumChunkTokens),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory,
+                        verificationTokens: speculativeTerms.map { $0.depth + 1 } ?? 1)
                     try configuration.allocatorPolicy.prepareReady(
                         synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                         snapshot: {
@@ -310,19 +332,32 @@ public final class MiMoResidentRuntime {
                     func allowance(_ context: Int, _ chunk: Int) throws -> MiMoResidentRequestAllowance {
                         try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                             plan: admission.plan, rank: collective.rank, maximumTokens: context, chunkSize: chunk,
-                            phaseSplit: mode.isPhaseSplit, speculativeBytes: try speculativeBytes(chunk),imageCandidate:admission.plan.visionEnabled)
+                            phaseSplit: mode.isPhaseSplit, speculativeBytes: try speculativeBytes(chunk),imageCandidate:admission.plan.visionEnabled, independentHistory: batch.usesPagedHistory,
+                        verificationTokens: speculativeTerms.map { $0.depth + 1 } ?? 1)
+                    }
+                    let sharedBatch = batch.lanes > 1 ? try MiMoBatchMemory.workspace(
+                        spec: admission.specification, localLayers: admission.plan.stages[collective.rank].layers.count,
+                        rank: collective.rank, lanes: batch.lanes,
+                        bound: QwenResidentResourceEnvironment.allocationBound) : nil
+                    func hostHistory(_ context: Int) throws -> Int {
+                        guard batch.usesPagedHistory else { return 0 }
+                        return try QwenLongPrefillCheckedBytes.sum([
+                            MiMoBatchMemory.historyBytes(maximumTokens: context), sharedBatch?.host ?? 0])
                     }
                     guard let admitted = try LayerStageContextGate.admitted(profile: admission.profile, charge: { context, _, chunk in
-                        .init(reservedBytes: try allowance(context, chunk).reservedBytes, extraNativeBytes: 0, extraHostBytes: 0)
+                        .init(reservedBytes: try allowance(context, chunk).reservedBytes,
+                            extraNativeBytes: sharedBatch?.native ?? 0, extraHostBytes: try hostHistory(context))
                     }) else {
                         let minimum = LayerStageContextGate.minimumContextTokens(admission.profile)
                         try allowance(minimum, min(admission.profile.maximumChunkTokens,
-                                                   min(admission.profile.maximumPromptTokens, minimum - 1))).requireLive()
+                                                   min(admission.profile.maximumPromptTokens, minimum - 1))).requireLive(
+                            additionalNativeBytes: sharedBatch?.native ?? 0, additionalHostBytes: hostHistory(minimum))
                         throw ProbeError("Resident load refused: not even a request of \(minimum) context tokens fits on rank \(collective.rank)")
                     }
                     let atAdmitted = try allowance(admitted.context, min(admission.profile.maximumChunkTokens,
                         min(admission.profile.maximumPromptTokens, admitted.context - 1)))
-                    try atAdmitted.requireLive()
+                    try atAdmitted.requireLive(additionalNativeBytes: admitted.charge.extraNativeBytes,
+                        additionalHostBytes: admitted.charge.extraHostBytes)
                     if prefixCache.enabled {
                         // Half the room beside the largest admitted request, at
                         // most the cache's ceiling (the dense runtime's rule).
@@ -347,7 +382,8 @@ public final class MiMoResidentRuntime {
                     // Sizes and durations only, for whoever launched this worker.
                     let loadFields: [String] = [
                         "darkbloom-mimo-resident-load-v1", "rank=\(collective.rank)", "cut=\(configuration.stageCut)",
-                        "mode=\(mode.rawValue)", "loaded_tensor_bytes=\(loaded.receipt.loadedTensorBytes)",
+                        "mode=\(mode.rawValue)", "lanes=\(batch.lanes)", "loaded_tensor_bytes=\(loaded.receipt.loadedTensorBytes)",
+                        "kv_backend=\(batch.usesPagedHistory ? "paged" : "contiguous")",
                         "vision_tensor_bytes=\(loaded.vision?.storageBytes ?? 0)",
                         "vision_inventory_sha256=\(loaded.visionCommitmentSHA256 ?? "none")",
                         "producer_tensor_bytes=\(producer?.receipt.loadedTensorBytes ?? 0)",
@@ -380,7 +416,8 @@ public final class MiMoResidentRuntime {
                         disagreementMessage: "Resident MiMo peers did not load matching verified stage commitments",
                         scope: .session(.loadedReady, "resident-loaded"), check: checked)
                     try checked()
-                    return maximum.reservedBytes
+                    return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes,
+                        batch.usesPagedHistory ? MiMoBatchMemory.historyBytes(maximumTokens: admission.profile.maximumContextTokens) : 0])
                 } catch {
                     try nativeError.check()
                     throw error
@@ -404,7 +441,7 @@ public final class MiMoResidentRuntime {
             try control.loaded()
             let runtime = MiMoResidentRuntime(admission: admission, control: control, collective: collective,
                 stage: stage!, producer: producer, residency: residency, capacity: capacity, lifecycle: lifecycle,
-                generationMode: mode, prefixCache: prefixCache, linkProbe: linkProbe)
+                generationMode: mode, prefixCache: prefixCache, batchLanes: batch.lanes, usesPagedHistory: batch.usesPagedHistory, linkProbe: linkProbe)
             runtime.recordsSteps = recordsSteps
             runtime.speculative = speculativeTerms.map { MiMoSpeculativeDecode(terms: $0, head: head) }
             runtime.handoffFault = handoffFault
@@ -435,6 +472,7 @@ public final class MiMoResidentRuntime {
     /// Metadata and native resource reservation only; no request state or forward.
     /// Returned bytes are this rank's named allowance, not combined peer memory.
     public func reserve(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
+        guard batchLanes == 1 else { throw ProbeError("MiMo multi-lane owner requires lane reservation") }
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds,
@@ -459,18 +497,21 @@ public final class MiMoResidentRuntime {
             }
             var allowance = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
-                chunkSize: chunk, phaseSplit: generationMode.isPhaseSplit, speculativeBytes: headBytes,imageCandidate:admission.plan.visionEnabled)
+                chunkSize: chunk, phaseSplit: generationMode.isPhaseSplit, speculativeBytes: headBytes,imageCandidate:admission.plan.visionEnabled,
+                independentHistory: usesPagedHistory, verificationTokens: speculative.map { $0.terms.depth + 1 } ?? 1)
             if let budget = imageBudget {
                 // Check the combined sum before storing in the nonthrowing ledger accessor.
                 _ = try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,budget.reservedBytes])
                 allowance.imageBytes = max(allowance.imageBytes,budget.reservedBytes)
                 guard collective.rank != 0 || stage.vision != nil else { throw ProbeError("MiMo image tower is not loaded") }
             }
-            guard allowance.reservedBytes <= value.capacityLimitBytes,
-                  allowance.reservedBytes <= baseReady.requestCapacityBytes else {
+            let hostBytes = usesPagedHistory ? try MiMoBatchMemory.historyBytes(maximumTokens: request.maximumTokens) : 0
+            let reservedBytes = try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes, hostBytes])
+            guard reservedBytes <= value.capacityLimitBytes,
+                  reservedBytes <= baseReady.requestCapacityBytes else {
                 throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
             }
-            var reserved = Reservation(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds)
+            var reserved = Reservation(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds, hostBytes: hostBytes)
             // Only what this request's capture adds after the prefix this rank
             // holds for it (nothing on a repeat of the whole prompt), under the
             // scope its agreement will key the cache by.
@@ -483,16 +524,16 @@ public final class MiMoResidentRuntime {
             // Kept prefixes give way before a reservation is refused for memory,
             // and this request's own capture is optional.
             do {
-                try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: reserved.prefixCaptureBytes) }
+                try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: reserved.prefixCaptureBytes, additionalHostBytes: hostBytes) }
             } catch where reserved.prefixCaptureBytes > 0 {
                 log("darkbloom-prefix-v1 rank=\(collective.rank) family=mimo capture-dropped bytes=\(reserved.prefixCaptureBytes): \(error)")
                 reserved.prefixCaptureBytes = 0
-                try prefixCache.yieldingMemory { try allowance.requireLive() }
+                try prefixCache.yieldingMemory { try allowance.requireLive(additionalHostBytes: hostBytes) }
             }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             prefixCache.admitCapture(prefixCache.enabled ? reserved.prefixCaptureBytes : nil)
             reservation = reserved
-            return allowance.reservedBytes
+            return reservedBytes
         }
     }
 
@@ -574,7 +615,7 @@ public final class MiMoResidentRuntime {
                 // Kept prefixes give way first, then this request's own capture.
                 captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
                     prefixCache: prefixCache, rank: collective.rank,
-                    live: { try reserved.allowance.requireLive(additionalNativeBytes: $0) })
+                    live: { try reserved.allowance.requireLive(additionalNativeBytes: $0, additionalHostBytes: reserved.hostBytes) })
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)
@@ -584,6 +625,7 @@ public final class MiMoResidentRuntime {
         var firstToken: UInt64?
         let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
             agreement: agreement, collective: collective, recordsSteps: recordsSteps, prefixCache: prefixCache,
+            independentHistory: usesPagedHistory,
             speculative: speculative, producerStage: producer,
             handoffFault: agreement.phaseSplit == nil ? nil : handoffFault, onCommittedToken: { token in
                 let current = ordinal; ordinal += 1
@@ -640,6 +682,8 @@ public final class MiMoResidentRuntime {
         try control.beginClose()
         collective.logDataPlaneStatus()
         do {
+            try batchDriver?.retireAll()
+            batchDriver = nil
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
@@ -649,7 +693,7 @@ public final class MiMoResidentRuntime {
                     prefixCache.disk?.close()
                     prefixCache.sweep()
                     try residency?.end(); residency = nil
-                    reservation = nil; speculative = nil; stage = nil; producer = nil
+                    reservation = nil; laneBook.clear(); speculative = nil; stage = nil; producer = nil
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident MiMo model remains retained") }
                     Memory.clearCache(); try error.check()
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()

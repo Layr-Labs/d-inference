@@ -33,6 +33,7 @@ public struct QualificationLimits: Equatable, Sendable {
         "registered_qwen35_35b_a3b": 262_144,
         "registered_qwen36_35b_a3b": 262_144,
         "registered_ternary_bonsai_2_27b": 262_144,
+        "registered_ternary_bonsai_2_9b": 262_144,
         "registered_nemotron35_lightning": 262_144,
         "registered_gemma4_26b_qat_4bit": 262_144,
         "registered_gemma4_26b": 262_144,

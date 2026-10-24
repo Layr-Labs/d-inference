@@ -527,9 +527,11 @@ private func checkTensorParallelOlderMacs(_ big: ClusterModelLayout, _ checks: P
                  try SyntheticMac.idle(16).device("b", speed: modelled(floorMs: 25, bandwidthGBs: 200, weightBytes: weights, prefill: 60),
                      chip: "Apple M1 Pro")]
     let tight = try ClusterPlacementPlanner.plan(devices: small, layout: layout, policy: policy(), link: linkCosts(reductionMicroseconds: 45))
-    checks.require("tensor parallel: two 16 GB Macs that cannot hold the 27B alone (nor a phase split) choose tensor parallel over the pipeline when it fits and is faster",
-        tight.alone.allSatisfy { !$0.fit.possible || $0.fit.tier > 0 }
-            && (tight.chosen.map { $0.mode.usesTensorParallelDecode || $0.tier > 0 } ?? true))
+    checks.require("tensor parallel: two 16 GB Macs use the fitting pipeline when neither a whole model nor the tensor-parallel envelope fits",
+        tight.alone.allSatisfy { !$0.fit.possible }
+            && tight.tensorParallel?.verdict == .doesNotFit
+            && tight.chosen?.mode == .pipeline && tight.chosen?.tier == 0
+            && tight.chosen?.ranks.allSatisfy { $0.fit == .now } == true)
 }
 
 // MARK: - Served requests correct the prediction

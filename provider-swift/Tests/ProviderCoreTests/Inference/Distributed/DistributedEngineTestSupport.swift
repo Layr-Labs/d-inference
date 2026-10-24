@@ -148,10 +148,12 @@ final class DistributedTestDetokenizers: CBv2DetokenizerFactory {
     func makeDetokenizer(stopStrings: [String]) -> any CBv2IncrementalDetokenizer { Decoder(stopStrings) }
 }
 
-func distributedTestProfile(maxPrompt: Int = 8192, maxOutput: Int = 128) throws -> DistributedResidentExecutionProfile {
+func distributedTestProfile(maxPrompt: Int = 8192, maxOutput: Int = 128,
+                            supportsLogprobs: Bool = false) throws -> DistributedResidentExecutionProfile {
     try .init(
         id: "fabricated-greedy", vocabularySize: 100, maxPromptTokens: maxPrompt,
-        maxOutputTokens: maxOutput, maxContextTokens: maxPrompt + maxOutput, requestTimeout: .seconds(315))
+        maxOutputTokens: maxOutput, maxContextTokens: maxPrompt + maxOutput, requestTimeout: .seconds(315),
+        supportsLogprobs: supportsLogprobs)
 }
 
 func distributedTestEngine(

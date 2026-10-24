@@ -281,6 +281,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
             usageSignal: signal)
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk):
                 if firstChunkAt == nil { firstChunkAt = .now }
                 text += chunk

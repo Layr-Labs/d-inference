@@ -116,7 +116,7 @@ public struct ClusterMemberPreparation: Sendable {
                 nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                 metallib: URL(fileURLWithPath: attachment.metallibPath),
                 resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip,
-                meshOverLink: plan.configuration.linkControl != nil, roster: roster) else {
+                meshOverLink: plan.configuration.linkControl != nil, roster: roster, batchLanes: plan.batchLanes()) else {
             throw ClusterConfigurationError.invalid(roster == nil
                 ? "Saved pair approval does not cover this Mac's chip, artifact or native build"
                 : "Saved cluster approval does not cover this Mac's numerics class, usable memory, artifact or native build")

@@ -20,10 +20,10 @@ public enum ClusterWorkerCodec {
         return try encoded(value, maximum: maximumBytes(frame.command))
     }
 
-    /// A reservation carrying GLM media bytes may use `mediaCommandBytes`;
+    /// A reservation carrying GLM or Qwen media bytes may use `mediaCommandBytes`;
     /// every other command stays within `commandBytes`.
     static func maximumBytes(_ command: ClusterWorkerCommand) -> Int {
-        if case .reserve(let r) = command, r.glmMedia?.carriesEncodedBytes == true {
+        if case .reserve(let r) = command, (r.glmMedia?.carriesEncodedBytes == true || r.qwenMedia?.carriesEncodedBytes == true) {
             return ClusterWorkerLimits.mediaCommandBytes
         }
         return ClusterWorkerLimits.commandBytes
@@ -260,6 +260,7 @@ public enum ClusterWorkerCodec {
             value["mimoImages"] = bytes.base64EncodedString()
         }
         if let media = r.glmMedia { value["glmMedia"] = media.wireObject() }
+        if let media = r.qwenMedia { value["qwenMedia"] = media.wireObject() }
         return value
     }
     /// A prompt's token IDs as packed little-endian UInt32 in base64: one JSON
@@ -330,12 +331,13 @@ public enum ClusterWorkerCodec {
             media = try ClusterMiMoImages.decodeBounded(bytes)
         } else { media = nil }
         let glmMedia = r.values["glmMedia"] == nil ? nil : try ClusterGLMMedia.decode(wire: r.object("glmMedia"))
+        let qwenMedia = r.values["qwenMedia"] == nil ? nil : try ClusterQwenMedia.decode(wire: r.object("qwenMedia"))
         let promptTokenCount = try r.int("promptTokenCount")
         let promptTokenIDs = try unpackedTokens(r.string("promptTokens"), count: promptTokenCount)
         let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: promptTokenIDs,
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
-            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia)
+            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {
@@ -357,6 +359,7 @@ public enum ClusterWorkerCodec {
             .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
             .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
             .merging(r.media.map { ["media": $0] } ?? [:]) { first, _ in first }
+            .merging(r.tensorAssistant.map { ["tensorAssistant": $0.object] } ?? [:]) { first, _ in first }
     }
     private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
         ["transport": p.transport, "keyed": p.keyed,
@@ -394,10 +397,11 @@ public enum ClusterWorkerCodec {
                 allSumLargeBytes: l.int("allSumLargeBytes"), allSumLargeMicroseconds: l.int("allSumLargeMicroseconds"))
             try l.finish()
         }
+        let assistant = try r.optionalObject("tensorAssistant").map(ClusterQwenTensorAssistantReady.decodeObject)
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
             dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe,
-            media: r.values["media"] == nil ? nil : try r.string("media"))
+            media: r.values["media"] == nil ? nil : try r.string("media"), tensorAssistant: assistant)
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

@@ -36,12 +36,14 @@ public struct ClusterWorkerPairReadiness: Sendable {
     /// The media contract both ranks serve (`ClusterWorkerReady.media`); nil
     /// when either serves text only.
     public let media: String?
+    public let tensorAssistant: ClusterQwenTensorAssistantReady?
     public init(identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, executionPlanSHA256: String,
                 requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane?, servingContextTokens: Int,
-                media: String? = nil) {
+                media: String? = nil, tensorAssistant: ClusterQwenTensorAssistantReady? = nil) {
         self.identity = identity; self.profile = profile; self.executionPlanSHA256 = executionPlanSHA256
         self.requestCapacityBytes = requestCapacityBytes; self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens; self.media = media
+        self.tensorAssistant = tensorAssistant
     }
 }
 
@@ -162,10 +164,11 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             let sum = a.requestCapacityBytes.addingReportingOverflow(b.requestCapacityBytes)
             guard !sum.overflow, sum.partialValue <= ClusterWorkerLimits.capacityBytes else { return nil }
             // One keyed session or none: ranks that disagree are not a pair.
-            guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true else { return nil }
+            guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true,
+                  a.tensorAssistant == b.tensorAssistant else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
                 requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked,
-                media: a.media == b.media ? a.media : nil)
+                media: a.media == b.media ? a.media : nil, tensorAssistant: a.tensorAssistant)
         }
     }
 
@@ -206,7 +209,14 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         self.timing = timing; self.keepWarm = keepWarm
         self.workers = workers; identity = workers[0].expectedIdentity; profile = workers[0].expectedProfile
         executionPlanSHA256 = workers[0].executionPlanSHA256
-        do { try Self.awaitReadiness(of: workers, until: startupDeadline) }
+        do {
+            try Self.awaitReadiness(of: workers, until: startupDeadline)
+            guard let first = workers[0].readiness, let second = workers[1].readiness,
+                  first.tensorAssistant == second.tensorAssistant,
+                  first.tensorAssistant.map({ $0.capacity == lanes }) ?? true else {
+                throw ClusterWorkerOwnerError.invalid("Tensor assistant READY differs between members or from pair capacity")
+            }
+        }
         catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
         rankServingContext = workers.map { $0.readiness?.servingContextTokens }
         for worker in workers { worker.setInvalidationHandler { [weak self] in self?.invalidate() } }

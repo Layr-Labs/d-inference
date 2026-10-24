@@ -18,6 +18,8 @@ import Darwin
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(120); defer { alarm(0) }
         privateMiMoSelectionRefusesBeforeAnyActionOnMemberOrUnpairedMac()
         terminalPresentationFallbacks()
+        colourSetupDrawsTheMarkAndKeepsTheTranscript()
+        narrowOrPlainLocaleColourKeepsPlainLines()
         failedTestDoesNotClaimSetupSuccess()
         modelPresentationPreservesEveryFamilyAndBlocker()
         pairingStateMachine()
@@ -104,6 +106,102 @@ import Darwin
         let count = Darwin.read(output[0], &buffer, buffer.count)
         let text = String(decoding: buffer.prefix(max(0, count)), as: UTF8.self)
         expect(text == "\nChoose a model\nNumber: \n", "pipe output has no colors, backspaces or echoed input: \(text)")
+    }
+
+    /// The coloured setup on a UTF-8 terminal: the Darkbloom mark beside the
+    /// setup's name, a meter on each stage, and live lines that the next said
+    /// line replaces. Every stage and line still reads in order; the mark
+    /// blooms (cursor up) only when animation is allowed, and nothing clears the screen.
+    static func colourSetupDrawsTheMarkAndKeepsTheTranscript() {
+        for animated in [false, true] {
+            let recorder = Recorder()
+            var environment = ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"]
+            if !animated { environment["DARKBLOOM_NO_ANIMATION"] = "1" }
+            let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+                .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+                pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")), environment: environment)
+            expect(run.waitFor("Does the other Mac show 123 456?"), "colour: the code question")
+            run.type("y")
+            expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "colour: the model choice")
+            run.type("\r")
+            let code = run.finish()
+            expect(code == 0, "colour: exit 0, got \(String(describing: code))")
+            let screen = visible(run.text)
+            expect(ClusterOnboardingBrand.rows().allSatisfy { row in screen.contains { $0.contains(row) } }, "colour: the whole mark")
+            expect(screen.contains { $0.contains("Darkbloom") } && screen.contains { $0.contains("Connect / Pair / Choose / Start / Test") },
+                "colour: the name and the steps beside the mark")
+            let stages = ["1 / 5  Connect the Macs", "2 / 5  Pair securely", "3 / 5  Choose a model", "4 / 5  Start the model", "5 / 5  Test a response"]
+            let rows = stages.compactMap { stage in screen.firstIndex { $0.contains(stage) } }
+            expect(rows.count == stages.count && rows == rows.sorted(), "colour: stages in order")
+            for (index, stage) in stages.enumerated() {
+                let meter = String(repeating: "\u{25CF}", count: index + 1) + String(repeating: "\u{25CB}", count: 4 - index)
+                expect(screen.contains { $0.contains(stage) && $0.contains(meter) }, "colour: \(stage) carries its meter")
+            }
+            expect(screen.contains("Serving Qwen3.5-9B across both Macs: pipeline, M3 Ultra 16 layers / M5 Ultra 16 layers."),
+                "colour: the serving line reads plainly")
+            for live in ["Checking the cable", "Reading both Macs", "Planning on both Macs' memory", "Loading Qwen3.5-9B on both Macs",
+                         "Waiting for the first tokens"] {
+                expect(!screen.contains { $0.contains(live + "\u{2026}") }, "colour: the live line \(live) is replaced, never left behind")
+            }
+            expect(run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A") == animated, "colour: the mark blooms only when animating")
+            expect(!run.text.contains("\u{1B}[2J") && !run.text.contains("\u{1B}[H"), "colour: no screen clearing")
+            expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0",
+                "serve", "waitReady", "testRequest"], "colour: operations in order: \(recorder.all)")
+        }
+        // The mark and the meter themselves.
+        expect(ClusterOnboardingBrand.rows() == ["\u{2588}\u{2588}\u{2588}\u{2588}  \u{2580}\u{2580}\u{2588}\u{2588}  \u{2588}\u{2588}",
+            "\u{2588}\u{2588}\u{2588}\u{2588}    \u{2588}\u{2588}\u{2588}\u{2588}  ", "\u{2588}\u{2588}\u{2588}\u{2588}  \u{2588}\u{2588}      ",
+            "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}  "], "the favicon's pixel d")
+        expect(Set(ClusterOnboardingBrand.bloom.map { $0.row * 7 + $0.column }).count == ClusterOnboardingBrand.bloom.count
+            && ClusterOnboardingBrand.bloom.allSatisfy { Array(ClusterOnboardingBrand.pixels[$0.row])[$0.column] == "#" }
+            && ClusterOnboardingBrand.bloom.count == ClusterOnboardingBrand.pixels.joined().filter { $0 == "#" }.count,
+            "the bloom draws every pixel once")
+        expect(ClusterOnboardingBrand.rows(revealed: 0).allSatisfy { $0.allSatisfy { $0 == " " } }, "an unopened bloom is blank")
+        expect(ClusterOnboardingBrand.meter("2 / 5  Pair securely") == "\u{25CF}\u{25CF}\u{25CB}\u{25CB}\u{25CB}"
+            && ClusterOnboardingBrand.meter("Test a response") == nil && ClusterOnboardingBrand.meter("6 / 5  x") == nil, "the step meter")
+        expect(!ClusterOnboardingBrand.drawsBlocks(["LANG": "C"]) && ClusterOnboardingBrand.drawsBlocks(["LC_ALL": "en_US.UTF-8"]),
+            "blocks only where the locale is UTF-8")
+        expect(ClusterOnboardingBrand.colour(["COLORTERM": "truecolor"]) == "38;2;20;86;255" && ClusterOnboardingBrand.colour([:]) == "38;5;27",
+            "the brand blue")
+    }
+
+    /// Colour on a terminal too narrow for the mark (an SSH window, a split
+    /// pane), or a locale without UTF-8: the coloured headings only, no mark,
+    /// no meter, no live line and no cursor movement, every line in order.
+    static func narrowOrPlainLocaleColourKeepsPlainLines() {
+        for (label, environment, columns) in [
+            ("narrow", ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"], UInt16(30)),
+            ("ascii locale", ["TERM": "xterm-256color", "LANG": "C"], UInt16(132)),
+        ] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+                .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+                pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")), environment: environment, columns: columns)
+            expect(run.waitFor("Does the other Mac show 123 456?"), "\(label): the code question")
+            run.type("y")
+            expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "\(label): the model choice")
+            run.type("\r")
+            let code = run.finish()
+            expect(code == 0, "\(label): exit 0, got \(String(describing: code))")
+            let screen = visible(run.text)
+            expect(!run.text.contains("\u{2588}") && !run.text.contains("\u{2580}") && !run.text.contains("\u{25CF}"),
+                "\(label): no mark and no meter")
+            expect(!run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A") && !run.text.contains("\u{1B}[K"),
+                "\(label): no cursor movement or live line")
+            expect(run.text.contains("\u{1B}[1;36m"), "\(label): the headings keep their colour")
+            let stages = ["1 / 5  Connect the Macs", "2 / 5  Pair securely", "3 / 5  Choose a model", "4 / 5  Start the model", "5 / 5  Test a response"]
+            let rows = stages.compactMap { stage in screen.firstIndex { $0.contains(stage) } }
+            expect(rows.count == stages.count && rows == rows.sorted(), "\(label): stages in order")
+            expect(recorder.all.last == "testRequest", "\(label): the setup ran to its test: \(recorder.all)")
+        }
+    }
+
+    /// What a person reads: escapes removed and each row as it was last written.
+    static func visible(_ text: String) -> [String] {
+        text.components(separatedBy: "\n").map { line in
+            let plain = line.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+            return plain.components(separatedBy: "\r").last ?? plain
+        }
     }
 
     static func failedTestDoesNotClaimSetupSuccess() {
@@ -327,9 +425,10 @@ import Darwin
         private(set) var keys = 0
         let done = DispatchSemaphore(value: 0)
 
-        init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init()) {
+        init(_ operations: ClusterOnboardingOperations, request: ClusterOnboardingRequest = .init(),
+             environment: [String: String] = ["NO_COLOR": "1"], columns: UInt16 = 132) {
             var primary: Int32 = -1, secondary: Int32 = -1
-            var window = winsize(ws_row: 50, ws_col: 132, ws_xpixel: 0, ws_ypixel: 0)
+            var window = winsize(ws_row: 50, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
             precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
             master = primary; slave = secondary
             _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
@@ -346,7 +445,7 @@ import Darwin
             }
             let slaveFD = secondary
             Thread.detachNewThread { [self] in
-                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: ["NO_COLOR": "1"])
+                let console = ClusterOnboardingTerminal(input: slaveFD, output: slaveFD, environment: environment)
                 let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
                 console.restore()
                 usleep(100_000)

@@ -34,6 +34,7 @@ enum ParityPieces {
         10: "<|endoftext|>", 11: "<|im_end|>", 12: "<end_of_turn>", 13: "<eos>",
         20: "Let me think.", 21: "</think>\n\n", 22: "The answer is 4.", 23: " More.", 24: " words",
         25: " and", 26: " more", 27: "{\"answer\": 4}",
+        28: "</think>\n\nThe answer is 4.",
         30: "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>",
         31: "<TOOLCALL>[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}]</TOOLCALL>",
         32: "<|tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}<tool_call|>",
@@ -175,6 +176,13 @@ struct ParityFamily: Sendable {
 
 // MARK: - Engines that commit the script
 
+/// Fixed captured values from two fabricated capable engines, never a claim
+/// that this artifact's native adapter computes logprobs. Unsupported profiles
+/// are exercised separately before owner reservation.
+func parityLogprob(_ token: Int) -> CBv2TokenLogprob {
+    .init(token: token, logprob: -0.25, topLogprobs: [(token, -0.25), (99, -2)])
+}
+
 /// The script both fake engines commit for the next request, and how it ends.
 final class ParityScript: @unchecked Sendable {
     private let lock = NSLock()
@@ -209,7 +217,8 @@ final class ParityScriptedEngine: CBv2Engine, @unchecked Sendable {
                 count += 1
                 let isStop = request.stopTokens.contains(token)
                 let text = isStop ? "" : detokenizer.push([token])
-                continuation.yield(.delta(text: text, tokens: [token], logprobs: nil))
+                let logprobs = request.sampling.topLogprobs > 0 ? [parityLogprob(token)] : nil
+                continuation.yield(.delta(text: text, tokens: [token], logprobs: logprobs))
                 if isStop || detokenizer.matchedStopString { reason = .stop; break }
                 if count == request.maxTokens { reason = .length; break }
             }
@@ -241,9 +250,10 @@ final class ParityClusterSession: DistributedLocalServerSession, @unchecked Send
     private let lock = NSLock()
     private var phase: DistributedInstalledSessionStatus = .prepared
 
-    init(family: ParityFamily, directory: URL) throws {
+    init(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) throws {
         profile = try .init(id: "fabricated-greedy", vocabularySize: 512, maxPromptTokens: 8192,
-                            maxOutputTokens: 4096, maxContextTokens: 8192 + 4096, requestTimeout: .seconds(315))
+                            maxOutputTokens: 4096, maxContextTokens: 8192 + 4096, requestTimeout: .seconds(315),
+                            supportsLogprobs: supportsLogprobs)
         model = .init(publicModelID: family.modelID, directory: directory, modelType: family.modelType,
                       eosTokenIDs: try family.installedEOS(), vocabularySize: 512)
         base.capacityBytes = 1 << 20
@@ -352,8 +362,8 @@ struct ParityClusterServer {
     let host: DistributedLocalServer
     let port: UInt16
 
-    static func start(family: ParityFamily, directory: URL) async throws -> Self {
-        let session = try ParityClusterSession(family: family, directory: directory)
+    static func start(family: ParityFamily, directory: URL, supportsLogprobs: Bool = true) async throws -> Self {
+        let session = try ParityClusterSession(family: family, directory: directory, supportsLogprobs: supportsLogprobs)
         let tokenizer = family.tokenizer
         // As `StartCommand+Distributed`: the plan's first-token budget is bound.
         let host = DistributedLocalServer(session: session,
@@ -378,8 +388,10 @@ struct ParityClusterServer {
             if stop.isSet { lease.acknowledge(); return }
             try? await Task.sleep(for: .milliseconds(2))
         }
+        let captures = owner.reservedRequests[reservations].sampling.topLogprobs > 0
         for token in script {
-            if !lease.send(.token(token)) { break }
+            let event: DistributedResidentEvent = captures ? .loggedToken(token, parityLogprob(token)) : .token(token)
+            if !lease.send(event) { break }
         }
         if failure { lease.send(.finished(.error("fixture failure"))) }
         lease.acknowledge()
@@ -398,7 +410,7 @@ final class ParityStopFlag: @unchecked Sendable {
 // MARK: - Requests and normalized answers
 
 enum ParityScriptKind: Sendable {
-    case plain, tool, stopString, long, json, none
+    case plain, tool, stopString, long, json, capturedContent, none
 
     func tokens(_ family: ParityFamily) -> [Int] {
         switch self {
@@ -407,6 +419,7 @@ enum ParityScriptKind: Sendable {
         case .stopString: family.stopString
         case .long: family.long
         case .json: family.json
+        case .capturedContent: family.harmony ? [44, 23, 24] : (family.modelType == "gemma4" ? [22, 23, 24] : [28, 23, 24])
         case .none: []
         }
     }
@@ -463,6 +476,10 @@ struct ParityCase: Sendable {
             .init("thinking-off", body: chat(m, #","chat_template_kwargs":{"enable_thinking":false}"#)),
             .init("reasoning-parser", body: chat(m, #","reasoning_parser":"think""#, stream: true)),
             .init("logprobs", body: chat(m, #","logprobs":true,"top_logprobs":2"#)),
+            // Compare all fields across a multi-token stream. Captured metadata
+            // follows each generation event through the canonical encoder.
+            .init("logprobs-stream", body: chat(m, #","logprobs":true,"top_logprobs":2,"max_tokens":3"#,
+                  stream: true), script: .capturedContent),
             .init("n-two", body: chat(m, #","n":2"#)),
             .init("engine-failure-stream", body: chat(m, stream: true), failure: true),
             .init("engine-failure", body: chat(m), failure: true),
@@ -615,11 +632,27 @@ func parityRun(_ family: ParityFamily) async throws -> [String] {
             if soloAnswer != clusterAnswer {
                 mismatches.append("[\(family.name)] \(testCase.name): HTTP answers differ\n single-Mac: \(soloAnswer)\n cluster:    \(clusterAnswer)")
             }
+            for (endpoint, answer) in [("single-Mac", soloAnswer), ("cluster", clusterAnswer)] {
+                if testCase.name == "stop-string-stream", answer.status != 200 {
+                    mismatches.append("\(endpoint): scalar stop was not accepted")
+                }
+                if testCase.name == "plain", answer.body.contains(where: { $0.contains("reasoning_content") }),
+                   !answer.body.contains(where: { $0.contains("reasoning_tokens") }) {
+                    mismatches.append("\(endpoint): reasoning usage was omitted")
+                }
+                if testCase.name.hasPrefix("logprobs"),
+                   answer.status != 200 || !answer.body.contains(where: { $0.contains("\"logprob\":-0.25") }) {
+                    mismatches.append("\(endpoint): captured logprobs were omitted")
+                }
+            }
             let clientSeed = testCase.body?.contains("\"seed\"") == true
             let soloRequest = solo.engine.requests.count > soloBefore
                 ? solo.engine.requests.last.map { ParityEngineRequest($0, clientSeed: clientSeed) } : nil
             let clusterRequest = cluster.session.base.reserveCount > reservations
                 ? cluster.session.base.reservedRequests.last.map { ParityEngineRequest($0, clientSeed: clientSeed) } : nil
+            if testCase.name == "sampling", soloRequest?.minP != 0.05 || clusterRequest?.minP != 0.05 {
+                mismatches.append("min_p did not reach both engines")
+            }
             if soloRequest != clusterRequest {
                 mismatches.append("[\(family.name)] \(testCase.name): engine requests differ\n single-Mac: \(soloRequest.map(String.init(describing:)) ?? "none")\n cluster:    \(clusterRequest.map(String.init(describing:)) ?? "none")")
             }
@@ -649,4 +682,34 @@ func parityRecord(_ lines: [String], family: String) {
     let url = URL(fileURLWithPath: folder).appendingPathComponent("parity-\(family).txt")
     let text = lines.isEmpty ? "PARITY: every case identical\n" : lines.joined(separator: "\n\n") + "\n"
     try? Data(text.utf8).write(to: url)
+}
+
+/// Exercise captured responses independently of the strict all-fields comparison.
+/// The content-only script ends at the exact output limit; the ordinary script
+/// includes reasoning delimiters and an EOS that emits no content. Both cases
+/// must preserve their distinct, explicit metadata attachment boundaries.
+func parityCapturedResponses(_ family: ParityFamily, contentOnly: Bool, stream: Bool) async throws -> [ParityAnswer] {
+    let directory = try family.makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let tokens = contentOnly ? ParityScriptKind.capturedContent.tokens(family) : family.plain
+    let script = ParityScript(); script.set(tokens)
+    let solo = try await ParitySoloServer.start(family: family, directory: directory, script: script)
+    let cluster = try await ParityClusterServer.start(family: family, directory: directory)
+    let client = URLSession(configuration: .ephemeral)
+    let limit = contentOnly ? #","max_tokens":3"# : ""
+    let request = ParityCase("multi-token-capture", body: ParityCase.chat(
+        family.modelID, #","logprobs":true,"top_logprobs":2"# + limit, stream: stream))
+    do {
+        let single = try await paritySend(port: solo.port, request, session: client)
+        let stop = ParityStopFlag()
+        let driver = Task { await cluster.drive(after: 0, script: tokens, failure: false, stop: stop) }
+        let pair: ParityAnswer
+        do { pair = try await paritySend(port: cluster.port, request, session: client) }
+        catch { stop.set(); await driver.value; throw error }
+        stop.set(); await driver.value
+        client.invalidateAndCancel(); await cluster.stop(); await solo.stop()
+        return [single, pair]
+    } catch {
+        client.invalidateAndCancel(); await cluster.stop(); await solo.stop(); throw error
+    }
 }

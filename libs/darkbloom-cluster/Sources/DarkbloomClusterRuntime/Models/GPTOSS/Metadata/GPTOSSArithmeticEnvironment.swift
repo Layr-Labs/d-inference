@@ -23,7 +23,7 @@ enum GPTOSSArithmeticEnvironment {
         let requiredAbsentNames: [String]
         let requiredAbsentPrefix: String
         let expertLayout = "split gate_proj and up_proj as stored; no load-time fusion"
-        let cache = "the text class's ordinary growing and rotating attention caches; not the engine's paged pool"
+        let cache = "request-owned demand-grown KV pages preserving ordinary full/sliding SDPA row order; no paged attention kernel"
         let numericalOrPerformanceQualificationEstablished = false
     }
 

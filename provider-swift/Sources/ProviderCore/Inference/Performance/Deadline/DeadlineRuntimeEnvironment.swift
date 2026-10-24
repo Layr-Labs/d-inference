@@ -13,6 +13,7 @@ enum DeadlineRuntimeEnvironment {
         "DARKBLOOM_NO_UPDATE_CHECK",
         "DARKBLOOM_PID_FILE",
         "DARKBLOOM_STATE_FILE",
+        "DARKBLOOM_VERIFIED_WEIGHTS_FILE",
         "DARKBLOOM_WATCHDOG_STATE",
     ]
 
@@ -23,6 +24,16 @@ enum DeadlineRuntimeEnvironment {
             catch { return false }
         }
         return !environment.keys.contains { key in
+            if key == EngineV2KVQuantizationPolicy.environmentKey {
+                // Existing bounds describe native execution only. The factory
+                // publishes this resolved key even without an env override.
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(environment[key] ?? "")) != .native
+            }
+            if key == EngineV2KVQuantizationPolicy.checkpointEnvironmentKey {
+                // Checkpoint encoding never selects live kernels or RAM rates.
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(
+                    environment[key] ?? "", purpose: .checkpoint)) == nil
+            }
             if cacheIsolation != nil && DeadlineQualificationCacheIsolation.isPlumbingKey(key) { return false }
             return key.hasPrefix("MLX_") || key.hasPrefix("MTPLX_") || key.hasPrefix("QWEN_")
                 || (key.hasPrefix("DARKBLOOM_") && !operationalKeys.contains(key))

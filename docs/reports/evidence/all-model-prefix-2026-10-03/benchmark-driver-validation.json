@@ -1,0 +1,70 @@
+{
+  "schema": "direct-native-driver-validation-v1",
+  "scope": "Supervision/CLI/observed-contract qualification; no native model performance from these checks.",
+  "binarySHA256": "05d48136843f321901a6475c5c60283c545f5d22618c15f18430a7b3bdc2ef52",
+  "binaryUnchangedDuringDiscovery": true,
+  "testingHelperSHA256": "da2601bc562f2e0dd0cd7e00e923aee763ce94bdbf3eddccdebf1a4b8d5d313d",
+  "discovery": {
+    "startedUTC": "2026-10-03T22:55:21.123980+00:00",
+    "endedUTC": "2026-10-03T22:55:21.398363+00:00",
+    "exitCode": 0,
+    "timedOut": false,
+    "benchmarkEnabled": false,
+    "specificationUnset": true,
+    "nativeModelExecuted": false,
+    "listedMethodCount": 3732,
+    "matchingMethodCount": 1,
+    "matchingMethod": "ProviderCoreTests.ModelPrefixBenchmarkLiveTests/modelPrefixPairs()",
+    "modeLimit": "Swift Testing intentionally enumerates all tests even with --filter; this is discovery only.",
+    "processOwnership": {
+      "directChildReaped": true,
+      "maximumTrackedDescendants": 0,
+      "trackedOwnedProcessesQuiescent": true,
+      "ownershipIdentity": "PID plus process creation time; no command/environment sweep"
+    }
+  },
+  "invocation": "swiftpm-testing-helper --test-bundle-path <frozen Darwin MH_BUNDLE> --testing-library swift-testing --filter ModelPrefixBenchmarkLiveTests",
+  "runtime": "Matching Xcode MacOSX platform Testing/XCTest framework, private framework and support library paths; no SwiftPM planning/cache/build.",
+  "orchestration": {
+    "SHA256": "cce186dc2dcb5077cd66e054a29e51340dabeb39dfb6d45ff17c16b5838a4932",
+    "files": {
+      "run-policy.py": "a7c3631c8e26947c9b11f3a8811cdab301136dd69e91921fb9ac79e7b9cf038a",
+      "policy_contract.py": "3fb13dc2bbeafb45a73a9300b449c000bb9d561bb99e46761a1decc9852bd43d",
+      "owned_process.py": "a116417b14d46d6b46ca9cdfa0b9ff68035d8fcced5b69711ca66944f85fa770",
+      "native_runner.py": "8e267489b6e4816e2837a2142bbc5fa1fccf560d24a21d36baaf369ef3bd1c9e",
+      "collate-policy.py": "f7069e507c48870cc5e3efb18751d1d3d69c24fcca56e49135db7e16fe9a5823"
+    }
+  },
+  "freezeGates": [
+    "orchestration five modules",
+    "plan",
+    "template",
+    "actual specification",
+    "provider/SDK source snapshot",
+    "test bundle",
+    "runtime helper"
+  ],
+  "processSupervision": {
+    "identity": "full PID plus process creation time, including root exclusion",
+    "cleanup": "direct child reaped; tracked descendants stopped/confirmed nonexecuting before final log/result digest; unexpected observed children fail closed",
+    "limits": "Known in-process helper supervision, not an OS sandbox against arbitrary fork/double-fork code.",
+    "oldGroupOnlyExpectedFailure": 1,
+    "finalOwnershipTestsPassed": 4,
+    "syntheticQuiescenceContractTestsPassed": 3,
+    "finalCombinedElapsedSeconds": 6.436,
+    "independentReview": "PID-reuse identity-double regression exposed and fixed; second source review clear."
+  },
+  "observedContract": "New final paired cohort requires explicit checkpointWritesDrained=true and finite consistent quiescenceCompletionSeconds/TPS/receiptToQuiescenceMilliseconds. Historical cohorts retain original field definitions and are not upgraded.",
+  "rateDefinitions": {
+    "generationTPS": "(completed output IDs - all IDs in first output event)/(last-first native output event)",
+    "endToEndTPS": "completed output IDs/native terminal duration; current COMPLETE publication already precedes terminal delivery",
+    "receiptCompletionTPS": "completed output IDs/return of session.complete, separate literal receipt timestamp",
+    "quiescenceCompletionTPS": "completed output IDs/explicit post-receipt idle plus owned checkpoint writer/activity joins; no fsync durability or saturation claim"
+  },
+  "limits": [
+    "Actual filtered suite invocation and full-model results belong to root-owned native cohort.",
+    "No provisional, failed or result-digest-mismatched arm may enter qualified three-pair comparisons.",
+    "Exact within-arm and four-role cross-policy output parity is required; no raw output fingerprint is exported."
+  ],
+  "privacy": "No local paths, prompts, generated IDs/output fingerprints, raw logprobs or provider/account identifiers."
+}

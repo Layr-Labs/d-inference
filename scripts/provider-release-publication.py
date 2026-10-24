@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Stage immutable signed products, then publish the same bytes after approval.
+"""Stage immutable signed products, then register and publish the same bytes.
 
 Signing and publication are separate jobs. Rerunning publication never signs or
-rebuilds. The release key can request promotion, but cannot grant qualification.
+rebuilds. The coordinator validates the exact build and enforces revocation.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,17 +16,11 @@ import urllib.error
 import urllib.request
 
 from provider_release_github import publish_github_release
-
-BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
+from provider_release_artifact import BUNDLE, checked_payload as artifact_payload, download, sha256
 
 
 class ReadinessPending(RuntimeError):
     pass
-
-
-def sha256(path):
-    with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def object_key(payload):
@@ -45,7 +38,7 @@ def validate(payload, env):
     if env["ENV_PREFIX"] not in {"dev", "prod"}:
         raise ValueError("Unknown publication environment")
     expected = {'version': env['VERSION'], 'source_commit': release_source(env),
-                'ci_run_id': env['GITHUB_RUN_ID'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
+                'ci_run_id': env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
                 'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod'}
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -63,10 +56,15 @@ def release_changelog(env):
     if env.get('RELEASE_TAG') or env.get('GITHUB_REF_TYPE') == 'tag':
         # Read annotation text as data: never interpolate it into Python or a
         # shell program. Preserve multiline notes in the retained JSON payload.
-        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)',
-                                 '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
-        if result.stdout.strip():
-            return result.stdout.strip()
+        # Git identifies the signature suffix separately. Keep the original
+        # contents as bytes so paragraph spacing and CRLFs are not reformatted.
+        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)%00%(contents:signature)%00',
+                                 '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, check=True)
+        if result.stdout:
+            contents, signature, _ = result.stdout.split(b'\0', 2)
+            notes = contents.removesuffix(signature).decode('utf-8').strip()
+            if notes:
+                return notes
     return f"Release v{env['VERSION']}"
 
 
@@ -77,6 +75,7 @@ def prepare(root, bundle, env):
         'binary_hash': env['BINARY_HASH'], 'bundle_hash': env['BUNDLE_HASH'],
         'metallib_hash': env['METALLIB_HASH'], 'code_directory_hash': env['CODE_DIRECTORY_HASH'],
         'source_commit': release_source(env), 'ci_run_id': env['GITHUB_RUN_ID'],
+        # Shipped wire name: require complete native identity, not a hardware test.
         'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod',
         'changelog': release_changelog(env),
     }
@@ -87,16 +86,13 @@ def prepare(root, bundle, env):
     shutil.copyfile(bundle, root / BUNDLE)
     provenance = {'source_commit': release_source(env), 'signing_workflow_commit': env['GITHUB_SHA'],
                   'signing_run_id': env['GITHUB_RUN_ID'],
+                  'signing_run_attempt': env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'build_run_id': env.get('RELEASE_BUILD_RUN_ID') or env['GITHUB_RUN_ID'],
                   'build_run_attempt': env.get('RELEASE_BUILD_RUN_ATTEMPT') or env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'unsigned_artifact_id': env.get('RELEASE_UNSIGNED_ARTIFACT_ID', ''),
                   'unsigned_artifact_digest': env.get('RELEASE_UNSIGNED_ARTIFACT_DIGEST', '')}
     (root / 'release-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
     (root / 'release-payload.json').write_text(json.dumps(payload, indent=2) + '\n')
-    qualification = {k: payload[k] for k in ['code_directory_hash', 'source_commit', 'ci_run_id']}
-    qualification['release'] = {k: v for k, v in payload.items() if k not in qualification and k != 'require_app_attest_qualification'}
-    qualification['evidence'] = ''  # Operator supplies actual test evidence, never CI-invented approval.
-    (root / 'qualification-request.json').write_text(json.dumps(qualification, indent=2) + '\n')
     notes = f"""## Provider v{payload['version']} (Swift CLI)
 
 **Source:** https://github.com/{env['GITHUB_REPOSITORY']}/commit/{payload['source_commit']}
@@ -107,7 +103,7 @@ def prepare(root, bundle, env):
 **Bundle SHA-256:** `{payload['bundle_hash']}`
 **Metallib SHA-256:** `{payload['metallib_hash']}`
 **Signed and notarized:** yes
-**Minimum macOS:** 14.0
+**macOS deployment target:** 14.0 (build, tests and signed runtime smoke: macOS 27)
 
 ### Install
 
@@ -138,9 +134,10 @@ def coordinator(env, path, payload=None):
         if exc.code == 503 and payload is None:
             raise ReadinessPending('Coordinator download policy is still converging') from exc
         if exc.code == 409:
-            raise RuntimeError('Publication blocked: approve qualification-request.json with test evidence '
-                               'via POST /v1/admin/app-attest/builds, then rerun ONLY the failed publication job. '
-                               'Do not rerun signing; it creates different signed bytes.') from exc
+            raise RuntimeError('Publication blocked: conflicting release identity or revoked artifact; '
+                               'no latest aliases advanced. Resolve the conflict or revocation before '
+                               'retrying the same retained artifact. Do not rerun signing; '
+                               'it creates different signed bytes.') from exc
         raise RuntimeError(f'Coordinator refused publication/readiness (HTTP {exc.code}); no latest aliases advanced') from exc
 
 
@@ -150,10 +147,9 @@ def upload(root, key, env):
 
 
 def checked_payload(root, env):
-    payload = json.loads((root / 'release-payload.json').read_text())
+    payload = artifact_payload(root, env['RELEASE_PAYLOAD_SHA256'], env['RELEASE_PROVENANCE_SHA256'],
+                               release_source(env), env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'])
     validate(payload, env)
-    if sha256(root / BUNDLE) != payload['bundle_hash']:
-        raise ValueError('Staged signed bundle digest mismatch')
     return payload
 
 
@@ -190,11 +186,14 @@ def await_latest(env, payload):
 
 def publish(root, env):
     payload = checked_payload(root, env)
-    if env.get('RELEASE_RESUME_RUN_ID'):
-        from provider_release_resume.api import GitHub, verify_tag
-        if env.get('RELEASE_TAG') != 'v' + payload['version']:
-            raise ValueError('Resumed publication tag and version differ')
-        verify_tag(GitHub(env['GITHUB_REPOSITORY']), env['RELEASE_TAG'], payload['source_commit'])
+    if env['ENV_PREFIX'] == 'prod':
+        from provider_release_resume.api import GitHub, verify_source, verify_tag
+        tag = env.get('RELEASE_TAG') or env.get('GITHUB_REF_NAME')
+        if tag != 'v' + payload['version']:
+            raise ValueError('Publication tag and version differ')
+        api = GitHub(env['GITHUB_REPOSITORY'])
+        verify_tag(api, tag, payload['source_commit'])
+        verify_source(api, payload['source_commit'])
     coordinator(env, '/v1/releases', payload)
     # Confirm serving policy is active before public aliases/GitHub publication.
     # An older concurrently staged release must never roll latest aliases back.
@@ -208,11 +207,17 @@ def publish(root, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['prepare', 'stage', 'publish'])
+    parser.add_argument('operation', choices=['prepare', 'download', 'stage', 'publish'])
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--artifact-id')
+    parser.add_argument('--artifact-digest')
+    parser.add_argument('--run-id')
     args = parser.parse_args()
-    if args.operation == 'prepare':
+    if args.operation == 'download':
+        download(os.environ['GITHUB_REPOSITORY'], args.artifact_id, args.artifact_digest,
+                 args.run_id, args.directory)
+    elif args.operation == 'prepare':
         if args.bundle is None:
             parser.error('prepare requires --bundle')
         prepare(args.directory, args.bundle, os.environ)

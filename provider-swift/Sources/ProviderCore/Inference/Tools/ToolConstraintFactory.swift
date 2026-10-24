@@ -23,6 +23,32 @@ enum ToolConstraintFactory {
         stopTokenIDs: Set<Int>,
         nativePromptTokens: [Int]? = nil
     ) throws -> (any CBv2TokenConstraint)? {
+        // Flint's automatic reasoning protocol needs framing even for no-tool
+        // and auto requests. Do not broaden another family's admission policy.
+        if modelContext.modelType == "flint" {
+            guard let nativePromptTokens, !nativePromptTokens.isEmpty,
+                  tokenizer.inner.decode(tokenIds: Array(nativePromptTokens.suffix(32)),
+                    skipSpecialTokens: false).hasSuffix("<|assistant|>") else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "Flint native protocol requires the rendered assistant boundary")
+            }
+            do {
+                // Client stops apply to visible answer bytes only. They are
+                // matched here and in the stream filter, never by the engine's
+                // raw-text holdback, which cannot see reasoning or call frames.
+                let stops = try validatedStops(request.stop, owner: "Flint")
+                let vocabulary = try FlintNativeVocabulary.cached(for: tokenizer, stopTokenIDs: stopTokenIDs)
+                let constraint = try FlintNativeProtocolConstraint(mode: prepared.mode,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, vocabulary: vocabulary,
+                    allowsParallel: prepared.allowsParallelCalls, allowedToolNames: prepared.allowedToolNames,
+                    tools: prepared.tools?.map { $0.toolSpec() }, responseFormat: prepared.responseFormat?.grammar)
+                guard !stops.isEmpty else { return constraint }
+                return FlintAnswerStopConstraint(base: constraint, vocabulary: vocabulary,
+                    stops: FlintAnswerStops(stops))
+            } catch let error as ToolConstraintSchemaError {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
+            }
+        }
         guard prepared.mode.requiresInferenceConstraint else { return nil }
         // `.none` keeps Gemma's sampler guard when its prompt contract is
         // pinned, while every other family retains the existing prompt-only
@@ -96,17 +122,9 @@ enum ToolConstraintFactory {
                     allowsParallel: prepared.allowsParallelCalls,
                     maxTokens: maxTokens,
                     vocabulary: vocabulary)
-                let stops = request.stop?
-                    .filter { !$0.isEmpty }
-                    .map { Array($0.utf8) } ?? []
-                guard stops.count <= maxStopSequences,
-                    stops.allSatisfy({ $0.count <= maxStopBytes })
-                else {
-                    throw ToolConstraintSchemaError.unsupported(
-                        "inference-enforced tool_choice stop sequences exceed "
-                            + "the \(maxStopSequences)-sequence or "
-                            + "\(maxStopBytes)-byte safety limit")
-                }
+                let stops = try validatedStops(
+                    request.stop, owner: "inference-enforced tool_choice"
+                ).map { Array($0.utf8) }
                 if stops.isEmpty { return grammar }
                 return try ForbiddenSubstringTokenConstraint(
                     base: grammar, vocabulary: vocabulary, patterns: stops)
@@ -117,4 +135,14 @@ enum ToolConstraintFactory {
         }
     }
 
+    /// Non-empty client stop sequences within the native constraint limits.
+    private static func validatedStops(_ stops: [String]?, owner: String) throws -> [String] {
+        let stops = stops?.filter { !$0.isEmpty } ?? []
+        guard stops.count <= maxStopSequences, stops.allSatisfy({ $0.utf8.count <= maxStopBytes }) else {
+            throw ToolConstraintSchemaError.unsupported(
+                "\(owner) stop sequences exceed the \(maxStopSequences)-sequence or "
+                    + "\(maxStopBytes)-byte safety limit")
+        }
+        return stops
+    }
 }

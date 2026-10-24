@@ -35,6 +35,9 @@ extension ModelBenchmark {
         Qwen4ExpPLEResidency.isQwen4ExpModelType(modelType)
             || modelType == "prism_hadamard_qwen35"
             || modelType == "mimo_v2"
+            // Flint is served only on paged attention; scalar generate would
+            // run its non-paged scalar caches.
+            || modelType == "flint"
     }
 
     static func decodedModelType(from data: Data) throws -> String? {
@@ -60,7 +63,8 @@ extension ModelBenchmark {
     static func runNativeQwen4(
         modelID: String, modelDirectory: URL,
         prompt: String, iterations: Int, maxTokens: Int, kvBackend: String = "auto",
-        operatorReserveBytes: UInt64? = nil
+        operatorReserveBytes: UInt64? = nil,
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> [BenchmarkIterationResult] {
         guard let verified = WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID)
         else { throw Failure.modelHashMismatch }
@@ -88,7 +92,9 @@ extension ModelBenchmark {
                 modelId: modelID, modelDirectory: modelDirectory, isVLM: loaded.isVLM,
                 container: loaded.container, tokenizer: tokenizer, verifiedWeightHash: verified,
                 kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: false,
-                useProductionKVGrant: true, requirePersistentKey: false, environment: environment)
+                useProductionKVGrant: true, kvBackendConfig: kvBackend,
+                checkpointQuantizationConfig: checkpointQuantizationConfig,
+                requirePersistentKey: false, environment: environment)
             do {
                 print("Model loaded. Native CBv2 baseline (MTP off, prefix cache off, \(session.backend)).")
                 let body = try nativeRequestBody(modelID: modelID, prompt: prompt, maxTokens: maxTokens)

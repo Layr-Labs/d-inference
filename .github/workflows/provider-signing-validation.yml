@@ -21,6 +21,13 @@ jobs:
     name: Build unsigned validation input
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
+    # One set of names for build, stage and sign. The stage step records the
+    # same set in unsigned-files.json, and unpack checks the app against it.
+    outputs:
+      app_name: ${{ steps.identity.outputs.APP_NAME }}
+      cli_name: ${{ steps.identity.outputs.CLI_NAME }}
+      enclave_name: ${{ steps.identity.outputs.ENCLAVE_NAME }}
+      release_environment: ${{ steps.identity.outputs.DARKBLOOM_RELEASE_ENVIRONMENT }}
     steps:
       - name: Verify Xcode 27 toolchain
         run: |
@@ -54,18 +61,25 @@ jobs:
           python-version: '3.12.10'
       - name: Validate packaging and workflow isolation guards
         run: python3 tooling/scripts/test-provider-signing-validation.py
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
-        with:
-          go-version-file: candidate/go.mod
-      - name: Install pinned Rust toolchain
-        run: bash tooling/scripts/install-release-rust.sh
+      - name: Resolve packaged names and build environment
+        id: identity
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        # The candidate's own identity file, so the products and the
+        # environment agree with the source that is built. A candidate from
+        # before that file existed uses this tooling's file.
+        run: |
+          set -euo pipefail
+          {
+            python3 tooling/scripts/provider_release_identity.py --source candidate "$EXPECTED_VERSION"
+            echo "DARKBLOOM_RELEASE_ENVIRONMENT=$(python3 tooling/scripts/provider_release_identity.py --environment --source candidate "$EXPECTED_VERSION")"
+          } | tee -a "$GITHUB_ENV" >> "$GITHUB_OUTPUT"
       - name: Install pinned CMake for Metal build
         run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
           EXPECTED_SOURCE: ${{ inputs.source_sha }}
-          RUSTUP_TOOLCHAIN: 1.88.0
           MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
         run: |
           set -euo pipefail
@@ -74,8 +88,8 @@ jobs:
           cmake --version
           cd candidate/provider-swift
           sdk=$(xcrun --sdk macosx --show-sdk-path)
-          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
-          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_CLI_NAME"
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product "$PRODUCT_ENCLAVE_NAME"
           swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
           bin_dir=$(swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
           cd "$GITHUB_WORKSPACE"
@@ -101,6 +115,10 @@ jobs:
     env:
       DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
       APPLE_TEAM_ID: SLDQ2GJ6TL
+      APP_NAME: ${{ needs.build.outputs.app_name }}
+      CLI_NAME: ${{ needs.build.outputs.cli_name }}
+      ENCLAVE_NAME: ${{ needs.build.outputs.enclave_name }}
+      DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.build.outputs.release_environment }}
     steps:
       - name: Verify Xcode 27 signing toolchain
         run: |
@@ -150,7 +168,7 @@ jobs:
             -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           rm -f "$RUNNER_TEMP/signing-certificate.p12"
-          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          app="$RUNNER_TEMP/signing-stage/$APP_NAME"
           printf '%s' "$PROFILE_BASE64" | base64 --decode > "$app/Contents/embedded.provisionprofile"
           security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
           python3 tooling/scripts/provider-signing-validation.py profile --profile "$RUNNER_TEMP/profile.plist"
@@ -160,7 +178,7 @@ jobs:
       - name: Sign and statically verify the app
         run: |
           set -euo pipefail
-          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          app="$RUNNER_TEMP/signing-stage/$APP_NAME"
           keychain="$RUNNER_TEMP/signing-validation.keychain-db"
           codesign --force --options runtime --timestamp --identifier io.darkbloom.fan-helper \
             --keychain "$keychain" --sign "$DEVELOPER_ID" "$app/Contents/Helpers/darkbloom-fan-helper"
@@ -170,15 +188,15 @@ jobs:
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/mlx.metallib"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements tooling/provider-swift/entitlements-enclave.plist \
-            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom-enclave"
+            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/$ENCLAVE_NAME"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements "$RUNNER_TEMP/provider-signing-entitlements.plist" \
-            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom"
+            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/$CLI_NAME"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements "$RUNNER_TEMP/provider-signing-entitlements.plist" --sign "$DEVELOPER_ID" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/darkbloom"
-          codesign -d --entitlements - --xml "$app/Contents/MacOS/darkbloom" > "$RUNNER_TEMP/cli-entitlements.plist"
+          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/$CLI_NAME"
+          codesign -d --entitlements - --xml "$app/Contents/MacOS/$CLI_NAME" > "$RUNNER_TEMP/cli-entitlements.plist"
           python3 tooling/scripts/provider-signing-validation.py cli-entitlements --plist "$RUNNER_TEMP/cli-entitlements.plist"
           python3 tooling/scripts/prepare-app-attest-entitlements.py \
             --base tooling/provider-swift/entitlements.plist --profile "$RUNNER_TEMP/profile.plist" \
@@ -195,7 +213,7 @@ jobs:
             --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" \
             --wait --timeout 15m --output-format json > "$RUNNER_TEMP/notary-result.json"
           python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); assert result.get("status")=="Accepted" and result.get("id")' "$RUNNER_TEMP/notary-result.json"
-          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          app="$RUNNER_TEMP/signing-stage/$APP_NAME"
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"

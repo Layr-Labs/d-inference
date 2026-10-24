@@ -16,8 +16,17 @@ struct ModelBenchmarkDispatchTests {
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp_text"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "prism_hadamard_qwen35"))
+        // Flint's scalar caches are not paged; it benchmarks through the production session.
+        #expect(ModelBenchmark.usesNativeGeneration(modelType: "flint"))
         for modelType in [nil, "qwen3_5", "qwen3_5_text", "gemma4", "nemotron_h"] {
             #expect(!ModelBenchmark.usesNativeGeneration(modelType: modelType))
+        }
+    }
+
+    @Test func flintSweepNeverRunsScalarPrefill() {
+        #expect(!ThroughputSweep.measuresScalarPrefill(modelType: "flint"))
+        for modelType in [nil, "qwen3_5", "gemma4", "Flint", "flint_mtp"] as [String?] {
+            #expect(ThroughputSweep.measuresScalarPrefill(modelType: modelType))
         }
     }
 
@@ -42,6 +51,21 @@ struct ModelBenchmarkDispatchTests {
         #expect(body["top_k"] as? Int == 0)
         #expect(body["min_p"] as? Double == 0)
         #expect(body["max_tokens"] as? Int == 8)
+    }
+
+    @Test func nativeSessionForwardsIndependentBackendAndCheckpointControls() throws {
+        // Verify the native route's wiring without loading a model or invoking Metal.
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: packageRoot.appendingPathComponent(
+            "Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift"), encoding: .utf8)
+        let start = try #require(source.range(of: "EngineV2Factory.makeBenchmarkSession("))
+        let end = try #require(source.range(of: "environment: environment)",
+            range: start.upperBound..<source.endIndex))
+        let arguments = source[start.upperBound..<end.lowerBound]
+        #expect(arguments.contains("kvBackendConfig: kvBackend"))
+        #expect(arguments.contains("checkpointQuantizationConfig: checkpointQuantizationConfig"))
     }
 
     @Test func invalidIterationAndOutputBudgetsFailBeforeLoad() throws {

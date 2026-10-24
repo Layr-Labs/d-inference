@@ -1,4 +1,6 @@
 import Foundation
+import MLX
+import MLXLMCommon
 import Testing
 
 @testable import ProviderCore
@@ -85,6 +87,58 @@ struct ModelLoadEvictionAndAdmissionTests {
 
         #expect(await loop.modelLoadingResidentIDs().isEmpty)
         #expect(stub.engine.shutdownCalls == 1)
+    }
+
+    @Test("retained KV segments are released before an idle model is evicted")
+    func retainedSegmentsReleaseBeforeEviction() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = "test/large-idle-retained"
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1)
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let parkedAtEviction = ParkedBytesRecorder()
+        let stub = makeInertStubBridge(
+            modelId: id, onShutdown: { parkedAtEviction.record(engine.parkedBytes) })
+        await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: 100 << 30)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        // The pinned sample never changes, so the release cannot make room and
+        // the eviction still follows. The refusal path releases too, so check
+        // the parked bytes at the moment the resident model shuts down.
+        await #expect(throws: InferenceError.self) {
+            try await loop.evictUntilAvailable(weightsGb: 10)
+        }
+        #expect(stub.engine.shutdownCalls == 1)
+        #expect(parkedAtEviction.bytes == 0)
+    }
+
+    @Test("retained KV segments their engine has not yet dropped are no eviction credit")
+    func unreleasedRetainedSegmentsAreNoEvictionCredit() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = "test/idle-retained-margin"
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1)
+        // No engine step lands within the release's wait (a long step).
+        let engine = try RetainingEngineStub()
+        let stub = makeInertStubBridge(modelId: id)
+        await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: 10 << 30)
+        let requiredGb = Self.requiredGbWithinRetainedMargin(availableGb: 1, idleWeightsBytes: 10 << 30)
+
+        do {
+            try await loop.evictUntilAvailable(weightsGb: requiredGb - (await loop.loadHeadroomGb))
+            Issue.record("expected the load to be refused without evicting")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message.hasSuffix("refusing without evicting"), "\(message)")
+        }
+        #expect(await loop.modelLoadingResidentIDs() == [id])
+        #expect(stub.engine.shutdownCalls == 0)
+        // The release request stands: the engine's next step honors it.
+        engine.step()
+        #expect(engine.parkedBytes == 0)
     }
 
     @Test("a model with a live request is never evicted")
@@ -196,6 +250,32 @@ struct ModelLoadEvictionAndAdmissionTests {
 
         #expect(await loop.fastAdmissionReject(modelId: id) == false)
         #expect(await loop.modelLoadingResidentIDs() == [idle])
+    }
+
+    @Test("fast admission does not admit on retained KV segments their engine has not yet dropped")
+    func fastAdmissionRejectsOnUnreleasedRetainedSegments() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let id = "test/fast-retained-margin"
+        let idle = "test/fast-retained-idle"
+        let loop = try await ModelLoadingFixtures.makeLoop(
+            sandbox: sandbox,
+            models: [ModelLoadingFixtures.model(id), ModelLoadingFixtures.model(idle)])
+        await ModelLoadingFixtures.setAvailableMemory(loop, gb: 1)
+        // No engine step lands within the release's wait (a long step).
+        let engine = try RetainingEngineStub()
+        let stub = makeInertStubBridge(modelId: idle)
+        await loop.modelLoadingInstallSlot(idle, bridge: stub.bridge, weightsBytes: 10 << 30)
+        let requiredGb = Self.requiredGbWithinRetainedMargin(availableGb: 1, idleWeightsBytes: 10 << 30)
+        await loop.modelLoadingAdvertise(
+            ModelLoadingFixtures.model(id, memoryGb: requiredGb - (await loop.loadHeadroomGb)))
+
+        #expect(await loop.fastAdmissionReject(modelId: id) == true)
+        #expect(await loop.modelLoadingResidentIDs() == [idle])
+        #expect(stub.engine.shutdownCalls == 0)
+        // Pre-accept released them too: the engine's next step honors it.
+        engine.step()
+        #expect(engine.parkedBytes == 0)
     }
 
     @Test("fast admission rejects when every slot is busy, even with free memory")
@@ -328,5 +408,16 @@ struct ModelLoadEvictionAndAdmissionTests {
         #expect(ProviderLoop.modelIsVLM(at: optedOut) == false)
         #expect(ProviderLoop.modelIsVLM(at: textOnly) == false)
         #expect(ProviderLoop.modelIsVLM(at: noConfig) == false)
+    }
+
+    /// A requirement that evicting the idle model reaches only with the
+    /// retained KV segments now parked process-wide, which close the
+    /// remaining gap by half. Empties MLX's buffer cache first, so the
+    /// other eviction credit is the idle model's weights alone.
+    private static func requiredGbWithinRetainedMargin(availableGb: Double, idleWeightsBytes: Int) -> Double {
+        MLX.Memory.clearCache()
+        let parked = Double(CBv2RetainedKVSegments.retainedBytes)
+        #expect(parked > 0)
+        return availableGb + (Double(idleWeightsBytes) + parked / 2) / 1_073_741_824
     }
 }

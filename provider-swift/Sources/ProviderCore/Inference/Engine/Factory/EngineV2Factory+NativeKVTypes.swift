@@ -2,6 +2,25 @@ import MLX
 import MLXLMCommon
 
 extension EngineV2Factory {
+    /// Target storage only. Indexer/recurrent/MTP charges retain their separate owners.
+    static func physicalFullKVBytesPerToken(
+        layerKinds: [CBv2LayerKind], dtypes: [DType], config: PagedKVPoolConfig
+    ) throws -> Int {
+        guard layerKinds.count == dtypes.count else {
+            throw EngineV2ProductionError.noKVHeadroom
+        }
+        var total = 0
+        for (index, kind) in layerKinds.enumerated() where kind.sharesKVWithLayer == nil {
+            guard case .full = kind.attention else { continue }
+            let key = PagedKVGroupKey(kind, dtype: dtypes[index], separateWindow: true,
+                quantization: config.nativeLayerIndices.contains(index) ? nil : config.quantization)
+            let (next, overflow) = total.addingReportingOverflow(try key.bytesPerToken())
+            guard !overflow else { throw EngineV2ProductionError.noKVHeadroom }
+            total = next
+        }
+        return total
+    }
+
     /// The same full-row marginal rate as slot sizing, using the constructed
     /// pool's exact native types. Borrowing rows own no bytes; window storage
     /// remains outside this marginal rate. Invalid arithmetic refuses capacity.
@@ -14,12 +33,8 @@ extension EngineV2Factory {
             guard [.float16, .bfloat16, .float32].contains(dtype),
                 kind.kvHeads > 0, kind.headDim > 0 else { return Int.max }
             guard kind.sharesKVWithLayer == nil, case .full = kind.attention else { continue }
-            var bytes = 2
-            for factor in [kind.kvHeads, kind.headDim, dtype.size] {
-                let (value, overflow) = bytes.multipliedReportingOverflow(by: factor)
-                guard !overflow else { return Int.max }
-                bytes = value
-            }
+            guard let bytes = kind.kvGeometry?.bytesPerToken(elementBytes: dtype.size)
+            else { return Int.max }
             let (value, overflow) = total.addingReportingOverflow(bytes)
             guard !overflow else { return Int.max }
             total = value

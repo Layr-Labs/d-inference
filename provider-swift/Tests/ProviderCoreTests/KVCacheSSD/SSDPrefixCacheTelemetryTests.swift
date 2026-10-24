@@ -182,7 +182,7 @@ struct SSDCompleteDonationTelemetryTests {
             onDropped: { store.settle($0, positions: []) }, consume: { job in
                 entered.signal()
                 func wait() { release.wait() }
-                wait(); store.write(job)
+                wait(); await store.write(job)
             })
         let first = Task { try await f.donate(store) }
         func isEntered() -> Bool { entered.wait(timeout: .now()) == .success }

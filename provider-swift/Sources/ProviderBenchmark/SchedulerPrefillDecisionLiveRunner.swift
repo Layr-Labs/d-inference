@@ -5,6 +5,15 @@ import ProviderCore
 struct SchedulerPrefillDecisionEngineParts: Sendable {
     let engine: any CBv2Engine
     let resolvedBackend: String
+    let kvQuantization: EngineV2KVQuantizationSelection
+    let kvCheckpointQuantization: EngineV2KVQuantizationSelection
+
+    init(build: EngineV2Factory.ProductionBuild) {
+        engine = build.engine
+        resolvedBackend = build.resolvedKVBackendDescriptor
+        kvQuantization = build.kvQuantization
+        kvCheckpointQuantization = build.kvCheckpointQuantization
+    }
 }
 
 struct SchedulerPrefillDecisionLiveMeasurement: Sendable {
@@ -54,6 +63,23 @@ enum SchedulerPrefillDecisionLiveRunner {
         case failed(String)
     }
 
+    /// The live engine runs the simulated geometry, not the family default:
+    /// a wide-chunk family would otherwise swallow the configured stripe.
+    static func engineEnvironment(
+        _ environment: [String: String],
+        configuration: SchedulerPrefillDecisionReport.Configuration,
+        cap: Int
+    ) -> [String: String] {
+        var configured = environment
+        configured[EngineV2Factory.maxPartialPrefillsKey] = String(cap)
+        configured[EngineV2Factory.prefillChunkKey] = String(configuration.prefillChunkTokens)
+        configured[EngineV2Factory.stepTokenBudgetKey] =
+            String(configuration.maxBatchedTokensPerStep)
+        configured[EngineV2Factory.soloPrefillStripeKey] =
+            String(configuration.soloPrefillStripeTokens)
+        return configured
+    }
+
     static func makeEngine(
         container: ModelContainer,
         modelID: String,
@@ -62,7 +88,9 @@ enum SchedulerPrefillDecisionLiveRunner {
         weightBytes: Int,
         configuration: SchedulerPrefillDecisionReport.Configuration,
         cap: Int,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection,
+        environment: [String: String]
     ) async throws -> SchedulerPrefillDecisionEngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -70,11 +98,8 @@ enum SchedulerPrefillDecisionLiveRunner {
                 residentWeightBytes: UInt64(max(0, weightBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
-        var configuredEnvironment = ProcessInfo.processInfo.environment
-        configuredEnvironment[EngineV2Factory.maxPartialPrefillsKey] = String(cap)
-        configuredEnvironment[EngineV2Factory.soloPrefillStripeKey] =
-            String(configuration.soloPrefillStripeTokens)
-        let environment = configuredEnvironment
+        let environment = engineEnvironment(
+            environment, configuration: configuration, cap: cap)
 
         return try await container.perform {
             context -> SchedulerPrefillDecisionEngineParts in
@@ -91,10 +116,9 @@ enum SchedulerPrefillDecisionLiveRunner {
                 constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend,
+                checkpointQuantization: checkpointQuantization,
                 environment: environment)
-            return SchedulerPrefillDecisionEngineParts(
-                engine: build.engine,
-                resolvedBackend: build.resolvedKVBackendDescriptor)
+            return SchedulerPrefillDecisionEngineParts(build: build)
         }
     }
 

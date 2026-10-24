@@ -57,20 +57,20 @@ struct ProviderLogger: Sendable {
 
     private func publicLog(_ level: ProviderLogLevel, _ message: ProviderOperationalMessage) {
         if let sink {
-            sink(level, .public, message.rawValue)
+            sink(level, .public, message.text)
             return
         }
         #if canImport(os)
         switch level {
         case .info:
-            osLogger.info("\(message.rawValue, privacy: .public)")
+            osLogger.info("\(message.text, privacy: .public)")
         case .warning:
-            osLogger.warning("\(message.rawValue, privacy: .public)")
+            osLogger.warning("\(message.text, privacy: .public)")
         case .error:
-            osLogger.error("\(message.rawValue, privacy: .public)")
+            osLogger.error("\(message.text, privacy: .public)")
         }
         #else
-        print("[\(category)] \(level.label): \(message.rawValue)")
+        print("[\(category)] \(level.label): \(message.text)")
         #endif
     }
 
@@ -120,9 +120,15 @@ enum ProviderLogVisibility: Sendable, Equatable {
 /// Do not add associated values or `ExpressibleByStringLiteral` conformance:
 /// public log text must remain a closed vocabulary.
 enum ProviderOperationalMessage: String, CaseIterable, Sendable {
+    /// The published text. `{cli}` names this build's command
+    /// (`BuildEnvironment.cliName`); no other substitution exists.
+    var text: String {
+        rawValue.replacingOccurrences(of: "{cli}", with: BuildEnvironment.current.cliName)
+    }
+
     // Startup and shutdown.
     case providerStarting = "Provider starting"
-    case startupPreloadInsufficientMemory = "Startup preload skipped: low free memory. Run darkbloom status or doctor."
+    case startupPreloadInsufficientMemory = "Startup preload skipped: low free memory. Run {cli} status or doctor."
     case coordinatorClientStarted = "Coordinator client started"
     case coordinatorEventStreamEnded = "Coordinator event stream ended; shutting down"
 
@@ -162,4 +168,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case inferenceFailureEncryption = "Inference failure: encryption"
     case inferenceFailureGeneration = "Inference failure: generation"
     case inferenceFailureInternal = "Inference failure: internal"
+
+    // Operator guidance.
+    case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."
 }

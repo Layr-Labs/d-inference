@@ -26,6 +26,11 @@ extension EngineV2SlotFactory {
         guard !scriptedEngine else {
             return .init(status: .init(state: .disabled, reason: .unsupportedBackend))
         }
+        if let preparedBackend, preparedBackend.kvQuantization != .native {
+            // Native tensor adoption cannot reproduce a packed prefix and its
+            // original-precision tail. Complete packed reuse is resolved first.
+            return .init(status: .init(state: .disabled, reason: .unsupportedLayout))
+        }
         if let preparedBackend, !preparedBackend.modelCapabilities.supportsPrefixReuse {
             return .init(status: .init(state: .disabled, reason: .unsupportedLayout))
         }

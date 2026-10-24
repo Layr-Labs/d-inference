@@ -129,7 +129,8 @@ public struct ModelBenchmark: Sendable {
         maxTokens: Int = defaultMaxTokens,
         hardware: HardwareInfo,
         kvBackend: String = "auto",
-        configuredMemoryReserveGB: UInt64? = nil
+        configuredMemoryReserveGB: UInt64? = nil,
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> BenchmarkReport {
         try validateArguments(iterations: iterations, maxTokens: maxTokens)
         let hardwareDesc = "\(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores, \(hardware.memoryBandwidthGbs) GB/s"
@@ -143,7 +144,8 @@ public struct ModelBenchmark: Sendable {
             modelType: modelType, configuredMemoryReserveGB: configuredMemoryReserveGB)
         if usesNativeBlockGeneration(modelType: modelType) {
             let results = try await runNativeDiffusion(modelID: modelID, directory: modelDirectory,
-                prompt: prompt, iterations: iterations, maxTokens: maxTokens, backend: kvBackend)
+                prompt: prompt, iterations: iterations, maxTokens: maxTokens, backend: kvBackend,
+                checkpointQuantizationConfig: checkpointQuantizationConfig)
             return BenchmarkReport(modelID: modelID, modelPath: modelDirectory.path,
                 prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
         }
@@ -152,7 +154,8 @@ public struct ModelBenchmark: Sendable {
             let results = try await runNativeQwen4(
                 modelID: modelID, modelDirectory: modelDirectory,
                 prompt: prompt, iterations: iterations, maxTokens: maxTokens, kvBackend: kvBackend,
-                operatorReserveBytes: operatorReserveBytes)
+                operatorReserveBytes: operatorReserveBytes,
+                checkpointQuantizationConfig: checkpointQuantizationConfig)
             return BenchmarkReport(modelID: modelID, modelPath: modelDirectory.path,
                 prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
         }

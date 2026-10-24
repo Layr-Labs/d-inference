@@ -2,8 +2,8 @@
 //
 // Production construction of the default SSD prefix cache for a CBv2-supported
 // model slot: Secure-Enclave-rooted KEK (the reviewed legacy key hierarchy,
-// unchanged), a per-model directory under `darkbloom/kv3`, environment knob
-// resolution, startup scan, and periodic TTL sweep. Donation is benefit-gated.
+// unchanged), a per-model directory under `darkbloom/kv3`, saved settings and
+// environment fallback, startup scan, and periodic TTL sweep. Donation is benefit-gated.
 //
 // Returns nil — tier disabled, slot serves uncached — when the KEK is
 // unavailable (unsigned build without the keychain entitlement), unless
@@ -19,7 +19,10 @@ import MLXLMCommon
 import os
 #endif
 
-enum SSDPrefixCacheConstructionFailure: String, Sendable {
+/// Typed SSD store construction refusal. Telemetry and the local `/metrics`
+/// `prefix_cache_status` `detail` label carry the raw value; the heartbeat
+/// status keeps the coordinator's closed `PrefixCacheStatusReason` vocabulary.
+public enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case missingWeightHash = "missing_weight_hash"
     case unsupportedPlan = "unsupported_plan"
     case unsafePath = "unsafe_path"
@@ -28,24 +31,26 @@ enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case blockContractMismatch = "block_contract_mismatch"
     case epochUnavailable = "epoch_unavailable"
     case promptContractUnavailable = "prompt_contract_unavailable"
+    case identityUnavailable = "identity_unavailable"
     case layoutUnavailable = "layout_unavailable"
+    case writeBudgetUnavailable = "write_budget_unavailable"
 }
 
 enum SSDPrefixCacheFactory {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
-    /// The SSD tier's OWN root: `~/Library/Caches/darkbloom/kv3/<modelKey>`
-    /// with `modelKey = SHA256(modelId)[:12]` — stable across weight
+    /// The SSD tier's OWN root: `<cacheDirectory>/<encryptedCacheNamespace>/kv3/<modelKey>`
+    /// (`CacheStorage.root`, one namespace per build environment) with `modelKey = SHA256(modelId)[:12]` — stable across weight
     /// re-downloads (the metadata weightHash binding invalidates stale
     /// files).
     ///
     /// DELIBERATELY OUTSIDE the retired pre-v0.7.5 `darkbloom/kv` root, so
     /// this tier never shares a directory with that tier's leftovers.
-    static let ssdRootDirectoryName = "darkbloom/kv3"
+    static let ssdRootDirectoryName = CacheStorage.rootDirectoryName
     /// Testbed-only isolated root. Requires the explicit test opt-in; ordinary
     /// isolated tests use an in-memory KEK, while persistent tests opt in separately.
     static let testRootEnvironmentKey = "DARKBLOOM_PREFIX_CACHE_TEST_ROOT"
@@ -64,15 +69,15 @@ enum SSDPrefixCacheFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
         if let root = isolatedTestRoot(environment: environment) { return root }
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return root.appendingPathComponent(Self.ssdRootDirectoryName, isDirectory: true)
+        return CacheStorage.root(for: CacheStorage.settings)
     }
 
     static func startWholeRootMaintenance(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         intervalSeconds: Int = 60
     ) {
+        guard isolatedTestRoot(environment: environment) != nil
+            || (try? CacheStorage.validateSelection()) != nil else { return }
         let root = cacheRootDirectory(environment: environment)
         let ttl = SSDPrefixCachePolicy.ttlSeconds(environment: environment)
         SSDWholeRootMaintainer.shared.startPeriodicMaintenance(
@@ -97,7 +102,7 @@ enum SSDPrefixCacheFactory {
         return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
-    private static func isolatedTestRoot(environment: [String: String]) -> URL? {
+    static func isolatedTestRoot(environment: [String: String]) -> URL? {
         guard ephemeralAllowed(environment: environment),
             let raw = environment[testRootEnvironmentKey]?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -167,6 +172,9 @@ enum SSDPrefixCacheFactory {
         let wholeRoot = cacheRootDirectory(environment: environment)
         let dir = cacheDirectory(modelId: modelId, environment: environment)
         do {
+            if isolatedTestRoot(environment: environment) == nil {
+                try CacheStorage.validateSelection()
+            }
             try SSDBlockStore.prepareModelRoot(
                 dedicatedRoot: wholeRoot,
                 modelRoot: dir)
@@ -280,11 +288,23 @@ enum SSDPrefixCacheFactory {
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
             windowSidecar: windowSidecar,
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
+        let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
+        let writeBudget: SSDWriteBudget?
+        do {
+            writeBudget = try CacheStorage.makeWriteBudget(
+                maxWriteBytesPerDay: maxWriteBytesPerDay,
+                payloadRoot: wholeRoot,
+                isolated: isolatedTestRoot(environment: environment) != nil)
+        } catch {
+            onConstructionFailure?(.writeBudgetUnavailable)
+            return nil
+        }
         let cache = SSDPrefixCache(
             config: config,
             kekKey: kekKey,
             kvBudget: kvBudget,
-            maxWriteBytesPerDay: SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment),
+            maxWriteBytesPerDay: maxWriteBytesPerDay,
+            writeBudget: writeBudget,
             strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
             diskBudgetBytes: { [dir] in
                 PrefixCachePolicy.ssdDiskBudgetBytes(

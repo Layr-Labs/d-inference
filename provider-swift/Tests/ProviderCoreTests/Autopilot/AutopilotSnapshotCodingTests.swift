@@ -10,6 +10,7 @@ struct AutopilotSnapshotCodingTests {
             residentModels: [.init(modelId: "gemma", residentSeconds: 120, idleSeconds: 60,
                 weightsGb: 17.4, residentGb: 14.8)], freeForLoadNoEvictGb: 22,
             activeCommandId: "active", lastCommandId: "previous", lastCommandStatus: .succeeded)
+        value.consentEnabled = true
         value.observeOnly = true
         value.sessionId = "test-session"
         value.revision = "test-revision"
@@ -71,9 +72,10 @@ struct AutopilotSnapshotCodingTests {
         #expect(try decoder.decode(DaemonState.self, from: data) == expected)
     }
 
-    @Test(arguments: [false, true])
-    func snapshotDecodesWireAndDaemonKeyStrategies(convertSnakeCase: Bool) throws {
-        let expected = snapshot()
+    @Test(arguments: [false, true], [false, true])
+    func snapshotDecodesWireAndDaemonKeyStrategies(convertSnakeCase: Bool, consentEnabled: Bool) throws {
+        var expected = snapshot()
+        expected.consentEnabled = consentEnabled
         let data = try JSONEncoder().encode(expected)
         let decoder = JSONDecoder()
         if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
@@ -81,6 +83,8 @@ struct AutopilotSnapshotCodingTests {
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["observe_only"] as? Bool == true)
         #expect(json["observeOnly"] == nil)
+        #expect(json["consent_enabled"] as? Bool == consentEnabled)
+        #expect(json["consentEnabled"] == nil)
         #expect(json["protocol"] as? Int == 3)
         let residents = try #require(json["resident_models"] as? [[String: Any]])
         #expect(residents.first?["resident_gb"] as? Double == 14.8)
@@ -88,13 +92,49 @@ struct AutopilotSnapshotCodingTests {
         #expect(history.first?["weight_hash"] as? String == "test-hash")
     }
 
-    @Test(arguments: [false, true])
-    func absentOptionalFieldsRemainAbsent(convertSnakeCase: Bool) throws {
-        let expected = ModelAutopilotSnapshot(enabled: false)
+    @Test(arguments: [false, true], [false, true])
+    func absentOptionalFieldsRemainAbsent(convertSnakeCase: Bool, enabled: Bool) throws {
+        let expected = ModelAutopilotSnapshot(enabled: enabled)
+        let data = try JSONEncoder().encode(expected)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["consent_enabled"] == nil)
+        #expect(json["consentEnabled"] == nil)
         let decoder = JSONDecoder()
         if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
-        #expect(try decoder.decode(ModelAutopilotSnapshot.self,
-            from: JSONEncoder().encode(expected)) == expected)
+        let decoded = try decoder.decode(ModelAutopilotSnapshot.self, from: data)
+        #expect(decoded == expected)
+        #expect(decoded.consentEnabled == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func providerReportFieldsUseSnakeCaseAndDecodeBothKeyStrategies(convertSnakeCase: Bool) throws {
+        var expected = snapshot()
+        expected.capabilities = ["inventory_adoption", "placement_holds", "busy_reasons"]
+        expected.adoptedModels = ["qwen"]
+        expected.heldModels = [.init(modelId: "gemma", expiresAtMs: 1_000)]
+        expected.busyReasons = ["startup_preload", "load_gate"]
+        expected.busyReason = "startup_preload"
+        expected.busySinceMs = 500
+        expected.transitionStalls = [.init(transition: "startup_preload", count: 2, lastAgeMs: 601_000)]
+        let data = try JSONEncoder().encode(expected)
+        let decoder = JSONDecoder()
+        if convertSnakeCase { decoder.keyDecodingStrategy = .convertFromSnakeCase }
+        #expect(try decoder.decode(ModelAutopilotSnapshot.self, from: data) == expected)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["adopted_models"] as? [String] == ["qwen"])
+        #expect(json["busy_reason"] as? String == "startup_preload")
+        #expect(json["busy_since_ms"] as? Int == 500)
+        let held = try #require(json["held_models"] as? [[String: Any]])
+        #expect(held.first?["model_id"] as? String == "gemma")
+        #expect(held.first?["expires_at_ms"] as? Int == 1_000)
+        let stalls = try #require(json["transition_stalls"] as? [[String: Any]])
+        #expect(stalls.first?["last_age_ms"] as? Int == 601_000)
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("autopilot-report-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let state = DaemonState(pid: 123, version: "test", writtenAt: 100, startedAt: 90, autopilot: expected)
+        DaemonStateFile.write(state, to: url)
+        #expect(try #require(DaemonStateFile.read(from: url)).autopilot == expected)
     }
 
     @Test(arguments: [false, true])

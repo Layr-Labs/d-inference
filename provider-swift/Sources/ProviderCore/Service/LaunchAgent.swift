@@ -9,10 +9,11 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderAppAttest
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
+    public static let label = BuildEnvironment.current.launchAgentLabel
 
     // MARK: - Paths
 
@@ -25,8 +26,8 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        LaunchctlControl.homeDirectory()
-            .appendingPathComponent(".darkbloom/provider.log")
+        BuildEnvironment.current.installDirectory(home: LaunchctlControl.homeDirectory())
+            .appendingPathComponent("provider.log")
     }
 
     // MARK: - Queries
@@ -74,7 +75,7 @@ public enum LaunchAgent: Sendable {
         public let port: UInt16
         public let bind: String
         public let noAuth: Bool
-        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+        public init(enabled: Bool = false, port: UInt16 = BuildEnvironment.current.defaultLocalPort, bind: String = "127.0.0.1", noAuth: Bool = false) {
             self.enabled = enabled
             self.port = port
             self.bind = bind
@@ -103,6 +104,31 @@ public enum LaunchAgent: Sendable {
             configPath: configPath,
             localEndpoint: localEndpoint
         )
+        try loadService()
+    }
+
+    /// The local-only selection is owned by the installed CLI arguments.
+    public static func installedLocalModels() -> [String]? {
+        guard let data = try? Data(contentsOf: plistPath()),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String], arguments.contains("--local") else { return nil }
+        return arguments.indices.compactMap { index in
+            arguments[index] == "--model" && index + 1 < arguments.count ? arguments[index + 1] : nil
+        }
+    }
+
+    /// Desktop local mode uses the same canonical launchd owner as network serving.
+    /// The caller must complete the normal drain and hold the lifecycle lock.
+    public static func installLocalAndStart(models: [String], configPath: URL?) throws {
+        guard !isLoaded() else { throw LaunchAgentError.bootstrapFailed("Existing provider must be drained first") }
+        var arguments = [currentExecutablePath(), "start", "--local"]
+        for model in models { arguments += ["--model", model] }
+        if let configPath { arguments += ["--config", configPath.path] }
+        let contents = makeServicePlist(label: label, programArguments: arguments,
+            logPath: logPath().path, environment: ProcessInfo.processInfo.environment)
+        try FileManager.default.createDirectory(at: plistPath().deletingLastPathComponent(), withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0)
+            .write(to: plistPath(), options: .atomic)
         try loadService()
     }
 
@@ -182,18 +208,20 @@ public enum LaunchAgent: Sendable {
     /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
     /// the watchdog recovers a crashed (loaded-but-dead) provider but never
     /// revives one the user stopped (`bootout` unloads it). Returns false if not
-    /// loaded.
+    /// loaded or if the service disappears before kickstart accepts the restart.
     @discardableResult
     public static func kickstartIfLoaded() throws -> Bool {
         guard isLoaded() else { return false }
-        try kickstartInPlace(label: label, reloadIfMissing: false)
-        return true
+        return try kickstartInPlace(label: label, reloadIfMissing: false)
     }
 
     /// `launchctl kickstart -k` — kill + relaunch the loaded service in place.
     /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
     /// job); the watchdog passes false so it never loads a job the user stopped.
-    private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
+    /// Returns whether launchctl accepted the restart or allowed reload; this
+    /// acknowledges the launch request, not the provider's subsequent health.
+    @discardableResult
+    private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws -> Bool {
         if reloadIfMissing {
             let enabled = LaunchctlControl.setEnabled(true, label: serviceLabel)
             guard enabled.succeeded else { throw LaunchAgentError.kickstartFailed(enabled.stderr) }
@@ -202,18 +230,20 @@ public enum LaunchAgent: Sendable {
             ["kickstart", "-k", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
         if !result.succeeded {
             let stderr = result.stderr
-            // Error 3 = "could not find service": the service vanished between
-            // the isLoaded() check and here.
-            if stderr.contains("3:") || stderr.contains("could not find service") {
+            // Error 3 / exit 113 = "could not find service": the service
+            // vanished between the isLoaded() check and here.
+            if result.status == 113 || stderr.contains("3:")
+                || stderr.lowercased().contains("could not find service")
+            {
                 // Fall back to a fresh load only when allowed; the watchdog opts
                 // out so it can't resurrect an intentionally-stopped provider.
-                if reloadIfMissing {
-                    try loadService()
-                }
-                return
+                guard reloadIfMissing else { return false }
+                try loadService()
+                return true
             }
             throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        return true
     }
 
     // MARK: - Uninstall
@@ -225,6 +255,28 @@ public enum LaunchAgent: Sendable {
         if FileManager.default.fileExists(atPath: path.path) {
             try FileManager.default.removeItem(at: path)
         }
+    }
+
+    // MARK: - Other CLI-owned agents
+
+    /// Shared launchctl plumbing for the CLI's other user agents (the desktop
+    /// control API), so they reuse this file's enable/bootstrap/kickstart/bootout
+    /// handling instead of spawning ad-hoc `launchctl` processes.
+    public static func isLoaded(agentLabel: String) -> Bool { isLoaded(label: agentLabel) }
+
+    /// Enable, bootstrap (an already-loaded job is benign) and kickstart `plist`.
+    public static func bootstrap(agentLabel: String, plist: URL) throws {
+        try loadService(label: agentLabel, path: plist)
+    }
+
+    /// Unload the job; a job that is not loaded is not an error.
+    public static func bootout(agentLabel: String) throws { try unloadService(label: agentLabel) }
+
+    /// `launchctl kickstart -k`: kill and relaunch a loaded job from its loaded
+    /// plist. For a job that is not loaded it may throw or return without effect
+    /// (launchctl's wording varies), so callers check `isLoaded(agentLabel:)`.
+    public static func kickstart(agentLabel: String) throws {
+        try kickstartInPlace(label: agentLabel, reloadIfMissing: false)
     }
 
     // MARK: - Private
@@ -253,47 +305,99 @@ public enum LaunchAgent: Sendable {
     /// export that did not reach launchd would silently no-op in the normal
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// `DARKBLOOM_R2_CDN_URL`: the model CDN override. The daemon downloads and
+    /// prefetches models, so the override must reach the launchd job.
     /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
     /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_CBV2_PREFILL_CHUNK` / `DARKBLOOM_CBV2_STEP_TOKENS`: `512` and
+    /// `2048` roll Gemma 4 back to the SDK prompt geometry; `2048` and `4096`
+    /// opt another family into the wide one.
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
-    /// admission-mode control. Both must persist in the provider job because
+    /// admission-mode control. All must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
+    /// corrections are on by default; their rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
+    /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
+    /// retained, host-zeroed paged KV segments are on by default; each
+    /// rollback must reach the provider job too.
     /// `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY`: native MiMo standing
     /// residency is on by default; exact `0` / `false` / `no` / `off` is the
     /// rollback, which must reach the launchd provider job to take effect.
+    /// `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY`: the same default-on standing
+    /// residency for a published GLM engine, with the same rollback values.
     /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
     /// on by default for the supported MiMo identities; preserve its opt-out
     /// in the provider job independently of the global cache kill switch.
+    /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
+    /// kernel wherever its parity probe finds it bit-exact, which says nothing
+    /// about speed; the stock-kernel rollback must reach the job. Spelled out
+    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLLM`.
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
     /// `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` and
     /// `MiMoV26DecodeDefaults.verifyEnvironmentKeys`: exact rectangular MTP
     /// verification is the MiMo default; each rollback must reach the job.
+    /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
+    /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
+    /// the rollback.
+    /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
+    /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
+    /// fully serial FIFO.
+    /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
+    /// default; its `0` rollback must reach the job too.
+    /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
+    /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
+    /// incremental `auto` tool calls and the plain-tail Qwen content seed are
+    /// on by default; exact `0` is each rollback.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
+        EngineV2Factory.prefillChunkKey,
+        EngineV2Factory.stepTokenBudgetKey,
         PrefillDeadlineMode.environmentKey,
+        DeadlineAdmissionFixes.environmentKey,
+        GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
+        EngineV2Factory.segmentRetentionEnvironmentKey,
+        EngineV2Factory.segmentHostZerosEnvironmentKey,
         SystemMemory.availabilityEnvironmentKey,
         MiMoV26WiredResidency.environmentFlag,
+        GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
+        "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        PromptTokenCachePolicy.environmentKey,
+        PromptTokenCachePolicy.capacityEnvironmentKey,
+        PromptTokenCachePolicy.verifyEnvironmentKey,
+        ChatTemplateLoopRewrites.environmentKey,
+        WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
+        ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
+        GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_PREFIX_CACHE_MEMORY",
+        "DARKBLOOM_PREFIX_CACHE_DISK_GB",
+        "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_KV_QUANTIZATION",
+        "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_R2_CDN_URL",
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
-    /// One value-conditional entry rides along: the operator drain
+    /// A value-conditional entry rides along: the operator drain
     /// refinement of the expert-slice route
     /// (`GemmaOptimizationEnvironment.daemonDrainPassthrough`). Serving
     /// defaults to `trust`; launchd does not inherit the installing shell, so
@@ -308,6 +412,11 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // Persist only the worker opt-in, never native diagnostic/fault flags.
+        let workerKey = AppAttestWorkerSelection.qualificationEnvironment
+        if environment[workerKey] == "1" {
+            out[workerKey] = "1"
         }
         // An explicitly empty/invalid memory policy fails toward free-only in
         // foreground mode too. Persist its canonical value instead of dropping
@@ -554,7 +663,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
         case .disableFailed(let detail):
             return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:
-            return "provider service is not installed; run `darkbloom start` first"
+            return "provider service is not installed; run `\(BuildEnvironment.current.cliName) start` first"
         }
     }
 }

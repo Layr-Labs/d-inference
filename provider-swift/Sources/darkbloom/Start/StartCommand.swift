@@ -29,7 +29,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
-    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `darkbloom idle`.")
+    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `\(BuildEnvironment.current.cliName) idle`.")
     var idleTimeout: UInt64?
 
     @Flag(help: "Interactively configure weekly availability and preloading before starting.")
@@ -45,7 +45,7 @@ struct Start: AsyncParsableCommand {
     var localEndpoint = false
 
     @Option(help: "Local server port (used with --local / --local-endpoint).")
-    var port: UInt16 = 8000
+    var port: UInt16 = BuildEnvironment.current.defaultLocalPort
 
     @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
     var bind: String = "127.0.0.1"
@@ -91,7 +91,7 @@ struct Start: AsyncParsableCommand {
         var scheduleEdit: (current: ScheduleSettings, draft: ScheduleSettings)?
         if schedule {
             guard !local, !foreground else {
-                throw ValidationError("--schedule configures a background provider. Use `darkbloom schedule` before --foreground; standalone --local does not use availability windows.")
+                throw ValidationError("--schedule configures a background provider. Use `\(BuildEnvironment.current.cliName) schedule` before --foreground; standalone --local does not use availability windows.")
             }
             try AvailabilitySchedule.requireInteractiveTerminal()
             let loaded = try loadRuntimeConfiguration(configPath: configOptions.config)
@@ -106,6 +106,7 @@ struct Start: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        try CacheStorage.configure(snapshot.config.cache)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         scheduleEdit?.draft.apply(to: &effectiveConfig)
@@ -159,15 +160,23 @@ struct Start: AsyncParsableCommand {
         }
         // Diagnose once from the already-bound immutable snapshot and carry
         // this exact set through every serving mode and registration path.
-        let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectPrepared(
-            hardware: hardware,
-            boundMetallibHash: boundMetallibHash
-        )
+        let runtimeCapabilities = GLM5NextLocalServing.gatingCapabilities(
+            ProviderRuntimeCapabilityDetector.detectPrepared(
+                hardware: hardware,
+                boundMetallibHash: boundMetallibHash),
+            mode: effectiveConfig.backend.mtpMode)
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
         // loop left standalone operators with no notice at all.
         for message in RetiredKnobWarnings.emit(config: effectiveConfig) {
             printError("warning: \(message)")
+        }
+        let servedModels = advertisedModels(
+            from: snapshot.models, config: effectiveConfig, modelOverrides: model, includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities)
+        if let notice = GLMWiredLimitAdvice.startNotice(
+            hardware: hardware, servedModels: servedModels, limits: .live()) {
+            printError("warning: \(notice)")
         }
 
         if local {

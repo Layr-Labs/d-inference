@@ -40,6 +40,40 @@ struct LocalServingPostureTests {
         }
     }
 
+    @Test func constructionRefusalAddsDetailOnlyToAnErrorStatus() {
+        func render(state: PrefixCacheStatusState, reason: PrefixCacheStatusReason,
+                    failure: SSDPrefixCacheConstructionFailure?) -> String {
+            LocalServingPostureRenderer.render([.init(model: "owned", snapshot: .init(
+                status: .disabled(.configDisabled, configured: false), metrics: nil),
+                posture: .init(backend: .paged,
+                    capacity: .init(activeRequests: 0, waitingRequests: 0,
+                        kvBytesInUse: 0, kvBytesCapacity: 0,
+                        kvBytesBackendCapacity: 0, kvBytesReserved: 0, activeTokens: 0),
+                    pageSize: nil,
+                    prefix: .init(modelId: "owned", backend: .paged,
+                        replayStrategy: .unknown, state: state, reason: reason),
+                    completeKeyPersistent: nil, prefixConstructionFailure: failure))])
+        }
+        #expect(render(state: .error, reason: .cacheInitFailed, failure: .keyUnavailable).contains(
+            "prefix_cache_status{model=\"owned\",state=\"error\",reason=\"cache_init_failed\",detail=\"key_unavailable\"} 1"))
+        #expect(render(state: .error, reason: .cacheInitFailed, failure: nil).contains(
+            "prefix_cache_status{model=\"owned\",state=\"error\",reason=\"cache_init_failed\"} 1"))
+        #expect(!render(state: .disabled, reason: .configDisabled, failure: .keyUnavailable).contains("detail="))
+    }
+
+    @Test func bridgeReportsItsConstructionRefusal() async {
+        let bridge = EngineV2Bridge(engine: InertStubEngine(), modelId: "owned",
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],
+            prefixCacheStatus: .init(modelId: "owned", backend: .paged, replayStrategy: .unknown,
+                state: .error, reason: .cacheInitFailed),
+            prefixCacheConstructionFailure: .keyUnavailable,
+            kvBackendKind: .paged, pagedPageSize: 32)
+        let sample = await bridge.localMetricsSample(model: "owned")
+        #expect(sample?.posture?.prefixConstructionFailure == .keyUnavailable)
+        #expect(sample?.posture?.prefix.reason == .cacheInitFailed)
+        await bridge.shutdown()
+    }
+
     @Test func drainedBridgeDoesNotPublishLivePosture() async {
         let bridge = EngineV2Bridge(engine: InertStubEngine(), modelId: "owned",
             tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],

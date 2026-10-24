@@ -1,37 +1,138 @@
 # Configuration reference
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-23
 
-Every environment variable read by the coordinator, the provider CLI
-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
-the code that reads it, and its effect. Defaults are the fallbacks at the cited
-symbol; a production or dev host may pin a different value in its environment
-file. Secrets are named, never valued. Unless a row says *live*, the variable is
-read once at process start and a restart applies a change.
+Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+Coordinator and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+Pinned platform links on this page are immutable evidence snapshots, not claims
+about current platform behavior. For current settings and behavior, consult the
+latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
 
-Autopilot `selected_models` is the cached planning inventory; `backend.enabled_models` and explicit startup overrides remain ordinary serving permission in waiting/shadow mode. See [the protocol and activation boundary](../architecture/model-autopilot.md).
+## Local GLM qualification
 
-## Deployment environment
+This process-local opt-in is independent of the coordinator supported-model set.
 
-| Setting | Default / bounds | Consumer |
+| Variable / field | Default / behavior | Consumer |
 |---|---|---|
-| `EIGENINFERENCE_DEPLOYMENT_ENVIRONMENT` | `production`; only `production` or `development`, unknown values fail startup | `coordinator/config/deployment.go` (`CheckDeploymentEnvironment`, `RequiresProductionAppAttest`); `coordinator/internal/startup/legacy_mdm.go` (`InitializeLegacyMDMPolicy`) |
+| `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT` | Unset: disabled. Otherwise an absolute path to a regular JSON selection file, at most 4 MiB; not a boolean and not forwarded to launchd | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLocalQualification.swift` (`selection`) |
+| `catalog`, `manifest` | Required complete `CatalogModel` and `ModelManifest` objects using their ordinary JSON keys; dates are ISO-8601. Both identify exactly `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`. The catalog's Hugging Face artifact binds that repository and a concrete revision. No network catalog request is made | `GLM5NextLocalQualification.selection` |
+| `expectedAggregateSHA256` | Required lowercase 64-digit SHA-256 pin; must equal both catalog and manifest aggregates. This is the exact local artifact selection, not an assertion that bytes are verified or published | `GLM5NextLocalQualification.validate` |
+| `maximumContextLength` | Optional positive enforced context bound, default `4096`; must not exceed the source model's maximum. Read once per LOAD together with the artifact plan; controls engine sizing and request admission, not source metadata. A request that omits `max_tokens` gets the smaller of the model's default output budget (4,096 for the pinned artifact) and half the bound. A prompt plus output budget above the bound is refused with HTTP 400 `advertised_context_exceeded` before native admission | `GLM5NextLocalQualification.LocalPlan.boundedSizing`; `EngineV2Factory.makeBridge` |
+| `tokenizer` | Not supported. A present field refuses the whole selection: the LOAD quotation covers only the tokenizer shipped in the pinned weight snapshot | `GLM5NextLocalQualification.Selection` |
+| `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | On: a published GLM engine holds standing wired residency for its weights, bounded by the MiMo safe ceiling (physical memory minus max(16 GiB, 10%)) and released only after proven retirement. Rollback: trimmed, case-insensitive `0`, `false`, `no`, `off`. Acceleration only, never load admission; without it 512-token prefill chunks measured 263–367 instead of 1,246 tok/s on a 256 GiB M5 Ultra. Forwarded to the launchd provider job | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`, `prepare`) |
 
-Production requires the [App Attest cutover prerequisites](../operations/coordinator-deploy.md#frozen-legacy-mdm-cutover-prerequisites)
-and freezes the legacy cohort. Explicit `development`, or actual memory-store
-fallback (`EIGENINFERENCE_ALLOW_MEMORY_STORE=true` with no database URL), skips
-that startup freeze. Allowing memory fallback does not exempt a configured
-Postgres store. `DD_ENV`, the App Attest proof environment, base URL and client
-claims do not classify deployment security. A later production startup freezes
-then-current eligible membership; dev startup does not establish a cutoff.
+The weight snapshot's `chat_template.jinja` must be the reviewed template
+shipped in `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`
+(`GLM5NextPromptPolicy.templateSHA256`); any other template refuses the LOAD
+even when it renders (`GLM5NextLocalQualification.requireShippedTemplate`).
+
+The provider rechecks the selection before local LOAD, and the managed loader
+verifies manifest-pinned bytes under ordinary pending-load admission. A stale
+discovery hash refuses selection. The opt-in does not change coordinator
+advertisement, MTP defaults or performance cohorts. Only use an isolated local
+process and explicitly reviewed artifacts; publication and full-model numerical
+or throughput qualification remain separate gates.
+
+GLM serves only through its embedded-MTP engine with a native operation owner;
+target-only GLM has no checked completion receipt. MTP is therefore on for GLM
+without any setting: the default `[backend] mtp_mode = "auto"` enables it, as
+does `"on"` (`MTPMode.enablesMTP`). `mtp_mode = "off"` or the process kill switch
+`DARKBLOOM_CBV2_MTP=0` (also `false`, `no`, `off`) disables it; local startup then skips the
+model with a message, and the local server's model list omits it
+(`GLM5NextLocalServing.partition`); any LOAD fails before weight allocation.
+When a selection is missing or invalid, startup prints the specific reason
+(`GLM5NextLocalQualification.localSelectionRefusal`).
+Coordinator-connected mode needs no setting: it serves only catalog build
+`glm-5.3-flash` with a 262,144-token enforced context, on Apple M5 Max or
+M5 Ultra with at least 256 GiB, and only while MTP is enabled
+(`ProviderLoop.coordinatorGLM5NextPlan`). The selection file is ignored there.
+There is no assistant-floor,
+post-build or wedge-recovery fallback to target-only: those paths unload or
+refuse the GLM slot instead.
+
+For the pinned local identity and `glm-5.3-flash` the encrypted SSD prefix store defaults on;
+`DARKBLOOM_PREFIX_CACHE=0` disables it
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`,
+`PrefixCachePolicy.isEnabled`). The KV backend needs no setting: automatic
+selection is paged, and `contiguous` or `DARKBLOOM_CBV2_PAGED_KV=0` refuses the
+load (`EngineV2Factory.prepareProductionBackend`).
+
+The local `/metrics` endpoint exports these gauges from
+`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadFaultState.swift`
+(`GLM5NextLoadFaultState`):
+
+| Metric | Meaning |
+|---|---|
+| `darkbloom_glm5_next_retained_fault` | `1` after any unproven GLM native retirement |
+| `darkbloom_glm5_next_retained_owner_objects` | Distinct in-process objects kept alive by GLM faults (bridges, newcomer containers, leases, activity markers); not a model count |
+| `darkbloom_glm5_next_retained_resident_bytes` | Unpublished weight and KV bytes charged to retained owners; subtracted from fleet KV budgets |
+
+A retained fault refuses new GLM work until process restart. Retained native
+roots, the pending-load lease and memory claims are never refunded by that
+signal. Other model families keep loading and reclaiming under their own
+admission and native health gates when capacity remains, but their re-sliced
+grants exclude the charged bytes, so survivors cannot regrow into memory a
+retained GLM owner may hold. When a lone GLM slot held the whole fleet KV
+budget, the retained charge leaves none, so other loads are refused. A
+published GLM slot whose unload, eviction or shutdown cannot prove retirement
+stays in place: its KV claim is charged, its grant is frozen, eviction skips
+it and shutdown stays draining.
+
+## Console UI
+
+The retained console uses build-time public variables. Rebuild after changing
+them; never place private credentials in `NEXT_PUBLIC_*` values.
+
+| Variable | Default / behavior | Consumer |
+|---|---|---|
+| `NEXT_PUBLIC_COORDINATOR_URL` | `https://api.darkbloom.dev` when missing or empty; server-side upstream for same-origin API routes | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`), `console-ui/src/lib/coordinator-url.ts` |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | Missing or `placeholder` selects mock authentication; configure a real app for a hosted deployment | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`IS_PRIVY_CONFIGURED`) |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Built-in measurement ID when missing; empty string disables analytics | `console-ui/src/lib/google-analytics.ts` (`getGoogleAnalyticsMeasurementId`) |
+| `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Both required to enable Datadog RUM | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_DD_SITE` | `datadoghq.com` | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_DD_ENV` | `production` | `console-ui/src/components/DatadogRUM.tsx` |
+| `NEXT_PUBLIC_APP_VERSION` | `dev` | `console-ui/src/components/DatadogRUM.tsx` |
+
+The Settings API-example URL is a display preference, not an upstream routing
+override. Request headers, cookies and browser storage cannot choose the
+server's coordinator origin. See [console architecture](../architecture/components/console-ui.md#coordinator-url-resolution).
+
+## Desktop app
+
+| Setting | Default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_DESKTOP_DIR` | `~/.darkbloom/desktop` (the build's install directory, e.g. `~/.darkbloom-dev/desktop` for dev builds) | `DesktopStorage.directory` in `provider-swift/Sources/darkbloom/Desktop/DesktopStorage.swift`; owner-only API discovery, operation journal, and coordinator-scoped dashboard credentials; useful for isolated tests |
+| `DARKBLOOM_CLI_PATH` | `~/.darkbloom/bin/darkbloom` | `Backend.binary` in `desktop-app/src/main/backend.ts`; development-only CLI override, ignored by packaged apps |
+| `DARKBLOOM_DESKTOP_ATTACH_ONLY` | unset | `Backend.connect` in `desktop-app/src/main/backend.ts`; when `1` in development, attach to an already-running isolated API without creating a LaunchAgent; ignored in packaged apps |
+| `DARKBLOOM_DEV_URL` | Packaged `darkbloom://app/index.html` | `desktop-app/src/main/index.ts`; development-only renderer URL, ignored by packaged apps |
+
+Provider `auto_update`, `idle_timeout_mins`, schedule windows, and startup
+preloading retain their existing native configuration. The app writes them
+through the [versioned desktop API](desktop-control.md), using expected revisions.
+
+## Runtime metallib snapshots
+
+The provider creates an anonymous snapshot before binding the runtime metallib.
+
+| Variable | Default / accepted values | Consumer |
+|---|---|---|
+| `TMPDIR` | When absent, Foundation's temporary directory. When present, an absolute path without NUL bytes to an existing writable directory; invalid or inaccessible values fail snapshot creation without fallback. Read when creating the snapshot. | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`) |
+
+Set `TMPDIR` in the environment of the process that serves inference. A shell
+export applies to `darkbloom start --foreground` and `darkbloom start --local`.
+For background `darkbloom start`, it applies to the invoking CLI's startup
+snapshot, but is not copied into the installed provider's launchd environment:
+`TMPDIR` is not in `LaunchAgent.passthroughEnvKeys`
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`passthroughEnvironment`). See [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough).
+This setting does not grant sandbox permissions or change snapshot binding checks.
 
 ## Provider drain deadline
 
 | Setting | Default / bounds | Consumer |
 |---|---|---|
-| `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom start/stop/restart/update/logout --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
 | `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
@@ -46,6 +147,29 @@ restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
 
+## Provider endpoint resumption and logout
+
+The separate physical diagnostic uses `DARKBLOOM_NATIVE_SERVE_QUALIFICATION`:
+only exact `1` enables it; unset and every other value refuse before any proof
+or model work. `NativeServeQualification.run` in
+`provider-swift/Sources/ProviderCore/Diagnostics/NativeServeQualification.swift`
+accepts no caller-provided signing key, binary hash, hardware or privacy claims.
+It uses normal serving safeguards with private state, target-only contiguous
+inference, no SSD prefix cache and no updater. This opt-in is not forwarded to
+launchd and does not enable production coordinator resumption. See
+[native serving qualification](../developer/test.md#native-serving-qualification).
+
+| Setting | Behavior | Consumer |
+|---|---|---|
+| Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |
+| `darkbloom logout --config` | Accepted for CLI compatibility, not used to retarget revocation. Logout uses issuer metadata bound to the saved token; missing metadata means local-only logout with a warning. Config parsing cannot block logout. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`, `revokeSavedToken`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore.issuer`) |
+
+The [wire contract](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+does not create local trust or change proof validity. The
+[logout contract](../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines stop-before-delete, force handling and remote confirmation. No worker
+mode or update configuration changes are part of this addition.
+
 ## Provider model selection
 
 | Setting | Default / precedence | Consumer |
@@ -53,7 +177,13 @@ time; they are not network control endpoints or serving credentials.
 | `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/Start/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runForeground`) |
-| later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
+| later scheduled serving windows | Read full current Autopilot settings/consent plus saved selection. Disabling between windows restores ordinary `enabled_models` even if unchanged; otherwise keep the initial foreground selection until a live switch or saved selection change. Resolve an empty ordinary list to eligible local models, validate/hash before reopening and retain the original window end. With consent, cached Autopilot builds verified at start or by the previous window's provider (downloads and background checks) stay while their bytes hash unchanged. All other inputs remain frozen | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift` (`runScheduled`) |
+| `backend.model_autopilot.selected_models` | With saved consent, the persisted part of the Autopilot set. The running provider adds every verified catalog build in the cache this Mac can run, including builds Autopilot downloaded, without a new consent step or revision change ([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotStartInventory.swift` (`AutopilotStartInventory`); `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotModelSet.swift` (`autopilotModelSet`) |
+| `[backend.autopilot_downloads] enabled` | `true` (table or key absent: on) | Let Autopilot download catalog builds on the operator's behalf; only with saved Autopilot consent. Provider configuration, not consent: changing any key here never changes the Autopilot revision. The running provider rereads it at its next policy refresh; `darkbloom autopilot downloads enable` and `disable` write it ([CLI](../provider/cli-reference.md#darkbloom-autopilot)) | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` (`AutopilotDownloadSettings`); `provider-swift/Sources/darkbloom/Autopilot/AutopilotDownloadCommands.swift` |
+| `[backend.autopilot_downloads] max_storage_gb` | absent: no cap | GiB the builds Autopilot downloaded and still on disk may use together; a download past it is refused `storage_limit_reached` | `AutopilotDownloadSettings`, `AutopilotDownloadBudget` in `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadSettings.swift` |
+| `[backend.autopilot_downloads] max_models` | absent: no cap | Builds Autopilot downloaded and still on disk; a new download at the cap is refused `model_limit_reached` | Same |
+| `[backend.autopilot_downloads] reserve_gb` | absent: `50` GiB (`AutopilotDiskGuard.defaultReserveGiB`) | Free disk a download must leave on the model cache volume, or it is refused `insufficient_disk` | Same; `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownload.swift` (`AutopilotDiskGuard`) |
+| `autopilot-downloads.json` beside `provider.toml` | Written by the provider, owner-only from creation: the builds Autopilot downloaded (model, weight hash, size, time), at most 256. Usage against the caps counts those still on disk; it keeps them in the set across restarts when the catalog is unreachable; nothing deletes their files | `provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownloadLedger.swift` (`AutopilotDownloadLedger`) |
 
 Ordinary non-enrolled `start` saves its selected models under the lifecycle lease before disabling
 recovery or draining/stopping the current daemon; persistence failure leaves it
@@ -79,430 +209,41 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 `restore` in the same module).
 
 
-## Where values are set
-
-| Component | Where the process gets its environment |
-|---|---|
-| Coordinator, production | `/etc/d-inference/env` (root-only, boot disk) on the Confidential VM. Secrets are placed by hand; `deploy/gcp/prod/refresh-env.sh` runs before Docker at every boot, adds any key from `deploy/gcp/prod/release-env-defaults` that is absent, migrates a few exact historical values, never overwrites an operator-set value, and refuses to run when a required key is missing or empty. The list of keys production must have is maintained once in [`../operations/coordinator-deploy.md#environment-file`](../operations/coordinator-deploy.md#environment-file). The container entrypoint `coordinator/deploy/start.sh` reads `USER_PERSISTENT_DATA_PATH`, `MICROMDM_API_KEY`, `MDM_PUSH_P12_B64`, `DOMAIN` and `EIGENINFERENCE_MDM_WEBHOOK_SECRET` itself before it `exec`s the `coordinator` binary; everything else is read by Go code. |
-| Coordinator, dev | Same file layout on the dev VM, written by `deploy/gcp/refresh-env.sh`; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
-| Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
-| Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
-| Provider CLI, installed LaunchAgent | `darkbloom start` writes a launchd plist whose `EnvironmentVariables` come from `LaunchAgent.passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`. The allow-list includes `DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, and `DARKBLOOM_PREFILL_DEADLINE_MODE`; `MLX_GATHER_QMM_EXPERT_SLICES` is forwarded only when exactly `1`. `PATH` and the Hugging Face/XDG cache variables are not forwarded. Model-cache selection is config-backed. The watchdog (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. |
-| Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration and the only path read unless `--config` is given; there is no legacy-location fallback or copy (under `sudo darkbloom report`, the invoking user's `~/.config/darkbloom/provider.toml`, from `ConfigManager.defaultConfigPath(home:)`); a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
-| console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
-| admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
-
-## Provider email operator command
-
-These variables apply only to the separately invoked `provider-emails` tool,
-not the coordinator server. See [provider email campaigns](../operations/provider-emails.md).
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `PROVIDER_EMAIL_DATABASE_URL` | PostgreSQL connection string | unset | `coordinator/provideremail/command/run.go` (`loadSnapshot`) | Read fleet ownership, reported versions and owner email in a read-only snapshot; unnecessary with a local fixture or `test`. |
-| `RESEND_API_KEY` | Secret, Full access for contact/segment/broadcast operations | unset | `coordinator/provideremail/command/run.go` (`Run`) | Authenticate Resend sync/draft operations and explicitly addressed test sends; unnecessary for fleet preview. |
-
-## Coordinator
-
-### Core server
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_NONSTREAM_RESPONSE_MAX_BYTES` | positive integer bytes | `67108864` (64 MiB) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/inference/responselimit/nonstream_response_limit.go` (`NewBudget`) | Aggregate decrypted provider payload cap per non-streaming attempt, enforced before queuing/settlement and during assembly. Invalid or non-positive values use the default. |
-| `EIGENINFERENCE_NONSTREAM_RESPONSE_MAX_CHUNKS` | positive integer frames | `262144` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/inference/responselimit/nonstream_response_limit.go` (`NewBudget`) | Bounds frame/string overhead, counting empty and malformed chunks too. Invalid or non-positive values use the default. |
-| `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
-| `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
-| `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/access/device/handlers.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
-| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/internal/api/middleware/middleware.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
-| `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/operations/drain.go` (`DrainGraceFromEnv`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
-| `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/app/routing.go`; `coordinator/api/inference/configuration.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
-| `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/app/runtime_policy.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
-
-### Database, store and persistent disk
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/app/store.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
-| `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
-| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`); `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
-| `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/internal/provider/journal/trust_reuse_journal.go` (`ResolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
-| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
-| `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
-| `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/operations/state_export.go` (`HandleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |
-| `EIGENINFERENCE_STATE_EXPORT_ROOT` | directory | `USER_PERSISTENT_DATA_PATH`, else `/mnt/disks/userdata` | `coordinator/api/operations/state_export.go` (`resolveStateExportRoot`) | Overrides the directory that is archived (tests). |
-
-### Auth: admin key, Privy, release key, sender encryption
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/app/store.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*`, release registration and state export. |
-| `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
-| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/release_handlers.go` | Bearer token accepted (constant-time) for release registration in addition to the admin key. |
-| `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |
-| `EIGENINFERENCE_PRIVY_APP_SECRET` | secret | unset | `coordinator/auth/config.go` (`ReadConfig`) | Basic-auth credential for Privy REST calls. |
-| `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | PEM ES256 public key | unset; required when the app id is set (`Check`) | `coordinator/auth/config.go` (`ReadConfig`) | Key that Privy access tokens are verified against. |
-| `EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE` | file path | unset | `coordinator/auth/config.go` (`ReadConfig`) | Reads the PEM from a file, overriding the inline value. |
-| `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | BIP39 phrase (secret) | unset (sender→coordinator encryption disabled) | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/app/services.go` (`e2e.DeriveCoordinatorKey`) | Derives the X25519 key served at `GET /v1/encryption-key`; `MNEMONIC` wins when both are set. See [`../architecture/security/encryption.md`](../architecture/security/encryption.md). |
-
-### MDM, attestation and APNs
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `MICROMDM_API_KEY` | secret | unset (MicroMDM is not started) | `coordinator/deploy/start.sh` | Starts the in-container MicroMDM with this API key; must be byte-identical to `EIGENINFERENCE_MDM_API_KEY`. |
-| `MDM_PUSH_P12_B64` | base64 PKCS#12, URL-safe alphabet accepted (secret) | unset | `coordinator/deploy/start.sh` | Decoded on first boot into `/data/micromdm/push.crt` and `push.key` and uploaded to MicroMDM. |
-| `DOMAIN` | hostname | `localhost` | `coordinator/deploy/start.sh` | MicroMDM `-server-url https://$DOMAIN`. |
-| `EIGENINFERENCE_MDM_URL` | URL | unset (MDM verification off) | `coordinator/mdm/config.go` (`ReadConfig`) | Enables the MicroMDM client, the verification scheduler and the webhook; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md). |
-| `EIGENINFERENCE_MDM_API_KEY` | secret | compiled placeholder (`defaultMDMApiKey`) | `coordinator/mdm/config.go` (`ReadConfig`) | API key for MicroMDM calls; production sets a real key. |
-| `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | secret | unset (warning; webhook relies on the CommandUUID gate) | `coordinator/app/services.go`; `coordinator/deploy/start.sh` | Shared secret MicroMDM must present on `/v1/mdm/webhook` (`?token=` or `X-Webhook-Token`); `start.sh` appends it to the webhook URL. |
-| `EIGENINFERENCE_MDM_SCHEDULER_WORKERS` | integer 1–12 | `12` | `coordinator/api/provider/trust/config.go` (`ReadMDMSchedulerConfig`) | Verification worker pool size (values above 12 clamp down). |
-| `EIGENINFERENCE_MDM_SCHEDULER_QUEUE_CAPACITY` | integer 1–4096 | `4096` | `coordinator/api/provider/trust/config.go` (`ReadMDMSchedulerConfig`) | Verification queue capacity (clamped). |
-| `EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN`, `EIGENINFERENCE_MDM_INITIAL_SPREAD_MAX` | Go durations, min ≤ max ≤ 30m | `5s`, `5m` | `coordinator/api/provider/trust/config.go` (`ReadMDMSchedulerConfig`) | Jitter window for a provider's first verification; an invalid pair resets both. |
-| `EIGENINFERENCE_MDM_CLAIM_TTL` | Go duration 2m–15m | `3m` | `coordinator/api/provider/trust/config.go` (`ReadMDMSchedulerConfig`) | Lease on a claimed verification job. |
-| `PROFILE_SIGNING_P12_B64`, `PROFILE_SIGNING_P12_PATH`, `PROFILE_SIGNING_P12_PASSWORD` | base64 or path to PKCS#12, password (secrets) | unset (profiles served unsigned) | `coordinator/profilesign/signer.go` (`LoadFromEnv`) | CMS-signs the `/v1/enroll` `.mobileconfig`. |
-| `APNS_KEY_ID`, `APNS_TEAM_ID` | Apple key id, team id | unset (code-identity attestation off) | `coordinator/app/apns.go` (`loadAPNsAttestor`) | Both required to construct the APNs attestor; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md). |
-| `APNS_AUTH_KEY_P8_B64`, `APNS_AUTH_KEY_P8_PATH` | base64 or path to the `.p8` (secret) | unset (attestor disabled) | `coordinator/app/apns.go` (`loadAPNsAttestor`) | The APNs auth key; the base64 form wins. |
-| `APNS_TOPIC` | bundle id | `io.darkbloom.provider` | `coordinator/app/apns.go` (`loadAPNsAttestor`) | APNs topic for code-identity pushes. |
-| `APNS_MODE` | `background`, `alert` | `background` | `coordinator/app/apns.go` (`loadAPNsAttestor`) | Push type used for the challenge. |
-| `APNS_ENFORCE_AFTER` | RFC 3339 timestamp | unset (grace: measured, never blocks) | `coordinator/internal/startup/startup_config.go` (`ParseAPNsEnforceAfter`) | After this instant un-attested providers are not routed; a malformed value refuses startup. |
-| `EIGENINFERENCE_TRUST_REUSE_WINDOW` | Go duration > 0 | `5m` | `coordinator/internal/provider/reuse/trust_reuse.go` (`trustReuseWindowFromEnv`) | How long a reconnecting provider may reuse its previous trust decision. |
-| `EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP` | Go duration 0–120s | `90s` (values above 120s clamp down) | `coordinator/internal/provider/reuse/trust_reuse.go` (`TrustReuseReconnectGapFromEnv`) | Maximum contiguous offline gap that still counts as continuity; `0` disables reuse. |
-| `EIGENINFERENCE_TRUST_GEO_HEADERS` | `1` | unset | `coordinator/api/geo/resolver.go` (`newProviderGeoResolverFromEnv`) | Trust proxy-supplied client-IP headers when geolocating providers. |
-| `EIGENINFERENCE_IPAPI_KEY` | secret | unset (free ip-api.com tier) | `coordinator/api/geo/resolver.go` (`newProviderGeoResolverFromEnv`) | Uses the keyed `pro.ip-api.com` endpoint for provider geolocation. |
-
-### Release policy, version floor and binary hashes
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/owner.go` (`belowMinProviderVersion`) | Providers below this version stay connected but are excluded from routing at registration, challenge revalidation and manifest sync; while a floor is set, a provider that reports no version counts as below it. Never derived from releases. Surfaced to operators in `/v1/me`. |
-| `EIGENINFERENCE_RELEASE_POLICY_MODE` | `shadow`, `enforce` | `shadow` | `coordinator/app/release_policy.go` | Whether missing application evidence blocks routing; see [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
-| `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` | Go duration ≥ 20m (raise-only) | `20m` | `coordinator/app/release_policy.go` | Boot grace before enforcement bites; shorter values clamp up to 20m. |
-| `EIGENINFERENCE_BINARYHASH_ENFORCE` | `true` | `false` | `coordinator/app/release_policy.go` (`SetBinaryHashEnforcement`) | Re-enables legacy derouting on a self-reported `binaryHash` mismatch (rollback only). |
-| `EIGENINFERENCE_KNOWN_BINARY_HASHES` | comma-separated hashes | unset | `coordinator/app/release_policy.go` (`AddKnownBinaryHashes`) | Extra known-good provider binary hashes beyond the active releases in the store. |
-| `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` | `name=hash,…`; a repeated name accepts every listed hash | unset | `coordinator/app/runtime_policy.go` (`SetRuntimeManifest`) | Replaces the store-built [runtime manifest](../architecture/security/attestation.md#runtime-manifest) at boot; discarded by the next release registration or deactivation, which rebuilds the union from active releases. |
-
-### Routing, admission and TTFT
-
-First-content ranking is active by default with no mode or percentage setting.
-The 100-ms band, confidence/freshness rules and bounded retry policy are defined
-in [first-content routing](../architecture/first-content-routing.md). Existing
-TTFT shadow metrics remain observational and do not control this selection.
-
-
-Trust floor, model routing and per-request quality:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_MIN_TRUST` | `none`, `self_signed`, `hardware` | `hardware` (`registry.New`) | `coordinator/registry/config.go` (`ReadConfig`, `Check`) | Minimum trust level a provider needs to receive public traffic; an unknown value refuses startup. |
-| `EIGENINFERENCE_DEDICATED_MODELS` | comma-separated family patterns, or `none` | `gemma-4` | `coordinator/app/registry.go`; `coordinator/registry/dedicated_models.go` (`ParseDedicatedModels`) | Model families that get dedicated-provider routing; `none` disables. |
-| `EIGENINFERENCE_REJECT_MODELS` | comma-separated model ids | unset | `coordinator/app/routing.go` (`SetRejectModels`) | Sheds the listed models with 429 at admission. |
-| `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/app/routing.go` (`SetMinDecodeTPS`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
-| `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/scheduler.go` (`decodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
-| `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/app/routing.go`; `coordinator/api/inference/servability_gate.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
-| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/app/routing.go` (`SetLongPromptThreshold`) | Threshold for the retained historical cost diagnostic; active first-content selection uses measured forecast work for every prompt size. |
-| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/app/routing.go` (`SetLongPromptPrefillWeight`) | Long-prompt weight in the historical cost diagnostic; read only when the threshold is set. Does not widen the first-content band. |
-| `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/app/routing.go`; `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/inference/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces per-family prompt-token calibration for the context gate and conservative first-content work; physical and billing estimates remain separate. |
-| `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` | comma-separated exact account IDs or stored emails | empty (no accounts); provision selected identities in the deployment environment | `coordinator/api/inference/first_content_accounts.go` (`accountHasFirstContentSLA`); `coordinator/api/server_config.go` (`ReadServerConfig`) | Enables the request-absolute SLA only for selected authenticated accounts. Email matching is case-insensitive and uses the stored user, never headers or the service role. Verify the production selector before rollout; a verified account ID avoids dependence on email changes. |
-| `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS` | `model=upstream_base_ms:per_input_token_ms,…`; `model=off` removes | Bonsai exact IDs: `10000:5` | `coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) | For selected accounts, overrides both SLA terms for exact model IDs; an explicit public alias policy takes precedence over the resolved build. Retains one second of coordinator headroom. Base 1001–600000 ms, slope 0–100 ms/token; invalid/duplicate entries fail startup atomically. Applied after the legacy base table. |
-| `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
-| `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init); `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
-| `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/app/routing.go` (`SetDisableClientErrorStop`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
-
-TTFT admission and dispatch termination:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/app/routing.go` (`SetTTFTHardReject`) | Enables 429 when all eligible candidates have credible conservative first-content forecasts beyond the original remaining deadline; Unknown evidence is not hard rejected. |
-| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/app/app.go` (`ValidateTTFTDeadlineBaseMs`) | Live first-content deadline base for selected accounts (`FirstContentDeadlineBase`, plus 1 ms per prompt token); legacy base-only policy may tighten it; an explicit model SLA overrides both terms. |
-| `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/app/routing.go`; `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
-| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/app/routing.go` (`ValidateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
-| `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/app/routing.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
-| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/internal/registry/ttftcalibration/calibrator.go` (`Calibrator.AppliedRatio`) | Historical TTFT diagnostic calibration; off returns ratio 1.0. It does not certify first-content feasibility. |
-| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/dispatch.go` (`ttftTerminalRejectEnabled`) | Legacy text TTFT refusal handling; typed predictive refusals use the bounded fresh-evidence ladder in `coordinator/api/inference/first_content_retry.go`. |
-| `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
-
-Queue and cold dispatch:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_QUEUE_MAX_DEPTH` | integer ≥ 1 | `32` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Per-model queue depth before 429. |
-| `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Upper bound on eligible queue waits; a public deadline-bound request also needs credible useful release evidence. |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/cold_dispatch.go` (`queueBeforeShedEnabled`) | Permit `machine_busy` preflight requests to reach dispatch queue policy. Public deadlines still require credible capacity-release evidence; owner/exempt requests retain queue behavior. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/inference/cold_dispatch.go` (`coldDispatchEnabled`) | Trigger warming for eligible idle on-disk providers and allow eligible owner/exempt waits; public deadlines still require credible release evidence before waiting. |
-
-Capacity breakers:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_BUDGET_CLAMP` | bool | `true` | `coordinator/registry/budget_clamp.go` | Clamp admission to a provider whose reported token budget is stale after a capacity 503. |
-| `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` | seconds | `300` | `coordinator/registry/budget_clamp.go` | Fail-open bound on how long a clamp can hold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` | integer (`0` disables) | `5` | `coordinator/registry/capacity_cooldown.go` | Consecutive capacity rejects before a (provider, model) pair is cooled down. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS` | seconds | `60` | `coordinator/registry/capacity_cooldown.go` | Window in which rejects count toward the threshold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/capacity_cooldown.go` | Initial cooldown; doubles on each failed probe. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/capacity_cooldown.go` | Ceiling of the exponential cooldown. |
-| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
-
-Reservation commit lock:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_RESERVE_COMMIT_MODE` | `shared`, `global` (trimmed, case-insensitive; any other value is treated as `shared` and logged as unknown) | `shared` | `coordinator/registry/gate_commit_mode.go` (`loadReserveCommitMode`, `parseReserveCommitMode`); read once at `registry.New` | How the reservation commit (`commitProviderReservation`, `ReserveNextFromPlan`) holds the registry lock. `shared` commits under `r.mu.RLock` plus the winner's `p.mu`; `global` is the kill switch that restores the fleet-wide `r.mu.Lock()` commit serialization. The fault-tracker recorders stay on their per-identity gates in both modes; see [`../architecture/routing.md`](../architecture/routing.md). |
-
-Quality concurrency cap:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | bool | `true` | `coordinator/registry/config.go` (`ReadConfig`) | Per-provider admission cap derived from each model's quality concurrency instead of the flat cap. |
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL` | `model=factor,…` | unset | `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Per-model overcommit overrides. |
-| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/concurrency_cap.go` | Use per-model solo decode rates (not the provider-level rate) for the cap. |
-| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/concurrency_cap.go` | Solo samples required before a per-model median is trusted. |
-| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | `model[@chip-class]=tok/s,…` | unset | `coordinator/registry/concurrency_cap.go` (`soloTPSSeedForClass`) | Cold-start decode-rate seed until solo samples accumulate. |
-
-#### Warm pool
-
-All read once in `ReadConfig` (`coordinator/registry/config.go`); the controller
-they tune is explained in
-[scheduling.md → Warm-pool controller](../architecture/scheduling.md#warm-pool-controller):
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_WARM_POOL_ENABLED` | bool | `true` | `coordinator/registry/config.go` | Runs the warm-pool controller (`StartWarmPoolController`). |
-| `EIGENINFERENCE_WARM_POOL_OBSERVE_ONLY` | bool | `false` | `coordinator/registry/config.go` | Compute targets and metrics without issuing loads. |
-| `EIGENINFERENCE_WARM_POOL_INTERVAL` | Go duration > 0 | `10s` | `coordinator/registry/config.go` | Controller tick. |
-| `EIGENINFERENCE_WARM_POOL_MIN_DWELL` | Go duration | `5m` | `coordinator/registry/config.go` | Minimum time a model stays warm before it may be unloaded. |
-| `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` | Go duration | `0` | `coordinator/registry/config.go` | Queue age that counts as pressure. |
-| `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Capacity rejects per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
-| `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | TTFT misses per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` | integer ≥ 1 | `2` | `coordinator/registry/config.go` | Speculative dispatch starts per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Speculative wins per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Cold dispatches per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` | Go duration | `20s` | `coordinator/registry/config.go` | Load duration above which a load is counted as slow. |
-| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | float (≤ 0 disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
-| `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` | integer ≥ 0 | `1` | `coordinator/registry/config.go` | Spare warm providers added to the demand-derived target. |
-| `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` | integer ≥ 1 | `4` | `coordinator/registry/config.go` | Per-provider concurrency assumed when rates are unknown. |
-| `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` | integer ≥ 0 | `512` | `coordinator/registry/config.go` | Representative prompt size for the service-time estimate. |
-| `EIGENINFERENCE_WARM_POOL_ASSUMED_COMPLETION_TOKENS` | integer ≥ 0 | `256` | `coordinator/registry/config.go` | Representative completion size for the service-time estimate. |
-| `EIGENINFERENCE_WARM_POOL_MIN_WARM` | `model=count,…` | unset | `coordinator/registry/config.go` (`envModelIntMap`) | Operator floor of warm providers per concrete model id. |
-| `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` | integer ≥ 0 (`0` = observe) | `4` | `coordinator/registry/config.go` | Baseline load burst per tick. |
-| `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Hard per-tick maximum after gap scaling. |
-| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
-| `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Fleet-wide cap on in-flight loads. |
-
-Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
-
-These controls govern cache participation. A sampling or QPS denial is also
-honored by prompt accounting, without a second sidecar call. With cache routing
-off, prompt accounting can still make count-only calls under its separate
-16-call concurrency and one-second deadline bounds; `MODE=off` does not disable
-the tokenizer transport (`coordinator/api/promptwork/planner.go`, `Plan`).
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off`, `on` | `off` | `coordinator/registry/config.go` (`ReadConfig`, `CacheRoutingConfig.Check`) | Enables provider-confirmed cache routing; any other value refuses startup. |
-| `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
-| `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). The in-memory holder and demand indexes are sized for at most `30m`; a longer value is accepted and logged as a warning at startup (`warnCacheRoutingTTL`). |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
-| `EIGENINFERENCE_CACHE_ROUTING_PERSIST` | bool | `true` | `coordinator/registry/config.go` (`env.EnvBool`) | Keep the holder and observed-demand indexes in the store across coordinator restarts (`coordinator/registry/cachepersist/persister.go`). Memory stays the serving copy; the store is a write-behind copy flushed every 5 s and reloaded at boot. `false` serves from an empty index after every restart. No effect when the store cannot persist. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |
-| `EIGENINFERENCE_CACHE_MASTER_KEY` | secret key material | unset; required when mode is `on` | `coordinator/registry/config.go` (`decodeCacheMasterKey`) | Keys the affinity digests so raw identity and prefix bytes are never stored. Rotating it empties the durable holder and demand copy on the next boot (`lifecycle.persistence.key_rotated`); persisted keys are derived from it. |
-
-The optional artifact array uses exactly `model_id`, `model_aggregate_sha256`
-and `prompt_contract_id` string fields. Model IDs match resolved catalog IDs
-exactly (at most 512 bytes, no wildcard, surrounding whitespace or control
-separators); both hashes must be 64 lowercase hexadecimal characters. Missing,
-unknown or duplicate fields, duplicate tuples, `null`, a blank setting, trailing
-JSON and oversized input are configuration errors. Multiple exact revisions of
-one model may be listed as distinct tuples. An absent variable preserves the
-existing unrestricted eligibility; `[]` is an explicitly configured empty list.
-`MODE=off` still disables participation with any list.
-
-The list is parsed once at startup and compiled into immutable membership;
-`ConfigureCacheRouting` replaces it with the holder/attempt tracker. Exclusion
-returns ordinary `ineligible` without a reusable remote scope or inference
-error. It does not alter provider capabilities or local HTTP cache policy
-(`coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`). No
-artifact entries are populated by the shipped defaults; follow the
-[rollout runbook](../operations/cache-routing-rollout.md) to configure a measured
-artifact subset before activating network routing.
-
-Rate limits and service-account admission (`coordinator/ratelimit/config.go`, `ReadConfig`):
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_RATE_LIMIT_RPS`, `EIGENINFERENCE_RATE_LIMIT_BURST` | float, integer | `20`, `120` | `coordinator/ratelimit/config.go` | Per-account consumer request limiter. |
-| `EIGENINFERENCE_RATE_LIMIT_ITPM`, `EIGENINFERENCE_RATE_LIMIT_ITPM_BURST` | tokens/min, tokens | `5000000`, `1000000` | `coordinator/ratelimit/config.go` | Per-account consumer input-token limiter (≤ 0 = unlimited). |
-| `EIGENINFERENCE_RATE_LIMIT_OTPM`, `EIGENINFERENCE_RATE_LIMIT_OTPM_BURST` | tokens/min, tokens | `500000`, `64000` | `coordinator/ratelimit/config.go` | Per-account consumer output-token limiter. |
-| `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST` | float, integer | `0.2`, `3` | `coordinator/ratelimit/config.go` | Limiter on deposit, payout and other financial endpoints. |
-| `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | float (`0` = bypass), integer | `200`, `600` | `coordinator/ratelimit/config.go` | Request limiter for service accounts. |
-| `EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM_BURST` | tokens/min, tokens | `50000000`, `5000000` | `coordinator/ratelimit/config.go` | Service-account input-token limiter. |
-| `EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM_BURST` | tokens/min, tokens | `5000000`, `512000` | `coordinator/ratelimit/config.go` | Service-account output-token limiter. |
-| `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED` | bool | `false` | `coordinator/ratelimit/config.go`; `coordinator/app/rate_limits.go` (`NewOutputAdmissionEstimator`) | Admit service requests against an expected output-token estimate. |
-| `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FRACTION` | float | `0.25` | `coordinator/ratelimit/config.go` | Fraction of `max_tokens` assumed as expected output. |
-| `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FLOOR`, `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_CEILING` | tokens | `512`, `8192` | `coordinator/ratelimit/config.go` | Bounds on the expected-output estimate. |
-
-Throughput anomaly detector:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_INTERVAL` | Go duration > 0 | `5m` | `coordinator/api/observation/throughput_anomaly.go` (`StartThroughputAnomalyDetector`) | Sweep cadence comparing observed decode rate to expectation per (model, chip class). |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | float > 0 | `0.35` | `coordinator/api/observation/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | integer > 0 | `3` | `coordinator/api/observation/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Providers required in a bucket before it is judged. |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | float > 0 | `0.80` | `coordinator/api/observation/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
-
-### Model autopilot
-
-Cached-inventory verification reports a busy model update/verification lock
-immediately. A normal start with saved consent preserves the configuration and
-running provider when any selected model cannot be verified. This introduces no
-new configuration setting (`ModelDownloader.verifySelectedModel`).
-
-All coordinator variables below are startup-only and read by
-`coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`); defaults and
-validation live in `coordinator/registry/autopilot/config.go` (`DefaultConfig`, `Config.Check`).
-Provider consent is separate persistent TOML, documented in
-[CLI configuration](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
-See [architecture](../architecture/model-autopilot.md) and
-[rollout](../operations/model-autopilot.md).
-
-| Variable | Values / type | Default | Effect / source |
-|---|---|---|---|
-| `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `true` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
-| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Default shadow rollout: compute/log hypothetical plans and send shadow status leases without residency ownership, reservations, fences or commands. Explicit `false` switches to live control after restart (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`; `autopilot_activation.go`, `refreshControlLeases`) |
-| `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
-| `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
-| `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
-| `EIGENINFERENCE_AUTOPILOT_LOAD_TIME_PRIOR` | Go duration, `1s...5m` | `30s` | Conservative unmeasured load cost; recent exact-build/weight-hash measurements retained after unloading may replace it (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Per-tick proposals/commands and managed-operation start budget, accounting for currently observed legacy pending loads; legacy controllers retain separate limits (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
-| `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
-| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `true` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle gates (`autopilotConfigFromEnv`; `coordinator/registry/autopilot/planner.go`, `Plan`) |
-
-These implementation defaults have **no environment-variable override** in this
-change; programmatic configuration fields are validated by `autopilot.Config.Check`.
-
-| Field / rule | Default or bound | Source |
-|---|---|---|
-| `MaxSnapshotAge` | `30s` baseline for actively controlled providers; effective age is at least controller interval + `10s`, at most `70s` with valid config | `coordinator/registry/autopilot/config.go`, `DefaultConfig`, `ControlSnapshotMaxAge` |
-| Ordinary/shadow/waiting/paused donor capacity | Normal `90s` serving heartbeat window; an accepted capacity sample is still required | `coordinator/registry/provider_lifecycle.go`, `DefaultProviderHeartbeatTimeout`; `autopilot_snapshot.go` |
-| `CommandAcceptTimeout` | `20s`; acceptance/first mutation, not total operation duration | `autopilot.DefaultConfig`; `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `checkAutopilotLoadOwnership` |
-| `CommandWatchdog` | `5m`; retain uncertain ownership rather than assume completion | `autopilot.DefaultConfig`; `coordinator/registry/autopilot_commands.go`, `markAutopilotWatchdogs` |
-| `FailureBackoff` | `2m` | `autopilot.DefaultConfig`; `coordinator/registry/autopilot_provider_state.go`, `reconcileAutopilotHeartbeatLocked` |
-| `MinBenefitSeconds` | `30` | `autopilot.DefaultConfig`; `coordinator/registry/autopilot/planner.go`, `Plan` |
-| Same-command sends | At most `3` total, separated by at least `30s`; immutable ID/payload/expiry | `coordinator/registry/autopilot_retries.go`, `retryAutopilotCommands` |
-| Standalone unload | Quiet, dwell, work and floor guards apply; no memory-pressure threshold | `coordinator/registry/autopilot/planner.go`, `Plan` |
-| Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot/demand.go`, `DemandTracker.Record`, `DemandTracker.Snapshot` |
-
-Each normal interactive start offers Yes/No again, defaulting to saved consent
-(or No initially); automatic restarts reuse the saved setting without prompting.
-Enrollment records interest/consent and verified downloaded network inventory;
-it is not activation. Both answers retain the normal model and memory selector,
-which saves the operator’s explicit choices. Enrollment itself preserves other
-preferences, and a larger advertised inventory does not change implicit startup
-preload selection. Ordinary restarts retain recorded `selected_models`; explicit
-startup choices can extend it, and explicit inventory refresh can replace it.
-Inventory verification adds no downloads. See [CLI enrollment](../provider/cli-reference.md#darkbloom-autopilot).
-Only active live control, or an explicit provider pause, transfers residency
-ownership away from ordinary cold loading and the saved idle policy. The default
-shadow lease reports `observe_only=true`, `active=false` and an acknowledged
-session without transferring ownership. Each accepted control renewal explicitly
-rebuilds capacity and sends an event heartbeat, independently of the normal
-provider heartbeat timer.
-
-Live control uses a connection/revision lease lasting `3 * Interval + 10s`.
-`POST /v1/admin/autopilot` changes only the runtime pause flag; resume does not
-promote shadow to live or alter startup configuration. Restart resets the
-operator pause. See `coordinator/registry/autopilot_activation.go`
-(`SetAutopilotPaused`, `refreshControlLeases`).
-
-### Billing, Stripe and base rewards
-
-Prices, the platform fee and the fixed consumer referral reward live in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants); this table only names the switches.
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_BILLING_MOCK` | `true` | `false` | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/app/services.go` | Bypasses Stripe with an instant-credit mock (dev only). |
-| `EIGENINFERENCE_STRIPE_SECRET_KEY` | secret | unset (deposits disabled) | `coordinator/billing/config.go` (`ReadConfig`) | Stripe API key for consumer deposits. |
-| `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Checkout webhooks. |
-| `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/stripe.go` (`NewStripeProcessor`) | Checkout redirect targets. |
-| `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies the retained Connect destination, including platform transfer reversals. Connected-account events can use the separate accounts destination below. |
-| `EIGENINFERENCE_STRIPE_CONNECT_SECRET_KEY` | secret | Checkout key before cutover; no fallback during cutover | `coordinator/billing/billing.go` (`NewService`) | Retains access to the old Connect platform independently of new Checkout. Required while retained Connect webhook secrets are configured during cutover. |
-| `EIGENINFERENCE_STRIPE_CONNECT_ACCOUNTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/payouts/stripe_payouts_webhooks.go` (`HandleStripeConnectAccountsWebhook`) | Signs `/v1/billing/stripe/connect/accounts/webhook`; configure events from connected accounts. |
-| `EIGENINFERENCE_STRIPE_LEGACY_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/stripe_checkout_webhook.go` (`HandleStripeWebhook`) | Verifies old-account Checkout events at the existing URL; shares atomic session settlement with the primary secret. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ONLY` | `true` / `false` | `false` | `coordinator/billing/config.go` (`ReadConfig`, `Check`) | Explicit cutover: all supported new bank setups and withdrawals use Global Payouts. Requires its dedicated key, financial account and webhook secret even while paused. Unknown values refuse startup. Does not erase legacy history or move money. |
-| `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` | ISO 3166-1 alpha-2 | `US` | `coordinator/billing/config.go` (`ReadConfig`) | Country for new Connect express accounts. |
-| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/billing/payouts/` | Bank onboarding redirect targets for both payout products; caller-supplied URLs are validated against the configured return URL. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `true` in production release defaults; `false` otherwise | `coordinator/billing/config.go` (`ReadConfig`, `Check`); `deploy/gcp/prod/release-env-defaults` | Enables new international onboarding, quotes and withdrawals. Production refresh preserves an explicit `false` and requires the funding account and webhook secret before activation; the payout client is independent of the Checkout and legacy Connect clients. Reconciliation continues with configured credentials even when disabled. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT` | ID | unset | `coordinator/billing/config.go` (`Check`) | Funding financial account; required when enabled. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted Global Payouts key; must be explicit during global-only cutover (no fallback in that mode). |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/payouts/global_payouts_reconcile.go` (`HandleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
-| `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
-| `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
-| `EIGENINFERENCE_BASE_REWARDS_K` | float | `0` (additive base income; `1` = legacy max backstop) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reduction factor applied to earnings before the floor is paid. |
-| `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO` | integer µUSD | `9000000000` ($9,000 per month) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Monthly cap on the base-rewards pool. |
-| `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` | float 0–1 | `0.90` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Uptime fraction required to share in the pool. |
-| `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | float 0–1 (`0` = per machine, no cap) | `0` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Cap on one account's share of the pool. |
-
-### Model registry, releases and R2/CDN
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `MODEL_REGISTRY_PUBLISHING_KEY` | secret | unset | `coordinator/api/access/publishing.go` (`RequirePublishingAPIKey`) | Bootstrap bearer token accepted (constant-time) for model-registry publishing in addition to admin keys; see [`../architecture/model-registry.md`](../architecture/model-registry.md). |
-| `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/internal/api/catalog/registration/registry_address.go` (`RegistryCDNBaseURL`) | Base URL providers download published model weights from. |
-| `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
-
-### Prompt sidecar and media fetch
-
-Prompt sidecar (`coordinator/promptcontract/config.go`, `ReadSupervisorConfig`; every duration is an integer count of milliseconds; `Check` refuses startup on an out-of-range value when the sidecar is enabled). Semantics: [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md).
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED` | bool | `false` | `coordinator/promptcontract/config.go` | Starts the supervised prompt-contract sidecar and its artifact provisioner. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_BINARY` | executable path or name | `promptsidecar` | `coordinator/promptcontract/config.go` | Sidecar binary the supervisor spawns. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_SOCKET` | absolute path | `/run/darkbloom/promptsidecar.sock` (`DefaultSocketPath`) | `coordinator/promptcontract/config.go` | Unix socket the coordinator dials. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT` | absolute directory | `/mnt/disks/userdata/prompt-contracts` (`DefaultArtifactRoot`) | `coordinator/promptcontract/config.go` | Cache of downloaded contract artifacts. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_BASE_URL` | `https://` URL without query or credentials | `https://models.darkbloom.ai` | `coordinator/promptcontract/config.go` | Origin artifacts are downloaded from. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_TIMEOUT_MS` | ms | `120000` | `coordinator/promptcontract/config.go` | Per-artifact download timeout. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_WORKERS`, `EIGENINFERENCE_PROMPT_SIDECAR_PROVISION_MAX_MODELS` | integers, workers ≤ models | `2`, `128` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/provisioner.go` | Provisioning concurrency and the maximum number of models provisioned. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_HEADER_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_PRELOAD_TIMEOUT_MS` | ms | `1000`, `1000`, `250`, `120000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Client deadlines for reading a response header, a render call, a health probe and a preload. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_FAILURE_THRESHOLD`, `EIGENINFERENCE_PROMPT_SIDECAR_SHUTDOWN_TIMEOUT_MS` | ms, ms, integer ≥ 2, ms | `120000`, `1000`, `5`, `2000` | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/supervisor_defaults.go` (`applySupervisorDefaults`) | Supervisor readiness wait, probe cadence, consecutive failures before a restart, graceful-stop budget. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MIN_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_WINDOW_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS` | ms, ms, ms, integer, ms | `100`, `5000`, `60000`, `3`, `30000` | `coordinator/promptcontract/config.go` | Crash-loop backoff and circuit breaker. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_STDERR_MAX_BYTES` | bytes 1024–1048576 | `16384` | `coordinator/promptcontract/config.go` | Sidecar stderr retained per incarnation. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_TOKENS` | bytes, tokens | `4194304` (`DefaultMaxRequestBytes`), `1048576` (`DefaultMaxTokens`) | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Request-body and rendered-token ceilings handed to the sidecar. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | integers | `4`, `64`, `8` | `coordinator/promptcontract/config.go` | Sidecar-side concurrency, connection and loaded-contract limits. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB` | MiB ≥ 256 | `1024` | `coordinator/promptcontract/config.go` | Memory ceiling applied to the sidecar process. |
-
-Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unparseable value is recorded and fails startup in `Check`, so a mistyped kill switch cannot silently keep fetching):
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_MEDIA_FETCH_ENABLED` | bool | `true` | `coordinator/mediafetch/config.go` | Lets the coordinator download `image_url`/`video_url` inputs and inline them as `data:` URIs before relaying; when off, requests carrying remote media are rejected. See [`../architecture/data-flow.md`](../architecture/data-flow.md). |
-| `EIGENINFERENCE_MEDIA_FETCH_MAX_FILE_BYTES`, `EIGENINFERENCE_MEDIA_FETCH_MAX_TOTAL_BYTES` | bytes | `8388608` (8 MiB), `10485760` (10 MiB) | `coordinator/mediafetch/config.go` | Per-file and per-request raw download ceilings. |
-| `EIGENINFERENCE_MEDIA_FETCH_TIMEOUT_MS`, `EIGENINFERENCE_MEDIA_FETCH_TOTAL_DEADLINE_MS` | ms | `15000`, `25000` | `coordinator/mediafetch/config.go` | Per-URL fetch timeout and whole-request resolution deadline. |
-| `EIGENINFERENCE_MEDIA_FETCH_GLOBAL_CONCURRENCY` | integer | `32` | `coordinator/mediafetch/config.go` | Process-wide cap on in-flight fetches. |
-| `EIGENINFERENCE_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS` | integer (`0` disables) | `100` | `coordinator/mediafetch/config.go` | Header-decoded pixel cap for fetched images. |
-| `EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS` | comma-separated hostnames | unset | `coordinator/mediafetch/config.go` | Hosts that are never fetched. |
-| `EIGENINFERENCE_MEDIA_FETCH_ALLOW_PRIVATE_IPS`, `EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS` | bool | `false`, `false` | `coordinator/mediafetch/config.go` | SSRF guards: allow loopback/private/link-local targets or ports other than 80/443 (tests only). |
-
-### Telemetry, Datadog and profiling
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `DD_API_KEY` | secret | unset (no metric or log shipping) | `coordinator/datadog/datadog.go` (`ConfigFromEnv`); `coordinator/app/observability.go` | Enables the Datadog client (metrics over the HTTP API, Logs API forwarding) and the APM tracer; see [`../architecture/telemetry.md`](../architecture/telemetry.md). |
-| `DD_AGENT_HOST` | hostname | unset | `coordinator/app/observability.go` | Also starts the APM tracer and trace-context log handler when set (agent-based deployments without an API key). |
-| `DD_SITE` | Datadog site | `datadoghq.com` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | Intake endpoint. |
-| `DD_ENV`, `DD_SERVICE` | strings | `production`, `d-inference-coordinator` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | `env:` and `service:` tags on every series, log and trace. |
-| `DD_DOGSTATSD_URL` | `host:port` | `localhost:8125` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | DogStatsD agent address. |
-| `DD_HOSTNAME` | hostname | the `DD_SERVICE` value | `coordinator/datadog/datadog.go` (`NewClient`) | `host` attribute on series shipped over the HTTP metrics API. |
-| `EIGENINFERENCE_PROFILER` | `off` disables | `on` | `coordinator/api/observation/profiler.go` (`newProfilerFromEnv`) | Kill switch for the per-request system profiler; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md). |
-| `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | float 0–1 | `0.1` | `coordinator/api/observation/profiler.go` (`newProfilerFromEnv`) | Fraction of successful requests the profiler samples; slow, failed and retried requests are always recorded. |
-
 ## Provider CLI (`darkbloom`)
 
-Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Scheduler-prefill benchmark prompts
+
+| CLI setting | Default / behavior | Consumer |
+|---|---|---|
+| `benchmark --scheduler-prefill --prefill-fixed-prompt` | Off by default: measured prompts rotate by `iteration * 17`. Enabled: warmup and measured prompts start at seed offset `0`, with identical inputs per length. CLI-only; no environment or `provider.toml` key. Other benchmark modes reject the flag before runtime loading. | `provider-swift/Sources/darkbloom/BenchmarkCommand.swift` (`prefillFixedPrompt`); `provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift` (`schedulerPrefillOptionError`, `runSchedulerPrefillBenchmark`); `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift` (`run`, `makePrompt`) |
+
+The [benchmark report metadata](../provider/cli-reference.md#darkbloom-benchmark) distinguishes
+fixed repeated-input runs from rotating-fixture runs. This option does not
+change the prefill stripe or enable prefix caching.
+
+Scheduler prefill applies the existing `MLXMemoryGuard` memory/cache settings
+before direct model loading, as serving and the throughput sweep do. It logs
+the applied limits without changing their defaults, reserves or override rules.
+
+### App Attest worker qualification
+
+These are internal qualification opt-ins, **not production-ready configuration**.
+They use exact `1`, not the general boolean parsing convention above. Only the
+worker opt-in is forwarded by `darkbloom start` into the installed LaunchAgent;
+native diagnostic and fault-injection flags are not. No `provider.toml` setting enables them.
+
+| Variable | Values / default | Read in | Effect |
+|---|---|---|---|
+| `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/ProviderAppAttest/Worker/WorkerProtocol.swift` (`AppAttestWorkerSelection`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`usesAppAttestWorker`); `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`passthroughEnvironment`) | Select the supervised worker candidate in foreground or background serving. Exact `1` is persisted in the provider plist; stop/start without it restores the default in-process path. Candidate failures do not fall back to in-process Apple calls or restart inference for a worker stall |
+| `DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/darkbloom/AppAttestQualificationCommand.swift` (`runIfRequested`); `scripts/nativequalification/stage-signed-app.sh` | Opt in to local signed-app staging/the private diagnostic entry; the diagnostic also requires the worker flag, signed resources and isolated loopback inputs. Does not enable serving or approve a build |
+
+The [worker security boundary](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
+and [native qualification status](../../scripts/nativequalification/README.md#qualification-status)
+remain separate from configuration selection. Endpoint-resumption capability is
+[advertised independently](protocol-messages.md#app-attest-endpoint-resumption-candidate);
+setting either flag creates no local trust and changes no proof lifetime.
 
 ### Startup model preload
 
@@ -510,8 +251,13 @@ Serving concurrency is resolved after the model's KV backend and verified
 artifact are known. `BackendSettings.engineV2MaxConcurrentIsExplicit`
 distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
 default `4` until an exact reviewed profile applies) from any existing literal
-operator cap. Serialization preserves that distinction; historical literal
-values are not silently raised. Per-model overrides remain explicit limits.
+operator cap. Without a profile, models on the native `auto` paged allowlist
+(`EngineV2KVBackendPolicy.preferredBackend`) start at the legacy ceiling `8` on
+M5 Pro, Max and Ultra and return to `4` under Low Power Mode or thermal pressure
+(`ServingPerformanceProfiles.automaticConcurrency`); a model paged only by an
+explicit backend or live packed quantization keeps `4`. Serialization
+preserves that distinction; historical literal values, including a stamped `4`,
+are not silently raised. Per-model overrides remain explicit limits.
 Daemon and standalone engines use the same profile resolver and preserve
 narrower architecture and physical memory constraints. `darkbloom status` and
 `doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).
@@ -564,7 +310,7 @@ next start/restart; they are not a live daemon update. Availability applies to
 coordinator serving and attached `--local-endpoint`, not standalone `--local`
 (`Start.run` in `provider-swift/Sources/darkbloom/Start/StartCommand.swift`).
 There is no saved timezone or wake-up setting: keep the Mac awake and use its
-local timezone. [Scheduling architecture](../architecture/scheduling.md#provider-availability-windows)
+local timezone. [Scheduling architecture](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#provider-availability-windows)
 defines DST adjustment, merged windows, full-week coverage and fail-closed parsing.
 
 ### Model cache location
@@ -641,34 +387,75 @@ provider or model command is running. Code:
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
+| `DARKBLOOM_VERIFIED_WEIGHTS_FILE` | file path | `~/.darkbloom/verified-weights.json` | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` | Owner-only records of fully verified managed-load weight hashes, each bound to every file's device, inode, size and modification and status-change times; startup registration reuses a matching record instead of re-hashing. |
 | `DARKBLOOM_PID_FILE` | file path | `~/.darkbloom/provider.pid` | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` | Daemon PID file. |
 | `DARKBLOOM_WATCHDOG_STATE` | file path | `~/.darkbloom/watchdog-state.json` | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` | Watchdog arm/disarm state. |
 | `DARKBLOOM_KV_BACKEND_GUARD` | absolute file path | `~/.darkbloom/kv-backend-guard.json` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` | Crash-loop guard record; on the LaunchAgent allow-list so the watchdog and daemon share one file. |
-| `DARKBLOOM_R2_CDN_URL` | URL | `https://models.darkbloom.ai` | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` | Mirror model weights are downloaded from. |
+| `DARKBLOOM_R2_CDN_URL` | URL | build default `BuildEnvironment.current.modelCDNURL`: `https://models.darkbloom.ai` for prod and dev builds | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` (`resolveCDNURL`) | Mirror model weights are downloaded from. On the LaunchAgent allow-list, so the daemon downloads from the same mirror. |
 | `DARKBLOOM_KEYCHAIN_ACCESS_GROUP` | access group | `SLDQ2GJ6TL.io.darkbloom.provider` | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` | Keychain access group for the Secure Enclave key items. |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | `0` quiets | unset (telemetry on) | forwarded only, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` | MLX resource telemetry switch consumed by `mlx-swift-lm`. |
 
 ### Engine and scheduler
 
+Serving acceptance is config-backed, not an environment override. Its default
+and rollback are defined in the [provider configuration reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+
+| Config key | Default | Read in | Effect |
+|---|---|---|---|
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.live`) | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.checkpoint`) | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_PAGED_KV` | `0`, `false`, `no`, `off` disable paging | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the backend setting. Nemotron Super, which serves paged KV only, fails its load instead (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`). Native live precision can serve contiguous; non-MiMo live-packed precision refuses construction when paging is unavailable. See [backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). A backend default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
-| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
+| `DARKBLOOM_CBV2_PREFILL_CHUNK` | positive tokens | family policy: `2048` (`widePrefillChunkTokens`) for Gemma 4, otherwise the SDK's `512` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkTokens`, `prefillGeometry`) | Plain prefill chunk, including prompt work beside decode rows, for every model except where a family policy replaces it: GLM5Next (`glm5NextServingScheduler`) and Nemotron Super local serving (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`, `NemotronSuperLocalPrefill.Policy.apply`) set their own chunk and step, and calibrated Nemotron models cap the chunk at their calibrated prefill limit (`calibratedPrefillTokenLimit`). Requests with bidirectional media blocks (Gemma 4 images and video) keep `512` whenever the chunk is wider. On Gemma 4 a value that leaves `max(chunk, stripe)` below its largest media block is raised to `1120` (`gemma4MaximumMediaBlockTokens`), because a block rides one chunk. Zero, negative or malformed values restore `512`. The paged pool sizes windowed rings from `max(chunk, stripe)`, so a value above the default stripe raises KV charges. Set it to `512` with `DARKBLOOM_CBV2_STEP_TOKENS=2048` to roll Gemma 4 back. `2048` with `DARKBLOOM_CBV2_STEP_TOKENS=4096` opts GPT-OSS or dense Qwen into the measured wide geometry, which raises their long-context activation peaks above their floors ([prompt geometry](../architecture/inference.md#prompt-geometry)). Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_STEP_TOKENS` | tokens, at least the plain chunk | twice the plain chunk, at least `2048` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`stepTokenBudget`) | Token budget per scheduler step. Smaller, zero, negative or malformed values restore `2048`, raised to the plain chunk. On Gemma 4 a budget below `1120` is raised to `1120`, because submit validation refuses a media block longer than the step budget. GLM5Next and Nemotron Super local serving replace it with their own budgets. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default: `4096` for dense Qwen3.5/3.8, otherwise `2048` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) | Solo-prefill stripe size; arms only above the plain chunk, so the 2,048-token default is off under Gemma 4's 2,048-token chunk. Malformed values and values not above the plain chunk, including zero, disable it. |
 | `DARKBLOOM_CBV2_MIXED_PREFILL_CAP` | nonnegative tokens | reviewed profile cap; otherwise uncapped | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Caps prompt tokens in steps that also decode. Positive Gemma caps have a 128-token minimum; `0` defers prefill while decode is active. Does not change the pure-prefill stripe. Foreground/local only. |
 | `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL` | comma-separated `model-id=tokens` | unset | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Exact model-ID overrides take precedence over the global cap, then the reviewed profile. Same nonnegative parsing and Gemma minimum; malformed entries are ignored. Foreground/local only. |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
+| `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`CBv2AttentionV1.fusedCausalPrefillEnabled`, `usesFusedCausalPrefill`) | Full-attention prompt chunks whose head geometry MLX serves with a fused kernel take one `.causal` SDPA call on either KV backend, except live packed paged KV ([eligible chunks](../architecture/inference.md#scheduler-and-loop-configuration)); `0` returns them to 128-query blocks. Read once per process; not forwarded to LaunchAgents. |
 | `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | integer | policy default | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift` | Tighten-only cap on rectangular MTP verification tokens. |
+| `DARKBLOOM_TTFT_QWEN_MTP_CHAINED` | `0`, `false`, `no`, `off` disable | on | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` (`CBv2MTPConfig.envOrdinaryDecodeHistory`) | While no Qwen inline-MTP row can speculate (more decode rows than its speculative batch of one), steps in which every MTP-eligible row is decoding run as ordinary chainable decode with no policy top-two; finalize feeds the assistant history and carry. Off restores hidden-returning seed steps. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_TTFT_QWEN_MTP_CARRY` | `0`, `false`, `no`, `off` disable | on | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` (`CBv2MTPConfig.envPrefillCarry`) | The final prompt row's hidden seeds the first Qwen MTP carry, so a round can follow the first token. Off restores the post-first-token seed step. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_CAPTURE_VERIFY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`requiredVerificationMode`) | Captured rectangular verification with every-prefix recurrent state; `0` uses serial target verification. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_BATCHED_M1` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTPExactRows.swift` (`NemotronMTPExecution`) | Batch-axis projection dispatch that retains matrix M=1. No change to target precision; not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Trusted-history replay may compute only the embedded assistant's K/V. Prefix save/restore uses the separate typed history codec. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS` | integer `1`…`7` | `7` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Upper proposal limit for adaptive depth; invalid selected limits fall back to seven. This is not a fixed proposal count. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_NEMOTRON_SUPER_MTP` | exact `1` enables (surrounding spaces ignored) | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift` (`Setting.resolve`) | Greedy text speculation for the Super qualification hook with the checkpoint's embedded head. The managed `nvidia-nemotron-3.5-super` slot sets or clears it from `backend.mtp_mode` (below) and ignores this value. Adds the head's LOAD supplement; image requests on the speculating owner run target-only. `DARKBLOOM_CBV2_MTP` still disables it. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` | integer `1`…`3`, `auto`, or a comma list of up to eight depths `1`…`3` | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift` (`Setting.resolve`) | Fixed Super draft depth; above one is the deep-draft opt-in. A list fixes the depth by the requests decoding in the step (entry N for N requests, the last for more; rectangular only). The managed slot defaults it to `3,2,2,2,1` and keeps an explicit value. Any other value fails the opt-in load. Ignored unless `DARKBLOOM_NEMOTRON_SUPER_MTP` is `1`. |
+| `DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION` | `rectangular` or `serial` (surrounding spaces ignored) | `rectangular` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift` (`Setting.resolve`) | Super target verification: `rectangular` runs one exact captured target window per round, `serial` one ordinary target step per draft. Any other value fails the opt-in load. Ignored unless `DARKBLOOM_NEMOTRON_SUPER_MTP` is `1`. |
+| `DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND` | `paged` (surrounding spaces ignored) | `paged` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalKVBackend.swift` (`resolve`) | Super attention KV storage, paged only: the eight attention layers' BF16 KV in the segmented native paged backend, charged by the engine's process-memory owner, with every request's decode-row workspace reserved for the owner's lifetime. `contiguous` is no longer supported and fails the load, as does any other value, before its LOAD claim and installation; so does `DARKBLOOM_CBV2_PAGED_KV` disabling paged KV. A paged construction failure fails the load, never falls back. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` | integer `1`…`64`; `1`…`8` with `DARKBLOOM_NEMOTRON_SUPER_MTP=1` (surrounding spaces ignored) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalAdmission.swift` (`concurrentRequests`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift` (`validate`) | Requests the Super qualification hook's owner serves at once (the managed slot sets it from its slot policy, below); above one, text decode runs as one row-exact batched step, and with speculation one rectangular verify window covers every decoding request. Any other value, or a value above one with `DARKBLOOM_NEMOTRON_SUPER_MTP_VERIFICATION=serial`, fails the load. The KV grant must hold every request's fixed bytes. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_NEMOTRON_SUPER_VIDEO_PRUNING` | number in [0, 1) (surrounding spaces ignored) | `0.5` (`NemotronSuperVideoPreprocessing.defaultPruningRate`) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoFeatures.swift` (`validatedPruningRate`) | EVS pruning rate `q` of Super video requests, in the managed slot and the qualification hook: a video of `T` tubelets of `N` visual rows keeps `max(N, int(T * N * (1 - q)))` rows; `0` keeps every row. Any other value fails the load before its LOAD claim and installation. A value below `0.5` keeps more rows, so a video's prompt has more tokens than the coordinator estimates for it, since that estimate assumes `0.5`. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
-| `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
+| `DARKBLOOM_MTP_ACCEPTANCE` | `exact`, `typical`, `typical:<delta>` (finite positive delta) | `exact` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift`; `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`benchmarkOverride`) | MTP draft acceptance rule (benchmark session only). An unrecognized value uses `exact`. Serving reads no environment variable for this rule; it reads `[backend] mtp_acceptance` and `mtp_acceptance_by_model` in [`provider.toml`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). |
+| `DARKBLOOM_PREFILL_DEADLINE_MODE` | exactly `off` disables; any other value enforces | `enforce` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`PrefillDeadlineMode.resolve`) | Prefill-deadline admission on the provider. Read only when `[backend] prefill_deadline_mode` is absent from `provider.toml`; that key takes precedence. |
+| `DARKBLOOM_TTFT_ADMISSION_FIXES` | `0`, `false`, `off`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`) | Deadline-admission estimator corrections: per-batch decode charging, anchored isolated-prefill rate, newest-observation freshness. Off restores the previous estimators. Forwarded to the launchd provider job. |
+| `DARKBLOOM_TTFT_SHAPE_WARMUP` | trimmed, case-insensitive `0`, `false`, `no`, `off` disable; `always` skips the probe | unset: probe-gated warmup | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupMode`) | Excluded load-time [shape warmup](../architecture/inference.md#model-startup-calibration) for ordinary `EngineV2` slots: a 128-token shader-cache probe runs twice and only a cold cache runs the shape cells, within 20 seconds per engine. Trains no rate or counter. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
+| `DARKBLOOM_TTFT_GDN_BLOCKED` | `0`, `false`, `no`, `off` keep the stock kernel; `packed` or `rows` force that kernel; unset or any other value probes. Case-insensitive; surrounding whitespace is ignored | probe | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift` (`GatedDeltaPrefill.mode`, `GatedDeltaPrefill.kernel`) | Selects the Gated DeltaNet prompt-window kernel of `qwen3_5`, `qwen3_5_moe` and `prism_hadamard_qwen35` models ([mechanism](../architecture/inference.md#context)). The default probe keeps a four-row kernel only where it reproduces `gated_delta_step` bit for bit on the GPU; it does not compare speed, so `0` is the rollback where a kept kernel is slower. Forced kernels skip that check and are for A/B measurement only. Decode, MTP verification and masked updates always use the stock kernel. Read once per process. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
+| `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` | exact `0` disables | on | `provider-swift/Sources/ProviderCore/Inference/ToolStreamPreparation.swift` (`streamsToolCallsByDefault`) | Chat streams send `tool_choice` `auto` calls in the Gemma, Qwen 3.5, Harmony and framed-JSON formats as OpenAI `tool_calls` fragments while they are generated; each call is still validated when its frame closes. Required/named calls and other formats are unchanged. `0` restores complete calls at the engine terminal. See [streamed auto tool calls](../architecture/inference.md#streamed-auto-tool-calls). Forwarded to the LaunchAgent. |
+| `DARKBLOOM_TTFT_THINK_CONTENT_SEED` | exact `0` disables | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` (`seedsPlainTailContentByDefault`) | Qwen3-VL (`qwen3_vl_moe`, `plainTailContentModelTypes`) requests on the `qwen3` reasoning parser whose prompt tail has no think marker start in content state, so the answer streams instead of waiting for a tag or the end of generation. Other model types, including close-only Qwen reasoners, keep undecided parsing. `0` restores undecided parsing. Forwarded to the LaunchAgent. |
+
+### Managed Nemotron Super slot
+
+The managed `nvidia-nemotron-3.5-super` slot reads provider configuration, not
+the qualification hook's keys, for speculation and width
+(`NemotronSuperServingPolicy.loadPlan` in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`).
+
+| Control | Default | Effect |
+|---|---|---|
+| `backend.mtp_mode` | `auto` | `auto` and `on` install exact rectangular speculation with the embedded head, depth 3 for one decoding request, 2 for two to four and 1 for more; `off`, or `DARKBLOOM_CBV2_MTP` negative, serves the plain owner |
+| `backend.engine_v2_max_concurrent`, `engine_v2_max_concurrent_by_model` | absent: 8 requests | An explicit value bounds the owner's width (at most 8 with speculation, 64 plain) |
+| `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `_MTP_VERIFICATION`, `_PREFILL_CHUNK`, `_DECODE_STEPS_BETWEEN_CHUNKS`, `_KV_BACKEND`, `_VIDEO_PRUNING` | depth `3,2,2,2,1`; the [builder defaults](../architecture/inference.md#context) otherwise | Kept when set in the provider process |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for either owner when the grant holds every request's fixed bytes and the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |
 
 ### Native MiMo V2.6 candidate
 
@@ -684,6 +471,7 @@ and restart for latched kernel flags.
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
 | `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download. The default verification is exact rectangular (`EngineV2SlotFactory.nativeMiMoVerificationMode`): scalar-dense rows, row-exact affine projections and serialized attention reproduce serial decode while scoring all draft columns in one forward; a tracked engine that cannot arm the scalar-dense scratch never drafts. Under the serial-target rollback the adaptive controller keeps plans target-only (`nativeMiMoMTPConfig`, `allowsAdaptiveSerialRounds: false`), because each serial draft column costs one ordinary target forward. Media rows stay target-only |
+| `DARKBLOOM_GLM_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (rectangular adaptive MTP verification, depth up to 3; greedy output is not token-identical to target-only decode); rollback selects the serial-target single-proposal profile | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextProtectedExecution.swift` (`GLM5NextProtectedModel.verification`); does not itself enable MTP. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | unset enables; rollback: trimmed, case-insensitive `0`, `false`, `no`, `off` | on (exact rectangular verification when MTP is enabled); rollback selects serial target | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP; the provider never selects the bulk rectangular trunk. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabled(environment:)`); separately charged scalar-shape rows only in genuine admitted rectangular verification. Its rollback also selects serial target in the provider. Forwarded to the launchd provider job |
 | `DARKBLOOM_MIMO_ROW_EXACT_PROJECTION` | unset enables; same rollback values | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RowExactProjection.swift`; scalar-dense affine 8-bit projections stream each weight tile once for up to seven rows with one-row `qmv_fast` arithmetic; rollback keeps one matmul per row (same output, slower). Forwarded to the launchd provider job |
@@ -728,9 +516,9 @@ MTP is repriced for the selected width without reducing other charges or reserve
 Controls are process-latched: a contradictory injected factory setting throws
 `MiMoV26PrefillPolicy.ProcessControlMismatch` before slot assembly. Restart with
 the desired process controls for actual rollback. See the
-[SDK fast-prefill policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md)
+[SDK fast-prefill policy](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/FAST-PREFILL-POLICY.md)
 for eligibility, fallback and still-required qualification. Port-specific eligibility and licenses are in the
-[SDK port map](../../libs/mlx-swift-lm/docs/mimo-v26/implementation-references.md).
+[SDK port map](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/implementation-references.md).
 
 ### Native Flash-Next candidate
 
@@ -782,7 +570,7 @@ artifact contract and qualification limits.
 | `DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/PrismHadamardPrefillCarry.swift` (`isEnabled`, `enabled`, `withScope`, `submit`) | Earlier submission of compact recurrent carry during eligible packed text prefill; native arithmetic, deferred input fills, write-fault checks and engine retirement remain unchanged. Short/decode, media positions and captured windows retain existing scheduling. Other explicit spellings remain disabled. |
 | `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift/Source/MLXNN/Hadamard.swift` (`float16ConstantReuseEnabled`, `permitsFloat16ConstantReuse`); `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`cachedCast`) | Reuses the native FP16-to-FP32 scale/offset conversion for eligible 2-bit/group128/block1024 packed projections. Adds approximately 1.60 GB of retained constants for the selected pack; weights and native precision do not change. Descriptor/stream changes invalidate reuse; tracing falls back. Other explicit spellings remain disabled; the generic cache rollback remains effective. |
 
-See the [matched performance report](../reports/2026-09-18-bonsai2-lossless-performance.md)
+See the [matched performance report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-18-bonsai2-lossless-performance.md)
 for measured gains, tradeoffs and open gates. Neither control authorizes model
 uploads, catalog changes, signing or production promotion.
 
@@ -791,10 +579,13 @@ uploads, catalog changes, signing or production promotion.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | GiB (floor 1) | `8` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | MLX buffer-cache limit, applied by serving and the throughput sweep before model loading. |
+| `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | exact `0` disables | on | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnabled`); `provider-swift/Sources/ProviderCore/Inference/Memory/KVPoolReclaimer.swift` (`proactiveWindow`) | Gates the proactive buffer-cache sweep (cache ≥ 2 GiB) on 5 s of whole-Mac idleness, flushing without reporting device activity while request admission waits (`WholeMacServiceBudget.performIfIdle`); busy engines flush only when the pool crowds out admission headroom. `0` restores flushing between busy engines' steps. Refused engine-owned KV charges and native MiMo media reservations signal a shortfall-gated reclaim unless this and `DARKBLOOM_TTFT_SEGMENT_RETENTION` are both `0` (`busyEnginesKeepReclaimableMemory`). Forwarded to the launchd provider job. |
+| `DARKBLOOM_TTFT_SEGMENT_RETENTION` | exact `0` disables | on | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnabled`) | Paged pools keep up to `min(2 GiB, slot grant / 8)` of free KV segments, uncommitted and uncharged, and reinstall them at admission instead of allocating, filling and fencing new ones; dropped on a refused admission, on process memory pressure (any refused charge, a pressure sweep or a macOS memory-pressure event), before a load gate (provider, standalone or managed Nemotron Super) evicts a resident model or refuses and before startup preload skips a model (load admission counts them as reclaimable only until that release; segments still parked afterwards never justify an eviction), and after 30 s of engine idleness. New segments whose size is a whole number of VM pages wrap zero-fill-on-demand host pages (no stream fence). `0` restores release-time trimming and device-filled segments. Forwarded to the launchd provider job. |
+| `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | exact `0` disables | on (with retention) | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` | `0` keeps segment retention but allocates new segments with the device zero fill plus stream fence. Forwarded to the launchd provider job. |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | GiB | `provider.toml` `memory_reserve_gb` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | Overrides the whole-machine memory reserve. |
 | `DARKBLOOM_MEM_CAP_FRACTION` | fraction | `0.90` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Share of unified memory the engine may address. |
-| `DARKBLOOM_MEMORY_AVAILABILITY` | `reclaimable` / `free-only` | `reclaimable` | `provider-swift/Sources/ProviderCore/Inference/Memory/SystemMemory.swift` | Process-start policy shared by admission, KV budgets and diagnostics; persisted into the provider launchd plist on background start. `reclaimable` counts Mach free + inactive pages; `free-only` excludes inactive pages and fails closed if sampling fails. Unknown/empty explicit values select `free-only`. See [shared-host admission](../architecture/scheduling.md#shared-host-memory-admission). |
-| `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | `5.5` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Activation headroom kept out of the weight budget. |
+| `DARKBLOOM_MEMORY_AVAILABILITY` | `reclaimable` / `free-only` | `reclaimable` | `provider-swift/Sources/ProviderCore/Inference/Memory/SystemMemory.swift` | Process-start policy shared by admission, KV budgets and diagnostics; persisted into the provider launchd plist on background start. `reclaimable` counts the larger of Mach free + inactive pages and free pages plus the file-backed page cache (`external_page_count`, speculative read-ahead counted once) and volatile purgeable pages (`SystemMemory.availableBytes`), so it is never stricter than free + inactive and active page cache never blocks a load; the page-cache measure counts no anonymous or compressed memory. `free-only` counts only free pages and fails closed if sampling fails. Unknown/empty explicit values select `free-only`. See [shared-host admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#shared-host-memory-admission). |
+| `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | [Resolved serving-set floor](../architecture/hardware-support.md#cap-and-reserves-unifiedmemorycap) | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) | Raises activation headroom above the effective floor; a lower value cannot reduce it. The [ordinary picker](../provider/cli-reference.md#darkbloom-start) resolves that floor from the complete selection; Autopilot enrollment retains the flat floor. |
 | `DARKBLOOM_VISION_MAX_TOWER_PATCHES` | integer (lower-only) | model default | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift` | Caps vision-tower patches. |
 | `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, `DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS` | megapixels | `100`, `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-image and per-request pixel caps. |
 | `DARKBLOOM_MAX_MEDIA_MIB` | MiB | `25` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request media bytes. |
@@ -806,8 +597,16 @@ uploads, catalog changes, signing or production promotion.
 
 The default reusable-buffer reader and bounded parallel hashing change full-file
 reading and scheduling, not the verified
-bytes or model arithmetic. Discovery remains hash-free. Fresh pre/post-load
-verification and delayed identity publication retain their existing rules.
+bytes or model arithmetic. Each file is first read through a page-aligned
+`F_NOCACHE` descriptor (`WeightHasher.hashSingleFileUncached`), so verification
+does not pull a second copy of loaded weights through the file cache; the
+readers selected below remain its fallbacks. `F_NOCACHE` does not evict pages
+that were cached before the read (a download's own writes, an earlier read), so
+that reader then drops the file's cached pages (`PageCache.drop`); a managed GLM
+load does the same for its shards once loaded. Discovery remains hash-free. Fresh pre/post-load
+verification and delayed identity publication retain their existing rules, except
+that a managed GLM load publishes its own per-file SHA-256 verification instead of
+bracketing passes ([inference](../architecture/inference.md)).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
@@ -822,7 +621,30 @@ original reading path and serial order, explicitly set
 The existing variable names and invalid-value fallbacks remain compatible.
 The controls do not enable caches, alter attestation policy or skip load checks.
 
+### Prompt preparation and admission
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_TTFT_PROMPT_CACHE` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift` (`PromptTokenCachePolicy.isEnabled`) | Reuses the token IDs of rendered chat-template pieces (text between added tokens) already seen in the request's prefix-cache scope; the IDs equal the uncached path. The global `DARKBLOOM_PREFIX_CACHE` disable also turns it off. Read at tokenizer load. Forwarded by LaunchAgent. |
+| `DARKBLOOM_TTFT_PROMPT_CACHE_MB` | MiB, `0`…`4096` | `32` | same file (`capacityBytes`) | Least-recently-used piece storage per loaded tokenizer; `0` keeps only the multi-core encoding of new long prompts. Read at tokenizer load. Forwarded by LaunchAgent. |
+| `DARKBLOOM_TTFT_PROMPT_CACHE_VERIFY` | integer, `0` off | `256` | same file (`verificationInterval`) | Re-tokenizes each tokenizer's first 4 prompts, then one in N, on the uncached path in the background; a mismatch, or an uncached path that throws, disables reuse for that tokenizer. `darkbloom benchmark --prompt-prep` sets `0`. Read at tokenizer load. Forwarded by LaunchAgent. |
+| `DARKBLOOM_TTFT_TEMPLATE_LOOPS` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/ChatTemplateLoopRewrites.swift` (`ChatTemplateLoopRewrites.isEnabled`) | The prompt token cache renders Gemma 4 and GPT-OSS templates through linear-time forms of their per-message history scans, which render the same text; used only when the load-time comparison with the served template passes, and checked by the same background comparisons. Read at tokenizer load. Forwarded by LaunchAgent. |
+| `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` | `0`, `false`, `off`, `no` disable | on | `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift` (`WorkFIFOPolicy`) | Lets later coordinator events overtake a request waiting for its model load (see [process boundaries](../architecture/components/provider.md#process-boundaries)). Read at loop start. Forwarded by LaunchAgent. |
+
 ### SSD prefix cache
+
+The optional `[cache]` table in `provider.toml` is saved by
+`darkbloom cache set` and read by `Start.run` before serving. It applies to both
+attention blocks and complete checkpoints. It does not enable a model's cache
+capability or alter the TTL, encryption or memory safeguards.
+
+| Key | Type / default | Effect | Source |
+|---|---|---|---|
+| `cache.daily_write_gb` | Optional nonnegative finite decimal GB; absent uses environment/default below | `0` explicitly means unlimited. A positive value must represent at least one byte and fit in `Int`; saved values win over the environment after restart | `provider-swift/Sources/ProviderCore/Config/CacheSettings.swift` (`validate`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift` (`dailyWriteBytes`) |
+| `cache.directory` | Optional absolute existing directory | Payloads use its `darkbloom/kv3` child (a dev build: its own namespace); absent retains the built-in cache directory. No automatic migration or fallback when configured storage is unavailable | `CacheStorage.swift` (`root`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift` (`inspect`) |
+| `cache.volume_uuid` | Optional UUID, required with `cache.directory` | Written by the CLI and checked against opened directories; a different filesystem at the same path is refused | `CacheStorage.swift` (`validateOpenedDirectory`) |
+
+Preparation and commands: [provider cache storage](../provider/cache-storage.md).
 
 Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 
@@ -835,11 +657,12 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_DEBUG_CACHE_KEY_FILE` | absolute path; empty is unset | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` (`load`) | DEBUG builds only; release builds do not compile this path. Replaces the Secure Enclave/Keychain SSD cache KEK with one derived from an existing operator-created file (`(umask 077 && head -c 32 /dev/urandom > FILE)`), reported as persistent. The file must be exactly 32 bytes, a regular file owned by the current user with mode `0600` and one link; the final path component must not be a symlink. Any other file refuses with a typed `key_unavailable` cause (an affirmative `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` still falls back to an ephemeral key). The file is never created or rewritten. An explicit persistent test namespace keeps its own enclave key. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `750` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `4000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent rolling-day write budget; includes serialized cache-file framing. A saved `cache.daily_write_gb` takes precedence. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000`; complete checkpoints on Macs with ≥ 48 GiB: `7168`, `15000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints apply the byte value as a payload cap and the time value as an estimated-read cap when capturing and reading (both defaults raised on large-memory Macs; an explicit value overrides both families); native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. Not forwarded to LaunchAgents, so installed daemons use the defaults. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
 
 ### Resident recurrent prefix cache
@@ -851,17 +674,19 @@ are forwarded to the LaunchAgent. Backend/model/assistant
 eligibility, measured publication limits, and the conservative reservation after
 a slot shrink are described in
 [`../architecture/prefix-cache.md#resident-tiers`](../architecture/prefix-cache.md#resident-tiers).
-Provider cache enablement does not enable coordinator preference; the independent
-`EIGENINFERENCE_CACHE_ROUTING_MODE` default remains `off`
-(`coordinator/registry/config.go`, `ReadConfig`).
+Provider cache enablement does not enable coordinator preference. The pinned
+[coordinator/registry/config.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/config.go)
+snapshot (`ReadConfig`) records an independent `EIGENINFERENCE_CACHE_ROUTING_MODE`
+default of `off`; consult the platform's latest default branch for current policy.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` | exact `0` disables | unset (eligible only after memory opt-in) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Disables recurrent checkpoint retention without changing paged/SSD policy or MTP mode. |
-| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. |
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))`; the pinned Nemotron Super checkpoint uses `NemotronSuperServingPolicy.defaultPrefixBankBytes` instead | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`), `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift` | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. The Super default is `min(16 GiB, grant / 4, serving / 2, load / 2)` rounded down to 256 MiB, where `serving` is the grant minus every request's fixed bytes plus 2 GiB, the prefill lane bound and one image's media charge, and `load` is the memory cap minus the activation reserve, the LOAD claim's installation and head bytes (counted once), the same fixed bytes and the lane bound; below 1 GiB there is no default bank. |
 
 `CBv2HybridPrefixCacheConfig` defaults to `maximumEntries = 32` and
-`maximumCheckpointsPerRequest = 2`; these have no CLI environment overrides
+`maximumCheckpointsPerRequest = 2`; the Super owner raises the entry limit to
+one per 256 MiB of bank. These have no CLI environment overrides
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift`).
 
 ### Benchmark, harness and tests
@@ -895,45 +720,6 @@ variable; its required input and backend are documented in the
 
 `scripts/install.sh` additionally reads `COORD_URL` (substituted by the coordinator when it serves `/install.sh`; required when the script is run from source), `HOME` (install root `$HOME/.darkbloom`), `TMPDIR` (enrollment-profile temp dir only) and the two code-signing requirement constants `DARKBLOOM_DESIGNATED_REQUIREMENT` and `DARKBLOOM_FAN_HELPER_REQUIREMENT`. See [`../provider/installation.md`](../provider/installation.md).
 
-## console-ui
-
-All variables are inlined at build time.
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | URL | `https://api.darkbloom.dev` | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`); `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`) | Upstream coordinator for every proxy route and for client-side display; a browser can override it via the `darkbloom_coordinator_url` localStorage key. |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Privy app id | `""` | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` | Unset or the literal `placeholder` selects mock auth (always authenticated, no token); otherwise the real Privy provider. |
-| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `G-…` | `G-M65PNVW5TE` (only `undefined` falls back; set `""` to disable) | `console-ui/src/lib/google-analytics.ts` | Google Analytics page-view tracking after consent. |
-| `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Datadog RUM credentials | unset (RUM off) | `console-ui/src/components/DatadogRUM.tsx` | Both must be set for RUM to initialise. |
-| `NEXT_PUBLIC_DD_SITE`, `NEXT_PUBLIC_DD_ENV`, `NEXT_PUBLIC_APP_VERSION` | strings | `datadoghq.com`, `production`, `dev` | `console-ui/src/components/DatadogRUM.tsx` | RUM site, env and version tags. |
-| `NODE_ENV` | set by Next | — | `console-ui/src/app/stats/model-brand.ts` | Suppresses unknown-brand console warnings in production. |
-| `SHARED_BUDGET_KB`, `ROUTE_BUDGET_KB` | KiB | `450`, `650` | `console-ui/scripts/analyze-bundle.mjs` | Bundle-size budgets for the build analysis script (not runtime). |
-
-## admin-ui
-
-Server-only runtime variables. See [`../architecture/components/admin-ui.md`](../architecture/components/admin-ui.md).
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `ADMIN_DB_URL` | Postgres DSN (secret) | required; pool creation throws | `admin-ui/src/lib/db.ts` | Read-only replica connection; `sslmode`/`ssl` query parameters are stripped and SSL is configured programmatically. |
-| `ADMIN_DB_SSL_NO_VERIFY` | `true` | unset (certificates verified) | `admin-ui/src/lib/db.ts` | Accepts self-signed replica certificates. |
-| `ADMIN_BASIC_USER`, `ADMIN_BASIC_PASS` | credentials (secret) | required; auth fails closed | `admin-ui/src/lib/auth.ts`, enforced by `admin-ui/src/proxy.ts` | HTTP Basic credentials compared as constant-time SHA-256 digests. |
-| `NODE_ENV` | set by Next | — | `admin-ui/src/lib/db.ts` | Outside `production` the pool is cached on `globalThis` for hot reload. |
-
-## Related
-
-- [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — the production environment file and the REQUIRED-key list
-- [`../operations/dev-environment.md`](../operations/dev-environment.md) — the dev VM and its environment
-- [`../operations/state-export.md`](../operations/state-export.md) — the `EIGENINFERENCE_STATE_EXPORT_*` runbook
-- [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md) — `EIGENINFERENCE_RELEASE_POLICY_*` rollout
-- [`../architecture/storage.md`](../architecture/storage.md) — the store the DSN selects and the provider's local files
-- [`../architecture/components/coordinator.md`](../architecture/components/coordinator.md) — where the coordinator reads its configuration during startup
-- [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — `EIGENINFERENCE_CACHE_ROUTING_*`
-- [`../architecture/routing.md`](../architecture/routing.md) and [`../architecture/scheduling.md`](../architecture/scheduling.md) — what the routing and admission knobs change
-- [`../provider/cli-reference.md`](../provider/cli-reference.md) — the `darkbloom` subcommands these variables act on
-- [`ssd-kv-cache.md`](ssd-kv-cache.md) — SSD prefix-cache format and knobs
-
-
 ## GPT-OSS performance controls
 
 These library controls apply to foreground processes and benchmark runs; they are not added to the provider LaunchAgent environment allow-list. Prefix reuse is independent of these changes.
@@ -942,7 +728,7 @@ These library controls apply to foreground processes and benchmark runs; they ar
 |---|---|---|---|
 | `DARKBLOOM_GPTOSS_PREFILL_OUTPUT` | `full`, `intermediate`, `last`, `last-layer` | `last` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+PrefillOutput.swift` (`GPTOSSPrefillOutputPolicy`): skip unused intermediate vocabulary projections and project only the final hidden position. `full` restores full projections; `intermediate` preserves the final full-shape head; `last-layer` additionally narrows the last full-attention layer when its cache supports it. |
 | `DARKBLOOM_GPTOSS_FUSED_GATE_UP` | `0` disables; otherwise enabled | enabled for hidden/intermediate width 2880 and 32 experts | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS.swift` (`useFusedGateUp`): concatenate compatible gate/up checkpoint rows. Conflicting quantization policies remain split; incremental materialization bounds the added load transient. |
-| `MLX_QUANTIZED_CONSTANT_CACHE` | `0`, `false`, `no`, `off` disable | enabled | `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`ConstantArrayCastCache`): bounded reuse of unchanged BF16-to-FP32 constants; updates invalidate and transforms bypass reuse. |
+| `MLX_QUANTIZED_CONSTANT_CACHE` | `0`, `false`, `no`, `off` disable | enabled | `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`ConstantArrayCastCache`): bounded reuse of unchanged BF16-to-FP32 constants; updates invalidate and transforms bypass reuse. A bf16 GPT-OSS checkpoint keeps bf16 activations, so its constants need no widening and this cache does not apply to it. |
 | `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL` | `1` enables, other explicit values disable | enabled only on physical `applegpu_g16s` | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/quantized.cpp` (`gather_qmv`): width-2880 MXFP4 gathered matrix-vector path with a masked 320-element tail. Exact shape/dtype gates retain the general fallback. |
 | `MLX_GPTOSS_MXFP4_PREFILL_TILE` | `m32n32k32`; other values use legacy | legacy | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/gptoss_mxfp4_policy.h` (`gptoss_mxfp4_prefill_tile`): optional 32-row tile for matching sorted expert prefill shapes. Small workstation gains do not establish a universal default. |
 | `DARKBLOOM_GPTOSS_COMPILED_EXPERTS` | `1` enables | disabled | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+CompiledExperts.swift` (`GPTOSSCompiledExpertsPolicy`): compile single-token B=1/2/4 expert graphs for exact 20B shapes. The global `MLX_COMPILED_DECODE=0` rollback still disables this path. Batch-dependent timing is mixed; weights remain live through weak updatable state. |

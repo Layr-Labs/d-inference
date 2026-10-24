@@ -377,7 +377,7 @@ struct EngineV2ResliceUnwindTests {
             eosTokenIds: [2])
         await runtime.register(modelId: Self.gptossId, bridge: bridgeB)
 
-        await loop.unwindBuiltSlotAndRegrowForTesting(
+        try await loop.unwindBuiltSlotAndRegrowForTesting(
             modelId: Self.gptossId, bridge: bridgeB, newcomer: box)
 
         // Bridge retired, engine drained.

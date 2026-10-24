@@ -2066,7 +2066,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("native rate is reserved on cache miss, disabled cache, and staged hit exactly once")
     func nativeRateCoversEveryCacheStateWithoutDoubleReservation() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-native-states-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2135,7 +2135,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("bridge records terminal saved-prefill truth exactly once")
     func terminalSavedPrefillUpdatesSSDStats() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-terminal-saved-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2186,7 +2186,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("prompt plus max-token overflow rejects before cache staging")
     func tokenCountOverflowRejectsBeforeStaging() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-token-overflow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2214,7 +2214,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("SSD staging never false-rejects a request that fits cold at the exact boundary")
     func stagingFallsBackToColdReservation() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-stage-boundary-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2275,7 +2275,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("native-width rate rejects staged-to-cold fallback before over-admission")
     func nativeWidthRefusalRejectsRequest() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-native-width-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2511,15 +2511,20 @@ struct EngineV2LookupReceiptCoverageTests {
         #expect(l2Result.promptAnchor?.tokenCount == 64,
             "the SSD probe must retain content-free prompt evidence")
 
-        // An index-only durable candidate deliberately has no files: this
-        // proves equal/shorter SSD matches do no I/O, while a longer match
-        // reaches real staging and is authenticated before any reuse.
+        // Malformed indexed files prove equal/shorter SSD matches do no I/O,
+        // while a longer match reaches the parser and rejects corruption
+        // before any reuse. Missing files would exercise absence instead.
         let hasher = CBv2BlockHasher(
             blockSize: 8, promptContractID: "bridge-l1-l2-contract", scopeID: "scope")
         let keys = SSDLookupKeys(kek: kek)
         for hash in hasher.chainHashes(tokens: prompt).prefix(6) {
+            let tag = keys.tag16(chainHash: hash, cacheSalt: "scope")
+            let file = SSDBlockStore.fileURL(root: root, tag16Hex: tag.hexString)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                   withIntermediateDirectories: true)
+            try Data(repeating: 0, count: 100).write(to: file)
             cache.index.insert(
-                tag16: keys.tag16(chainHash: hash, cacheSalt: "scope"),
+                tag16: tag,
                 fileBytes: 100, lastAccess: 10_000)
         }
         for residentSaved in [64, 48, 16] {
@@ -2747,7 +2752,7 @@ struct EngineV2SeededSamplingTests {
     @Test("sequential identical seeded requests keep receipt callbacks and cleanup isolated")
     func seededReceiptIdentityIsIndependent() async throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let parent = try SSDTestDirectory.parent().appendingPathComponent(
             "bridge-receipt-\(UUID().uuidString)", isDirectory: true)
         let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

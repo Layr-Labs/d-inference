@@ -388,19 +388,12 @@ extension ProviderLoop {
         } catch { return true }
     }
 
-    func finishNativeMiMoSlotPublication(modelID: String) async throws {
+    func finishNativeMiMoSlotPublication(modelID: String,
+        deviceActivity: WholeMacUnboundedActivity) async throws {
         try requireResidentNativeMiMoOwner(modelID)
         syncWarmModelState()
         persistLoadedModelSet()
-        await updateAggregateCapacity()
-        try Task.checkCancellation()
-        try requireResidentNativeMiMoOwner(modelID)
-        modelsLoading.remove(modelID)
-        isLoadingAny = false
-        for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] { waiter.resume() }
-        releaseLoadGateWaiters()
-        await retryReserveDeferredPrefetches()
-        await refreshMimoCalibration()
+        try await finishModelLoad(modelID: modelID, deviceActivity: deviceActivity)
     }
 
     func finishNativeMiMoLoadFailure(modelID: String, load: MiMoV26ServingLoad, error: Error) async {

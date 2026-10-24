@@ -25,7 +25,7 @@ public actor CoordinatorClient {
     internal let stats: AtomicProviderStats
     internal let state: ProviderState
 
-    internal let logger = CoordinatorWSLogger(subsystem: "dev.darkbloom.provider", category: "coordinator")
+    internal let logger = CoordinatorWSLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "coordinator")
 
     /// Tracks whether the box currently has a usable network path, so reconnect
     /// logs/telemetry can attribute flap to local connectivity vs the coordinator.
@@ -59,6 +59,10 @@ public actor CoordinatorClient {
     /// immediately instead of `await`-ing each TCP ACK — that is what unblocks
     /// per-stream inference-chunk throughput under concurrent load.
     internal var nwConnection: NWConnection?
+    internal var appAttestResumeNonce: String?
+    internal var appAttestResumeAnswered = false
+    /// Captures the existing process key, never a key serialized in config.
+    internal let appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)?
 
     /// Serial queue that drives the NWConnection state machine, receive
     /// callbacks, send completions, and pong handlers. Kept off the cooperative
@@ -117,7 +121,8 @@ public actor CoordinatorClient {
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
         state: ProviderState,
-        liveAPNsToken: (@Sendable () -> String?)? = nil
+        liveAPNsToken: (@Sendable () -> String?)? = nil,
+        appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -128,6 +133,7 @@ public actor CoordinatorClient {
                 modelID: $0.id, available: config.runtimeCapabilities)
         })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+        self.appAttestResumeResponder = appAttestResumeResponder
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode
@@ -136,7 +142,7 @@ public actor CoordinatorClient {
         // which isn't available while initializing stored properties) to avoid a
         // retain cycle through the actor.
         let chunkLogger = CoordinatorWSLogger(
-            subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
+            subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "coordinator.chunks")
         let batcher = ChunkBatcher()
         self.chunkBatcher = batcher
         self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
@@ -245,6 +251,8 @@ public actor CoordinatorClient {
     private func closeCurrentConnection() {
         guard let connection = nwConnection else { return }
         nwConnection = nil
+        appAttestResumeNonce = nil
+        appAttestResumeAnswered = false
         // Best-effort close frame: enqueue a .goingAway close frame so the
         // coordinator sees a clean WS shutdown. Then cancel immediately —
         // don't gate on the close frame flushing, because if the connection is

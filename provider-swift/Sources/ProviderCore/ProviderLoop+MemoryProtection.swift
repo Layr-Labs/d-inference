@@ -20,7 +20,11 @@ extension ProviderLoop {
     /// Surface any prior-run OOM (consume marker + scrape crash logs → oom
     /// telemetry) and watch live memory pressure (reclaim cache + drop a marker
     /// on critical so a kill before we can report it is attributed next launch).
-    internal func startMemoryProtection() {
+    internal func startMemoryProtection(
+        markerURL: URL = OOMDetector.defaultMarkerURL(),
+        lastScanURL: URL = OOMDetector.defaultLastScanURL(),
+        diagnosticReportsDirs: [URL] = OOMDetector.defaultDiagnosticReportsDirs()
+    ) {
         do { try requireNativeMiMoProcessWorkAllowed() } catch { return }
         // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
@@ -32,8 +36,8 @@ extension ProviderLoop {
         })
 
         let now = Date()
-        let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)
-        let findings = OOMDetector.detectOnLaunch(since: since)
+        let since = OOMDetector.loadLastScan(at: lastScanURL) ?? now.addingTimeInterval(-24 * 3600)
+        let findings = OOMDetector.detectOnLaunch(markerURL: markerURL, diagnosticReportsDirs: diagnosticReportsDirs, since: since)
         for finding in findings {
             var fields: [String: AnyCodableValue] = ["detect_source": .string(finding.source.rawValue)]
             if let reason = finding.reason { fields["reason"] = .string(reason) }
@@ -45,13 +49,15 @@ extension ProviderLoop {
         }
         // Advance the scan watermark only AFTER findings are handed to telemetry,
         // so a crash before this point re-scans the same reports next launch.
-        OOMDetector.saveLastScan(now)
+        OOMDetector.saveLastScan(now, at: lastScanURL)
 
         let monitor = MemoryPressureMonitor(
             clearCache: { [nativeMiMoRegistry] in
                 guard ProviderLoop.nativeProcessAllowsReclamation(),
                     !nativeMiMoRegistry.hasRetainedFault,
                     !nativeMiMoRegistry.hasUnretiredClosingTransactions else { return }
+                // Engines also drop retained free KV segments at their next step.
+                CBv2RetainedKVSegments.requestRelease()
                 MLX.Memory.clearCache()
             },
             writeMarker: { _ in
@@ -60,7 +66,7 @@ extension ProviderLoop {
                     epochSeconds: Date().timeIntervalSince1970,
                     peakMemoryBytes: UInt64(max(0, MLX.Memory.peakMemory)),
                     availableBytesAtEvent: SystemMemory.availableBytes() ?? 0)
-                OOMDetector.writeMarker(marker)
+                OOMDetector.writeMarker(marker, to: markerURL)
             },
             emit: { level, severity in
                 TelemetryClient.shared.emit(

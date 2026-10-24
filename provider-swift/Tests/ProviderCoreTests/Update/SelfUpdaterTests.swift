@@ -204,7 +204,7 @@ struct SelfUpdaterTests {
             Issue.record("a flat-only bundle (no Darkbloom.app) must not install")
             return
         }
-        #expect("\(error)".contains("Darkbloom.app"))
+        #expect("\(error)".contains(BuildEnvironment.current.appBundleName))
 
         #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "old darkbloom")
         #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "old enclave")
@@ -452,11 +452,15 @@ struct SelfUpdaterTests {
         if includeResource {
             let builtBundle = try activeBuildProduct(
                 PackagedRuntimeSmoke.mlxLMCommonBundleName)
-            try fm.copyItem(
-                at: builtBundle,
-                to: resources.appendingPathComponent(
-                    PackagedRuntimeSmoke.mlxLMCommonBundleName,
-                    isDirectory: true))
+            let repository = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent()
+            try runTestProcess("/bin/bash", [
+                repository.appendingPathComponent("scripts/stage-swiftpm-resource-bundles.sh").path,
+                builtBundle.deletingLastPathComponent().path, app.path,
+                root.appendingPathComponent("resource-bundles.txt").path,
+            ])
         }
 
         if includeFanHelper {

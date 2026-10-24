@@ -1,0 +1,92 @@
+{
+  "name": "d-inference conditional security clearance",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "~DEFAULT_BRANCH",
+        "refs/heads/master"
+      ],
+      "exclude": []
+    },
+    "repository_id": {
+      "repository_ids": [
+        1182082906
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "workflows",
+      "parameters": {
+        "do_not_enforce_on_create": false,
+        "workflows": [
+          {
+            "repository_id": 1182082906,
+            "path": ".github/workflows/threat-model-review.yml",
+            "ref": "refs/heads/master"
+          }
+        ]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Release Integrity",
+            "integration_id": 15368
+          },
+          {
+            "context": "Docs Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "Docs Impact",
+            "integration_id": 15368
+          },
+          {
+            "context": "Commit Signatures",
+            "integration_id": 15368
+          },
+          {
+            "context": "Coordinator Tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Coordinator Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "Provider Tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Provider SDK Tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Provider Prompt Parity",
+            "integration_id": 15368
+          },
+          {
+            "context": "Prompt Sidecar Tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Console UI Lint & Build",
+            "integration_id": 15368
+          },
+          {
+            "context": "E2E Integration Tests",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ]
+}

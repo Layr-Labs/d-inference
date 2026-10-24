@@ -1,0 +1,69 @@
+{
+  "curatedEvidenceSHA256": "7e0432fac3572d282209ce08b977111f1bc7ca65a11e85b98f9358e99c228191",
+  "environmentLimit": "Historical schema1 manifests do not retain the child environment; this audit verifies prepared input and raw prompt/score identity only.",
+  "fullOwnedAuditSHA256": "6cc899c0457033ea8aa2df68333d1f52d5da5f897c4f11e2d5a1078c9c4c4f6d",
+  "parsedReportInputMatches": 138,
+  "schema": 1,
+  "selectedInputCount": 148,
+  "stageCounts": {
+    "candidate03-m4-matrix": {
+      "parsedReportInputsMatched": 50,
+      "selectedInputsVerified": 60
+    },
+    "candidate03-m5-matrix": {
+      "parsedReportInputsMatched": 30,
+      "selectedInputsVerified": 30
+    },
+    "candidate03-m5-mtp": {
+      "parsedReportInputsMatched": 4,
+      "selectedInputsVerified": 4
+    },
+    "candidate04-m5-gemma": {
+      "parsedReportInputsMatched": 10,
+      "selectedInputsVerified": 10
+    },
+    "candidate05-m5-gemma": {
+      "parsedReportInputsMatched": 10,
+      "selectedInputsVerified": 10
+    },
+    "candidate05-m5-gemma-mtp": {
+      "parsedReportInputsMatched": 2,
+      "selectedInputsVerified": 2
+    },
+    "candidate07-m5-final-controls": {
+      "parsedReportInputsMatched": 16,
+      "selectedInputsVerified": 16
+    },
+    "candidate07-m5-gemma-mtp": {
+      "parsedReportInputsMatched": 4,
+      "selectedInputsVerified": 4
+    },
+    "candidate07-m5-gemma-target-with-assistant": {
+      "parsedReportInputsMatched": 2,
+      "selectedInputsVerified": 2
+    },
+    "candidate08-m4-gemma8": {
+      "parsedReportInputsMatched": 10,
+      "selectedInputsVerified": 10
+    }
+  },
+  "suiteManifests": {
+    "inputs": "50052d7830d236d8b0a9ac479abe9a545c1e16f97bc4c976d31d8ebe0eaa9823",
+    "inputs-1024": "8fda81d3dd0436aeb292f2f20ba9b4eede8580a231c1c74a7c6a1aa67673fe96"
+  },
+  "verifiedInputSHA256": {
+    "EigenLabs--Qwen3.8-27B-4bit-mtp-scores-input.json": "cdbc794e332220748b3e2a08619a234700c2aba73fece641c6b111cc244503fa",
+    "Qwen3.5-9B-scores-input.json": "43dddb6059ae003a085a045002ffd6a0feb6058668bce3333aa9eee9f040e7e7",
+    "arithmetic.txt": "b398ce34b468d6665a7e542e0062a0c4ffad6af7395ff4bc2fd382d3b7245691",
+    "gemma-4-26b-8bit-scores-input.json": "167abb8dc653358dc0455fbe8ca56b0d98b524b88107dac167a1a235b6d62d13",
+    "gemma-4-26b-qat-4bit-scores-input.json": "97d4fef1716650c6e0b9124730566a480f2de0e13eb58e44ec3e9b68f31158ad",
+    "gpt-oss-20b-scores-input.json": "173743ad840c0dc4718bee43f9505978a2df5e695e39f30f932bb1afd4b83e27",
+    "long_retrieval.txt": "3d5cd51bd28002211861b2d78d6505a07e72d495195ee5bcda3706cc4dc655b7",
+    "nvidia-nemotron-3.5-lightning-scores-input.json": "b86657426b6d8d6100daa84de7624d3425f15e5993c1f7faee1e47104105f9d9",
+    "program.txt": "615f3262200f575fa1d47707ae8430424f2c0f2c76da2b9241c4cd8507b18e81",
+    "qwen3.5-35b-a3b-scores-input.json": "d0976fc558d6143d580f92c541fea85560330f1ff8ac7202b9469533b89b757f",
+    "qwen3.6-35b-a3b-vl-mtp-mxfp8-scores-input.json": "521ddb832ee4463cce4be6d878b9712e14184b450e4e649d2785bbed848bf95d",
+    "retrieval.txt": "127af1a80d3a14d1e525fa758d1cbbab49dc9fef2af8a99644addab36e24e6f5",
+    "ternary-bonsai-2-27b-scores-input.json": "d881be3335638b966830772c6d7def837d7554e343c2778b94306110aafbe8b5"
+  }
+}

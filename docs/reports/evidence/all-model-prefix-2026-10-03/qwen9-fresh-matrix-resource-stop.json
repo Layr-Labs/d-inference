@@ -1,0 +1,35 @@
+{
+  "scope": "Fresh Qwen9 short and long serial matrix only; both previous stopped matrices and Qwen3.5 diagnostic remain immutable and excluded.",
+  "startedUTC": "2026-10-04T00:22:28.236764+00:00",
+  "endedUTC": "2026-10-04T00:36:34.254153+00:00",
+  "status": "stopped_safety_gate",
+  "stopReason": "inner_driver_safety_stop",
+  "outerBindingBeforeAfterIdentical": true,
+  "requestedArms": 12,
+  "startedArms": 11,
+  "completeReports": 10,
+  "partialReports": 1,
+  "unstartedArms": 1,
+  "recordedRequests": 43,
+  "reportedOutputIDs": 5504,
+  "short": {
+    "status": "pass",
+    "qualifiedBlocks": 3,
+    "sameGeometryControl": true,
+    "causalPolicyGainClaimed": false
+  },
+  "long": {
+    "status": "incomplete_or_failed",
+    "qualifiedBlocks": 0,
+    "stopReason": "free_disk_below_selected_floor_plus0.25GiB_while_active",
+    "numericalFailureAndResourceStopKeptSeparate": true
+  },
+  "sourceSnapshotSHA256": "9f56066a82996159866a9aba146cb2cf21ee978d7cbbd9554a4022a1c3a57eea",
+  "binarySHA256": "b1c4caccc029c63cf925d8e29f68514be8c7048bfb945a720c7626f2d6700b92",
+  "allStartedProcessesReapedAndQuiescent": true,
+  "maximumTrackedDescendants": 0,
+  "limits": [
+    "Resource guard retained20GiB floor/20.25GiB active threshold; no reserve/memory/runtime relaxation.",
+    "Unstarted and partial observations are not model performance results; no cross-matrix pooling."
+  ]
+}

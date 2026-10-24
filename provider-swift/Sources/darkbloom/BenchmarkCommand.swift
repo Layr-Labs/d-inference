@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 import ProviderBenchmark
+import ProviderCoreFoundation
 
 struct Benchmark: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -26,14 +27,14 @@ struct Benchmark: AsyncParsableCommand {
     @Flag(name: .long, help: """
         Run the fail-closed signed-candidate cap-0/cap-1 scheduler-prefill \
         evaluation. This mode only runs from the packaged signed \
-        Darkbloom.app main executable.
+        \(BuildEnvironment.current.appBundleName) main executable.
         """)
     var schedulerPrefillDecision = false
 
     @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
     var expectedModelAggregateSHA256: String?
 
-    @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
+    @Option(name: .long, help: "Signed decision: expected registered signed \(BuildEnvironment.current.cliName) binary SHA-256.")
     var expectedRegisteredBinarySHA256: String?
 
     @Option(name: .long, help: "Signed decision: exact expected ProviderCore version.")
@@ -85,12 +86,11 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: """
         KV-backend selection passed to every engine this command builds — \
-        auto|contiguous|paged (default auto). Candidate auto selects paged only \
-        for exact model IDs qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, \
-        and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous. \
-        Automatic paged failures and the version-bound crash-loop guard \
-        still fall back to contiguous. Pass --kv-backend paged to require \
-        the paged arm rather than automatic fallback. \
+        auto|contiguous|paged (default auto). Live quantization makes auto \
+        require paged storage for supported targets. Use --kv-quantization \
+        native for a native control or contiguous rollback. MiMo stays native. \
+        Quantized construction refuses unavailable paged storage; native auto \
+        retains its exact-model backend policy and observable fallback. \
         Applies to --sweep, --scheduler-prefill, \
         --scheduler-prefill-decision, and --arrival-invariance alike. Each \
         engine receives the same requested selection; automatic fallback \
@@ -98,15 +98,42 @@ struct Benchmark: AsyncParsableCommand {
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
         exits non-zero naming the reason. DARKBLOOM_CBV2_PAGED_KV=0 and \
-        capability/span-mask vetoes can still force contiguous, even for an \
-        explicit selection. The backend that actually served is recorded per \
+        capability/span-mask vetoes require native precision to serve contiguous. \
+        The backend that actually served is recorded per \
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
-        kvBackend block. Candidate rollout is not yet validated; see \
-        docs/design/qwen-first-paged-ssd-rollout.md. Ordinary native \
+        kvBackend block. Ordinary scalar MLX.generate does not exercise \
+        production KV compression; use --runtime-generation. Ordinary native \
         DiffusionGemma benchmarks also honor this backend selection.
         """)
     var kvBackend = "auto"
+
+    @Option(name: .long, help: "Live attention KV precision: balanced (K4/V4), k8v4, k8v8 or native. MiMo always remains native. Defaults to the provider config/environment or native; independent of checkpoint storage.")
+    var kvQuantization: String?
+
+    @Option(name: .long, help: "Complete-checkpoint storage precision: balanced (K4/V4), k8v4, k8v8 or native. Applies to eligible checkpoint codecs, not live attention. MiMo always remains native. Defaults to the provider config/environment or balanced.")
+    var kvCheckpointQuantization: String?
+
+    @Flag(name: .long, help: "Generate one request through the production CBv2 slot and print raw tokens, text, precision, timings and memory as JSON; prefix caches are off and --iterations does not apply.")
+    var runtimeGeneration = false
+
+    @Flag(name: .long, help: "Runtime generation: explicitly enable the artifact's MTP policy; default is target-only for paired precision controls.")
+    var runtimeMtp = false
+
+    @Option(name: .long, help: "Runtime MTP: offline local Gemma assistant directory; requires --runtime-generation --runtime-mtp and passes the normal artifact/target checks.")
+    var runtimeAssistantDirectory: String?
+
+    @Option(name: .long, help: "Runtime generation: read the public/synthetic prompt from a UTF-8 file (at most 4 MiB).")
+    var runtimePromptFile: String?
+
+    @Option(name: .long, help: "Runtime generation: comma-separated concurrent batch sizes from 1 to 64 (e.g. 1,2,4,8). One production slot per size, warmed by one identical batch; greedy rows with distinct prompts; per-token arrival timing as JSON.")
+    var runtimeConcurrency: String?
+
+    @Flag(name: .long, help: "Runtime concurrency: row i of a B-row batch stops after max-tokens*(B-i)/B tokens (max-tokens must be at least 3*B), so the decode cohort shrinks to one row.")
+    var runtimeStagger = false
+
+    @Option(name: .long, help: "Runtime generation: fixed UTC template date YYYY-MM-DD for paired runs.")
+    var runtimePromptDate = PromptRenderDate.capture().value
 
     @Flag(name: .long, help: """
         Run the cold-prefill TTFT benchmark through the production \
@@ -117,6 +144,9 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: "Scheduler prefill: measured iterations per length.")
     var prefillIterations = 2
+
+    @Flag(name: .long, help: "Scheduler prefill only: repeat the same seed-token prompt at offset 0 for warmup and measured iterations; default rotates measured prompts by iteration * 17.")
+    var prefillFixedPrompt = false
 
     @Flag(name: .long, help: "Measure production CBv2 burst-versus-staggered request arrivals and output invariance.")
     var arrivalInvariance = false
@@ -167,6 +197,16 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
     var teacherForcedInput: String?
 
+    @Flag(name: .long, help: """
+        CPU only: time prompt preparation (template render and tokenization) \
+        for synthetic chat and agent conversations, uncached and through the \
+        prompt token cache, and print a JSON report. Loads only the tokenizer.
+        """)
+    var promptPrep = false
+
+    @Option(name: .long, help: "Prompt prep: comma-separated approximate prompt lengths in tokens (default 2048,8192,32768).")
+    var promptPrepLengths = "2048,8192,32768"
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
@@ -175,6 +215,15 @@ struct Benchmark: AsyncParsableCommand {
         if let error = teacherForcedOptionError() {
             printError(error)
             throw ExitCode(2)
+        }
+        if let error = schedulerPrefillOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        // Keep explicit overrides raw until the model is known: MiMo ignores
+        // both precision controls, including malformed irrelevant values.
+        for (key, value) in kvQuantizationOverrides() {
+            setenv(key, value, 1)
         }
         if schedulerPrefillDecision {
             try await runSignedSchedulerPrefillDecision()
@@ -206,7 +255,7 @@ struct Benchmark: AsyncParsableCommand {
                 benchmark is config-driven: refusing to run with \
                 \(conflict.key)=\(conflict.shellValue) set in this shell while \
                 provider.toml projects \(conflict.configValue). Toggle with \
-                `darkbloom beta` or edit [gemma_optimizations] in provider.toml, \
+                `\(BuildEnvironment.current.cliName) beta` or edit [gemma_optimizations] in provider.toml, \
                 then re-run benchmark without the low-level override.
                 """)
             throw ExitCode.failure
@@ -243,16 +292,80 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        let precision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVQuantization,
+            byModel: snapshot.config.backend.engineV2KVQuantizationByModel,
+            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment)
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVCheckpointQuantization,
+            byModel: snapshot.config.backend.engineV2KVCheckpointQuantizationByModel,
+            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment,
+            purpose: .checkpoint)
+        setenv(EngineV2KVQuantizationPolicy.environmentKey, precision.rawValue, 1)
+
         if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
             printError(error)
             throw ExitCode(2)
+        }
+
+        if promptPrep {
+            let lengths = promptPrepLengths.split(separator: ",").compactMap {
+                Int($0.trimmingCharacters(in: .whitespaces))
+            }.filter { $0 > 0 }
+            guard !lengths.isEmpty else {
+                printError("--prompt-prep-lengths needs positive token counts")
+                throw ExitCode(2)
+            }
+            let result = try await PromptPreparationBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                modelType: selectedModel.modelType, lengths: lengths, iterations: iterations)
+            print(result.json)
+            if !result.identical { throw ExitCode(2) }
+            return
+        }
+
+        if runtimeGeneration {
+            let input: String
+            if let runtimePromptFile {
+                let file = URL(fileURLWithPath: runtimePromptFile)
+                let handle = try FileHandle(forReadingFrom: file)
+                defer { try? handle.close() }
+                let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
+                guard bytes.count <= 4 << 20, let text = String(data: bytes, encoding: .utf8)
+                else { throw RuntimeGenerationBenchmark.Failure.invalidArguments }
+                input = text
+            } else { input = prompt }
+            if let runtimeConcurrency {
+                let result = try await RuntimeConcurrencyBenchmark.run(
+                    modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                    batchSizes: try RuntimeConcurrencyBenchmark.batchSizes(
+                        parsing: runtimeConcurrency),
+                    maxTokens: maxTokens, staggered: runtimeStagger, backend: kvBackend,
+                    mtpEnabled: runtimeMtp,
+                    assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                    renderDate: runtimePromptDate,
+                    checkpointQuantizationConfig: checkpointPrecision.rawValue)
+                print(result.json)
+                if !result.succeeded { throw ExitCode(2) }
+                return
+            }
+            let result = try await RuntimeGenerationBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
+                maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
+                assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
+                renderDate: runtimePromptDate,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue)
+            print(result.json)
+            if !result.succeeded { throw ExitCode(2) }
+            return
         }
 
         if let teacherForcedInput {
             let result = try await TeacherForcedBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath,
                 inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
-                gemmaOptimizations: gemmaSettings)
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue)
             // Preserve nonfinite/neutrality evidence even when inconclusive.
             print(result.json)
             if !result.controlsPassed { throw ExitCode(2) }
@@ -272,7 +385,9 @@ struct Benchmark: AsyncParsableCommand {
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
                 hardware: hardware,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                kvQuantization: precision,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
@@ -281,7 +396,8 @@ struct Benchmark: AsyncParsableCommand {
             try await runSchedulerPrefillBenchmark(
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
@@ -290,12 +406,13 @@ struct Benchmark: AsyncParsableCommand {
             try await runArrivalInvarianceBenchmark(
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
 
-        print("darkbloom benchmark")
+        print("\(BuildEnvironment.current.cliName) benchmark")
         print("")
 
         let report = try await ModelBenchmark.run(
@@ -306,13 +423,43 @@ struct Benchmark: AsyncParsableCommand {
             maxTokens: maxTokens,
             hardware: hardware,
             kvBackend: kvBackend,
-            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB
+            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB,
+            checkpointQuantizationConfig: checkpointPrecision.rawValue
         )
 
         report.printTable()
     }
 
+    func kvQuantizationOverrides() -> [String: String] {
+        var environment: [String: String] = [:]
+        if let kvQuantization {
+            environment[EngineV2KVQuantizationPolicy.environmentKey] = kvQuantization
+        }
+        if let kvCheckpointQuantization {
+            environment[EngineV2KVQuantizationPolicy.checkpointEnvironmentKey] = kvCheckpointQuantization
+        }
+        return environment
+    }
+
     func benchmarkModeConflict() -> String? {
+        if !runtimeGeneration
+            && (runtimeMtp || runtimePromptFile != nil || runtimeAssistantDirectory != nil
+                || runtimeConcurrency != nil)
+        {
+            return "Runtime options require --runtime-generation"
+        }
+        if runtimeStagger && runtimeConcurrency == nil {
+            return "--runtime-stagger requires --runtime-concurrency"
+        }
+        if let runtimeConcurrency,
+            (try? RuntimeConcurrencyBenchmark.batchSizes(parsing: runtimeConcurrency)) == nil
+        {
+            return "--runtime-concurrency takes comma-separated batch sizes from 1 to 64"
+        }
+        if let runtimeAssistantDirectory,
+            !runtimeMtp || runtimeAssistantDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "--runtime-assistant-directory requires a nonempty path and --runtime-mtp"
+        }
         let selected = [
             (schedulerPrefillDecision, "--scheduler-prefill-decision"),
             (sweep, "--sweep"),
@@ -320,6 +467,8 @@ struct Benchmark: AsyncParsableCommand {
             (arrivalInvariance, "--arrival-invariance"),
             (parity, "--parity"),
             (teacherForcedInput != nil, "--teacher-forced-input"),
+            (runtimeGeneration, "--runtime-generation"),
+            (promptPrep, "--prompt-prep"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
@@ -329,7 +478,7 @@ struct Benchmark: AsyncParsableCommand {
 
     func nativeBlockModeError(modelType: String?) -> String? {
         guard modelType == "diffusion_gemma",
-            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil else { return nil }
+            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil || runtimeGeneration else { return nil }
         return "Native block diffusion uses the ordinary benchmark command; AR sweep, teacher-forcing, arrival and parity modes are unsupported for this architecture."
     }
 

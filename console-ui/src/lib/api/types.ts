@@ -220,7 +220,7 @@ export interface StripeWithdrawal {
   fee_micro_usd: number;
   net_micro_usd: number;
   method: "standard" | "instant";
-  status: "pending" | "transferred" | "paid" | "failed" | "processing" | "posted" | "returned" | "canceled";
+  status: "queued" | "pending" | "transferred" | "paid" | "failed" | "processing" | "posted" | "returned" | "canceled";
   failure_reason?: string;
   refunded?: boolean;
   created_at: string;

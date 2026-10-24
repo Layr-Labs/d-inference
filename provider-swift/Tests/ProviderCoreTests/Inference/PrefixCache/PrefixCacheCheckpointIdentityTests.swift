@@ -8,13 +8,14 @@ import Testing
 
 @Suite("Complete checkpoint identity")
 struct PrefixCacheCheckpointIdentityTests {
-    @Test("Normalization v8 and renderer v4 separate prior memory and disk cache identities")
+    @Test("Normalization v9 and renderer v4 separate prior memory and disk cache identities")
     func normalizationVersionFence() throws {
         struct Vector: Decodable {
             let artifacts: [ManifestFile]
             let expected_prompt_contract_id: String
             let legacy_v6_prompt_contract_id: String
             let legacy_v7_prompt_contract_id: String
+            let legacy_v8_prompt_contract_id: String
         }
         struct Corpus: Decodable { let vectors: [Vector] }
         var root = URL(fileURLWithPath: #filePath)
@@ -25,7 +26,8 @@ struct PrefixCacheCheckpointIdentityTests {
         for vector in corpus.vectors {
             let current = try PromptContractIdentity.compute(files: vector.artifacts)
             #expect(current == vector.expected_prompt_contract_id)
-            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id] {
+            for old in [vector.legacy_v6_prompt_contract_id, vector.legacy_v7_prompt_contract_id,
+                vector.legacy_v8_prompt_contract_id] {
                 #expect(current != old)
                 let oldIdentity = try #require(identity(prompt: old))
                 let newIdentity = try #require(identity(prompt: current))
@@ -279,6 +281,39 @@ struct PrefixCacheCheckpointIdentityTests {
         #expect(identity(mtp: .init(enabled: true, fixedDraftTokens: 2), codec: nil, storage: base) != baseID)
     }
 
+    @Test("Resolved packed precision, recent band and assistant owner exemptions separate namespaces")
+    func quantizedStorageNamespace() throws {
+        let types: [DType] = [.bfloat16, .float32]
+        let base = PagedKVPoolConfig(pageSize: 16, capacityBytes: 64 << 20,
+            segmentSizeBytes: 64 << 10, layerDTypes: types, quantization: .init())
+        func namespace(_ config: PagedKVPoolConfig) throws -> String {
+            let storage = try #require(CompleteCheckpointStorageIdentity(kind: .paged,
+                layerDTypes: types, pagedConfig: config))
+            let resolved = try #require(identity(storage: storage))
+            return SSDHybridCheckpointStoreFactory.namespace(modelId: "target",
+                identity: resolved, backendLayout: storage.backendLayout)
+        }
+        let balanced = try namespace(base)
+        let storage = try #require(CompleteCheckpointStorageIdentity(kind: .paged,
+            layerDTypes: types, pagedConfig: base))
+        #expect(storage.backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout)
+        #expect(storage.fingerprintFields["storage.quantization"] == base.quantization?.identity)
+        for change in 0 ..< 5 {
+            var other = base
+            switch change {
+            case 0: other.quantization = nil
+            case 1: other.quantization = .init(keyBits: 8, valueBits: 4)
+            case 2: other.quantization = .init(keyBits: 8, valueBits: 8)
+            case 3: other.quantization = .init(recentTokenCount: 64)
+            default: other.nativeLayerIndices = [1]
+            }
+            #expect(try namespace(other) != balanced)
+        }
+        var resized = base
+        resized.capacityBytes *= 2
+        #expect(try namespace(resized) == balanced, "Capacity does not change numerical storage compatibility")
+    }
+
     @Test("Historical eligibility refuses incompatible native mappings and storage")
     func historicalStorageRefusal() {
         let window = CBv2LayerKind(attention: .slidingWindow(128), headDim: 64, kvHeads: 1, queryHeads: 2)
@@ -300,7 +335,8 @@ struct PrefixCacheCheckpointIdentityTests {
                 pagedConfig: config, target: .historicalAttention(modified)) == nil)
         }
         #expect(CompleteCheckpointStorageIdentity(kind: .contiguous, layerDTypes: [.float16, .float16],
-            pagedConfig: nil, target: .historicalAttention(kinds)) == nil)
+            pagedConfig: nil, target: .historicalAttention(kinds))?.backendLayout
+                == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
         #expect(CompleteCheckpointStorageIdentity(kind: .paged, layerDTypes: [.float16, .float32],
             pagedConfig: config, target: .historicalAttention(kinds)) == nil)
     }

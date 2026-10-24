@@ -34,6 +34,17 @@ MIMO_PROVIDER_PREPARE = ('python3 scripts/prepare-mimo-provider-fixtures.py '
 SDK_MIMO_PREPARE_NAME = "Prepare tiny MiMo fixture for media-to-text isolation"
 SDK_MIMO_GATE_NAME = "Verify media refusal leaves the native text engine usable"
 SDK_MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-isolation-fixture.outcome == 'success' }}"
+SDK_RETENTION_PREPARE_NAME = "Prepare asymmetric tiny MiMo fixture for native retention"
+SDK_RETENTION_GATE_NAME = "Verify native retained frontier after donor retirement"
+SDK_RETENTION_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.sdk-mimo-retention-fixture.outcome == 'success' }}"
+SDK_RETENTION_HOST_COMMANDS = {
+    "Verify native historical retention policy":
+        "../../scripts/run-nested-suite.sh CBv2NativeHistoricalRetentionTests --no-parallel",
+    "Verify demanded checkpoint scheduling and projection":
+        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointPartitionTests --no-parallel",
+    "Verify demanded long range continuation and projection":
+        "../../scripts/run-nested-suite.sh CBv2DemandedCheckpointContinuationTests --no-parallel",
+}
 MIMO_NATIVE_COMMANDS = {
     "Run isolated native MiMo startup gates":
         "../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel",
@@ -45,6 +56,8 @@ MIMO_NATIVE_COMMANDS = {
         "../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel",
     "Run isolated native MiMo retained-fault gate":
         "../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel",
+    "Run isolated native MiMo lifecycle drain gate":
+        "../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel",
 }
 COVERAGE_STEPS = ("Collect provider coverage profiles", "Report provider coverage")
 LANES = {
@@ -53,6 +66,11 @@ LANES = {
     "test-provider-parity": "parity",
 }
 SDK_COMMANDS = {
+    **SDK_RETENTION_HOST_COMMANDS,
+    SDK_RETENTION_PREPARE_NAME:
+        'python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-native-retention" --asymmetric',
+    SDK_RETENTION_GATE_NAME:
+        "../../scripts/run-nested-suite.sh MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork --no-parallel",
     "Verify DiffusionGemma artifact and expert reduction":
         "../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel",
     "Run nested MiMo media decode tests":
@@ -244,10 +262,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         steps = step_blocks(self.jobs["test-provider"])
         expected = (
             "python3 scripts/test-qwen4-packaged-resources.py",
+            "python3 scripts/test-stage-swiftpm-resource-bundles.py",
             "python3 scripts/test-profile-inventory-auth.py",
             MIMO_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,
+            "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
@@ -259,14 +279,30 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
         self.assertEqual(field(test_step, "timeout-minutes"), "20")
+
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
+        desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))
+        self.assertEqual(field(desktop, "if"), "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}")
+        self.assertEqual(field(desktop, "timeout-minutes"), "3")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
         self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")
         self.assertNotIn("rustup", self.jobs["test-provider"])
         self.assertNotIn("actions/setup-go@", self.jobs["test-provider"])
+
+    def test_atomic_installer_checks_use_only_the_canonical_public_script(self):
+        script = (ROOT / "scripts/test-install-atomic.sh").read_text()
+        self.assertIn('INSTALLER="$REPO_ROOT/scripts/install.sh"', script)
+        self.assertNotIn("coordinator/api/install.sh", script)
+        self.assertNotIn("sync-install-embed.sh", script)
+        for safeguard in ("assert_no_clt_tools", "assert_no_privileged_install",
+                          "assert_fan_variants_rejected", "assert_flat_only_rejected",
+                          "assert_pre_paged_rejected", "run_install_without_hashes",
+                          'run_install "$DIVERGED"', 'run_install "$TAMPERED"',
+                          "DARKBLOOM_TEST_SMOKE_NO_ATTEST=1"):
+            self.assertIn(safeguard, script)
 
     def test_provider_watchdog_diagnostics_survive_test_failure_not_cancellation(self):
         steps = step_blocks(self.jobs["test-provider"])
@@ -342,14 +378,39 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("rustup", self.jobs["test-provider-sdk"])
 
     def test_every_sdk_gate_requires_successful_build_but_not_earlier_tests(self):
+        fixture_conditions = {
+            SDK_MIMO_GATE_NAME: SDK_MIMO_READY,
+            SDK_RETENTION_GATE_NAME: SDK_RETENTION_READY,
+        }
+        preparation_steps = {SDK_MIMO_PREPARE_NAME, SDK_RETENTION_PREPARE_NAME}
         for step in step_blocks(self.jobs["test-provider-sdk"]):
             if field(step, "run"):
                 with self.subTest(gate=field(step, "name", indent=6)):
                     name = field(step, "name", indent=6)
-                    self.assertEqual(field(step, "if"), SDK_MIMO_READY if name == SDK_MIMO_GATE_NAME else READY)
-                    expected_directory = None if name == SDK_MIMO_PREPARE_NAME else "libs/mlx-swift-lm"
+                    self.assertEqual(field(step, "if"), fixture_conditions.get(name, READY))
+                    expected_directory = None if name in preparation_steps else "libs/mlx-swift-lm"
                     self.assertEqual(field(step, "working-directory"), expected_directory)
                     self.assertNotIn("continue-on-error:", step)
+
+    def test_sdk_retention_requires_asymmetric_fixture_and_non_skipping_selectors(self):
+        steps = step_blocks(self.jobs["test-provider-sdk"])
+        by_name = {field(step, "name", indent=6): step for step in steps}
+        prepare = by_name[SDK_RETENTION_PREPARE_NAME]
+        gate = by_name[SDK_RETENTION_GATE_NAME]
+        self.assertEqual(field(prepare, "id"), "sdk-mimo-retention-fixture")
+        self.assertEqual(run_command(prepare), SDK_COMMANDS[SDK_RETENTION_PREPARE_NAME])
+        self.assertLess(steps.index(prepare), steps.index(gate))
+        self.assertEqual(field(gate, "if"), SDK_RETENTION_READY)
+        self.assertEqual(field(gate, "timeout-minutes"), "5")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_NATIVE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(gate, "MIMO_V26_SERIAL_LOAD_FIXTURES", indent=10), "${{ runner.temp }}/mimo-native-retention")
+        self.assertEqual(run_command(gate), SDK_COMMANDS[SDK_RETENTION_GATE_NAME])
+        for name, command in SDK_RETENTION_HOST_COMMANDS.items():
+            with self.subTest(gate=name):
+                host = by_name[name]
+                self.assertEqual(run_command(host), command)
+                self.assertEqual(field(host, "timeout-minutes"), "5")
+                self.assertNotIn("\n        env:", host)
 
     def test_sdk_media_isolation_requires_its_fixture_and_native_lane(self):
         steps = step_blocks(self.jobs["test-provider-sdk"])
@@ -405,12 +466,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
         self.assertEqual(commands["./scripts/verify-prompt-parity.sh"], 1)
 
-    def test_parity_retains_pinned_go_and_original_script(self):
+    def test_parity_retains_public_swift_golden_vector_scripts(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
         go = [step for step in steps if "actions/setup-go@" in step]
-        self.assertEqual(len(go), 1)
-        self.assertIn("actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34", go[0])
-        self.assertEqual(field(go[0], "go-version-file", indent=10), "go.mod")
+        self.assertEqual(go, [])
         runs = [step for step in steps if field(step, "run")]
         self.assertEqual([run_command(step) for step in runs],
                          [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh",
@@ -448,6 +507,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(fault, "MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS", indent=10), "'1'")
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE", indent=10), "'0'")
         self.assertEqual(field(fault, "DARKBLOOM_PREFIX_CACHE_MEMORY", indent=10), "'0'")
+        drain = next(step for step in steps if field(step, "name", indent=6) == "Run isolated native MiMo lifecycle drain gate")
+        self.assertEqual(field(drain, "MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS", indent=10), "'1'")
+        self.assertEqual(field(drain, "DARKBLOOM_PREFIX_CACHE", indent=10), "'0'")
+        self.assertEqual(field(drain, "DARKBLOOM_PREFIX_CACHE_MEMORY", indent=10), "'0'")
+        self.assertNotIn("MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE", drain)
 
     def test_audio_qualification_uses_real_codec_and_no_skip_gate(self):
         steps = step_blocks(self.jobs["test-provider"])
@@ -461,17 +525,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
         self.assertNotIn("continue-on-error:", gate)
 
-    def test_rust_cache_is_saved_only_after_successful_parity(self):
+    def test_parity_has_no_backend_caches_or_credentials(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
-        parity = next(step for step in steps if run_command(step) == "./scripts/verify-prompt-parity.sh")
         saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual(len(saves), 1)
-        self.assertEqual(field(parity, "id"), "prompt-parity")
-        self.assertGreater(steps.index(saves[0]), steps.index(parity))
-        self.assertEqual(field(saves[0], "if"), "${{ !cancelled() && steps.prompt-parity.outcome == 'success' && steps.provider-ci-build.outputs.rust-cache-hit != 'true' }}")
-        self.assertIn("key: ${{ steps.provider-ci-build.outputs.rust-key }}", saves[0])
-        for path in ("~/.cargo/registry", "~/.cargo/git/db", "coordinator/promptsidecar/target"):
-            self.assertIn(path, saves[0])
+        self.assertEqual(saves, [])
+        for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
+            self.assertNotIn(forbidden, self.jobs["test-provider-parity"])
 
     def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
         job = self.jobs["cache-swift"]
@@ -484,6 +543,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57", job)
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
+        self.assertIn("python3 provider-swift/Tests/test_protocol_fixture_resources.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-ci-cache.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
@@ -513,7 +573,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)
 
-    def test_composite_cache_keys_and_rust_work_stay_in_their_lanes(self):
+    def test_composite_cache_keys_retain_swift_and_metal_without_backend_work(self):
         action = ACTION.read_text()
         steps = step_blocks(action, indent=4)
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
@@ -525,11 +585,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("restore-keys:", metal_cache)
         rust_steps = [step for step in steps if "install-release-rust.sh" in step
                       or "cargo +1.88.0 clean" in step or field(step, "id", indent=6) == "rust-cache"]
-        self.assertEqual(len(rust_steps), 3)
-        for step in rust_steps:
-            self.assertEqual(field(step, "if", indent=6), "inputs.lane == 'parity'")
-        self.assertIn("rust-key:", action)
-        self.assertIn("rust-cache-hit:", action)
+        self.assertEqual(rust_steps, [])
+        self.assertNotIn("rust-key:", action)
+        self.assertNotIn("rust-cache-hit:", action)
         self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
 
 

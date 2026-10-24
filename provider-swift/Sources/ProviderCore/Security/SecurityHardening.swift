@@ -24,7 +24,7 @@ import Darwin
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "security")
 
 // MARK: - Errors
 
@@ -290,9 +290,21 @@ public struct SecurityPosture: Sendable {
 
 }
 
+/// Whether this install's own Darkbloom MDM profile is installed. The host of
+/// `coordinatorURL` counts as ours, the same as for enroll, doctor and
+/// unenroll; the other build environment's profile does not. The provider loop
+/// passes the URL it connects to (`ProviderLoopConfig.coordinatorURL`), so a
+/// `start --coordinator-url` override counts, not only provider.toml.
+func postureMDMEnrolled(
+    coordinatorURL: String?,
+    check: (String?) -> MDMEnrollmentState = { checkMDMEnrollment(coordinatorURL: $0) }
+) -> Bool {
+    check(coordinatorURL).isDarkbloom
+}
+
 /// Collect startup posture. Failures are reported to the coordinator, which
 /// owns the routing trust decision; local startup remains warning-only.
-public func collectSecurityPosture() -> SecurityPosture {
+public func collectSecurityPosture(coordinatorURL: String? = nil) -> SecurityPosture {
     let sipEnabled = checkSIPEnabled()
     if !sipEnabled {
         logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
@@ -337,7 +349,7 @@ public func collectSecurityPosture() -> SecurityPosture {
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
         envScrubbed: true,
-        mdmEnrolled: checkMDMEnrollment().isDarkbloom,
+        mdmEnrolled: postureMDMEnrolled(coordinatorURL: coordinatorURL),
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash()
     )

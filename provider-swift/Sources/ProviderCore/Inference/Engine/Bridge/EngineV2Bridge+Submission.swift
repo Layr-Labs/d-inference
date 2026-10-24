@@ -59,7 +59,8 @@ extension EngineV2Bridge {
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         donationDemand: SSDCheckpointDonationDemand? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -76,12 +77,22 @@ extension EngineV2Bridge {
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
                 donationDemand: donationDemand,
-                firstContentDeadline: nil, promptWork: promptWork)
+                firstContentDeadline: nil, promptWork: promptWork,
+                measurementPurpose: measurementPurpose)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
+            continuation.finish()
+            return stream
+        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
+            MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
+            // Capacity and output-control refusals already finalized their
+            // lookup; keep their content-free markers in-band for nonthrowing
+            // callers, which map them back to the same typed errors.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(message))
             continuation.finish()
             return stream
         } catch {
@@ -120,7 +131,8 @@ extension EngineV2Bridge {
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -134,6 +146,11 @@ extension EngineV2Bridge {
             continuation.yield(.error("request queue full: engine is shutting down"))
             continuation.finish()
             return stream
+        }
+        if let refusal = nativeOutputControlRefusal(request: request, tokenConstraint: tokenConstraint) {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.unsupportedOutputControl(refusal)
         }
 
         // Duplicate request-id guard (legacy: the planner's
@@ -151,7 +168,7 @@ extension EngineV2Bridge {
         }
         // Foreground work on any model preempts the shared idle calibration.
         // The original deadline keeps running while native retirement completes.
-        let foreground = mimoCalibration.requests[id] == nil
+        let foreground = modelCalibration.requests[id] == nil
             ? await serviceBudget?.idleCalibration.beginForeground() : nil
         defer { foreground?.finish() }
         // Waiting for a probe is an actor suspension: revalidate request and
@@ -171,10 +188,13 @@ extension EngineV2Bridge {
                 promptTokens: promptTokens.count, maxOutputTokens: request.max_tokens ?? defaultMaxTokens,
                 deadline: firstContentDeadline,
                 isMultimodal: multimodal != nil || mediaKind != nil)) else {
+            // A full Mac refuses as capacity before any stream exists, so
+            // routing moves on and a local client gets 503, not a 200 stream
+            // that fails at once.
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
-            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
-            return stream
+            throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+                Self.serviceAllowanceExhausted)
         }
         defer {
             if active[id] == nil && !retirementTransfer.isClaimed {
@@ -259,6 +279,25 @@ extension EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        // GLM prices each request by its reserved tokens beside one step's
+        // setup. Refuse as capacity before any stream exists, so routing moves
+        // on, a request that can never fit or that would leave a step no room
+        // once all held requests run; the engine charges step scratch from
+        // the same ledger.
+        if glm5NextNativeOwner != nil {
+            let decision = Self.glm5NextSlotAdmission(
+                requestBytes: requestReservationBytes(tokenCount: worstCaseTokens),
+                committedBytes: glm5NextCommittedBytes(),
+                admissibleBytes: admissionCapacityBytes())
+            guard case .admit(let bytes) = decision else {
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                continuation.finish()
+                throw Self.glm5NextSlotRefusal(
+                    neverFits: decision == .neverFits, reservedTokens: worstCaseTokens)
+            }
+            glm5NextGateReservations[id] = bytes
+        }
+        defer { glm5NextGateReservations.removeValue(forKey: id) }
 
         // Prefer resident pages when they save at least as much prefill as
         // the durable tier. A shorter memory hit must not hide a longer SSD
@@ -433,6 +472,8 @@ extension EngineV2Bridge {
                 engine: actual, bridge: self, budget: kvBudget)
         } else { completePrefixOwnsRequestCharge = false }
         let nativePagedOwnsRequestCharge: Bool
+        // GLM's separate operation owner validates its actual process owner at
+        // both admission checks. It must not masquerade as a MiMo transaction.
         if let actual = ownedEngine as? EngineV2, let kvBudget,
            let transaction = nativeTransaction, nativeTransactionID == transaction.id {
             nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(
@@ -546,7 +587,7 @@ extension EngineV2Bridge {
                 serviceBudget?.exclusiveEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id), ownerID: id)
         }
         let calibrationGuard: CBv2FirstContentEvidenceGuard?
-        if mimoCalibration.requests[id]?.width == 1 {
+        if modelCalibration.requests[id]?.width == 1 {
             if let captured = serviceBudget?.calibrationEvidenceGuard(ownerID: serviceOwnerPrefix + ":" + id) {
                 calibrationGuard = captured
             } else {
@@ -560,6 +601,8 @@ extension EngineV2Bridge {
         let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
             isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
+            measurementPurpose: measurementPurpose,
+            calibrationCell: modelCalibration.requests[id],
             nativeCausalMedia: nativeCausalMedia,
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
@@ -778,9 +821,9 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
-                } else if let native = engine as? EngineV2,
-                    native.nativeShutdownExecutionContractID != nil {
-                    let submitted = try native.submitWithNativeRetirement(engineRequest)
+                } else if let autoregressive = engine as? EngineV2,
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else {
@@ -913,5 +956,36 @@ extension EngineV2Bridge {
         for error: Error
     ) -> PrefixCacheLookupFailureClass {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
+    }
+
+    /// A native-tracked engine refuses token constraints, and logprob rows
+    /// unless its contract qualifies capture (`EngineV2.acceptsLogprobRows`:
+    /// GLM5-Next, not MiMo), at submit (`EngineV2.validateRequest`) with an
+    /// SDK-internal error this bridge could report only as a generation
+    /// failure: an untyped 500 that strikes the coordinator's inference-error
+    /// breaker for every request of the model's shape. Refuse those requests
+    /// first, as a typed client error.
+    func nativeOutputControlRefusal(
+        request: ChatCompletionRequest, tokenConstraint: (any CBv2TokenConstraint)?
+    ) -> String? {
+        let engine = ownedEngine as? EngineV2
+        return Self.nativeOutputControlRefusal(
+            nativeTracked: engine?.nativeShutdownExecutionContractID != nil,
+            capturesLogprobs: engine?.acceptsLogprobRows ?? true,
+            topLogprobs: EngineV2Translation.topLogprobs(
+                logprobs: request.logprobs, topLogprobs: request.top_logprobs),
+            constrained: tokenConstraint != nil)
+    }
+
+    static func nativeOutputControlRefusal(
+        nativeTracked: Bool, capturesLogprobs: Bool, topLogprobs: Int, constrained: Bool
+    ) -> String? {
+        guard nativeTracked else { return nil }
+        let prefix = EngineV2Translation.unsupportedOutputControlPrefix
+        if topLogprobs != 0 && !capturesLogprobs {
+            return "\(prefix): this model's engine does not return logprobs"
+        }
+        if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
+        return nil
     }
 }

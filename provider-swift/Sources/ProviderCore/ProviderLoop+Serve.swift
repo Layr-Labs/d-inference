@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -105,6 +105,7 @@ extension ProviderLoop {
         // serving (test instances never flip this, so their unload paths
         // cannot clobber the real ~/.darkbloom/loaded-models.json).
         loadedModelsPersistenceEnabled = true
+        if usesHostServices { verifiedWeightHashesFile = VerifiedWeightHashStore.path() }
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -130,6 +131,11 @@ extension ProviderLoop {
             }
             return
         }
+
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -196,10 +202,14 @@ extension ProviderLoop {
         }
         // 4. Create coordinator client and start connection
         publishModelAutopilotSnapshot()
+        let fixedKey = keyPair
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { challenge, nonce in
+                try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
@@ -276,6 +286,7 @@ extension ProviderLoop {
         startIdleMonitor()
         startCapacityRefreshMonitor()
         startAutoUpdateMonitor()
+        startAutopilotCandidateVerification()
 
         logger.info(.coordinatorClientStarted)
 
@@ -283,13 +294,16 @@ extension ProviderLoop {
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
         coordinatorEventLoopStarted = true
-        let eventTask = Task {
-            for await event in events {
+        let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
+        let workTask = Task {
+            for await event in workEvents {
+                // Only order-free events overtake a request waiting for its
+                // model load (`ProviderLoop+WorkFIFO.swift`).
+                if !event.overtakesReleasedAdmissions { await awaitReleasedAdmissions() }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
-                    clearConnectionAuthorization()
                     clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
@@ -299,10 +313,8 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
                     clearAutopilotControl()
-                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -316,26 +328,31 @@ extension ProviderLoop {
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
                 ):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        cacheReceiptNonce: cacheReceiptNonce,
-                        authenticatedCacheScope: cacheScope,
-                        prefixCacheProtocol: prefixCacheProtocol,
-                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
-                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
-                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
-                        firstContentDeadline: firstContentDeadline,
-                        receivedAt: receivedAt,
-                        profile: profile,
-                        serviceReservationID: serviceReservationID,
-                        promptWork: promptWork,
-                        send: send
-                    )
+                    await admitInWorkFIFO(requestId: requestId) { gate in
+                        await self.handleInferenceRequest(
+                            requestId: requestId,
+                            ciphertext: ciphertext,
+                            senderPublicKey: senderPublicKey,
+                            cacheReceiptNonce: cacheReceiptNonce,
+                            authenticatedCacheScope: cacheScope,
+                            prefixCacheProtocol: prefixCacheProtocol,
+                            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                            firstContentDeadline: firstContentDeadline,
+                            receivedAt: receivedAt,
+                            profile: profile,
+                            serviceReservationID: serviceReservationID,
+                            promptWork: promptWork,
+                            send: send,
+                            workFIFOGate: gate
+                        )
+                    }
 
                 case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
+                    if !deferCancelForReleasedAdmission(requestId) {
+                        await handleCancellation(requestId: requestId)
+                    }
 
                 case .attestationChallenge(let nonce, let timestamp):
                     await handleAttestationChallenge(
@@ -344,8 +361,9 @@ extension ProviderLoop {
                         send: send
                     )
 
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow, .trustStatus:
+                    // Consumed by the connection-control reader below.
+                    break
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
@@ -376,11 +394,40 @@ extension ProviderLoop {
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
 
-                case .trustStatus(let trustLevel, let status, let reason, let authorization):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
-                                      authorization: authorization)
                 }
             }
+            // The consumer ends only after every admission it started.
+            await awaitReleasedAdmissions()
+        }
+        let eventTask = Task {
+            // Model admission, hashing and cancellation may suspend for longer
+            // than an attestation exchange. Read connection controls separately
+            // so a healthy socket can renew trust while that work is parked.
+            // All fast handlers are synchronous on this actor; connection
+            // invalidation therefore precedes the next session's challenge.
+            for await event in events {
+                switch event {
+                case .appAttestShadow(let payload, let reply):
+                    handleAppAttestShadow(payload, reply: reply)
+                    continue
+                case .trustStatus(let level, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: level, status: status, reason: reason,
+                                      authorization: authorization)
+                    continue
+                case .connected, .disconnected:
+                    clearConnectionAuthorization()
+                    cancelAppAttestShadow()
+                default:
+                    break
+                }
+                // Slow work keeps its original FIFO ordering, including
+                // disconnect cleanup before the next connection's work.
+                workContinuation.yield(event)
+            }
+            clearConnectionAuthorization()
+            cancelAppAttestShadow()
+            workContinuation.finish()
+            await workTask.value
         }
         await withTaskCancellationHandler {
             await eventTask.value
@@ -430,6 +477,10 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
+        if let autopilotDownloadCoordinator {
+            await autopilotDownloadCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
+        autopilotCandidateVerification?.cancel()
         // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).
@@ -476,7 +527,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.coordinatorURL)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

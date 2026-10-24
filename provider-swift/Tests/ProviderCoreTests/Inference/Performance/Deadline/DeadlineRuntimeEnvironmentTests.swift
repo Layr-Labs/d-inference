@@ -33,6 +33,18 @@ import Testing
     }
     #expect(resolve([:]) == profile)
     #expect(resolve(["DARKBLOOM_STATE_FILE": "/tmp/state"]) == profile)
+    for raw in ["native", " OFF ", "0", ""] {
+        #expect(resolve([EngineV2KVQuantizationPolicy.environmentKey: raw]) == profile)
+    }
+    for raw in ["balanced", "k8v4", "k8v8", "invalid"] {
+        #expect(resolve([EngineV2KVQuantizationPolicy.environmentKey: raw]) == nil)
+    }
+    for raw in ["native", "balanced", "k8v4", "k8v8", ""] {
+        #expect(resolve([EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: raw]) == profile)
+    }
+    #expect(resolve([EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: "invalid"]) == nil)
+    #expect(resolve([EngineV2KVQuantizationPolicy.environmentKey: "native",
+                     "DARKBLOOM_FUTURE_TUNING": "0"]) == nil)
     for key in [
         "MLX_METAL_FAST_SYNCH", "MTPLX_KERNEL_MODE", "QWEN_MTP_SERIAL",
         "MLX_FUTURE_TUNING", "MTPLX_FUTURE_TUNING", "QWEN_FUTURE_TUNING",

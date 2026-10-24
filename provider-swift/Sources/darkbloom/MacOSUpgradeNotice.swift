@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// A local, informational notice shared by every CLI entry path. It never
 /// changes command dispatch, serving authorization, or installed profiles.
@@ -8,7 +9,7 @@ enum MacOSUpgradeNotice {
         return """
         Warning: This Mac is running macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion). Upgrade to macOS 27 or later.
         Darkbloom MDM will be deactivated soon. macOS 27 supports App Attest without Darkbloom MDM.
-        Existing MDM verification remains supported during the transition. Keep your Darkbloom profile installed until `darkbloom unenroll` confirms App Attest migration is ready.
+        Existing MDM verification remains supported during the transition. Keep your Darkbloom profile installed until `\(BuildEnvironment.current.cliName) unenroll` confirms App Attest migration is ready.
         """
     }
 

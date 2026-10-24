@@ -266,10 +266,51 @@ struct Qwen35TemplateFixesTests {
         #expect(floor == 3)
     }
 
+    @Test(arguments: ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen3_vl_moe", "qwen4_exp"])
+    func historiesWithoutAUserQueryAreRejectedOnlyWhereTheTemplateRaises(modelType: String) throws {
+        let raises = !["qwen3_vl_moe", "qwen4_exp"].contains(modelType)
+        let toolOnly = "<tool_response>\nsunny\n</tool_response>"
+        let rejected: [[[String: any Sendable]]] = [
+            [["role": "system", "content": "sys"]],
+            [["role": "system", "content": "sys"], ["role": "assistant", "content": "hi"]],
+            [["role": "user", "content": toolOnly]],
+        ]
+        let accepted: [[[String: any Sendable]]] = [
+            [["role": "user", "content": ""]],
+            [["role": "user", "content": toolOnly], ["role": "user", "content": "and now?"]],
+        ]
+        let context = ChatTemplateFixContext(modelType: modelType)
+        for messages in rejected where raises {
+            #expect(throws: MultiModelBatchSchedulerEngineError.missingUserQuery) {
+                try Qwen35TemplateFix.validateUserQuery(messages, context: context)
+            }
+        }
+        for messages in accepted + (raises ? [] : rejected) {
+            try Qwen35TemplateFix.validateUserQuery(messages, context: context)
+        }
+    }
+
+    @Test func missingUserQueryIsAClient400BeforeTemplateRendering() {
+        let request = OpenAIChatCompletionRequest(
+            model: "opaque-model", messages: [.init(role: .system, content: .text("policy"))])
+        #expect(throws: MultiModelBatchSchedulerEngineError.missingUserQuery) {
+            try ProviderPromptContractPipeline.tokenize(
+                prepared: ToolChoicePromptPolicy.prepare(request), request: request,
+                tokenizer: QwenSystemFirstTokenizer(), modelType: "qwen3_5", templateControls: .init())
+        }
+        let failure = ProviderLoop.sanitizedInferenceFailure(
+            from: MultiModelBatchSchedulerEngineError.missingUserQuery, phase: .streamStart)
+        #expect(failure.statusCode == 400 && failure.code == .invalidRequest)
+        #expect(failure.errorReason == .clientError)
+    }
+
     @Test func admissionForecastRequiresRepresentableTokenEnvelope() {
         var request = OpenAIChatCompletionRequest(
             model: "opaque-model",
-            messages: [.init(role: .system, content: .text("policy"))])
+            messages: [
+                .init(role: .system, content: .text("policy")),
+                .init(role: .user, content: .text("question")),
+            ])
         let tokenizer = TokenizerHandle(QwenSystemFirstTokenizer())
         func envelope() -> Int64? {
             ProviderLoop.admissionTokenEnvelope(

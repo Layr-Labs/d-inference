@@ -9,6 +9,7 @@ import { render, screen } from "@testing-library/react";
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
   usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 // Mock @/hooks/useToast — provides addToast

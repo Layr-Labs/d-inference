@@ -1,0 +1,60 @@
+[
+  {
+    "all_zero_ledgers": {
+      "active_requests": 0,
+      "active_tokens": 0,
+      "allocator_padding_bytes": 0,
+      "closing_owner_count": 0,
+      "commitment_debt_bytes": 0,
+      "kv_in_use_bytes": 0,
+      "kv_reserved_bytes": 0,
+      "live_page_bytes": 0,
+      "over_grant_bytes": 0,
+      "owner_count": 0,
+      "page_committed_bytes": 0,
+      "poison_bytes": 0,
+      "process_C": 0,
+      "process_M": 0,
+      "process_unmaterialized": 0,
+      "reserved_page_bytes": 0,
+      "segment_count": 0,
+      "slack_bytes": 0,
+      "ssd_staged_bytes": 0,
+      "ssd_write_host_bytes": 0,
+      "waiting_requests": 0
+    },
+    "native_generation_count_not_exposed_by_harness": true,
+    "pending_retirement": [],
+    "process_generation_is_epoch_id": 976258149441998,
+    "profile": "native"
+  },
+  {
+    "all_zero_ledgers": {
+      "active_requests": 0,
+      "active_tokens": 0,
+      "allocator_padding_bytes": 0,
+      "closing_owner_count": 0,
+      "commitment_debt_bytes": 0,
+      "kv_in_use_bytes": 0,
+      "kv_reserved_bytes": 0,
+      "live_page_bytes": 0,
+      "over_grant_bytes": 0,
+      "owner_count": 0,
+      "page_committed_bytes": 0,
+      "poison_bytes": 0,
+      "process_C": 0,
+      "process_M": 0,
+      "process_unmaterialized": 0,
+      "reserved_page_bytes": 0,
+      "segment_count": 0,
+      "slack_bytes": 0,
+      "ssd_staged_bytes": 0,
+      "ssd_write_host_bytes": 0,
+      "waiting_requests": 0
+    },
+    "native_generation_count_not_exposed_by_harness": true,
+    "pending_retirement": [],
+    "process_generation_is_epoch_id": 2219557959293912,
+    "profile": "balanced"
+  }
+]

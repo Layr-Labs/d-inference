@@ -14,12 +14,11 @@ body:
       label: Component
       description: Which part of the system would this affect?
       options:
-        - coordinator (Go)
-        - provider (Rust, legacy)
         - provider-swift (Swift CLI)
-        - console-ui (Next.js)
+        - native runtime / MLX
+        - landing (Next.js)
         - enclave (Swift Secure Enclave helper)
-        - infra / deploy / CI
+        - CI / provider release
         - docs
         - cross-cutting / not sure
     validations:
@@ -52,4 +51,4 @@ body:
     id: scope
     attributes:
       label: Scope notes
-      description: Any non-obvious surfaces this touches (protocol changes, billing, attestation, release bundle, etc.)? Knowing this up front helps reviewers.
+      description: Any non-obvious surfaces this touches (protocol contracts, native inference, attestation, release bundle, etc.)? Backend implementation belongs in darkbloom-platform.

@@ -136,10 +136,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var requestsServed: UInt64
         public var tokensGenerated: UInt64
         public var usageGaps: UInt64
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0) {
+        /// Nil on older runtimes; all prompt tokens including prefix-cache hits.
+        public var promptTokensProcessed: UInt64?
+        public var cachedInputTokens: UInt64?
+        public var reasoningTokens: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
+            self.promptTokensProcessed = promptTokensProcessed
+            self.cachedInputTokens = cachedInputTokens
+            self.reasoningTokens = reasoningTokens
         }
     }
 
@@ -155,6 +162,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Capacity: Codable, Sendable, Equatable {
+        /// Absent on older daemons; never infer zero activity from absence.
+        public var modelActivity: [ModelActivity]?
+        public var activityObservedAt: Double?
         public var totalMemoryGb: Double
         public var gpuMemoryActiveGb: Double
         /// Live MLX GPU cache (buffer pool) memory. Optional for backward
@@ -173,7 +183,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var loadTransitionActive: Bool?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
                     loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
-                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil,
+                    modelActivity: [ModelActivity]? = nil, activityObservedAt: Double? = nil) {
+            self.modelActivity = modelActivity
+            self.activityObservedAt = activityObservedAt
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
@@ -225,6 +238,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `status`/`doctor` can answer "why contiguous?" without the
         /// coordinator. Optional and absent in pre-guard state files.
         public var kvBackendFallbackReason: String?
+        /// Effective live/complete-checkpoint precision, not requested config.
+        /// Nil live precision identifies an older snapshot; nil checkpoint
+        /// precision on a current snapshot means no complete store is active.
+        public var kvQuantization: String?
+        public var kvCheckpointQuantization: String?
+        public var checkpointBackendLayout: String?
         /// MTP was configured for this slot (a drafter was requested).
         public var mtpEnabled: Bool
         /// MTP is actually producing drafts. `mtpEnabled && !mtpActive`, or
@@ -245,6 +264,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
             kvBackend: String? = nil,
             kvBackendRequested: String = "auto",
             kvBackendFallbackReason: String? = nil,
+            kvQuantization: String? = nil,
+            kvCheckpointQuantization: String? = nil,
+            checkpointBackendLayout: String? = nil,
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
@@ -254,6 +276,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.kvBackend = kvBackend
             self.kvBackendRequested = kvBackendRequested
             self.kvBackendFallbackReason = kvBackendFallbackReason
+            self.kvQuantization = kvQuantization
+            self.kvCheckpointQuantization = kvCheckpointQuantization
+            self.checkpointBackendLayout = checkpointBackendLayout
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
@@ -374,6 +399,9 @@ public enum DaemonSlotPostureBuilder {
         /// differs from the request, nil when it does not (see
         /// `SlotPosture.kvBackendFallbackReason`).
         public let kvBackendFallbackReason: String?
+        public let kvQuantization: String?
+        public let kvCheckpointQuantization: String?
+        public let checkpointBackendLayout: String?
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
@@ -382,6 +410,9 @@ public enum DaemonSlotPostureBuilder {
             model: String,
             kvBackend: String,
             kvBackendFallbackReason: String? = nil,
+            kvQuantization: String? = nil,
+            kvCheckpointQuantization: String? = nil,
+            checkpointBackendLayout: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
             mtpInactiveReason: String?
@@ -389,6 +420,9 @@ public enum DaemonSlotPostureBuilder {
             self.model = model
             self.kvBackend = kvBackend
             self.kvBackendFallbackReason = kvBackendFallbackReason
+            self.kvQuantization = kvQuantization
+            self.kvCheckpointQuantization = kvCheckpointQuantization
+            self.checkpointBackendLayout = checkpointBackendLayout
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
@@ -468,6 +502,9 @@ public enum DaemonSlotPostureBuilder {
                 kvBackend: $0.kvBackend,
                 kvBackendRequested: requested($0.model),
                 kvBackendFallbackReason: $0.kvBackendFallbackReason,
+                kvQuantization: $0.kvQuantization,
+                kvCheckpointQuantization: $0.kvCheckpointQuantization,
+                checkpointBackendLayout: $0.checkpointBackendLayout,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
                 mtpInactiveReason: $0.mtpInactiveReason)
@@ -500,8 +537,13 @@ public enum DaemonStateFile {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/daemon-state.json")
+        return path(for: .current)
+    }
+
+    /// The state file of a build environment's install. `doctor` reads the
+    /// other environment's file to see whether that provider is serving.
+    public static func path(for environment: BuildEnvironment) -> URL {
+        environment.installDirectory().appendingPathComponent("daemon-state.json")
     }
 
     /// Built once. `write` runs on a ~2 s tick for the life of the daemon, and

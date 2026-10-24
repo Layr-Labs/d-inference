@@ -19,8 +19,8 @@ struct Beta: AsyncParsableCommand {
 
         Changes that affect process-wide optimization state require a restart.
         To roll back a default-on feature:
-          darkbloom beta disable gemma-weighted-r1
-          darkbloom restart
+          \(BuildEnvironment.current.cliName) beta disable gemma-weighted-r1
+          \(BuildEnvironment.current.cliName) restart
         """,
         subcommands: [List.self, Enable.self, Disable.self, Status.self],
         defaultSubcommand: List.self
@@ -94,8 +94,8 @@ extension Beta {
                 }
             }
             print("")
-            print("Change with:  darkbloom beta enable|disable <feature>   (then: darkbloom restart)")
-            print("Details with: darkbloom beta status <feature>")
+            print("Change with:  \(BuildEnvironment.current.cliName) beta enable|disable <feature>   (then: \(BuildEnvironment.current.cliName) restart)")
+            print("Details with: \(BuildEnvironment.current.cliName) beta status <feature>")
         }
     }
 }
@@ -133,7 +133,7 @@ extension Beta {
                 print("\(feature.title) (\(feature.id)): \(betaFeatureStatusLabel(feature.state(in: config)))")
                 print("  \(feature.details)")
                 if feature.requiresRestart {
-                    print("  Requires `darkbloom restart` after a change.")
+                    print("  Requires `\(BuildEnvironment.current.cliName) restart` after a change.")
                 }
             }
         }
@@ -150,7 +150,7 @@ extension Beta {
 
         @OptionGroup var configOptions: ConfigOptions
 
-        @Argument(help: "Beta feature id (see `darkbloom beta list`).")
+        @Argument(help: "Beta feature id (see `\(BuildEnvironment.current.cliName) beta list`).")
         var feature: String
 
         mutating func run() async throws {
@@ -165,7 +165,7 @@ extension Beta {
 
         @OptionGroup var configOptions: ConfigOptions
 
-        @Argument(help: "Beta feature id (see `darkbloom beta list`).")
+        @Argument(help: "Beta feature id (see `\(BuildEnvironment.current.cliName) beta list`).")
         var feature: String
 
         mutating func run() async throws {
@@ -179,7 +179,7 @@ extension Beta {
 private func unknownFeatureError(_ id: String) -> ValidationError {
     let known = BetaFeatures.all.map(\.id).joined(separator: ", ")
     let available = known.isEmpty ? "(none available in this build)" : known
-    return ValidationError("Unknown beta feature '\(id)'. Available: \(available). Run `darkbloom beta list`.")
+    return ValidationError("Unknown beta feature '\(id)'. Available: \(available). Run `\(BuildEnvironment.current.cliName) beta list`.")
 }
 
 /// Read-modify-write a single beta feature's config field and persist it.
@@ -215,7 +215,7 @@ func setBetaFeature(
         print("\(enabled ? "Enabled" : "Disabled") beta feature: \(feature.title) (\(feature.id))")
         print("  \(feature.details)")
         if feature.requiresRestart {
-            print("  Restart to apply:  darkbloom restart")
+            print("  Restart to apply:  \(BuildEnvironment.current.cliName) restart")
         }
         print("  Config: \(savePath.path)")
     }

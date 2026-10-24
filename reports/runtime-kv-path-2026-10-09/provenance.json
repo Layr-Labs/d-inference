@@ -1,0 +1,13 @@
+{
+  "root_commit": "c93380daba521d94454e41152e4c176c23e14adb",
+  "submodule_pins": {
+    "mlx": "cb77239be31b1df7f5db895226af55c39fc4f093",
+    "mlx-swift": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+    "mlx-swift-lm": "3fd4944c3b3ee5cb45c5cbfac8805876332d3a29"
+  },
+  "scope": "Chosen runtime architecture and CPU reference prototype; no production engine integration or all-model quality qualification",
+  "catalog": {
+    "sha256": "2d4d865e33d4903e48f241fa8e1a5a375b318877d35dbdb788f5ebd341eabc37",
+    "observed_at": "2026-10-09T08:51:15.883905+00:00"
+  }
+}

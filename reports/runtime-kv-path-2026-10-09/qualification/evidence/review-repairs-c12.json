@@ -1,0 +1,61 @@
+{
+  "CLI": {
+    "firstPASSSeconds": 4.569,
+    "functions": 50,
+    "oldRendererNegativeAssertionIssues": 17,
+    "oldRendererNegativeFunctions": 11,
+    "oldRendererNegativeSuites": 2,
+    "positiveSourceRestoredSHA256": "0d769427bf2b79d606d4cb6a89f54b8d7f36d2ef453d4490a2751e5b990f7adc",
+    "restoredPASSSeconds": 4.431,
+    "suites": 7
+  },
+  "buildSeconds": {
+    "first": 16.94,
+    "negativeRetry": 2.69,
+    "restored": 7.89
+  },
+  "counterexamplesVerified": [
+    "ambient inference override inherited before / scrubbed after",
+    "prepared prompt mutation accepted before / refused before either child after",
+    "prepared score mutation accepted before / refused before either child after"
+  ],
+  "dedicatedRefactorReview": "clean; no changes warranted",
+  "freshPagedGPT": {
+    "arms": 2,
+    "balancedGeneratedTokens": 117,
+    "nativeGeneratedTokens": 95,
+    "normalStopExpectedAnswerBoth": true,
+    "sameProfileTokenArraysEqualC3": true,
+    "syntheticOverridesAbsentFromChild": true
+  },
+  "logSHA256": {
+    "firstBuild": "a4885c04ac11d3d1699ab9064c011d2073cb298f56743eae6c61ddd57c55c892",
+    "negativeBuild": "cabd2ac73c49d225b99fba66b921c1063f67e28bc231039b111fcb8991d007a7",
+    "negativeCLI": "b0e46ca5dd26b01a3cf5bb4661f3b82fd67ea34e1080f42cfb7360c8defc820f",
+    "negativeSetupBuild": "ee3595e4994990a1a005984789a0403d3765644ef67856da6d7e34aca9a0f4db",
+    "positiveCLI": "a331faf7c468e010653434770faacc16b4cf812de245578cb7e76564b3ea4857",
+    "realPagedGPT": "4a4d4c7c0d2409610c8d2b2511d77fc476fdad84cf703eb32e88099534c663e7",
+    "restoredBuild": "5e34b8f47e7b0af80329654b9641378adc1fc5bba6cf32d5529d1727994f301b",
+    "restoredCLI": "abaedf7feeb806876e05212623cfdabe1d3d983a7d9910abf7a1189529b6c8d4",
+    "workflow": "b5fd3f19548bc0a6be64004087776f89fac17d0be333f4fa0ec6e5e032f61990",
+    "wrapper": "6f709282681861bde30cffd9b0aaf5974612d4c19227496df016f2eab8f44064"
+  },
+  "negativeSetupFailure": "Initial controlled-negative build hit an unsigned staged Metal copy in an owned test-bundle MacOS directory. Verified staged copies were removed before rebuilding; this setup failure is not counted as regression proof.",
+  "reviewComments": [
+    4234232130,
+    4234232145,
+    4234232152,
+    4234232162
+  ],
+  "reviewedHead": "7e3189cee92f2073e5e85abc3e98795f2d6d42d7",
+  "schema": 1,
+  "scope": "Input/environment provenance and operator/telemetry guidance repairs; only one compiled CLI renderer changes, SDK/core/attention/storage policies unchanged.",
+  "workflowTestsPassed": 23,
+  "wrapper": {
+    "curatorTests": 8,
+    "failures": 0,
+    "preExistingHistoricalArchiveSkips": 1,
+    "runnerTests": 8,
+    "tests": 213
+  }
+}

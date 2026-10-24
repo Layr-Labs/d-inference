@@ -82,8 +82,17 @@ extension ProviderLoop {
         }
 
         // A non-forced timeout must not truncate accepted native requests.
-        let nativeOwnersDrained = request.force || lifecycleRemaining == 0
+        var nativeOwnersDrained = request.force || lifecycleRemaining == 0
             ? await drainNativeMiMoOwners() : false
+        // After served requests, the first attempt to retire an idle owner only
+        // starts joining their finished consumers; a later attempt completes
+        // it. With nothing left in flight, retry within the graceful deadline
+        // rather than reporting a timeout.
+        while !request.force, !nativeOwnersDrained, lifecycleRemaining == 0,
+              !Task.isCancelled, ContinuousClock.now < finishDeadline {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            nativeOwnersDrained = await drainNativeMiMoOwners()
+        }
 
         // Do not claim success just because the engine finished: the FIFO
         // coordinator acknowledgement follows all terminal/usage messages.
@@ -93,7 +102,10 @@ extension ProviderLoop {
         }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
-        if request.force {
+        let workerRetired = await stopAppAttestWorkerAndWait()
+        if !workerRetired {
+            lifecycleStatus.outcome = .timedOut
+        } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
         } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
@@ -163,6 +175,7 @@ extension ProviderLoop {
     ) async -> Bool {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
+            guard await stopAppAttestWorkerAndWait() else { return false }
             if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
             else if !(await shutdownBeforeRegistration()) { return false }
             return true
@@ -181,6 +194,7 @@ extension ProviderLoop {
         // the already-drained path: retain pending/faulted owners and refuse
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
+        guard await stopAppAttestWorkerAndWait() else { return false }
         if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
         else if !(await shutdownBeforeRegistration()) { return false }
         return true

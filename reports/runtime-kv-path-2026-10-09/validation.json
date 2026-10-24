@@ -1,0 +1,20 @@
+{
+  "focused_python_tests": {
+    "passed": 6,
+    "independent_review_passed": true
+  },
+  "source_hashes_verified": true,
+  "sizing_arithmetic_verified": true,
+  "catalog_active_ids": 11,
+  "catalog_unique_hashes": 10,
+  "docs_impact": "passed",
+  "docs_check": {
+    "passed": false,
+    "existing_problem": "docs/reports/2026-10-03-all-model-prefix-qualification.md links to absent coordinator/registry/cache_match_groups.go",
+    "changed_files_problem": false
+  },
+  "refactor_pass": "independent no-change assessment; marked older numerical recommendations superseded",
+  "serving_integration": "not implemented",
+  "full_model_quality": "not qualified",
+  "production": "unchanged"
+}

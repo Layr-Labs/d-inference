@@ -849,36 +849,40 @@ struct BackendParityReportTests {
         #expect(!asked.contains("NOT SUPPLIED"))
     }
 
-    // MARK: - Control dtype pinning and validity
+    // MARK: - Native dtype selection and control validity
 
-    @Test("the harness pins every engine to fp16 pages against ambient env dtype")
-    func harnessPinsCandidateDTypeAgainstAmbientEnvironment() {
+    @Test("main parity arms use observed native types and clear ambient dtype controls")
+    func harnessUsesObservedNativeTypesAgainstAmbientEnvironment() {
         // An operator (or a prior benchmark step) exporting
         // DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32 must NOT leak into the
-        // candidate arm: the fp32 control would then compare two identical
-        // fp32 engines and hold tautologically.
+        // candidate arm. Its actual per-layer native table is authoritative,
+        // and a same-dtype secondary control never counts as a perturbation.
         let ambient = [
             "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32",
             "HOME": "/Users/operator",
         ]
         let candidateEnv = BackendParityHarness.engineEnvironment(
             ambient: ambient, overrides: [:])
-        #expect(candidateEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+        #expect(candidateEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == nil)
+        #expect(candidateEnv["DARKBLOOM_CBV2_KV_QUANTIZATION"] == "native")
         // The rest of the ambient environment passes through untouched.
         #expect(candidateEnv["HOME"] == "/Users/operator")
 
-        // The fp32 control's explicit override still wins over the pin —
-        // the pin protects arms that did NOT ask, never one that did.
+        // Only the secondary diagnostic requests fp32 explicitly. The
+        // factory may still refuse it under the native dtype contract.
         let controlEnv = BackendParityHarness.engineEnvironment(
             ambient: ambient,
             overrides: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32"])
         #expect(controlEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float32")
+        #expect(controlEnv["DARKBLOOM_CBV2_KV_QUANTIZATION"] == "native")
+        #expect(controlEnv["HOME"] == "/Users/operator")
 
-        // And with NO ambient dtype at all the pin still applies, so the
-        // candidate arm is fp16 by construction rather than by default.
+        // Without an ambient dtype the same observed-native contract holds.
         let bare = BackendParityHarness.engineEnvironment(
             ambient: ["HOME": "/Users/operator"], overrides: [:])
-        #expect(bare["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+        #expect(bare["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == nil)
+        #expect(bare["DARKBLOOM_CBV2_KV_QUANTIZATION"] == "native")
+        #expect(bare["HOME"] == "/Users/operator")
     }
 
     @Test("a control whose two arms resolved the SAME dtype is rejected at evaluation")

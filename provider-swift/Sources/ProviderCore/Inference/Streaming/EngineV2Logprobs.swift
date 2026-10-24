@@ -159,7 +159,7 @@ public final class EngineV2LogprobsChannel: @unchecked Sendable {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2_logprobs")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2_logprobs")
     #endif
 
     public init() {}

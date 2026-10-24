@@ -1,0 +1,21 @@
+{
+  "benchmarkContractsPASSSeconds": 0.595,
+  "benchmarkContractsPassed": 4,
+  "dedicatedRefactorReview": "clean; no changes warranted",
+  "focusedPASSSeconds": 1.405,
+  "logSHA256": {
+    "benchmarkContracts": "9e56eb49d8c28749a5689cec51c2546405a3116d9ef537bd71c4f4ceb0c93b28",
+    "fullTestbed": "ebaf4d02f6e1634b6cf3b4cc34fab3c4923554ca66ef3423dbba6e4b5d4ce9e3",
+    "negativeReceipt": "180792860715449bead01ff8bcdd80f4974a9ae805b7f234c2c70648e7fdfd46"
+  },
+  "newPrecedenceSubcases": 22,
+  "oldCommittedHelperNegativeExitCode": 1,
+  "oldCommittedHelperNegativeFailures": 10,
+  "oldCommittedHelperNegativeSeconds": 0.692,
+  "restoredHelperSHA256": "faf3122ee7efc0cc6ce08c5abee716abdce80a9200eaa6e244b95b7953ee3c0f",
+  "restoredTestbedPASSSeconds": 8.203,
+  "reviewComment": 4234484472,
+  "reviewedHead": "d7013a2eb4dfa05fd1753ec603c08e9c17dfa882",
+  "schema": 1,
+  "scope": "Existing legacy contiguous test controls keep native precision across TOML and supplied environment. Explicit paged/auto and absent precision contracts remain unchanged. No provider/SDK/storage/math/budget or model measurement changes."
+}

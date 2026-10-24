@@ -3,6 +3,20 @@
 import PackageDescription
 import Foundation
 
+// Release builds select the default coordinator, model CDN and install
+// identity (BuildEnvironment). The release workflow sets
+// DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
+let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
+    .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
+precondition(["prod", "dev", "staging"].contains(releaseEnvironment),
+             "DARKBLOOM_RELEASE_ENVIRONMENT must be prod, dev or staging")
+let buildEnvironmentSwiftSettings: [SwiftSetting]
+switch releaseEnvironment {
+case "dev": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_DEV")]
+case "staging": buildEnvironmentSwiftSettings = [.define("DARKBLOOM_ENV_STAGING")]
+default: buildEnvironmentSwiftSettings = []
+}
+
 let package = Package(
     name: "DarkbloomProvider",
     // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
@@ -58,10 +72,21 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),
     ],
     targets: [
+        // BuildEnvironment only. ProviderAppAttest and ProviderCore both need
+        // the install identity, and ProviderCore re-exports this module.
+        .target(
+            name: "ProviderBuildEnvironment",
+            path: "Sources/ProviderBuildEnvironment",
+            swiftSettings: buildEnvironmentSwiftSettings
+        ),
         .target(
             name: "ProviderAppAttest",
+            dependencies: [
+                "ProviderBuildEnvironment",
+                .product(name: "Sodium", package: "swift-sodium"),
+            ],
             path: "Sources/ProviderAppAttest",
-            linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security")]
+            linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security"), .linkedLibrary("bsm")]
         ),
         .testTarget(
             name: "ProviderAppAttestTests",
@@ -94,6 +119,22 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // DarkbloomHardwareLoad: sudoless whole-machine load sampling for the
+        // desktop control API (per-core CPU, GPU, ANE, memory, best-effort
+        // IOReport SoC counters). MLX-free so its tests build in seconds.
+        // ----------------------------------------------------------------
+        .target(
+            name: "DarkbloomHardwareLoad",
+            path: "Sources/DarkbloomHardwareLoad",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .testTarget(
+            name: "DarkbloomHardwareLoadTests",
+            dependencies: ["DarkbloomHardwareLoad"],
+            path: "Tests/DarkbloomHardwareLoadTests"
+        ),
+
+        // ----------------------------------------------------------------
         // ProviderCoreFoundation: Linux-buildable subset containing the
         // model hashing primitives (ModelScanner file discovery,
         // WeightHasher) and the registry manifest types. Has NO Apple-
@@ -103,6 +144,7 @@ let package = Package(
         .target(
             name: "ProviderCoreFoundation",
             dependencies: [
+                "ProviderBuildEnvironment",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Jinja", package: "swift-jinja"),
@@ -127,6 +169,7 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderAppAttest",
+                "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -136,6 +179,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Tokenizer configurations for the prompt token cache.
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
@@ -181,9 +226,12 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomHardwareLoad",
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -278,7 +326,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "ProviderCoreFoundationTests",
-            dependencies: ["ProviderCoreFoundation"],
+            dependencies: ["ProviderBuildEnvironment", "ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
         ),
 
@@ -316,7 +364,10 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: [
+                "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ],
             path: "Tests/DarkbloomCLITests"
         ),
 

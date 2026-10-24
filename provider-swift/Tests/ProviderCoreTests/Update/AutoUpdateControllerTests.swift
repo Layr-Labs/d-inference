@@ -9,8 +9,7 @@ import Testing
 @Suite("AutoUpdateController")
 struct AutoUpdateControllerTests {
 
-    /// Thread-safe ordered recorder. A plain locked class (not an actor) so the
-    /// non-async `restart` closure can record too.
+    /// Thread-safe ordered recorder shared by async steps and synchronous logging.
     private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private var _events: [String] = []

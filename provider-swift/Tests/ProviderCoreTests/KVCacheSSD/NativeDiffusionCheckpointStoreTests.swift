@@ -8,7 +8,7 @@ import Testing
 @Suite("Native diffusion complete encrypted store", .serialized)
 struct NativeDiffusionCheckpointStoreTests {
     @Test func boundNativeMediaMayProbeButUnboundAndForeignControlsDoNot() async throws {
-        let f = try NativeDiffusionCheckpointFixture()
+        let f = try NativeDiffusionCheckpointFixture(rootParent: SSDTestDirectory.parent())
         defer { f.remove() }
         let store = try f.makeStore()
         let binding = try CBv2HybridPrefixIdentity(digest: Data(repeating: 17, count: 32))
@@ -42,7 +42,7 @@ struct NativeDiffusionCheckpointStoreTests {
     }
 
     @Test func restartAdoptsExactAndAppendedPrefixesWithoutChangingNativeState() async throws {
-        let f = try NativeDiffusionCheckpointFixture()
+        let f = try NativeDiffusionCheckpointFixture(rootParent: SSDTestDirectory.parent())
         defer { f.remove() }
         let donor = try f.makeStore()
         #expect(try await f.donate(donor) == [512], "Native diffusion can preserve the full prompt, unlike AR last-logit replay")
@@ -95,7 +95,7 @@ struct NativeDiffusionCheckpointStoreTests {
     }
 
     @Test func scopeCapacityCancellationAndTamperNeverPublishAStage() async throws {
-        let f = try NativeDiffusionCheckpointFixture()
+        let f = try NativeDiffusionCheckpointFixture(rootParent: SSDTestDirectory.parent())
         defer { f.remove() }
         let store = try f.makeStore()
         #expect(try await f.donate(store) == [512])
@@ -132,7 +132,7 @@ struct NativeDiffusionCheckpointStoreTests {
     }
 
     @Test func missingProcessAuthorityAndIncompatibleRequestCannotConsumeOrDeleteGoodData() async throws {
-        let f = try NativeDiffusionCheckpointFixture()
+        let f = try NativeDiffusionCheckpointFixture(rootParent: SSDTestDirectory.parent())
         defer { f.remove() }
         let store = try f.makeStore()
         #expect(try await f.donate(store) == [512])

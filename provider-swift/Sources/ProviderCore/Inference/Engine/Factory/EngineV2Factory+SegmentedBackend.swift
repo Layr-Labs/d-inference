@@ -1,3 +1,4 @@
+import Foundation
 import MLX
 import MLXLMCommon
 
@@ -15,9 +16,13 @@ extension EngineV2Factory {
         schedulerConfig: CBv2SchedulerConfig,
         maxContextLength: Int?,
         maxBufferLength: Int,
-        residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil
+        quantization: PagedKVQuantizationConfig? = nil,
+        nativeLayerIndices: Set<Int> = [],
+        residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> PagedKVBackend {
-        try PagedKVBackend(
+        let retention = segmentRetentionEnabled(environment: environment)
+        return try PagedKVBackend(
             layerKinds: layerKinds,
             config: PagedKVPoolConfig(
                 capacityBytes: admittedGrantBytes,
@@ -28,8 +33,31 @@ extension EngineV2Factory {
                 nominalMaxSequenceLength: max(1, maxContextLength ?? 8192),
                 maxBufferLength: maxBufferLength,
                 segmentSizeBytes: 64 << 20,
-                layerDTypes: layerDTypes),
+                layerDTypes: layerDTypes,
+                quantization: quantization,
+                nativeLayerIndices: nativeLayerIndices,
+                retainedFreeSegmentBytes: retention
+                    ? min(retainedFreeSegmentCapBytes, admittedGrantBytes / 8) : 0,
+                hostZeroedSegments: retention
+                    && environment[segmentHostZerosEnvironmentKey] != "0"),
             slabCommitment: .atFirstAdmission,
             residentPrefixCache: residentPrefixCache)
+    }
+
+    /// Free segment backing a pool may keep across requests, so admission
+    /// reuses evaluated KV segments instead of allocating, filling and fencing
+    /// new ones each time (bounded to an eighth of the slot grant).
+    static let retainedFreeSegmentCapBytes = 2 << 30
+
+    /// `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` restores release-time segment
+    /// retirement and the per-segment device zero fill plus stream fence;
+    /// `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS=0` keeps retention with device fills.
+    static let segmentRetentionEnvironmentKey = "DARKBLOOM_TTFT_SEGMENT_RETENTION"
+    static let segmentHostZerosEnvironmentKey = "DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS"
+
+    static func segmentRetentionEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment[segmentRetentionEnvironmentKey] != "0"
     }
 }

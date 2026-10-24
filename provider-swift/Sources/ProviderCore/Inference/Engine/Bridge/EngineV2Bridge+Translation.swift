@@ -17,7 +17,7 @@ enum EngineV2Translation {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2")
     #endif
 
     // MARK: - Request translation
@@ -247,6 +247,11 @@ enum EngineV2Translation {
     /// backend, so these rejections indicate a provider-side gating bug and
     /// double as its loud signal.
     static let multimodalRejectedPrefix = "multimodal_rejected"
+
+    /// Canonical marker for an output control the slot's engine cannot honor.
+    /// `MultiModelBatchSchedulerEngineError.fromSchedulerMessage` maps it to
+    /// `.unsupportedOutputControl` → 400 on the non-throwing submit path.
+    static let unsupportedOutputControlPrefix = "unsupported_output_control"
 
     static func admissionErrorMessage(for error: Error) -> String {
         if let mmError = error as? CBv2MultimodalError {

@@ -19,7 +19,7 @@ enum ServiceDrain {
     static func prepare(options: DrainOptions,
                         withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws -> SelfUpdater.UpdateSession {
         let state = DaemonStateFile.read()
-        let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? "https://api.darkbloom.dev")
+        let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? BuildEnvironment.current.coordinatorHTTPURL)
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
         do {
             let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
@@ -151,7 +151,7 @@ enum ServiceDrain {
             }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
-        throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect darkbloom status. No second restart was issued.")
+        throw ValidationError("Restart launched, but fresh authorization was not confirmed within \(timeout)s. The new service is still starting; inspect \(BuildEnvironment.current.cliName) status. No second restart was issued.")
     }
     static func restartReady(state: DaemonState, previous: ProcessIdentity?, now: Double,
                              isCurrent: (ProcessIdentity) -> Bool = { $0.isCurrent() }) -> Bool {

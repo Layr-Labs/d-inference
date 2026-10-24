@@ -8,10 +8,15 @@ struct StandaloneLifecycleControlTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let lifecycleDirectory = root.appendingPathComponent("lifecycle", isDirectory: true)
+        try FileManager.default.createDirectory(at: lifecycleDirectory, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        let attributes = try FileManager.default.attributesOfItem(atPath: lifecycleDirectory.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
         let server = StandaloneServer(config: .init(port: 0))
         let lease = try server.responseTracker.admit()
         let state = root.appendingPathComponent("state.json")
-        let mailbox = LifecycleMailbox(identity: try #require(ProcessIdentity.current()), directory: root.appendingPathComponent("lifecycle"))
+        let mailbox = LifecycleMailbox(identity: try #require(ProcessIdentity.current()), directory: lifecycleDirectory)
         await server.startLifecycleControl(stateFile: state)
         let request = ProviderDrainRequest(target: mailbox.identity, timeoutSeconds: 3)
         try mailbox.writeRequest(request)

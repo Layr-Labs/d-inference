@@ -1,0 +1,7 @@
+model,cell,block,policy,order,status,startedUTC,endedUTC,exitCode,sourceUnchanged,binaryUnchanged,specUnchanged,failureCodes,mtpRequested,mtpEffectiveActive,mtpQualified,assistantIdentityPresent,servingModelType,backend,cacheMode,strictFsync,parityQualified
+nvidia/nemotron-3.5-lightning,short,0,production,0,pass,2026-10-03T22:56:29.011750+00:00,2026-10-03T22:57:13.024746+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True
+nvidia/nemotron-3.5-lightning,short,0,candidate,1,pass,2026-10-03T22:57:13.238787+00:00,2026-10-03T22:57:55.151415+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True
+nvidia/nemotron-3.5-lightning,short,1,candidate,2,pass,2026-10-03T22:57:55.359253+00:00,2026-10-03T22:58:38.343941+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True
+nvidia/nemotron-3.5-lightning,short,1,production,3,pass,2026-10-03T22:58:38.568559+00:00,2026-10-03T22:59:30.071772+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True
+nvidia/nemotron-3.5-lightning,short,2,production,4,pass,2026-10-03T22:59:30.292745+00:00,2026-10-03T23:00:14.278888+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True
+nvidia/nemotron-3.5-lightning,short,2,candidate,5,pass,2026-10-03T23:00:14.487219+00:00,2026-10-03T23:00:57.429361+00:00,0,True,True,True,,True,True,True,True,NemotronH35Model,paged,ssd_complete,False,True

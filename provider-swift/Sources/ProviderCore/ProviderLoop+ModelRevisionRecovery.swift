@@ -19,7 +19,8 @@ extension ProviderLoop {
                 guard oldInfo == nil else {
                     throw ModelCatalogError.downloadFailed("previous advertised snapshot selection is unavailable")
                 }
-                let ref = ModelDownloader.cacheModelDirectory(for: id).appendingPathComponent("refs/main")
+                let ref = ModelDownloader.cacheModelDirectory(for: id).appendingPathComponent("refs")
+                    .appendingPathComponent(BuildEnvironment.current.modelRevisionRef)
                 if FileManager.default.fileExists(atPath: ref.path) { try FileManager.default.removeItem(at: ref) }
             }
             advertisedModels[id] = oldInfo

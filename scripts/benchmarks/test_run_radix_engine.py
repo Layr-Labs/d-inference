@@ -27,7 +27,29 @@ class EngineInvocationTests(unittest.TestCase):
                                      "--mtp", "on", "--kv-backend", "paged"])
         self.assertEqual(run_radix_engine.probe_command(args, "/result.json")[-7:],
                          ["paged", "ssd", "ephemeral-key", "--concurrency", "4",
-                          "--kv-budget-gib", "24"])
+                           "--kv-budget-gib", "24"])
+
+    def test_acceptance_only_forwards_an_explicit_candidate_selection(self):
+        original = run_radix_engine.probe_command(run_radix_engine.arguments(self.base), "/result.json")
+        self.assertIsNone(run_radix_engine.arguments(self.base).mtp_acceptance)
+        for mode in ("exact", "typical"):
+            flag = ["--mtp-acceptance", mode]
+            self.assertEqual(run_radix_engine.probe_command(
+                run_radix_engine.arguments(self.base + flag), "/result.json"), original + flag)
+        for raw in ("", "EXACT", " typical", "typical:0.1", "unknown"):
+            with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                run_radix_engine.arguments(self.base + ["--mtp-acceptance", raw])
+
+    def test_explicit_mtp_rule_requires_active_matching_installed_metrics(self):
+        for mode in ("exact", "typical"):
+            args = run_radix_engine.arguments(self.base + ["--mtp", "on", "--mtp-acceptance", mode])
+            run_radix_engine.validate_mtp_acceptance(args,
+                {"metrics_loaded": {"mtp": {"active": True, "acceptance": mode}}})
+            for mtp in ({}, {"active": False, "acceptance": mode},
+                        {"active": True, "acceptance": "wrong"}):
+                with self.subTest(mode=mode, mtp=mtp), self.assertRaisesRegex(RuntimeError, "Requested MTP acceptance"):
+                    run_radix_engine.validate_mtp_acceptance(args, {"metrics_loaded": {"mtp": mtp}})
+        run_radix_engine.validate_mtp_acceptance(run_radix_engine.arguments(self.base), {})
 
     def test_invalid_concurrency_or_grant_is_rejected_before_host_work(self):
         for option in (["--concurrency", "0"], ["--concurrency", "8"],

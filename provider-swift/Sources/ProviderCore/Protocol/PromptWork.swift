@@ -2,6 +2,10 @@ import Foundation
 
 /// Numeric count evidence tied to verified model and prompt-contract bytes.
 /// Unknown sources/versions remain decodable and cannot enable qualification.
+/// The coordinator may reconcile the SLA token term from verified exact work
+/// matching the serving renderer at the original ingress anchor. Other
+/// candidates keep their fallback duration. Provider recount and
+/// calibration uncertainty cannot extend the inherited deadline or change billing.
 public struct PromptWork: Codable, Sendable, Equatable {
     public static let currentVersion = 1
     public static let maxTokens = 1_048_576

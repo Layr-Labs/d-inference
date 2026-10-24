@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MLX
 import MLXLLM
 import MLXVLM
 @_spi(Diagnostics) import MLXLMCommon
@@ -34,6 +35,11 @@ public enum TeacherForcedBenchmark {
         let metallibSHA256: String
         let modelDirectory: String
         let resolvedBackend: String
+        let kvQuantization: String
+        let kvCheckpointQuantization: String
+        let checkpointBackendLayout: String?
+        let peakMLXMemoryBytes: Int
+        let finalMemory: ProcessMemoryTelemetry?
         let cacheMode = "off"
         let mtpEnabled = false
         let concurrency = 1
@@ -83,7 +89,8 @@ public enum TeacherForcedBenchmark {
     }
 
     public static func run(modelID: String, modelDirectory: URL, inputURL: URL,
-        backend: String, gemmaOptimizations: GemmaOptimizationSettings) async throws
+        backend: String, gemmaOptimizations: GemmaOptimizationSettings,
+        checkpointQuantizationConfig: String = "balanced") async throws
         -> (json: String, controlsPassed: Bool)
     {
         try validateBackend(backend)
@@ -122,7 +129,8 @@ public enum TeacherForcedBenchmark {
             modelId: modelID, modelDirectory: modelDirectory, isVLM: isVLM,
             container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
             kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: false,
-            useProductionKVGrant: true, kvBackendConfig: backend, requirePersistentKey: false,
+            useProductionKVGrant: true, kvBackendConfig: backend,
+            checkpointQuantizationConfig: checkpointQuantizationConfig, requirePersistentKey: false,
             environment: environment)
         do {
             let cache = await session.cacheSnapshot()
@@ -133,6 +141,7 @@ public enum TeacherForcedBenchmark {
                 throw Failure.unexpectedServingMode
             }
             let start = engine.teacherForcedScoringActivity()
+            Memory.peakMemory = 0
             let plain = try engine.teacherForcedTop1(
                 promptTokens: request.promptTokens, continuation: request.continuation)
             let afterPlain = engine.teacherForcedScoringActivity()
@@ -150,7 +159,11 @@ public enum TeacherForcedBenchmark {
                 inputSHA256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
                 verifiedModelAggregateSHA256: verified, executableSHA256: executable,
                 metallibSHA256: metallib, modelDirectory: modelDirectory.path,
-                resolvedBackend: session.backend, kvCapacityBytes: cache.engineKVCapacityBytes,
+                resolvedBackend: session.backend, kvQuantization: session.kvQuantization.rawValue,
+                kvCheckpointQuantization: session.kvCheckpointQuantization.rawValue,
+                checkpointBackendLayout: session.checkpointBackendLayout,
+                peakMLXMemoryBytes: Memory.peakMemory, finalMemory: await session.memorySnapshot(),
+                kvCapacityBytes: cache.engineKVCapacityBytes,
                 productionGrant: grant, plainTop1: plain, activity: activity,
                 diagnostic: first, repeatedDiagnostic: repeated,
                 meanForcedTokenNLL: first.allFinite ? first.records.reduce(0.0) {

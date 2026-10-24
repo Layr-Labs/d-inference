@@ -358,6 +358,7 @@ struct AutoUpdateClaimTests {
         let updater = fixture.updater(baseURL: URL(string: "http://127.0.0.1:9")!)
         let loop = try makeAutoUpdateLoop()
         #expect(await loop.claimUpdateStart(updater: updater))
+        await loop.beginUpdateDraining()
 
         let outcome = await loop.prepareInstalledCandidateRestart(
             updater: updater,

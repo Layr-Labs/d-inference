@@ -1,0 +1,39 @@
+{
+  "scope": "Second fresh metadata-observed remaining matrix; distinct from original first matrix and separate Qwen3.5 diagnostic.",
+  "status": "stopped_safety_gate",
+  "startedUTC": "2026-10-04T00:08:35.000909+00:00",
+  "endedUTC": "2026-10-04T00:14:19.872824+00:00",
+  "sourceAndOrchestrationBindingBeforeAfterUnchanged": true,
+  "requestedArms": 18,
+  "startedArms": 10,
+  "completeReports": 9,
+  "partialReports": 1,
+  "reportedRequests": 38,
+  "reportedOutputIDs": 4864,
+  "unstartedArms": 8,
+  "cohorts": [
+    {
+      "id": "short-qwen36-moe",
+      "status": "completed_unqualified_observations"
+    },
+    {
+      "id": "short-qwen9",
+      "status": "failed_safety_gate"
+    },
+    {
+      "id": "long-qwen9",
+      "status": "not_started"
+    }
+  ],
+  "stopReason": "Qwen9 short block1 production active disk20.25GiB guard",
+  "noObservedUnexpectedDescendants": true,
+  "newQwen36AllSixCompleteReportsPreserved": true,
+  "noQualifiedQwen36PolicyGain": true,
+  "qwen9OneCompletePairedBlockOnly": true,
+  "qwen9LongUnstarted": true,
+  "limits": [
+    "Report counts include two recorded requests from the partial Qwen9 arm,distinct from completed report count.",
+    "Original first matrix, diagnostic and this matrix are not pooled for medians.",
+    "No inherited or partial row is replaced on retry; fresh directories/receipts required."
+  ]
+}

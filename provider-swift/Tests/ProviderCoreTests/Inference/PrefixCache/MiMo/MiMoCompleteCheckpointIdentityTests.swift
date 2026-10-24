@@ -21,9 +21,12 @@ final class MiMoCompleteCheckpointIdentityTests: XCTestCase {
         XCTAssertEqual(a.fingerprintFields["storage.attention.0.valueHeadDim"], "128")
         XCTAssertEqual(a.fingerprintFields["storage.attention.1.window"], "128")
         XCTAssertNotEqual(a.fingerprintFields, b.fingerprintFields)
-        XCTAssertNil(CompleteCheckpointStorageIdentity(kind: .contiguous,
+        let symmetric = try XCTUnwrap(CompleteCheckpointStorageIdentity(kind: .contiguous,
             layerDTypes: [.bfloat16, .bfloat16], pagedConfig: nil,
             target: .historicalAttention(kinds(value: 192))))
+        XCTAssertEqual(symmetric.backendLayout, CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
+        XCTAssertNotEqual(symmetric.backendLayout, a.backendLayout)
+        XCTAssertNil(symmetric.fingerprintFields["storage.attention.0.valueHeadDim"])
     }
 
     func testNoPersistentAssistantOrDeclaredOnlyDtypeCanEnterTargetOnlyStore() {
@@ -34,11 +37,12 @@ final class MiMoCompleteCheckpointIdentityTests: XCTestCase {
                 modelDTypes: declared, nativeDTypes: observed, pagedConfig: nil, assistant: assistant)
         }
         XCTAssertNotNil(storage(.none, [.bfloat16, .bfloat16]))
+        XCTAssertNotNil(storage(.stateless, [.bfloat16, .bfloat16]))
         XCTAssertNil(storage(.none, nil))
         XCTAssertNil(storage(.none, [.float32, .float32]))
         XCTAssertNil(storage(.none, [.bfloat16]))
-        for assistant in [EngineV2SlotFactory.CompleteCheckpointAssistant.stateless,
-                          .persistentCodec, .unsupportedPersistent] {
+        for assistant in [EngineV2SlotFactory.CompleteCheckpointAssistant.persistentCodec,
+                          .unsupportedPersistent] {
             XCTAssertNil(storage(assistant, [.bfloat16, .bfloat16]))
         }
     }

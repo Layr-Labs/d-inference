@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MEMORY = 'evaluatedPagesAvoidDoubleTaxAndRetainedAliasKeepsPressure'
 COMPOSITION = 'decodeBatchCompositionInvariance'
 EXCLUSIVE = (MEMORY, COMPOSITION)
+CPU_CHECKPOINT = ('SSDShorterNativeBlockRestoreTests', 'SSDNativeCheckpointOracleTests')
 FAKE_SWIFT = r'''
 import json, os, sys
 args = sys.argv[1:]
@@ -79,13 +80,15 @@ class NativeGPUTestRouting(unittest.TestCase):
         result, calls = self.run_script('run-provider-tests.sh')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([row['filter'] for row in calls], [
-            'general', 'emptyNativePoolTeardownUsesActualRetiredAdapter',
+            'general', *CPU_CHECKPOINT, 'emptyNativePoolTeardownUsesActualRetiredAdapter',
             'processLedgerCannotCombineOldUsageWithNewMaterializationCredit',
             'defaultApplyProjectsSettings', 'stageDelta', 'SpecDecHuggingFaceTests',
             'acceptedThenExpired', MEMORY])
         skip = calls[0]['args'][calls[0]['args'].index('--skip') + 1]
         self.assertIn('ProcessMemoryNativeIntegrationTests', skip)
         self.assertIn('SpecDecHuggingFaceTests', skip)
+        for selected in CPU_CHECKPOINT:
+            self.assertIn(selected, skip)
         for row in calls:
             self.assertIn('--no-parallel', row['args'])
             self.assertEqual(row['exclusive'], '1' if row['filter'] == MEMORY else None)
@@ -103,7 +106,7 @@ class NativeGPUTestRouting(unittest.TestCase):
         profiles = self.work / 'profiles'
         result, calls = self.run_script('run-provider-tests.sh', PROVIDER_COVERAGE_DIR=str(profiles))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 10)
         self.assertEqual({row['profile'] for row in calls}, {f'{profiles}/%p-%m.profraw'})
         # swift test --enable-code-coverage would delete earlier profiles.
         self.assertTrue(all('--enable-code-coverage' not in row['args'] for row in calls))
@@ -121,8 +124,23 @@ class NativeGPUTestRouting(unittest.TestCase):
     def test_general_failure_does_not_silence_provider_isolated_gates(self):
         result, calls = self.run_script('run-provider-tests.sh', FAKE_SWIFT_FAIL='general')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 10)
         self.assertEqual(calls[-1]['filter'], MEMORY)
+
+    def test_cpu_checkpoint_gates_reject_failure_empty_and_skips_without_hiding_later_gates(self):
+        for selected in CPU_CHECKPOINT:
+            for changes in (
+                {'FAKE_SWIFT_FAIL': selected},
+                {'FAKE_SWIFT_EMPTY': selected},
+                {'FAKE_SWIFT_SKIP': selected},
+                {'FAKE_SWIFT_SKIP': selected, 'FAKE_SWIFT_SKIP_STYLE': 'xctest'},
+            ):
+                with self.subTest(selected=selected, changes=changes):
+                    result, calls = self.run_script('run-provider-tests.sh', **changes)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(len(calls), 10)
+                    self.assertEqual(calls[-1]['filter'], MEMORY)
+                    self.assertEqual(sum(row['filter'] == selected for row in calls), 1)
 
     def test_huggingface_isolation_failure_does_not_silence_exclusive_gate(self):
         result, calls = self.run_script(

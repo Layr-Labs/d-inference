@@ -514,6 +514,27 @@ struct StandaloneServerModelAdmissionTests {
         #expect(slot.engine.shutdownCalls == 1)
     }
 
+    @Test func headroomGateReleasesRetainedKVSegmentsBeforeRefusing() async throws {
+        let server = StandaloneServer(
+            kvBudgetForTesting: ScriptedProviderMemory.budget())
+        await server.setV2TestHooksForTesting(admissionHooks())
+        let slot = await installSlot(server, modelId: "model-a")
+        let engine = try RetainingEngineStub()
+        #expect(engine.parkedBytes > 0)
+        let steps = engine.start()
+        defer { steps.cancel() }
+
+        // Even a gate that may not evict releases parked KV backing first.
+        do {
+            try await server.ensureMemoryHeadroomForLoad(
+                requiredGb: 100_000, allowEviction: false)
+            Issue.record("the gate must refuse without eviction")
+        } catch StandaloneServerError.capacityUnavailable {}
+        #expect(engine.parkedBytes == 0)
+        #expect(await server.loadedModelIds() == ["model-a"])
+        #expect(slot.engine.shutdownCalls == 0)
+    }
+
     @Test func qwen4EvictionOpensARetirementWindowBeforeRefusal() async throws {
         let server = StandaloneServer(
             kvBudgetForTesting: ScriptedProviderMemory.budget())

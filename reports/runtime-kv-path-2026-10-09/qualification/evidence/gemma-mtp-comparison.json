@@ -1,0 +1,44 @@
+{
+  "control": {
+    "environment": {
+      "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "1"
+    },
+    "purpose": "Existing automatic verification bound suppresses proposals while retaining the same loaded assistant and native borrowed target owners. Positive MTP arm uses the default adaptive policy."
+  },
+  "pairs": [
+    {
+      "task": "retrieval",
+      "sameGeneratedTokens": true,
+      "actualGeneratedTokens": 43,
+      "mtpRounds": 3,
+      "proposedTokens": 3,
+      "acceptedDraftTokens": 3,
+      "targetControlRounds": 0,
+      "mtpJSONSHA256": "355cd16ed5e67e6ca5d6403f0e7378d8e4f7e2e00cae2e492447756eee6b6a39",
+      "targetControlJSONSHA256": "5fae3bfbaa5bab973120d1293f966a40251db9fe977c0fc74de254425004d3b7",
+      "assistantIdentity": {
+        "config_sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf",
+        "revision": "local-0cd54ff36e53a258",
+        "source": "local",
+        "weight_sha256.model.safetensors": "3c4d43863abbbf455ec537c726eff7abeb88bb361e3ab23ff0d2d6006f620f74"
+      }
+    },
+    {
+      "task": "long_retrieval",
+      "sameGeneratedTokens": true,
+      "actualGeneratedTokens": 40,
+      "mtpRounds": 19,
+      "proposedTokens": 19,
+      "acceptedDraftTokens": 19,
+      "targetControlRounds": 0,
+      "mtpJSONSHA256": "96fefa1aadc57943fc79c8c7c0de273d15fa9d9d9b173b014c8e525b683cd4a5",
+      "targetControlJSONSHA256": "88936f97cdf7e7b2c24e2ca1f0b59d19d2c2274268c2393b3765fcc8c516d070",
+      "assistantIdentity": {
+        "config_sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf",
+        "revision": "local-0cd54ff36e53a258",
+        "source": "local",
+        "weight_sha256.model.safetensors": "3c4d43863abbbf455ec537c726eff7abeb88bb361e3ab23ff0d2d6006f620f74"
+      }
+    }
+  ]
+}

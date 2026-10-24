@@ -16,8 +16,15 @@ extension EngineV2SlotFactory {
     static func prepareDiffusionPrefixCache(
         modelId: String, modelDirectory: URL?, weightHash: String?, kvBytesCapacity: Int,
         kvBudget: GlobalKVCacheBudget?, environment: [String: String],
-        persistentTestNamespace: SSDPersistentTestKeyNamespace?, pageBacked: Bool = false
+        persistentTestNamespace: SSDPersistentTestKeyNamespace?, pageBacked: Bool = false,
+        kvQuantization: EngineV2KVQuantizationSelection = .native
     ) async throws -> DiffusionPrefixPreparation {
+        guard kvQuantization == .native else {
+            // The native block snapshot codec has no packed canvas/history
+            // contract yet. Never label packed numerics as native SDPA.
+            return .init(snapshots: nil, store: nil, retainMemory: false,
+                status: .init(state: .disabled, reason: .unsupportedLayout))
+        }
         let resident = try PrefixCachePolicy.diffusionResidentConfig(modelDirectory: modelDirectory,
             weightHash: weightHash, kvBytesCapacity: kvBytesCapacity, environment: environment)
         func fallback(_ reason: PrefixCacheStatusReason, state: PrefixCacheStatusState = .disabled) -> DiffusionPrefixPreparation {

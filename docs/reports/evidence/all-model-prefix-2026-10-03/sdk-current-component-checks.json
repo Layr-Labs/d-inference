@@ -1,0 +1,147 @@
+{
+  "status": "pass",
+  "scope": "Current compatible candidate SDK source; separate isolated complete invocation before remaining model qualification. Final signed source/dependency cut and CI are separate.",
+  "startedUTC": "2026-10-03T23:26:45.229286+00:00",
+  "endedUTC": "2026-10-03T23:42:03.996864+00:00",
+  "compatibleSDKBase": "58d538c8a9668f72a2702d5bb348e0e53a8cdf61",
+  "sourceBeforeAfterIdentical": true,
+  "sourceFileRecords": 997,
+  "sourceSnapshotSHA256": "fed9b4078dbbb7ae9fc4a14c457350c374c5ef893df61ac68a34580958242c02",
+  "sourceSnapshotDigestConvention": "SHA256 of sorted-key compact JSON path-to-source-SHA256 records from the unchanged receipt; no payload rehash during curation.",
+  "testSourceSHA256": {
+    "Tests/MLXLMTests/CBv2DemandedCheckpointPartitionTests.swift": "0572f1e919cb5041ce15b8e36ee426512a65fc8b0ea499bfaa7540e19babdf43",
+    "Tests/MLXLMTests/CBv2NativeHistoricalRetentionTests.swift": "51d69174da5500e103db870e3986b6ca7aae455635072e756792c9e20cfa79f8",
+    "Tests/MLXLMTests/Fixtures/MiMoNativeHistoricalRetentionFixture.swift": "3142cda9f1e8ba1fba08d139110eb1a4eae85d2d92ca6c6f3ab45ab7f1e54156",
+    "Tests/MLXLMTests/MiMo/MiMoV26NativeHistoricalRetentionTests.swift": "f73c91aea963f1b6721125a5ca7fc240df9300209edff8bf93df8d8a6e83322f"
+  },
+  "binarySHA256": "eab080ff47cc0ac82631303215bc39828c9f85d158f5209ad86506858022ac1e",
+  "binaryBeforeAfterIdentical": true,
+  "metallibSHA256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2",
+  "compiler": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+  "actualCmlxRevision": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+  "buildSeconds": 212.0504107910092,
+  "metalStagingSeconds": 10.92286316701211,
+  "allOwnedProcessesReapedAndQuiescent": true,
+  "requiredNewSelectors": [
+    {
+      "name": "host-retention",
+      "framework": "XCTest",
+      "testCases": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "testSeconds": 0.044,
+      "commandElapsedSeconds": 12.392708416969981,
+      "logSHA256": "db39a0a4059fae72b4b4ddfe6ee01cc0230996ac9f0fc26a427c04694d403b38",
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "CBv2NativeHistoricalRetentionTests",
+        "--no-parallel"
+      ]
+    },
+    {
+      "name": "host-partition",
+      "framework": "XCTest",
+      "testCases": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "testSeconds": 0.002,
+      "commandElapsedSeconds": 3.856721624964848,
+      "logSHA256": "a01dd52c753a8b8c1af5897fe1a7c3828823d1e5163ac78836e10f87b04c809d",
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "CBv2DemandedCheckpointPartitionTests",
+        "--no-parallel"
+      ]
+    },
+    {
+      "name": "native-retention",
+      "framework": "XCTest",
+      "testCases": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "testSeconds": 1.116,
+      "commandElapsedSeconds": 10.146031040989328,
+      "logSHA256": "7344f919c67774f12447a39da11a2d2825e7edeffa4695550a9e38c0fb588741",
+      "command": [
+        "scripts/run-nested-suite.sh",
+        "MiMoV26NativeHistoricalRetentionTests.testDemandedMiddleFrontierSurvivesNativePublicationAndReopenedFork",
+        "--no-parallel"
+      ]
+    }
+  ],
+  "nativeScope": {
+    "owningTests": 1,
+    "modes": [
+      "MTP off",
+      "MTP on"
+    ],
+    "actualArchives": [
+      896,
+      512,
+      128
+    ],
+    "savedTokensPerWarmFork": 512,
+    "replayTokens": 0,
+    "greedyContinuationIDsComparedPerMode": 24,
+    "actualMTPActivityAsserted": true,
+    "limitations": [
+      "Small native-contiguous model; not full MiMo or provider encrypted SSD throughput.",
+      "The previous1.002-second invocation and current1.116-second invocation are the same owning test; no speed comparison or extra unique test is inferred."
+    ]
+  },
+  "fullSuite": {
+    "command": [
+      "swift",
+      "test",
+      "--skip-build",
+      "--disable-automatic-resolution",
+      "--no-parallel"
+    ],
+    "commandElapsedSeconds": 667.5652525839978,
+    "logSHA256": "80f6ca12a9ec1094774d736baa34002053a244bb4ad0c504cbdc955a30ec7ef1",
+    "XCTest": {
+      "enumerated": 1605,
+      "passed": 1270,
+      "skipped": 335,
+      "failed": 0,
+      "unexpectedFailures": 0,
+      "testSeconds": 333.028
+    },
+    "SwiftTesting": {
+      "passed": 1388,
+      "suites": 226,
+      "failed": 0,
+      "testSeconds": 330.533,
+      "enumerated": 1422,
+      "skipped": 34,
+      "skippedSuites": 0,
+      "terminalSummaryCountsSkippedDeclarations": true
+    },
+    "combinedPassCount": 2658,
+    "combinedEnumeratedCount": 3027,
+    "skipCount": 369,
+    "countConvention": "Individual executed pass and explicit skipped declaration outcomes reconciled with terminal enumerated populations; terminal Swift Testing1422 includes34skips. Required6+3+1 are separate invocations, not added as unique tests.",
+    "limitations": [
+      "Optional/gated full-suite335XCTest+34SwiftTesting skips are retained; the required6+3+1 selectors separately execute10methods with0skips. The native owning test is skipped in generic full and explicitly passes in the required invocation.",
+      "Complete-suite runtime includes resource discovery and model/test startup; it is not inference TTFT or performance qualification."
+    ],
+    "populationReconciliationEvidence": "sdk-population-reconciliation.json"
+  },
+  "privacy": "Source/bundle identities and aggregate count/position/clock outcomes only; no private paths, raw logs, output IDs/fingerprints, prompts, provider/account identifiers.",
+  "ownedDerivedBuildCleanup": {
+    "status": "pass",
+    "startedUTC": "2026-10-04T00:16:27.024264+00:00",
+    "endedUTC": "2026-10-04T00:16:34.790588+00:00",
+    "binaryRetained": true,
+    "metallibRetained": true,
+    "derivedBuildAbsent": true,
+    "reclaimedBytes": 4700033024,
+    "scope": "Owned compatible SDK derived build removed after complete source/image proof; exact test image and Metal retained, frozen provider build untouched. Resource preparation only; not a performance measurement.",
+    "runtimeResourceClosure": "unproven",
+    "standaloneArchiveReplayQualified": false,
+    "preservationScope": "Recorded tested executable and staged Metal bytes only; no audited adjacent SwiftPM resource-bundle/framework/dylib closure is claimed."
+  }
+}

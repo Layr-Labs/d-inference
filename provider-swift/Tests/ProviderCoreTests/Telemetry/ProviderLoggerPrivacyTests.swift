@@ -84,3 +84,11 @@ private final class ProviderLogRecorder: @unchecked Sendable {
     #expect(messages.allSatisfy { !$0.isEmpty && $0.utf8.count <= 96 })
     #expect(messages.allSatisfy { !$0.contains("\n") && !$0.contains("\r") })
 }
+
+@Test func publicProviderLogNamesThisBuildsCommand() {
+    #expect(ProviderOperationalMessage.startupPreloadInsufficientMemory.text
+        == "Startup preload skipped: low free memory. Run \(BuildEnvironment.current.cliName) status or doctor.")
+    for message in ProviderOperationalMessage.allCases {
+        #expect(!message.text.contains("{"))
+    }
+}

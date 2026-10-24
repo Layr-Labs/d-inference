@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-23
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -13,8 +13,8 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
-decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
-and validated by `ValidateModelManifest` (`coordinator/internal/api/catalog/registration/registry_validation.go`).
+decoded on the coordinator as `store.ModelManifest` ([coordinator/store/interface.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/interface.go))
+and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/registration/registry_validation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/api/catalog/registration/registry_validation.go)).
 
 | Field | Type | Constraint (coordinator) | Notes |
 |---|---|---|---|
@@ -46,6 +46,58 @@ and validated by `ValidateModelManifest` (`coordinator/internal/api/catalog/regi
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
 
+### Raw GLM discovery quotation
+
+`GLM5NextDiscoveryLoadFootprint.estimate` in
+`provider-swift/Sources/ProviderCoreFoundation/GLM5NextDiscoveryLoadFootprint.swift`
+prices exact `glm5_next` affine-Q4 metadata without constructing native arrays
+or hashing payloads. `ModelScanner.glm5NextLoadEstimate` in
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+GLM5Next.swift` supplies
+the existing bounded header reader and flat regular-file inventory.
+
+| Term | Bytes counted |
+|---|---|
+| `disk` | All integrity files in the raw snapshot, including every weight shard and non-weight file |
+| Native copies | `2 * largestTensor + largestExpertBank + 2 * visionBytes + (257 << 20)` |
+| Tokenizer allowance | `max(64 << 20, 8 * allNonWeightBytes)` |
+| Residual (`residualAllowanceBytes`) | `max(1 << 30, ceil(disk / 32))` |
+| Full LOAD | `disk + nativeCopies + tokenizerAllowance + residual` |
+| `native_load_transient_bytes` | Native copies, tokenizer allowance and residual, **above** raw `disk` (no disk × 1.2) |
+
+The managed loader copies one bounded tensor or expert bank at a time, so the
+generic disk × 1.2 padding over-counted GLM. On the staged 122-shard Q4
+artifact, MLX active memory after the target load equalled the text and vision
+payload, 177,510,375,672 bytes. The MLX peak through a 512-token prefill was
+180.89 GB, at most 3.38 GB above residency and below the native copies alone.
+For the retained 43-header profile the full LOAD is 192,045,833,503 bytes
+(178.86 GiB), not 222,714,752,471 bytes (207.42 GiB). With the default
+activation and minimum-KV headroom it fits a 256 GiB Mac's 90% cap.
+`GLM5NextLoadQuotation` (`GLM5NextLoadAdmission.swift`) prices the managed load
+with the same formula from the selected manifest.
+
+All MTP weights remain in `disk`; expert banks include every stored expert,
+not the active-expert count. Integer arithmetic is checked through the signed
+wire range. Missing, malformed, non-Q4, unknown-role, nested-integrity or incomplete
+inventories are omitted from GLM discovery, not given a loadable generic quote.
+This footprint is not the native loader's complete architecture validation or
+a model-support grant.
+
+Metadata-only directories such as `.cache/` and `_provenance/` are permitted
+without adding their receipts to model bytes. The descriptor-relative scan
+checks every entry, including hidden entries, and rejects symlinks, special
+files and any nested filename classified as integrity-relevant by
+`ModelScanner.isIntegrityFile`. It allows at most 4,096 total entries and eight
+directory levels; ignored metadata is bounded to 32 MiB per file and 64 MiB in
+aggregate. These directories are inspected read-only and are never deleted.
+
+Only the tokenizer shipped in the weight snapshot is priced. The provider has no
+separate-tokenizer composition path, and the local selection refuses a
+`tokenizer` field, so the raw declaration never covers another tokenizer. Actual source
+identity, complete native inventory, reservation and post-load guards remain
+the managed loader's responsibility. This changes neither manifest publication
+nor catalog activation. The [memory policy](../architecture/hardware-support.md#load-gate-modelloadadmission)
+retains separate OS, activation and KV reserves.
+
 ### Aggregate hash
 
 MiMo checkpoints (`config.json` declares `model_type: "mimo_v2"`) also include
@@ -61,10 +113,13 @@ selection does not validate receipt contents or qualify the model for serving.
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
-`AggregateManifestFileHashes` (`coordinator/internal/api/catalog/registration/registry_validation.go`),
+`AggregateManifestFileHashes` ([coordinator/internal/api/catalog/registration/registry_validation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/api/catalog/registration/registry_validation.go)),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
-provider runs after download. The same value is the catalog `weight_hash`.
+provider runs after download. The same value is the catalog `weight_hash`. On
+macOS each file's read then drops its pages from the file cache
+(`provider-swift/Sources/ProviderCoreFoundation/PageCache.swift`), so a verified
+download does not stay resident beside the model it is loaded into.
 
 ### R2 layout
 
@@ -75,7 +130,7 @@ provider runs after download. The same value is the catalog `weight_hash`.
 | Object prefix | `v2/<slug>--<first 12 hex of sha256(model_id)>/<version>` | `modelR2Prefix`, `readableModelSlug` (Go); `ManifestBuilder.safeModelID` (Swift) |
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
 | Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
-| Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` (`coordinator/api/catalog/`); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
+| Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` ([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
 | CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
 
 Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
@@ -84,7 +139,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 ## Registration
 
 `POST /v1/admin/models/register` — `HandleRegisterModel`
-(`coordinator/api/catalog/`). Publishing-key auth
+([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)). Publishing-key auth
 ([below](#authentication)). Unknown JSON fields are rejected
 (`DisallowUnknownFields`).
 
@@ -100,7 +155,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax` or `glm5_next_v1`, trimmed, unique (`ValidateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list `apple_m5` and `mlx_nax`. The provider and platform also require `apple_m5`, `mlx_nax` and `glm5_next_v1` for `glm-5.3-flash` whatever the row lists (`ModelRuntimeRequirements.glm5NextRequiredCapabilities`); platform sign-off on the catalog row is pending |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -120,7 +175,7 @@ Server-side sequence, in order; any failure before step 5 persists nothing:
 5. `SetModelVersion` writes the entry (`status = "beta"`), version
    (`status = "ready"`, `uploaded_by` = key name), and file rows in one
    transaction.
-6. `SetModelPrice(store.ModelPrice{AccountID: "platform", Model: model_id, InputPrice, OutputPrice, CacheReadPrice})` (`coordinator/api/modelprice/price.go` `modelprice.Input`).
+6. `SetModelPrice(store.ModelPrice{AccountID: "platform", Model: model_id, InputPrice, OutputPrice, CacheReadPrice})` ([coordinator/api/modelprice/price.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/modelprice/price.go) `modelprice.Input`).
 7. If `promote`: `PromoteModelVersion` upserts `model_active_versions`.
 8. `SyncModelCatalog()`.
 
@@ -145,62 +200,31 @@ Response `200`:
 default when the request set none); the `*_usd` strings are USD per 1M tokens
 (`registerModelResponse`, `types.ModelPriceQuote`).
 
-## Stored rows
+## Nemotron Super
 
-DDL in `coordinator/store/postgres/`; Go types in `coordinator/store/interface.go`.
+The provider serves one Nemotron Super registration natively; its discovery and
+slot are explained in the [registry](../architecture/model-registry.md#nemotron-super-discovery)
+and [inference](../architecture/inference.md#managed-nemotron-super-slot) architecture.
 
-### `model_registry` ↔ `ModelRegistryEntry`
-
-| Column / JSON | Type | Default | Notes |
-|---|---|---|---|
-| `id` | text (PK) | | the `model_id` |
-| `display_name` | text | | |
-| `family`, `architecture`, `quantization` | text | `''` | |
-| `max_context_length`, `max_output_length`, `min_ram_gb` | integer | `0` | |
-| `capabilities` | text[] | `{}` | consumer-visible features |
-| `required_provider_capabilities` | text[] | `{}` | routing gate; a migration forces `{apple_m5, mlx_nax}` onto `EigenLabs/Qwen3.8-27B-4bit` |
-| `status` | text | `'beta'` | closed set: `beta`, `active`, `deprecated`, `retired` (`validModelStatus`) |
-| `description` | text | `''` | |
-| `runtime_parameters` | jsonb | `{}` | |
-| `metadata` | jsonb | `{}` | |
-| `created_at`, `updated_at` | timestamptz | `NOW()` | |
-
-### `model_versions` ↔ `ModelVersion`
-
-| Column / JSON | Type | Notes |
+| Field | Value | Code |
 |---|---|---|
-| `id` | bigserial | referenced by `model_active_versions` |
-| `model_id` | text | FK → `model_registry.id`, cascade delete |
-| `version` | text | unique per `model_id` |
-| `r2_prefix`, `aggregate_sha256`, `total_size_bytes`, `file_count` | | copied from the manifest |
-| `status` | text | `'ready'` on new registration; an existing `'retired'` version stays retired across re-registration |
-| `uploaded_by` | text | original publishing key name, `env-bootstrap`, or `admin`; preserved by identical registration/publication retries |
-| `uploaded_at`, `promoted_at` | timestamptz | original `uploaded_at` survives identical retries; `promoted_at` set by `PromoteModelVersion` |
-| `metadata` | jsonb | the registration `metadata` |
+| `model_id` | `nvidia-nemotron-3.5-super` (exact; no alias or other id is served) | `NemotronSuperServingPolicy.modelID` (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperServingPolicy.swift`) |
+| `version` | `2026-10-20-nvfp4-r2` | registration input |
+| Artifact | The complete NVIDIA NVFP4 checkpoint (revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`): 88 shards, the embedded MTP head in shard 88, plus the integrity files `ModelScanner.collectWeightFiles` selects. Published to R2 with `scripts/publish-model.sh` and mirrored byte for byte as the `hugging_face_artifact` `EigenLabs/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at revision `0e854f634f26f0cc342a32857c38b81c57207cea`, downloaded first with per-file R2 fallback | `NemotronSuperCheckpointPin` (`libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperCheckpointPin.swift`) |
+| `config.json` SHA-256 | `35189a8038d1b1f934e58cba50eb7e97b42a4da569424e35b9fd1048058bc7ea`, `model_type` `nemotron_h_omni` | `NemotronSuperServingPolicy.configSHA256` |
+| `model.safetensors.index.json` SHA-256 | `c368acdbcfe882236af1ec79df4a1fb6127e6ed9f742d59c01c21fe96ddc2741` | `NemotronSuperCheckpointPin.index` |
+| `chat_template.jinja` SHA-256 | `1369e90b19976f99ce2070eb21ade8fcb4af640f008e14e82af5c5e89a9cc816` | `NemotronSuperPromptContract.templateSHA256` |
+| `quantization` | `nvfp4` (the scanner reports it) | `ModelScanner.parseModelInfo` |
+| `max_context_length` | `262144`, the whole verified context the slot serves (see the [managed slot](../architecture/inference.md#managed-nemotron-super-slot)) | `NemotronSuperServingPolicy.contextTokens`, `NemotronSuperServingPolicy.maximumContextTokens` |
+| `max_output_length` | at most the context minus the prompt; omitted `max_tokens` defaults to `4096` | `ProviderLoop.schedulerDefaultMaxTokens` |
+| `min_ram_gb` | `128`; Super's own load gate admits a 128 GB Mac from 85.6 GiB available, the narrowest configuration ([hardware support](../architecture/hardware-support.md#context)), which is emulated but not yet measured on a physical 128 GB Mac; only 256 GB is measured | `NemotronSuperLoadFit.minimumAvailableBytes` |
+| `required_provider_capabilities` | `["apple_m5"]`; with `min_ram_gb` it limits the model to M5 Max (128 GB) and M5 Ultra; the coordinator honors `apple_m5` only for an attested M5 chip family | registration input; `ProviderRuntimeCapability.appleM5` (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
+| Input | text with tools, reasoning and `response_format`; JPEG and PNG images as `data:` URIs (up to 16 per request, 13312 patches per image), or one MP4 or QuickTime video as the request's only media (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; 2 frames per second, at most 256, coded frames of at most 8,847,360 pixels (`4096 * 2160`, in any shape), frame grids up to 1,088 patches); media requests refuse tools and `response_format` and are served target-only on the speculating owner | `ModelMediaPolicy.advertisesMedia`, `NemotronSuperSlotOwner.chatEngine`, `NemotronSuperLocalImageBinding.parseEncodedBody`, `NemotronSuperServingPolicy.maximumVideoFramePixels`, `NemotronSuperServingPolicy.maximumVideoGridPatches` |
 
-### `model_version_files` ↔ `ModelVersionFile`
-
-`model_version_id` (FK), `path`, `size_bytes`, `sha256`, `role` — one row per
-`ManifestFile`; unique on (`model_version_id`, `path`).
-
-### `model_active_versions`
-
-`model_id` (PK, FK) → `model_version_id` (FK, `ON DELETE RESTRICT`),
-`activated_at`. A model is **routable** when
-`model_registry.status IN ('active','beta')` and the active version has
-`status = 'ready'` (`activeModelRegistryQuery` in
-`coordinator/store/postgres/model_registry.go`).
-
-### Metadata keys
-
-Keys in `model_registry.metadata` the coordinator reads
-(`coordinator/api/catalog/openrouter_models.go`, `coordinator/api/catalog/`):
-
-| Key | Set by | Effect |
-|---|---|---|
-| `hugging_face_id` | `hugging-face-id` action or registration `metadata` | `GET /v1/models` and `GET /v1/models/openrouter` emit it as `hugging_face_id`; otherwise `model_id` is used (`huggingFaceIDForModel`) |
-| `openrouter_slug` | `openrouter-slug` action | OpenRouter marketplace slug in the feed |
-| `deprecation_date` | `deprecation` action | `YYYY-MM-DD`; OpenRouter deprecation metadata |
+Providers without this policy drop the artifact at scan, advertisement and
+prefetch publication, but the downloader has no architecture gate: a provider
+of an earlier release that receives it as a desired build downloads the
+weights before refusing to advertise them.
 
 ## Hugging Face download artifact
 
@@ -208,7 +232,7 @@ Keys in `model_registry.metadata` the coordinator reads
 `model_versions.hugging_face_artifact` (nullable JSONB) and emitted on each
 public catalog model by `catalogModelFromRegistryRecord`. Its fields are
 validated by `HuggingFaceArtifact.Validate` in
-`coordinator/store/hugging_face_artifact.go`:
+[coordinator/store/hugging_face_artifact.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/hugging_face_artifact.go):
 
 | Field | Rule |
 |---|---|
@@ -245,7 +269,7 @@ The metadata-preserving `publish-revision` action has a different retry contract
 an existing version retains its stored source, including R2-only, regardless of
 an omitted or different valid locator in the retry. It does not undo an explicit
 source edit through normal registration (`SetExistingModelVersion` versus
-`SetModelVersion` in `coordinator/store/postgres/model_registry.go` and `memory.go`).
+`SetModelVersion` in [coordinator/store/postgres/model_registry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/postgres/model_registry.go) and `memory.go`).
 
 ### Pinned assistant download artifact
 
@@ -271,7 +295,7 @@ immutable staging publication remain required. Cancellation does not initiate
 R2 fallback; existing verified local artifacts need no download
 (`provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift`).
 
-The [Gemma QAT assistant catalog patch](../operations/artifacts/gemma-qat-assistant-hugging-face.patch.json)
+The [Gemma QAT assistant catalog patch](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/artifacts/gemma-qat-assistant-hugging-face.patch.json)
 adds only the pinned assistant locator to a current public catalog-model JSON
 object, with JSON Patch `test` operations guarding the exact target and existing
 assistant identity. It is a review artifact, not an HTTP request body: the
@@ -314,12 +338,12 @@ and manifest endpoints continue to describe only the desired version.
 ## Admin actions
 
 `POST /v1/admin/models/{model_id}/{action}` — `HandleAdminModelRegistryAction`
-(`coordinator/api/catalog/`). Publishing-key auth. Every
+([coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog)). Publishing-key auth. Every
 successful action calls `SyncModelCatalog()`.
 
 | `action` | Body | Effect | Response |
 |---|---|---|---|
-| `publish-revision` | `{"version":"...","hugging_face_artifact":{"repo_id":"owner/repo","revision":"<40-character SHA>","path_prefix":"optional/subdir"}}` | `handlePublishModelRevision` in `coordinator/api/catalog/model_revision_handlers.go` validates the optional per-revision HF locator, verifies the R2 manifest/files, records the initial authenticated publisher, preserves original upload attribution on retries and model metadata/pricing, promotes and refreshes live desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}`; 503 with `Retry-After` if promotion committed but live policy refresh or desired-state delivery to a provider failed |
+| `publish-revision` | `{"version":"...","hugging_face_artifact":{"repo_id":"owner/repo","revision":"<40-character SHA>","path_prefix":"optional/subdir"}}` | `handlePublishModelRevision` in [coordinator/api/catalog/model_revision_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/model_revision_handlers.go) validates the optional per-revision HF locator, verifies the R2 manifest/files, records the initial authenticated publisher, preserves original upload attribution on retries and model metadata/pricing, promotes and refreshes live desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}`; 503 with `Retry-After` if promotion committed but live policy refresh or desired-state delivery to a provider failed |
 | `retire-revision` | `{"version":"..."}` | `RetireModelVersion` removes an inactive revision from accepted hashes; active revision returns 409. Re-registration preserves retired status; no file deletion | `{"status":"retired","model_id","version"}`; 503 if live policy refresh or desired-state delivery failed |
 | `promote` | `{"version": "..."}` | `PromoteModelVersion` — point `model_active_versions` at this version | `{"status":"promoted","model_id","version"}`; 503 with `Retry-After: 5` if promotion committed but live policy refresh or desired-state delivery failed; retry the same version |
 | `status` | `{"status": "..."}` | `SetModelStatus`; value must be `beta`, `active`, `deprecated`, or `retired` | `{"status":"updated","model_id","model_status"}` |
@@ -337,7 +361,7 @@ applies before registration or promotion. A 503 can occur after the durable
 promotion and live catalog update when sending desired state to a provider fails;
 an alias-store read failure also returns 503 and suppresses desired-state fan-out
 until alias synchronization succeeds (`SyncModelCatalog`, `syncModelAliases` in
-`coordinator/api/catalog/publication.go`). Neither failure implies rollback. Retry with the same version and source fields. An
+[coordinator/api/catalog/publication.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/publication.go)). Neither failure implies rollback. Retry with the same version and source fields. An
 identical retry preserves the original `uploaded_by` and `uploaded_at`, plus the
 currently stored download source. Use normal registration for deliberate source edits.
 Promoting a retired revision returns 409 (`ErrModelVersionRetired`);
@@ -345,118 +369,20 @@ publish a new version to approve those bytes again.
 
 Unknown action → `404 model action not found`.
 
-## Standard aliases
-
-A standard alias is a stable public name that resolves to one `desired_build`,
-with an optional still-acceptable `previous_build` during a rollout. Handlers in
-`coordinator/api/catalog/model_alias_handlers.go`; stored as `ModelAlias`
-(`coordinator/store/interface.go`) in `model_aliases`.
-
-### `POST /v1/admin/models/aliases` (`HandleModelAliasUpsert`)
-
-Idempotent on `alias_id`; unknown fields rejected.
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `alias_id` | string | yes | ≤ `maxAliasIDLength = 128`; charset `A-Z a-z 0-9 . _ -` (no `/`) |
-| `display_name` | string | no | |
-| `desired_build` | string | yes | a registered `model_id` |
-| `previous_build` | string | no | a registered `model_id` |
-| `active` | boolean | no | omitted ⇒ `true` |
-| `takeover` | boolean | no | adopt an existing concrete model id as the alias name; see rules |
-
-Rules, with the status code returned when violated:
-
-| Rule | Code |
-|---|---|
-| `alias_id` and `desired_build` present and well-formed | 400 |
-| `desired_build != alias_id` | 400 |
-| `alias_id` does not equal a concrete `model_id` — unless `takeover=true` | 409 |
-| with `takeover=true`, `previous_build == alias_id` (the absorbed concrete build) | 400 |
-| without a same-named concrete model, `previous_build != alias_id` | 400 |
-| `previous_build != desired_build` | 400 |
-| `desired_build` (and `previous_build` if set) is a registered model | 400 |
-| `alias_id` is not an existing OpenRouter-only alias | 409 |
-| when `active`, no member build is pinned as a concrete source by an OpenRouter-only alias | 409 |
-
-On success the server recomputes `retired_builds` (prior desired/previous
-members no longer pointed to, oldest dropped past `maxRetiredBuilds = 16`;
-`retiredBuildsAfterUpsert`), upserts the row, calls `SyncModelCatalog()` (which
-fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
-
-### `GET /v1/admin/models/aliases` (`HandleModelAliasList`)
-
-`{"aliases": [<ModelAlias>...]}` — standard aliases only.
-
-### `DELETE /v1/admin/models/aliases/{aliasID}` (`HandleModelAliasDelete`)
-
-`{"status":"deleted","alias_id":"..."}`; refuses OpenRouter-only aliases (404).
-
-### Stored `ModelAlias`
-
-| JSON | Type | Notes |
-|---|---|---|
-| `alias_id` | string | primary key |
-| `display_name` | string | |
-| `desired_build` | string | build providers converge to |
-| `previous_build` | string | omitted when empty |
-| `retired_builds` | array of string | lineage; lets a provider offline through a retirement still receive `desired_models` |
-| `active` | boolean | inactive aliases are not loaded into the registry |
-| `openrouter_only` | boolean | marketplace clone (below) |
-| `source_model`, `source_kind`, `openrouter_slug`, `hugging_face_id` | string | OpenRouter-only fields; `source_kind` ∈ `standard_alias` (default), `concrete_model` |
-| `created_at`, `updated_at` | timestamp | |
-
-### Resolution precedence
-
-`ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
-called from `resolveRequestedModel` (`coordinator/api/inference/consumer.go`):
-
-1. Not an alias → the id is used as a concrete build.
-2. Alias → `desired_build` if an eligible provider can route it; else
-   `previous_build` if routable; else `desired_build` (request queues).
-
-Responses echo the alias; billing and stats store the concrete build.
-
-## OpenRouter-only aliases
-
-Marketplace clones of an existing alias or concrete model with their own API
-id. Handlers in `coordinator/api/catalog/openrouter_alias_handlers.go`; invariants in
-`coordinator/internal/api/catalog/aliaspolicy/openrouter_alias_invariants.go`.
-
-| Endpoint | Handler |
-|---|---|
-| `GET /v1/admin/models/openrouter-aliases` | `HandleOpenRouterAliasList` |
-| `POST /v1/admin/models/openrouter-aliases` | `HandleOpenRouterAliasUpsert` |
-| `DELETE /v1/admin/models/openrouter-aliases/{aliasID}` | `HandleOpenRouterAliasDelete` |
-
-Upsert body (`openRouterAliasUpsertRequest`):
-
-| Field | Required | Rule |
-|---|---|---|
-| `id` | yes | alias charset, ≤ 128; must not equal a concrete model (409) or a standard alias (409); must differ from `source_model` |
-| `source_model` | yes | an active standard alias (`source_kind = standard_alias`) **or** an active concrete catalog model eligible for the text-only OpenRouter feed (`source_kind = concrete_model`); a concrete source already covered by a standard alias is rejected (409) |
-| `openrouter_slug` | yes | marketplace slug |
-| `hugging_face_id` | yes | repository id emitted in feeds |
-| `active` | no | omitted ⇒ `true` |
-
-The clone appears only in `GET /v1/models/openrouter` (and is retrievable via
-`GET /v1/models/{id}`); it never drives provider convergence and never becomes
-a build's canonical public name (`registry.AliasTarget.OpenRouterOnly`).
-
 ## Provider-facing messages
 
-Defined in `coordinator/protocol/messages.go`; full field tables in
+Defined in [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go); full field tables in
 [`protocol-messages.md`](protocol-messages.md).
 
 | `type` | Direction | Shape |
 |---|---|---|
-| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers (`ProviderSupportsDesiredModels`, `coordinator/api/catalog/model_alias_handlers.go`) |
+| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers (`ProviderSupportsDesiredModels`, [coordinator/api/catalog/model_alias_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/model_alias_handlers.go)) |
 | `prefetch_model_status` | provider → coordinator | `status` ∈ `started`, `downloading`, `verified`, `failed`; `bytes_done`, `bytes_total`, `error` |
-| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/provider_models.go`) |
+| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, [coordinator/registry/provider_models.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models.go)) |
 
 ## Authentication
 
-`RequirePublishingAPIKey` (`coordinator/api/access/publishing.go`) guards
+`RequirePublishingAPIKey` ([coordinator/api/access/publishing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/access/publishing.go)) guards
 every `/v1/admin/models/...` endpoint on this page. Accepted, in order:
 
 | Credential | Where | Actor recorded as |
@@ -476,7 +402,7 @@ Unauthenticated; used by providers and `scripts/install.sh`.
 
 | Endpoint | Handler | Response |
 |---|---|---|
-| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `HandleModelCatalog` (`coordinator/api/catalog/catalog.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
+| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `HandleModelCatalog` ([coordinator/api/catalog/catalog.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/catalog.go)) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
 | `GET /v1/models/catalog/{id}` | `HandleModelCatalogItem` | one catalog model, or 404 |
 | `GET /v1/models/catalog/manifest/{id}` | `HandleModelCatalogManifest` | the stored `ModelManifest` for the active version, or 404 |
 
@@ -503,12 +429,38 @@ build; aliases with neither are omitted).
 |---|---|---|
 | `darkbloom-publish hash <dir> --id <model_id> --version <version> [-o manifest.json]` | `provider-swift/Sources/darkbloom-publish/HashCommand.swift` | validates id/version before hashing; writes to stdout without `-o` |
 | `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last; optional env `HUGGING_FACE_ARTIFACT_JSON` validates an existing public HF artifact and passes it into the printed registration command; prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
-| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
+| `.github/workflows/register-model.yml`, default `publish_revision_only=false` | `model_id`, `version`, `display_name`, `quantization`, positive integer context/output limits, RAM and prices; other inputs mirror the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`) | validates registration-only inputs, builds the payload with `jq`, and POSTs to `/v1/admin/models/register` |
+| Same workflow, `publish_revision_only=true` | `model_id`, `version`, explicit `promote=true`, optional `hugging_face_artifact_json`; registration-only inputs are ignored | POSTs `{"version":"...","hugging_face_artifact":null}` (or the supplied artifact object) to `/v1/admin/models/{encoded_model_id}/publish-revision`; preserves metadata/prices and promotes the revision |
+
+Both workflow modes default `coordinator_url` to `https://api.darkbloom.dev` and
+use `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}`. Neither
+uploads bytes or uses R2 credentials. The canonical manifest and all serving
+files must already be published. Only `model_id` and `version` are required by
+the dispatch form; the normal registration step rejects missing registration
+fields and nonpositive or noninteger limits, RAM and prices before any HTTP
+request. See the [operation decision table](../operations/model-revisions.md#choose-the-operation-first)
+for upload versus registry-only work.
+
+Revision-only mode rejects `promote=false` before HTTP because the existing
+`publish-revision` action always promotes. It cannot stage an inactive version;
+use normal registration with `promote=false` for that operation. The optional
+HF source follows the [existing revision retry contract](#admin-actions): null
+means R2-only for a new version and preserves the stored source on retry.
+
+## Flint local package exception
+
+| Contract | Value | Source |
+|---|---|---|
+| Native architecture identity | Exact `flint` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`, `isSupported(modelType:)` |
+| Shard-only local discovery | `model-*.safetensors` plus nonempty regular config of at most 1,048,576 bytes; no synthetic index | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `isMLXModel`, `boundedModelConfiguration` |
+| Weight format | Official group-64 affine INT4 projections/experts, INT8 embeddings and BF16 sensitive tensors, or documented BF16; strict complete inventory; not NVFP4 | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintCheckpoint.swift`, `FlintModel.installFlintWeights` |
+| KV precision | Native live KV and native checkpoint storage; official export uses BF16 KV | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| Catalog publication | Separate manifest/review operation; local discovery does not publish to HF/R2 or activate a catalog | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
 
 ## Related
 
 - [`../architecture/model-registry.md`](../architecture/model-registry.md) — why the registry is shaped this way and how routing consumes it.
 - [`../operations/model-migration.md`](../operations/model-migration.md) — publishing and alias cutover runbook.
-- [`api-contracts.md`](api-contracts.md) — consumer-facing `GET /v1/models`.
+- [api-contracts.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md) — consumer-facing `GET /v1/models`.
 - [`protocol-messages.md`](protocol-messages.md) — `desired_models`, `models_update`, `prefetch_model_status` field tables.
 - [`configuration.md`](configuration.md) — `MODEL_REGISTRY_CDN_BASE_URL`, `MODEL_REGISTRY_PUBLISHING_KEY`, `DARKBLOOM_R2_CDN_URL`.

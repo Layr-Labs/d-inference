@@ -5,8 +5,9 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-install-test.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INSTALLER="$REPO_ROOT/scripts/install.sh"
-"$REPO_ROOT/scripts/sync-install-embed.sh" check
 python3 "$REPO_ROOT/scripts/test-install-onboarding.py"
+python3 "$REPO_ROOT/scripts/test-install-coordinator-binding.py"
+python3 "$REPO_ROOT/scripts/test-install-identity.py"
 
 cat > "$ROOT/paged.c" <<'C'
 #include <libgen.h>
@@ -65,7 +66,7 @@ clang -Os "$ROOT/fan-helper.c" -o "$ROOT/fan-helper"
 # A pristine Mac has no Xcode Command Line Tools: /usr/bin/strings, otool,
 # nm, etc. are shims that prompt/fail. Prove the installers never need them
 # two ways: (1) statically — no CLT tool is referenced outside comments in
-# either installer; (2) behaviorally — every install below runs with failing
+# the canonical installer; (2) behaviorally — every install below runs with failing
 # CLT shims first on PATH, so any hidden invocation aborts the install.
 CLT_SHIMS="$ROOT/clt-shims"
 mkdir -p "$CLT_SHIMS"
@@ -91,7 +92,6 @@ assert_no_clt_tools() {
     fi
 }
 assert_no_clt_tools "$REPO_ROOT/scripts/install.sh"
-assert_no_clt_tools "$REPO_ROOT/coordinator/api/install.sh"
 
 assert_no_privileged_install() {
     local script=$1
@@ -106,7 +106,6 @@ assert_no_privileged_install() {
     fi
 }
 assert_no_privileged_install "$REPO_ROOT/scripts/install.sh"
-assert_no_privileged_install "$REPO_ROOT/coordinator/api/install.sh"
 
 make_artifact() {
     local output=$1
@@ -225,9 +224,7 @@ FAN_HELPER_REQUIREMENT=$(codesign -d -r- \
 [ -n "$FAN_HELPER_REQUIREMENT" ]
 PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 PRODUCTION_FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-for installer in \
-    "$REPO_ROOT/scripts/install.sh" \
-    "$REPO_ROOT/coordinator/api/install.sh"
+for installer in "$REPO_ROOT/scripts/install.sh"
 do
     grep -Fqx \
         "DARKBLOOM_DESIGNATED_REQUIREMENT='$PRODUCTION_REQUIREMENT'" \
@@ -445,34 +442,43 @@ DARKBLOOM_NO_UPDATE_CHECK=1 \
     MLX_GATHER_QMM_EXPERT_SLICES=1 \
     "$INSTALL/bin/darkbloom" runtime-smoke
 
-INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
-COORD_INSTALL="$ROOT/coordinator-install"
-mkdir -p "$COORD_INSTALL/Darkbloom.app"
-printf 'coordinator-old\n' > "$COORD_INSTALL/Darkbloom.app/sentinel"
-assert_fan_variants_rejected "$COORD_INSTALL"
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install_without_hashes "$VALID" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted an app without payload hashes" >&2
+INSTALLER="$REPO_ROOT/scripts/install.sh"
+FRESH_INSTALL="$ROOT/fresh-install"
+mkdir -p "$FRESH_INSTALL/Darkbloom.app"
+printf 'fresh-old\n' > "$FRESH_INSTALL/Darkbloom.app/sentinel"
+assert_fan_variants_rejected "$FRESH_INSTALL"
+test -f "$FRESH_INSTALL/Darkbloom.app/sentinel"
+if run_install_without_hashes "$VALID" "$FRESH_INSTALL"; then
+    echo "canonical installer accepted an app without payload hashes" >&2
     exit 1
 fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install "$MISSING" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted missing paged resource" >&2
+test -f "$FRESH_INSTALL/Darkbloom.app/sentinel"
+if run_install "$MISSING" "$FRESH_INSTALL"; then
+    echo "canonical installer accepted missing paged resource" >&2
     exit 1
 fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install "$DIVERGED" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted a divergent app payload" >&2
+test -f "$FRESH_INSTALL/Darkbloom.app/sentinel"
+if run_install "$DIVERGED" "$FRESH_INSTALL"; then
+    echo "canonical installer accepted a divergent app payload" >&2
     exit 1
 fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-assert_flat_only_rejected "$COORD_INSTALL"
-run_install "$VALID" "$COORD_INSTALL"
-test ! -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-test -x "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
-test "$(stat -f '%Lp' "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
+test -f "$FRESH_INSTALL/Darkbloom.app/sentinel"
+assert_flat_only_rejected "$FRESH_INSTALL"
+run_install "$VALID" "$FRESH_INSTALL"
+test ! -f "$FRESH_INSTALL/Darkbloom.app/sentinel"
+test -x "$FRESH_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+test "$(stat -f '%Lp' "$FRESH_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
 
-assert_pre_paged_rejected "$ROOT/coordinator-legacy-install"
+assert_pre_paged_rejected "$ROOT/fresh-legacy-install"
+
+# A restrictive caller umask must not leave release files owner-only: the
+# bundle is extracted under umask 022 whatever the invoking shell uses.
+UMASK_INSTALL="$ROOT/umask-install"
+mkdir -p "$UMASK_INSTALL"
+(umask 077; run_install "$VALID" "$UMASK_INSTALL")
+test "$(stat -f '%Lp' "$UMASK_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
+test "$(stat -f '%Lp' \
+    "$UMASK_INSTALL/Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal")" = "644"
 
 echo "atomic installer tests passed"
 

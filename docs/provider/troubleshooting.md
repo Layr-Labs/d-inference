@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-23
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -69,12 +69,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
-| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and generation cooldown | Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
+| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and local generation safeguard | The coordinator may retry after the displayed local countdown expires. Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
 | `gui session` | macOS 27+: the provider runs outside the GUI session. Either a user is logged in at the console but the provider was launched elsewhere (SSH, system daemon), or nobody is logged in (`AppAttestDeepDiagnosis.swift`) | Run `darkbloom restart` from the logged-in desktop (Terminal or Screen Sharing). If nobody is logged in, log in and enable automatic login |
 | `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
 | `app signing` | A known missing opt-in, invalid environment entitlement, or missing/expired profile fails. Unavailable signing data or unknown expiry warns instead of passing; an explicitly absent environment entitlement can be legitimate | Reinstall a known-bad release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then restart; for indeterminate evidence, collect a report |
 | `process start` | Why this provider process started (launchd, watchdog, update, stall restart, manual) and whether the previous one shut down cleanly (`provider-run.json`) | Unclean exits come from a crash, force-kill, power loss or a reboot without a drain. If App Attest broke right after one, run `darkbloom report` |
-| `key history`, `last apple failure` | Key generations in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused to sign. Doctor distinguishes a latest error eligible for coordinator dead-key checks from timeouts or `serverUnavailable`; the aggregate failure count alone cannot establish a dead key or promise rotation | The coordinator decides whether replacement is due. For repeated `invalidKey` on brand-new keys, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo) |
+| `key history`, `last apple failure` | Key generation attempts in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused to sign. Doctor distinguishes a latest error eligible for coordinator dead-key checks from timeouts or `serverUnavailable`; the aggregate failure count alone cannot establish a dead key or promise rotation | The coordinator decides whether replacement is due. For repeated generation attempts with a recorded `invalidKey` attestation failure, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo); see the [limits of local key-history evidence](./attestation.md#app-attest-without-darkbloom-mdm) |
 | `apns pushes` | APNs code-identity pushes received and answered in 24 h, and whether APNs registration produced a device token (`apns-push-history.json`) | No token: APNs registration failed, so stay in the GUI session and restart. None received while the coordinator says it pushed: an APNs delivery problem, so keep the Mac awake and online. Received but unanswered: `darkbloom restart` |
 | `devicecheckd log` | Device-wide system App Attest patterns, potentially from other apps; they cannot be attributed to Darkbloom or establish this provider's key failure. Administrator log access is required | Use an explicit administrator-run report for supporting context; do not infer provider key loss or rotate a key from these observations alone |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
@@ -83,10 +83,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
+| `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
 | `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
-`darkbloom verify` runs the same set and exits 1 on any ⚠.
+`darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
+and exits 1 on any ⚠.
 
 The process-table, local-port and sleep probes have a five-second execution
 deadline, followed by bounded child termination. Large output is captured in
@@ -129,6 +131,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
 | Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
+| Console shows the provider offline while `darkbloom status` prints `Daemon: running` and a `Not serving:` line | A `stop`, `restart`, `start` or `update` drain timed out, was interrupted (Ctrl+C), or drained without a relaunch. The old process stays alive and refuses new work (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`, `Status.lifecycleDrainLine`); the command also turned automatic restart off (`provider-swift/Sources/darkbloom/ServiceDrain.swift`, `ServiceDrain.prepare`) | `darkbloom restart` to serve again or `darkbloom stop` to stay stopped, each with a new drain deadline; add `--force` to interrupt unfinished work |
 
 ## Coordinator connection
 
@@ -165,16 +168,45 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
 | Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
+| GLM-5.3-Flash requests or loads fail and the log mentions Metal `Insufficient Memory` | The macOS GPU wired-memory limit is below what GLM plans at full KV | [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
+
+## GLM-5.3-Flash GPU wired-memory limit
+
+The [requirement and values](./hardware-requirements.md) apply to a 256 GB M5
+Mac serving GLM-5.3-Flash. The commands need an administrator; the provider
+never runs `sudo` itself.
+
+1. Run `darkbloom doctor`. A `glm wired limit` ⚠ prints the current limits and
+   these commands.
+2. Apply the limits until the next reboot:
+
+   ```bash
+   sudo sysctl -w iogpu.wired_limit_mb=245760 vm.global_user_wire_limit=261134011596 vm.user_wire_limit=261134011596
+   ```
+
+3. Restart the provider so MLX reads the new limit: `darkbloom restart`.
+4. To reapply them at every boot, paste the LaunchDaemon block that `doctor`
+   prints after its detailed checks. It writes
+   `/Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`, which runs
+   `/usr/sbin/sysctl -w` with the three values at load, and bootstraps it with
+   `sudo launchctl bootstrap system /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`.
+
+Verify: `sysctl iogpu.wired_limit_mb vm.global_user_wire_limit vm.user_wire_limit`
+prints the three values, and `darkbloom doctor` shows `glm wired limit` ✓ with
+them. To roll back, run
+`sudo launchctl bootout system/com.layrlabs.glm53-wired-limits`, delete the
+plist and reboot.
 
 ## KV-backend crash-loop guard
 
 The watchdog writes `~/.darkbloom/kv-backend-guard.json` after
 `crashLoopTripThreshold` restarts ([runtime constants](./cli-reference.md#runtime-constants));
-while it matches the running version the
-engine forces `auto` selections to contiguous KV, without overriding explicit
-backend settings, and `doctor` shows `kv backend crash-loop guard`
+while it matches the running version it changes automatic backend selection,
+and `doctor` shows `kv backend crash-loop guard`
 (`provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift`;
 `provider-swift/Sources/darkbloom/Diagnostics/KVBackendGuardDiagnostics.swift`).
+The resulting fallback or refusal depends on live precision; see the
+[backend posture and recovery reference](./cli-reference.md#darkbloom-doctor-1).
 
 ```bash
 darkbloom doctor                        # read the guard record and the posture per slot
@@ -183,25 +215,19 @@ darkbloom restart
 ```
 
 A new binary version clears a stale record on start. Clearing the guard restores
-normal selection on the next model load: candidate `auto` retries paged only for
-the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); all other
-IDs remain contiguous. Automatic paged failures still fall back to contiguous.
-Explicit settings, capability/span-mask vetoes and `DARKBLOOM_CBV2_PAGED_KV=0`
-still apply, so clearing the guard does not guarantee paged service. The
-[Qwen-first rollout](../design/qwen-first-paged-ssd-rollout.md) is **not yet
-validated**; clearing a guard is not validation of that rollout.
+normal selection on the next model load. It does not bypass live precision,
+operator settings or loaded-model capability checks, and does not guarantee
+paged service or qualify a runtime.
+The [Qwen-first rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md)
+is historical qualification evidence, not the current selection policy.
 
 `kv backend posture` ✗ means an explicit backend request was refused or the
-served backend differs from the request. An explicit
-`engine_v2_kv_backend = "paged"` (or per-model entry) refuses construction
-failures instead of falling back; a kill switch or capability veto can instead
-produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
-that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
-is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
-automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
-`degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
-`prepareProductionBackend`).
+served backend differs from the request. Read the reported reason. For explicit
+contiguous recovery, first resolve live precision to `native`, then select
+`contiguous`; account for per-model and environment overrides using the
+[precision settings](./cli-reference.md#providertoml-keys-read-by-the-cli).
+The [backend posture reference](./cli-reference.md#darkbloom-doctor-1) defines
+the effects of explicit selection, capability vetoes and the paged kill switch.
 
 Paging rollback alone does not disable eligible Qwen SSD reuse on contiguous.
 SSD caching remains enabled by default with no resident retention; use

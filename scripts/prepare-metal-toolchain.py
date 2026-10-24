@@ -67,12 +67,28 @@ class MetalSetup:
         return result
 
     def checked(self, arguments):
-        result = self.invoke(arguments)
-        if result.returncode != 0:
+        last_failure = None
+        for attempt in range(1, 4):
+            try:
+                result = self.invoke(arguments)
+            except SetupError as error:
+                if last_failure is not None:
+                    raise SetupError(f"{error}; last download failure: {last_failure}") from error
+                raise
+            if result.returncode == 0:
+                if result.stdout.strip():
+                    self.log(result.stdout.strip())
+                return
             detail = (result.stderr or result.stdout or "no diagnostics").strip()
-            raise SetupError(f"Metal setup command failed ({result.returncode}): {detail}")
-        if result.stdout.strip():
-            self.log(result.stdout.strip())
+            last_failure = f"Metal setup command failed ({result.returncode}): {detail}"
+            # Catalog retrieval can fail transiently before either download path starts.
+            if (arguments[:len(DOWNLOAD)] != DOWNLOAD or result.returncode != 70
+                    or "Failed fetching catalog for assetType (com.apple.MobileAsset.MetalToolchain)" not in detail
+                    or attempt == 3):
+                raise SetupError(last_failure)
+            delay = min(5.0 * attempt, self.remaining())
+            self.log(f"{last_failure}\nRetrying Metal catalog download ({attempt + 1}/3) in {delay:g}s")
+            self.sleep(delay)
 
     def probe(self, limit=30.0):
         result = self.invoke(PROBE, limit=limit)

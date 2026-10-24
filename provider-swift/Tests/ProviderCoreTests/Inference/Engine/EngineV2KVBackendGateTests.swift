@@ -16,9 +16,9 @@ import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
-import MLXLMCommon
 import Testing
 
+@testable import MLXLMCommon
 @testable import ProviderCore
 
 // MARK: - Tiny real-family fixtures
@@ -125,7 +125,11 @@ private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 /// version would fail every explicit-paged assertion here — the same reason
 /// tests inject `environment:` instead of inheriting the shell's kill switch.
 /// A caller's explicit value wins.
-private let hermeticGuardEnvironment = [KVBackendGuardStore.pathEnvKey: "/dev/null"]
+private let hermeticGuardEnvironment = [
+    KVBackendGuardStore.pathEnvKey: "/dev/null",
+    // This suite qualifies the existing native backend/fallback contract.
+    EngineV2KVQuantizationPolicy.environmentKey: "native",
+]
 
 private func gateEnvironment(_ overrides: [String: String] = [:]) -> [String: String] {
     hermeticGuardEnvironment.merging(overrides) { _, explicit in explicit }
@@ -195,6 +199,16 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
+    @Test(arguments: ["gemma-4-26b", "gemma-4-26b-8bit", "unlisted-supported-model"])
+    func balancedAutoUsesActualPagedFormatIndependentOfListingAlias(modelID: String) async throws {
+        let build = try makeBuild(model: tinyGPTOSS(), modelID: modelID, kvBackend: .auto,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "balanced"])
+        #expect(build.kvBackendKind == .paged && build.kvQuantization == .balanced)
+        #expect(build.kvBackendFallbackReason == nil)
+        #expect(build.engine.capacity().pagedStorage != nil)
+        await build.engine.shutdown()
+    }
+
     @Test("qualification constructs width 16 while unknown serving stays at 8")
     func qualificationConstructionPreservesRequestedWidth() async throws {
         for purpose in [EngineV2Factory.ConstructionPurpose.serving, .benchmark] {
@@ -210,7 +224,7 @@ struct EngineV2KVBackendGateTests {
         }
         // Benchmark intent never removes the native architecture guard.
         #expect(EngineV2Factory.nativeConcurrentRequestLimit(
-            requested: 16, qwen4: true, environment: [:]) == 1)
+            requested: 16, qwen4: true, environment: gateEnvironment()) == 1)
     }
 
     @Test(arguments: candidateQwenIDs)
@@ -493,7 +507,7 @@ struct EngineV2KVBackendGateTests {
             maxConcurrentRequests: 2,
             kvBackend: .paged,
             maxContextLength: 2048,
-            environment: [:],
+            environment: gateEnvironment(),
             pagedPreflightOverride: { _ in })
         #expect(prepared.kind == .paged)
         #expect(prepared.fallbackReason == nil)
@@ -611,7 +625,7 @@ struct EngineV2KVBackendGateTests {
             maxConcurrentRequests: 2,
             kvBackend: .paged,
             maxContextLength: 2048,
-            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"],
+            environment: gateEnvironment([EngineV2KVBackendPolicy.killSwitchEnvKey: "0"]),
             pagedPreflightOverride: { _ in })
         #expect(prepared.kind == .contiguous)
         #expect(prepared.fallbackReason == "kill_switch")
@@ -684,7 +698,7 @@ struct EngineV2KVBackendGateTests {
             maxConcurrentRequests: 2,
             kvBackend: .paged,
             maxContextLength: 2048,
-            environment: [:])
+            environment: gateEnvironment())
         #expect(prepared.kind == .paged)
         let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
         let paged = try #require(backend as? PagedKVBackend)
@@ -696,19 +710,49 @@ struct EngineV2KVBackendGateTests {
         // `assembleProductionBuild`; this pins the pool against it so a
         // re-introduced parallel constant fails here instead of aborting
         // the daemon under a long windowed prefill.
-        // The solo-prefill stripe (default-on) is a chunk the engine can
-        // actually schedule, so the lockstep covers max(chunk, stripe).
+        // The solo-prefill stripe is also a chunk the engine can actually
+        // schedule, so the lockstep covers max(chunk, stripe).
         #expect(
             paged.pool.config.maxPrefillChunk
                 == max(
                     prepared.schedulerConfig.prefillChunkSize,
                     prepared.schedulerConfig.soloPrefillStripeTokens ?? 0))
-        #expect(prepared.schedulerConfig.soloPrefillStripeTokens
-            == EngineV2Factory.defaultSoloPrefillStripeTokens)
+        // Gemma 4's wide plain chunk replaces its former default stripe, so
+        // the rings keep their size.
+        #expect(prepared.schedulerConfig.prefillChunkSize == EngineV2Factory.widePrefillChunkTokens)
+        #expect(prepared.schedulerConfig.soloPrefillStripeTokens == nil)
+        #expect(paged.pool.config.maxPrefillChunk == EngineV2Factory.defaultSoloPrefillStripeTokens)
         #expect(prepared.schedulerConfig.maxConcurrentRequests == 2)
         // Prefix caching is the ONLY field assembly may still decide, and
         // it is off until a cache instance is supplied.
         #expect(!prepared.schedulerConfig.enablePrefixCache)
+    }
+
+    @Test("the wide plain chunk replaces the stripe without resizing the paged pool")
+    func widePrefillChunkKeepsPagedPoolGeometry() async throws {
+        let model = try tinyGPTOSS()
+        func prepare(_ overrides: [String: String]) throws -> (CBv2SchedulerConfig, Int) {
+            let prepared = try EngineV2Factory.prepareProductionBackend(
+                model: model, kvBytesCapacity: gateTestCapacity, maxConcurrentRequests: 2,
+                kvBackend: .paged, maxContextLength: 2048, environment: gateEnvironment(overrides))
+            #expect(prepared.kind == .paged)
+            let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
+            let paged = try #require(backend as? PagedKVBackend)
+            return (prepared.schedulerConfig, paged.pool.config.maxPrefillChunk)
+        }
+        // GPT-OSS keeps the SDK geometry by default; the wide chunk is an opt-in.
+        let (wide, widePoolChunk) = try prepare([
+            EngineV2Factory.prefillChunkKey: "2048", EngineV2Factory.stepTokenBudgetKey: "4096",
+        ])
+        #expect(wide.prefillChunkSize == EngineV2Factory.widePrefillChunkTokens)
+        #expect(wide.maxBatchedTokensPerStep == 2 * EngineV2Factory.widePrefillChunkTokens)
+        #expect(wide.soloPrefillStripeTokens == nil)
+        let (sdk, sdkPoolChunk) = try prepare([:])
+        #expect(sdk.prefillChunkSize == 512 && sdk.maxBatchedTokensPerStep == 2048)
+        #expect(sdk.soloPrefillStripeTokens == EngineV2Factory.defaultSoloPrefillStripeTokens)
+        // Windowed rings and their KV charges follow max(chunk, stripe).
+        #expect(widePoolChunk == sdkPoolChunk)
+        #expect(widePoolChunk == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
     @Test("resident cache policy is prompt-bound and follows the master gate")
@@ -723,11 +767,11 @@ struct EngineV2KVBackendGateTests {
         #expect(PrefixCachePolicy.residentConfig(
             modelId: "tiny-gemma",
             promptContractID: nil,
-            environment: [:]) == nil)
+            environment: gateEnvironment()) == nil)
         #expect(PrefixCachePolicy.residentConfig(
             modelId: "tiny-gemma",
             promptContractID: "contract",
-            environment: [PrefixCachePolicy.environmentFlag: "0"]) == nil)
+            environment: gateEnvironment([PrefixCachePolicy.environmentFlag: "0"])) == nil)
     }
 
     @Test("resolved paged backend installs resident L1; contiguous ignores it")
@@ -765,18 +809,67 @@ struct EngineV2KVBackendGateTests {
         #expect(!contiguous.residentPrefixCacheEnabled)
     }
 
+    @Test("packed factories preserve complete capability but reject legacy resident/tensor prefixes")
+    func quantizedPrefixFactoryRejectsLegacyState() async throws {
+        let model = try tinyGemma4Text()
+        let resident = try #require(PrefixCachePolicy.residentConfig(
+            modelId: "tiny-gemma", promptContractID: "prompt-contract",
+            environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"]))
+        let prepared = try EngineV2Factory.prepareProductionBackend(
+            model: model, kvBytesCapacity: gateTestCapacity, maxConcurrentRequests: 2,
+            kvBackend: .paged, maxContextLength: 2048,
+            environment: gateEnvironment([EngineV2KVQuantizationPolicy.environmentKey: "balanced"]),
+            residentPrefixCache: resident)
+        #expect(prepared.kind == .paged && prepared.kvQuantization == .balanced)
+        #expect(prepared.modelCapabilities.supportsPrefixReuse)
+        #expect(!prepared.residentPrefixCacheEnabled)
+        #expect(prepared.pagedPoolConfig?.prefixSharingBlockSize == nil)
+        let attempted = GateFlag()
+        let legacy = await EngineV2SlotFactory.prepareAttentionPrefixCache(
+            modelId: "tiny-gemma", preparedBackend: prepared, scriptedEngine: false,
+            weightHash: String(repeating: "d", count: 64), promptContractID: "prompt-contract",
+            kvBudget: nil, environment: [PrefixCachePolicy.environmentFlag: "1"],
+            persistentTestNamespace: nil,
+            makePrefixCache: { _, _ in attempted.set(); return nil },
+            emitTelemetry: nil, logInfo: { _ in }, logWarning: { _ in })
+        #expect(legacy.cache == nil && legacy.capability == nil)
+        #expect(legacy.status.state == .disabled && legacy.status.reason == .unsupportedLayout)
+        #expect(!attempted.value, "Legacy construction must be refused before any cache IO")
+    }
+
+    @Test("packed historical targets retain complete SSD reuse")
+    func packedHistoricalSlotKeepsCompleteCache() async throws {
+        let outcome = try await slotCacheOutcome(kvBackendConfig: "paged",
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "balanced",
+                          PrefixCachePolicy.environmentFlag: "1"])
+        #expect(outcome.kind == .paged && outcome.cache)
+        #expect(!outcome.legacyConstructionAttempted)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout)
+        #expect(outcome.status.replayStrategy == .direct)
+        #expect(outcome.status.state == .ready)
+    }
+
     @Test("slot factory binds complete historical SSD state to the resolved paged backend")
     func slotFactoryOrdersResolvedBackendBeforeCache() async throws {
         let outcome = try await slotCacheOutcome(kvBackendConfig: "paged")
         #expect(outcome.kind == .paged)
         #expect(outcome.cache)
-        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout)
+        #expect(outcome.livePrecision == .native && outcome.checkpointPrecision == .balanced)
         #expect(outcome.usesEphemeralKey)
         #expect(!outcome.legacyConstructionAttempted)
         #expect(outcome.status.backend == .paged)
         #expect(outcome.status.replayStrategy == .direct)
         #expect(outcome.status.state == .ready)
         #expect(outcome.status.reason == .ready)
+    }
+
+    @Test("checkpoint-native override does not change native live backend selection")
+    func explicitNativeCheckpointKeepsExactStorage() async throws {
+        let outcome = try await slotCacheOutcome(kvBackendConfig: "paged", checkpointQuantizationConfig: "native")
+        #expect(outcome.kind == .paged && outcome.cache)
+        #expect(outcome.livePrecision == .native && outcome.checkpointPrecision == .native)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
     }
 
     @Test("slot factory REFUSES an explicit paged request it cannot serve")
@@ -829,7 +922,7 @@ struct EngineV2KVBackendGateTests {
                 assemblyOverrides: .init(
                     promptContractID: "tiny-gemma-contract",
                     pagedPreflight: { _ in throw PreflightFailure() }),
-                environment: [:],
+                environment: gateEnvironment(),
                 emitTelemetry: { telemetry.record($0) })
         }
         #expect(reason?.hasPrefix("kernel_preflight:") == true)
@@ -870,12 +963,9 @@ struct EngineV2KVBackendGateTests {
             mtpStatus: .disabled(.configDisabled, configured: false),
             mtpArtifact: nil)
         let nominalRate = 100_000
-        let expectedRate =
-            nominalRate
-            + CBv2PrefixReuseCapability.derive(
-                layerKinds: model.cbv2LayerKinds,
-                backend: .contiguousUnquantized
-            ).fullKVBytesPerToken
+        let expectedRate = EngineV2Factory.nativeFullKVBytesPerToken(
+            layerKinds: model.cbv2LayerKinds,
+            dtypes: Array(repeating: .float32, count: model.cbv2LayerKinds.count))
 
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(
             modelId: "tiny-gpt-oss",
@@ -898,7 +988,7 @@ struct EngineV2KVBackendGateTests {
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
             preparedModel: preparedModel,
-            environment: [PrefixCachePolicy.environmentFlag: "0"])
+            environment: gateEnvironment([PrefixCachePolicy.environmentFlag: "0"]))
         let backendKind = await bundle.bridge.kvBackendKind
         let nativeRate = await bundle.bridge.kvBytesPerToken
         let heartbeat = await bundle.bridge.backendSlotCapacity()
@@ -921,6 +1011,7 @@ struct EngineV2KVBackendGateTests {
     private func slotCacheOutcome(
         kvBackendConfig: String,
         modelID: String = "tiny-gemma",
+        checkpointQuantizationConfig: String = "balanced",
         environment: [String: String] = [PrefixCachePolicy.environmentFlag: "1"]
     ) async throws -> (
         kind: EngineV2KVBackendKind,
@@ -928,7 +1019,9 @@ struct EngineV2KVBackendGateTests {
         completeLayout: String?,
         usesEphemeralKey: Bool,
         cache: Bool,
-        status: PrefixCacheModelStatus
+        status: PrefixCacheModelStatus,
+        livePrecision: EngineV2KVQuantizationSelection,
+        checkpointPrecision: EngineV2KVQuantizationSelection
     ) {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("slot-cache-gate-\(UUID().uuidString)", isDirectory: true)
@@ -971,6 +1064,7 @@ struct EngineV2KVBackendGateTests {
             maxConcurrentRequests: 2,
             kvBudget: nil,
             kvBackendConfig: kvBackendConfig,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
             weightHash: String(repeating: "d", count: 64),
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -991,29 +1085,36 @@ struct EngineV2KVBackendGateTests {
                 SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
             ]) { _, isolated in isolated }))
         let kind = await bundle.bridge.kvBackendKind
+        let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
+        #expect(engine.completeCheckpointCodec?.backendLayout
+            == bundle.bridge.ssdHybridCheckpointStore?.config.backendLayout,
+            "The engine and encrypted store must use the same resolved checkpoint encoding")
         let outcome = (
             kind: kind,
             legacyConstructionAttempted: attempted.value,
             completeLayout: bundle.bridge.ssdHybridCheckpointStore?.config.backendLayout,
             usesEphemeralKey: bundle.bridge.ssdHybridCheckpointStore?.usesEphemeralKey == true,
             cache: bundle.bridge.ssdHybridCheckpointStore != nil || bundle.bridge.ssdPrefixCache != nil,
-            status: bundle.bridge.prefixCacheModelStatus()
+            status: bundle.bridge.prefixCacheModelStatus(),
+            livePrecision: bundle.bridge.kvQuantization,
+            checkpointPrecision: bundle.bridge.kvCheckpointQuantization
         )
         await bundle.bridge.shutdown()
         return outcome
     }
 
-    @Test("a resolved-CONTIGUOUS slot gets NO prefix cache — adoption is not exact there")
-    func contiguousSlotGetsNoPrefixCache() async throws {
+    @Test("a resolved-contiguous slot restores historical state without selecting paged execution")
+    func contiguousSlotKeepsNativeHistoricalCache() async throws {
         let outcome = try await slotCacheOutcome(kvBackendConfig: "contiguous")
         #expect(outcome.kind == .contiguous)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(!outcome.cache, "a contiguous slot must not hold an SSD prefix cache")
+        #expect(outcome.cache)
         #expect(outcome.status.backend == .contiguous)
-        #expect(outcome.status.state == .disabled)
-        #expect(outcome.status.reason == .unsupportedLayout)
-        #expect(outcome.status.replayStrategy == .unknown)
-        #expect(outcome.completeLayout == nil)
+        #expect(outcome.status.state == .ready)
+        #expect(outcome.status.reason == .ready)
+        #expect(outcome.status.replayStrategy == .direct)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
+        #expect(outcome.livePrecision == .native && outcome.checkpointPrecision == .balanced)
     }
 
     @Test("a resolved-PAGED slot KEEPS the prefix cache — the gate is not a global disable")
@@ -1021,7 +1122,7 @@ struct EngineV2KVBackendGateTests {
         let outcome = try await slotCacheOutcome(kvBackendConfig: "paged")
         #expect(outcome.kind == .paged)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout)
         #expect(outcome.status.replayStrategy == .direct)
         #expect(outcome.cache)
         #expect(outcome.status.backend == .paged)
@@ -1029,42 +1130,39 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.status.reason == .ready)
     }
 
-    @Test("the gate follows the RESOLVED backend: paged degraded by the kill switch gets no cache")
-    func killSwitchDegradedSlotGetsNoPrefixCache() async throws {
-        // The control the v0.8.0 gate found by accident and the reason this
-        // must key on the resolved kind: an arm that REQUESTED paged,
-        // resolved contiguous under the kill switch, and diverged with the
-        // contiguous rows. Requested does not predict; resolved does.
+    @Test("the paged kill switch keeps native execution and independently eligible historical storage")
+    func killSwitchDegradedSlotKeepsNativeCheckpoint() async throws {
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "paged",
             environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0",
                           PrefixCachePolicy.environmentFlag: "1"])
         #expect(outcome.kind == .contiguous)
-        #expect(
-            !outcome.legacyConstructionAttempted,
-            "a slot serving contiguous gets no cache however it got there")
-        #expect(!outcome.cache)
-        #expect(outcome.status.reason == .unsupportedLayout)
+        #expect(!outcome.legacyConstructionAttempted)
+        #expect(outcome.cache)
+        #expect(outcome.status.reason == .ready)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
+        #expect(outcome.livePrecision == .native)
     }
 
     @Test("unlisted tiny Gemma `.auto` stays contiguous even with explicit cache opt-in")
-    func autoSlotGetsNoPrefixCache() async throws {
+    func autoContiguousSlotKeepsCheckpointWithoutBackendOverride() async throws {
         // Only exact release IDs change automatic backend selection.
         let outcome = try await slotCacheOutcome(kvBackendConfig: "")
         #expect(outcome.kind == .contiguous)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(!outcome.cache)
-        #expect(outcome.status.reason == .unsupportedLayout)
+        #expect(outcome.cache)
+        #expect(outcome.status.reason == .ready)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
     }
 
     @Test("Historical paged targets construct complete SSD checkpoints by default",
           arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
     func historicalTargetDefaultCompleteSSD(modelID: String) async throws {
         let outcome = try await slotCacheOutcome(
-            kvBackendConfig: "auto", modelID: modelID, environment: [:])
+            kvBackendConfig: "auto", modelID: modelID, environment: gateEnvironment())
         #expect(outcome.kind == .paged)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout)
         #expect(outcome.cache)
         #expect(outcome.status.backend == .paged)
         #expect(outcome.status.state == .ready)
@@ -1077,16 +1175,19 @@ struct EngineV2KVBackendGateTests {
     func gemmaQatDefaultCacheKillSwitch(key: String) async throws {
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "auto", modelID: "gemma-4-26b-qat-4bit", environment: [key: "0"])
-        #expect(!outcome.cache)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(outcome.completeLayout == nil)
-        #expect(outcome.status.state == .disabled)
         if key == PrefixCachePolicy.environmentFlag {
+            #expect(!outcome.cache)
+            #expect(outcome.completeLayout == nil)
+            #expect(outcome.status.state == .disabled)
             #expect(outcome.kind == .paged)
             #expect(outcome.status.reason == .configDisabled)
         } else {
             #expect(outcome.kind == .contiguous)
-            #expect(outcome.status.reason == .unsupportedLayout)
+            #expect(outcome.cache)
+            #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
+            #expect(outcome.status.state == .ready)
+            #expect(outcome.status.reason == .ready)
         }
     }
 
@@ -1168,7 +1269,7 @@ struct EngineV2KVBackendGateTests {
             mtpStatus: .disabled(.configDisabled, configured: false),
             mtpArtifact: nil)
 
-        return try await EngineV2SlotFactory.makeProductionBundle(
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
             modelId: modelID,
             modelType: isQwen ? "qwen3_5_moe" : "gemma4",
             isVLM: true,
@@ -1180,7 +1281,8 @@ struct EngineV2KVBackendGateTests {
                 fp16KVBytesPerToken: 1_024,
                 maxContextLength: 2_048,
                 defaultMaxTokens: 32),
-            kvBytesCapacity: gateTestCapacity,
+            // Qwen's fixed state must clear the serving floor; the pool stays lazy.
+            kvBytesCapacity: isQwen ? 2 << 30 : gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBudget: nil,
             kvBackendConfig: kvBackendConfig,
@@ -1193,6 +1295,11 @@ struct EngineV2KVBackendGateTests {
             assemblyOverrides: .init(pagedPreflight: pagedPreflightOverride),
             environment: gateEnvironment(environment.merging(
                 [PrefixCachePolicy.environmentFlag: "0"]) { _, disabled in disabled }))
+        if isQwen, await bundle.bridge.kvBackendKind == .paged {
+            let snapshot = await bundle.bridge.capacitySnapshot()
+            #expect(snapshot.pagedStorage?.committedBytes == 0)
+        }
+        return bundle
     }
 
     /// The other side of the same gate, and the reason it is a gate rather

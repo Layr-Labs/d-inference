@@ -132,7 +132,7 @@ extension ProviderLoop {
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
     internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
-        if let modelId, !autopilotAllowsModel(modelId) {
+        if let modelId, !autopilotServesModel(modelId) {
             throw MultiModelBatchSchedulerEngineError.requestRejected("model_not_selected")
         }
         if autopilotCommand != nil {
@@ -190,7 +190,8 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
-        send: SendHandle
+        send: SendHandle,
+        workFIFOGate: WorkFIFOGate? = nil
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
@@ -342,9 +343,12 @@ extension ProviderLoop {
         // tools, content-less messages, the `developer` role) before
         // retrying — surfacing the real decoder error on failure rather
         // than a masked one (#252). See ProviderLoop+InboundDecode.swift.
-        let chatRequest: OpenAIChatCompletionRequest
+        // `decodeInboundChatRequest` runs that decode and also reads the
+        // body extensions below, in the same parse when the tool and
+        // function-call repairs leave the body unchanged.
+        let inbound: InboundChatRequest
         do {
-            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
+            inbound = try Self.decodeInboundChatRequest(decryptedData)
         } catch {
             // Privacy: the provider logger renders the whole message `.public`, and
             // reports collect this subsystem — so never interpolate the raw decode
@@ -358,6 +362,7 @@ extension ProviderLoop {
             rejectInvalidRequest()
             return
         }
+        let chatRequest = inbound.request
         profile.mark(.parsed)
 
         // Reject unknown/non-native audio before acceptance or cold loading.
@@ -390,7 +395,7 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths.
-        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
+        let templateControls = inbound.extensions.templateControls.resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -399,10 +404,10 @@ extension ProviderLoop {
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
         // honored by the EngineV2 path (see EngineV2Logprobs.swift).
-        let logprobsSpec = Self.extractLogprobsSpec(from: decryptedData)
+        let logprobsSpec = inbound.extensions.logprobsSpec
         // OpenAI `logit_bias` / `seed` (also absent from the upstream request
         // shape). Overlaid onto the EngineV2 translation.
-        let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
+        let samplingOverrides = inbound.extensions.samplingOverrides
 
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -437,7 +442,15 @@ extension ProviderLoop {
         // load step: a cold sample includes model-load latency and must never
         // calibrate warm quotes.
         let modelWasResidentAtDispatch = modelSlots[modelId] != nil
-        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        // A cold model is sized only after released loads of other models
+        // have taken their capacity, and a rejection while a released load of
+        // the same model runs is checked again after it
+        // (`ProviderLoop+WorkFIFO.swift`).
+        if !modelWasResidentAtDispatch { await awaitReleasedLoads(otherThan: modelId) }
+        var fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        if fastAdmissionRejected, await awaitReleasedLoads(of: modelId) {
+            fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        }
         profile.mark(.admission)
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -497,7 +510,7 @@ extension ProviderLoop {
         // Authoritative autopilot check after all admission suspensions and
         // before request ownership is registered. Managed network work may use
         // warm models only; owner-local work retains its own load path.
-        if !autopilotAllowsModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
+        if !autopilotServesModel(modelId) || autopilotCommand != nil || (autopilotManagesResidency && modelSlots[modelId] == nil) {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId,
                     failure: InferenceFailure(code: .capacity, statusCode: 503), profile: profile),
@@ -546,6 +559,11 @@ extension ProviderLoop {
             f.set(.loadCold, !loadWasWarm)
             f.set(.loadParked, loadParked)
         }
+        // Accepted and registered: later events need not queue behind a cold
+        // load or another load's wait. Native MiMo keeps serial admission.
+        if !loadWasWarm, advertisedModels[modelId]?.modelType != "mimo_v2" {
+            releaseWorkFIFO(workFIFOGate, requestId: requestId, modelId: modelId)
+        }
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
@@ -556,6 +574,7 @@ extension ProviderLoop {
             profile.mark(.loadWaitEnd)
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
+            GLM5NextWiredLimitNotice.report(error, modelID: modelId)
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
@@ -664,12 +683,18 @@ extension ProviderLoop {
                 terminal: callbacks.terminal)
         }
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
+        // The managed Super owner renders, parses and validates through its
+        // pinned prompt contract and output parsers, never the generic engine.
+        let superOwner = slot.modelContainer.nemotronSuper
         // Logprobs passthrough: a per-request channel the bridge pump fills
         // with OpenAI-shaped entries and the frames loop below drains into
         // content-bearing SSE chunks. nil (request didn't ask) ⇒ frames
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
+        // Withheld Flint reasoning must not return as logprob entry tokens.
+        let filtersReasoningLogprobs = logprobsSpec != nil && FlintRequestPolicy.withholdsReasoning(
+            chatRequest, controls: templateControls, modelType: modelType)
 
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -847,7 +872,17 @@ extension ProviderLoop {
             // already resolved. This keeps the engine constructor's
             // "model not loaded" path unreachable on this code path while
             // still going through the upstream library for SSE encoding.
-            let providerEngine = MultiModelBatchSchedulerEngine(
+            let providerEngine: any MLXServerEngine
+            if let superOwner {
+                // Text prefix reuse is partitioned by the authenticated scope
+                // and off without one; it emits no cache receipts or usage.
+                // Schema metadata passed the protocol check above, so it is
+                // trusted as on the generic engine.
+                providerEngine = superOwner.chatEngine(body: decryptedData,
+                    hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
+                    trustsSchemaMetadata: true)
+            } else {
+                providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
@@ -879,6 +914,7 @@ extension ProviderLoop {
                 },
                 promptWork: promptWork
             )
+            }
 
             // Force-stream so we get SSE frames even if the original request
             // had `stream: false`. The coordinator always uses streaming
@@ -905,8 +941,17 @@ extension ProviderLoop {
             // reasoning tokens (Harmony channels, Gemma4 channels,
             // Qwen3/DeepSeek <think> tags) are parsed into
             // reasoning_content rather than leaking as raw content.
-            if streamingRequest.reasoningParser == nil {
+            // Super's owner already splits its reference reasoning channel.
+            if streamingRequest.reasoningParser == nil, superOwner == nil {
                 streamingRequest.reasoningParser = Self.inferReasoningParser(for: modelType)
+            }
+            let floorRequest = streamingRequest
+            let promptFloor: @Sendable () -> Int = {
+                if let superOwner {
+                    return superOwner.promptTokenCount(body: decryptedData, trustsSchemaMetadata: true)
+                }
+                return Self.promptTokenFloor(request: floorRequest, tokenizer: tokenizer,
+                                             modelType: modelType, templateControls: templateControls)
             }
 
             let service = MLXOpenAIService(engine: providerEngine)
@@ -975,6 +1020,7 @@ extension ProviderLoop {
                 InferenceFailureLogger(logger: log).record(
                     requestId: requestId,
                     failure: failure)
+                GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
                 // TemplateException `error.localizedDescription` collapses to the
@@ -1035,6 +1081,11 @@ extension ProviderLoop {
             if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
+            // Visible output only (content, reasoning, tool names and argument
+            // text): the cancelled-stream billing floor. Streamed calls add one
+            // hash marker per fragment to `fullResponseText`, which would
+            // otherwise inflate that floor.
+            var deliveredText = ""
             var promptTokens = 0
             var completionTokens = 0
             // Profiler frame counters (locals; written to the profile once at
@@ -1061,6 +1112,11 @@ extension ProviderLoop {
             // upstream's usage block only carries the total completion count.
             var reasoningText = ""
             var reasoningTokens = 0
+            // Reasoning the request asked not to receive is never framed, but
+            // it is still generated: count it with the visible reasoning.
+            func generatedReasoningText() -> String {
+                reasoningText + v2UsageSignal.withheldReasoning
+            }
 
             // A cancelled request that already streamed output settles through
             // the completion path below with real usage, not a bare 499 ($0).
@@ -1081,13 +1137,18 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
+            var reasoningLogprobs = filtersReasoningLogprobs ? FlintReasoningLogprobsFilter() : nil
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
                     // Role/usage boilerplate is not content, so keep enforcing
                     // the same absolute deadline until a real content,
-                    // reasoning, or tool delta has been observed.
-                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                    // reasoning, or tool delta has been observed. Withheld
+                    // reasoning or answer text is generated output too, though
+                    // not framed (yet).
+                    if contentFrameCount == 0, v2UsageSignal.firstWithheldOutputAt == nil,
+                        rejectExpiredDeadline()
+                    {
                         return
                     }
                     if token.isCancelled {
@@ -1117,11 +1178,14 @@ extension ProviderLoop {
                     //   real assistant output on `delta.tool_calls`; a
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
+                    // - Reasoning withheld at the request's direction is never
+                    //   framed, so the hash commits to exactly what is emitted.
                     var frameToEmit = frame
                     if let parsed = Self.parseStreamChunk(frame) {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
+                            deliveredText += content
                             // Count only NON-empty content toward the billing
                             // floor: parseStreamChunk returns a non-nil but empty
                             // contentDelta for SSE frames carrying "content":""
@@ -1133,18 +1197,27 @@ extension ProviderLoop {
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
                             fullResponseText += reasoning
+                            deliveredText += reasoning
                             frameHadContent = true
                             reasoningText += reasoning
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                            for call in toolCalls {
+                                deliveredText += (call.function?.name ?? "") + (call.function?.arguments ?? "")
+                            }
+                            // A streamed call's first fragment is content: the
+                            // pre-content deadline no longer applies once a
+                            // call is visible, so it is never discarded late.
                             frameHadContent = true
                         }
                         if frameHadContent {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
-                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                // Withheld output was the first generated output.
+                                let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
+                                let elapsed = firstOutputAt - dispatchReceivedAt
                                 firstContentElapsedMs =
                                     Double(elapsed.components.seconds) * 1000.0
                                     + Double(elapsed.components.attoseconds) / 1e15
@@ -1167,14 +1240,15 @@ extension ProviderLoop {
                             // (OpenAI shape). The coordinator forwards this
                             // chunk verbatim, so no coordinator change is
                             // needed for the streaming path.
-                            if !reasoningText.isEmpty {
+                            let generatedReasoning = generatedReasoningText()
+                            if !generatedReasoning.isEmpty {
                                 // Re-tokenizing detokenized text isn't a perfect
                                 // identity (whitespace/special-token merges), so
                                 // clamp to the engine's completion count — a
                                 // reasoning subset can never exceed the total.
                                 reasoningTokens = min(
                                     tokenizer.inner.encode(
-                                        text: reasoningText, addSpecialTokens: false
+                                        text: generatedReasoning, addSpecialTokens: false
                                     ).count,
                                     max(0, completionTokens)
                                 )
@@ -1206,7 +1280,8 @@ extension ProviderLoop {
                     // never alter `delta.content`, so the response hash and
                     // billing extraction are unaffected.
                     if let logprobsChannel {
-                        pendingLogprobs += logprobsChannel.drain()
+                        let drained = logprobsChannel.drain()
+                        pendingLogprobs += reasoningLogprobs?.visible(drained) ?? drained
                         // Re-cap after every drain: without a content-bearing
                         // frame this buffer would grow unbounded past the
                         // channel's own cap (see the declaration comment).
@@ -1247,6 +1322,7 @@ extension ProviderLoop {
                     InferenceFailureLogger(logger: log).record(
                         requestId: requestId,
                         failure: failure)
+                    GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
@@ -1287,12 +1363,13 @@ extension ProviderLoop {
             }
 
             if cancelledMidStream {
-                if reasoningTokens == 0 && !reasoningText.isEmpty {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
                         reasoningTokens = min(
                             tokenizer.inner.encode(
-                                text: reasoningText, addSpecialTokens: false
+                                text: generatedReasoning, addSpecialTokens: false
                             ).count,
                             completionFloor
                         )
@@ -1305,19 +1382,14 @@ extension ProviderLoop {
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
                     deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: fullResponseText, addSpecialTokens: false
+                        text: deliveredText, addSpecialTokens: false
                     ).count,
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
                     )
                 )
-                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
-                    request: streamingRequest,
-                    tokenizer: tokenizer,
-                    modelType: modelType,
-                    templateControls: templateControls
-                ))
+                let terminal = partialUsage.cancelledTerminal(promptTokenFloor: promptFloor())
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
@@ -1356,9 +1428,13 @@ extension ProviderLoop {
 
                 // Partial billing stays tied to delivered output. Cache usage
                 // needs the native terminal that proves adoption; cancellation
-                // can end this frame loop before the bridge records it.
-                await slotEngineV2.settleCancelledStream(
-                    profile: profile, usageSignal: v2UsageSignal)
+                // can end this frame loop before the bridge records it. Super
+                // submits under its owner's own signal and reports no cache use;
+                // its stream termination cancels and joins the native request.
+                if superOwner == nil {
+                    await slotEngineV2.settleCancelledStream(
+                        profile: profile, usageSignal: v2UsageSignal)
+                }
             }
 
             // No usage chunk on a clean finish means an upstream regression.
@@ -1376,12 +1452,7 @@ extension ProviderLoop {
                     )
                 }
                 if promptTokens == 0 {
-                    promptTokens = Self.promptTokenFloor(
-                        request: streamingRequest,
-                        tokenizer: tokenizer,
-                        modelType: modelType,
-                        templateControls: templateControls
-                    )
+                    promptTokens = promptFloor()
                     if promptTokens > 0 {
                         log.warning(
                             "[\(requestId)] usage chunk missing/zero prompt tokens"
@@ -1391,10 +1462,11 @@ extension ProviderLoop {
                     }
                 }
                 // Re-tokenize reasoning here too when the usage frame is missing.
-                if reasoningTokens == 0 && !reasoningText.isEmpty && completionTokens > 0 {
+                let generatedReasoning = generatedReasoningText()
+                if reasoningTokens == 0 && !generatedReasoning.isEmpty && completionTokens > 0 {
                     reasoningTokens = min(
                         tokenizer.inner.encode(
-                            text: reasoningText, addSpecialTokens: false
+                            text: generatedReasoning, addSpecialTokens: false
                         ).count,
                         completionTokens
                     )
@@ -1422,6 +1494,7 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+            providerStats.addPromptTokensProcessed(UInt64(max(promptTokens, 0)))
 
             // Commit the TTFT sample (routing v2): completed real requests
             // only — a cancelled stream's first-token timing is still real,
@@ -1459,6 +1532,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            let localCachedTokens = min(usageInfo.promptTokens, usageInfo.cachedTokens ?? UInt64(max(0, v2UsageSignal.prefixCacheHitTokens ?? 0)))
+            providerStats.addCachedInputTokens(localCachedTokens)
+            providerStats.addReasoningTokens(min(usageInfo.reasoningTokens, usageInfo.completionTokens))
+            await me.recordLocalUsage(ProviderUsageRecord(
+                id: requestId, sessionStartedAt: me.startedAtEpoch, model: modelId,
+                inputTokens: usageInfo.promptTokens, outputTokens: usageInfo.completionTokens,
+                cachedInputTokens: localCachedTokens, reasoningTokens: usageInfo.reasoningTokens,
+                exact: !usageRecovered))
             finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(

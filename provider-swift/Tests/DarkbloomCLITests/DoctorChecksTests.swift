@@ -1,3 +1,4 @@
+import DarkbloomFanProtocol
 import Foundation
 import ProviderCore
 import Testing
@@ -17,7 +18,8 @@ struct DoctorChecksTests {
         configFileExists: Bool = true,
         models: [ModelInfo] = [],
         bootSecurity: BootSecuritySnapshot = .init(macOSMajorVersion: 26, sip: .enabled),
-        contention: LocalContentionSnapshot = .empty
+        contention: LocalContentionSnapshot = .empty,
+        fanHelperVersion: String? = nil
     ) -> [DoctorCheck] {
         buildDoctorChecks(
             snapshot: RuntimeSnapshot(
@@ -33,8 +35,18 @@ struct DoctorChecksTests {
                 models: models
             ),
             bootSecurity: bootSecurity,
-            contention: contention
+            contention: contention,
+            fanHelperVersion: { fanHelperVersion }
         )
+    }
+
+    @Test("doctor warns about an installed fan helper older than this build")
+    func outdatedFanHelper() {
+        #expect(check(checks(), "fan helper") == nil)
+        #expect(check(checks(fanHelperVersion: FanIPC.helperVersion), "fan helper") == nil)
+        let outdated = check(checks(fanHelperVersion: "1"), "fan helper")
+        #expect(outdated?.status == .warn)
+        #expect(outdated?.detail.contains("sudo \(BuildEnvironment.current.cliName) fan enable") == true)
     }
 
     private func check(_ checks: [DoctorCheck], _ name: String) -> DoctorCheck? {

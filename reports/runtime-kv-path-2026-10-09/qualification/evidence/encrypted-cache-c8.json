@@ -1,0 +1,347 @@
+{
+  "binary_sha256": "aebf7d99e8f95e1cee6b1a63e0d60f3450dfa40afa441088b94f524a243ced76",
+  "comparison": {
+    "balanced_files": 4,
+    "balanced_observed_restore_tokens": [
+      2048,
+      2048,
+      2048
+    ],
+    "balanced_saved_tokens_total": 6144,
+    "caveat": "Raw reductions include packed frontier-only capture:4 vs8 files and2048 vs3072 saved tokens per restore. Public DBK3 headers intentionally do not disclose exact per-file checkpoint positions.",
+    "native_files": 8,
+    "native_observed_restore_tokens": [
+      3072,
+      3072,
+      3072
+    ],
+    "native_saved_tokens_total": 9216,
+    "same_position_payload_comparison": false,
+    "total_authenticated_stage_read_reduction_fraction": 0.8211641677321354,
+    "total_write_reduction_fraction": 0.8684775125793314
+  },
+  "model_aggregate_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "profiles": [
+    {
+      "bytes_written": 853723034,
+      "consumed_prefix_tokens": 9216,
+      "encrypted_file_size_counts": {
+        "56377865": 1,
+        "56377901": 2,
+        "56377906": 1,
+        "157052837": 1,
+        "157052873": 2,
+        "157052878": 1
+      },
+      "entry_gpu_temp_c": 23.674850463867188,
+      "entry_gpu_temp_valid": true,
+      "files_written": 8,
+      "metadata_sha256": "8d92bd07bae8fd3a1e156605a93f627492e792eecfe64f03bff85bd21e13dc5a",
+      "profile": "native",
+      "qualified": true,
+      "report_sha256": "bc86d1d9c0149cbcead8ae5b2c4b8678cd2ebbf08d0d7b14a30afddda6eb2941",
+      "restores": [
+        {
+          "authenticated_stage_read_bytes": 157080050,
+          "control": "warm_tenant",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_read_bytes": 157080060,
+          "control": "cancelled",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        },
+        {
+          "authenticated_stage_read_bytes": 157080060,
+          "control": "recovered",
+          "matched_tokens": 3072,
+          "read_files_delta": 2,
+          "saved_tokens": 3072
+        }
+      ],
+      "shutdown": {
+        "activation_reserve_bytes": 3758096384,
+        "assistant_identity": {
+          "source": "none"
+        },
+        "cache_mode": "ssd_complete",
+        "cache_status": {
+          "reason": "cache_init_failed",
+          "state": "error"
+        },
+        "capacity": {
+          "active_requests": 0,
+          "active_tokens": 0,
+          "decode_rows_total": 387,
+          "kv_backend_capacity_bytes": 107860842572,
+          "kv_capacity_bytes": 107860842572,
+          "kv_in_use_bytes": 0,
+          "kv_reserved_bytes": 0,
+          "step_wall_nanos_total": 25474279039,
+          "steps_executed": 407,
+          "waiting_requests": 0
+        },
+        "engine_kv_capacity_bytes": 107860842572,
+        "idle_observation": {
+          "attempts": 1,
+          "elapsed_s": 3.3125e-05,
+          "pending_retirement": [],
+          "shutdown": true,
+          "status": "ready",
+          "timeout_s": 5
+        },
+        "key_mode": "ephemeral",
+        "kv_quantization": "native",
+        "memory_cache_enabled": false,
+        "mlx_memory": {
+          "active_bytes": 12254690313,
+          "cache_bytes": 7031887485,
+          "peak_bytes": 14587573113
+        },
+        "paged_storage": {
+          "address_pages": 4623,
+          "allocator_padding_bytes": 0,
+          "committed_bytes": 0,
+          "grant_bytes": 107860842572,
+          "last_allocation_allowance_bytes": 163835,
+          "live_page_bytes": 0,
+          "over_grant_bytes": 0,
+          "poison_bytes": 0,
+          "reserved_page_bytes": 0,
+          "segment_count": 0,
+          "slack_bytes": 0
+        },
+        "physical_memory_bytes": 137438953472,
+        "post_build_headroom_bytes": 86938730496,
+        "post_load_maximum_kv_bytes": 107858582940,
+        "post_load_maximum_scope": "Memory.active diagnostic; explicit-mode guard only; production grant uses loaded parameters",
+        "process_memory": {
+          "activation_reserve_bytes": 3758096384,
+          "active_bytes": 12254690313,
+          "cache_bytes": 7031887485,
+          "cap_bytes": 123695058124,
+          "charged_bytes": 0,
+          "closing_owner_count": 0,
+          "commitment_debt_bytes": 0,
+          "generation": 976258149441998,
+          "materialized_bytes": 0,
+          "owner_count": 0,
+          "policy_epoch": 1,
+          "remaining_bytes": 79886041088,
+          "sample_age_ms": 0,
+          "sample_seq": 19,
+          "system_available_bytes": 83644137472,
+          "unmaterialized_bytes": 0
+        },
+        "process_rss_bytes": 6235668480,
+        "production_grant": {
+          "activation_reserve_bytes": 3758096384,
+          "assistant_weight_bytes": 0,
+          "cap_fraction": 0.9,
+          "effective_cap_bytes": 123695058124,
+          "fleet_budget_bytes": 107860842572,
+          "grant_bytes": 107860842572,
+          "hard_cap_bytes": 123695058124,
+          "operator_reserve_bytes": 4294967296,
+          "physical_bytes": 137438953472,
+          "ram_prefix_allowance_bytes": 0,
+          "resident_weight_bytes": 12076119168,
+          "slot_count": 1,
+          "target_weight_bytes": 12076119168
+        },
+        "resident_bank_budget_bytes": 0,
+        "ssd_cache": {
+          "bytes_on_disk": 853723034,
+          "bytes_read": 471240170,
+          "bytes_written": 853723034,
+          "consumed_prefix_tokens": 9216,
+          "corrupt_dropped": 0,
+          "donation_read_bytes": 0,
+          "entries": 8,
+          "files_read": 6,
+          "files_written": 8,
+          "maximum_segment_bytes": 4194304,
+          "misses": 4,
+          "peak_staging_reservation_bytes": 20971520,
+          "peak_write_host_bytes": 20971520,
+          "stage_consumptions": 3,
+          "stage_ms": 162.437084,
+          "stage_read_bytes": 471240170,
+          "staged_bytes_in_use": 0,
+          "stages": 3,
+          "write_host_bytes_in_use": 0,
+          "write_host_capacity_refusals": 0,
+          "write_ms": 290.801335,
+          "writes_dropped": 0
+        }
+      },
+      "stage_read_bytes": 471240170,
+      "strict_pass": true,
+      "verdict_sha256": "172c04ad0e6efbd2f13617ff71e88ad81f3c30347577287a82f5589c65b2a5cd"
+    },
+    {
+      "bytes_written": 112283777,
+      "consumed_prefix_tokens": 6144,
+      "encrypted_file_size_counts": {
+        "28070916": 1,
+        "28070952": 2,
+        "28070957": 1
+      },
+      "entry_gpu_temp_c": 27.374256134033203,
+      "entry_gpu_temp_valid": true,
+      "files_written": 4,
+      "metadata_sha256": "b3f69d38184d1c181c93e7de60a652442998ecf50c991ccf87928104d0e98f87",
+      "profile": "balanced",
+      "qualified": true,
+      "report_sha256": "7a8d2c61f187f7ac2ef93fad676104fde80a0a14f85a6abcda079f246edcd584",
+      "restores": [
+        {
+          "authenticated_stage_read_bytes": 28091536,
+          "control": "warm_tenant",
+          "matched_tokens": 2048,
+          "read_files_delta": 2,
+          "saved_tokens": 2048
+        },
+        {
+          "authenticated_stage_read_bytes": 28091546,
+          "control": "cancelled",
+          "matched_tokens": 2048,
+          "read_files_delta": 2,
+          "saved_tokens": 2048
+        },
+        {
+          "authenticated_stage_read_bytes": 28091546,
+          "control": "recovered",
+          "matched_tokens": 2048,
+          "read_files_delta": 2,
+          "saved_tokens": 2048
+        }
+      ],
+      "shutdown": {
+        "activation_reserve_bytes": 3758096384,
+        "assistant_identity": {
+          "source": "none"
+        },
+        "cache_mode": "ssd_complete",
+        "cache_status": {
+          "reason": "cache_init_failed",
+          "state": "error"
+        },
+        "capacity": {
+          "active_requests": 0,
+          "active_tokens": 0,
+          "decode_rows_total": 387,
+          "kv_backend_capacity_bytes": 107860842572,
+          "kv_capacity_bytes": 107860842572,
+          "kv_in_use_bytes": 0,
+          "kv_reserved_bytes": 0,
+          "step_wall_nanos_total": 35102977046,
+          "steps_executed": 400,
+          "waiting_requests": 0
+        },
+        "engine_kv_capacity_bytes": 107860842572,
+        "idle_observation": {
+          "attempts": 1,
+          "elapsed_s": 3.1e-05,
+          "pending_retirement": [],
+          "shutdown": true,
+          "status": "ready",
+          "timeout_s": 5
+        },
+        "key_mode": "ephemeral",
+        "kv_quantization": "balanced",
+        "memory_cache_enabled": false,
+        "mlx_memory": {
+          "active_bytes": 12254694921,
+          "cache_bytes": 6494988462,
+          "peak_bytes": 15150503660
+        },
+        "paged_storage": {
+          "address_pages": 6670,
+          "allocator_padding_bytes": 0,
+          "committed_bytes": 0,
+          "grant_bytes": 107860842572,
+          "last_allocation_allowance_bytes": 196602,
+          "live_page_bytes": 0,
+          "over_grant_bytes": 0,
+          "poison_bytes": 0,
+          "reserved_page_bytes": 0,
+          "segment_count": 0,
+          "slack_bytes": 0
+        },
+        "physical_memory_bytes": 137438953472,
+        "post_build_headroom_bytes": 87247405056,
+        "post_load_maximum_kv_bytes": 107858582940,
+        "post_load_maximum_scope": "Memory.active diagnostic; explicit-mode guard only; production grant uses loaded parameters",
+        "process_memory": {
+          "activation_reserve_bytes": 3758096384,
+          "active_bytes": 12254694921,
+          "cache_bytes": 6494988462,
+          "cap_bytes": 123695058124,
+          "charged_bytes": 0,
+          "closing_owner_count": 0,
+          "commitment_debt_bytes": 0,
+          "generation": 2219557959293912,
+          "materialized_bytes": 0,
+          "owner_count": 0,
+          "policy_epoch": 1,
+          "remaining_bytes": 80602120192,
+          "sample_age_ms": 0,
+          "sample_seq": 78,
+          "system_available_bytes": 84360216576,
+          "unmaterialized_bytes": 0
+        },
+        "process_rss_bytes": 6216269824,
+        "production_grant": {
+          "activation_reserve_bytes": 3758096384,
+          "assistant_weight_bytes": 0,
+          "cap_fraction": 0.9,
+          "effective_cap_bytes": 123695058124,
+          "fleet_budget_bytes": 107860842572,
+          "grant_bytes": 107860842572,
+          "hard_cap_bytes": 123695058124,
+          "operator_reserve_bytes": 4294967296,
+          "physical_bytes": 137438953472,
+          "ram_prefix_allowance_bytes": 0,
+          "resident_weight_bytes": 12076119168,
+          "slot_count": 1,
+          "target_weight_bytes": 12076119168
+        },
+        "resident_bank_budget_bytes": 0,
+        "ssd_cache": {
+          "bytes_on_disk": 112283777,
+          "bytes_read": 84274628,
+          "bytes_written": 112283777,
+          "consumed_prefix_tokens": 6144,
+          "corrupt_dropped": 0,
+          "donation_read_bytes": 0,
+          "entries": 4,
+          "files_read": 6,
+          "files_written": 4,
+          "maximum_segment_bytes": 917504,
+          "misses": 4,
+          "peak_staging_reservation_bytes": 20971520,
+          "peak_write_host_bytes": 20971520,
+          "stage_consumptions": 3,
+          "stage_ms": 69.249126,
+          "stage_read_bytes": 84274628,
+          "staged_bytes_in_use": 0,
+          "stages": 3,
+          "write_host_bytes_in_use": 0,
+          "write_host_capacity_refusals": 0,
+          "write_ms": 70.382874,
+          "writes_dropped": 0
+        }
+      },
+      "stage_read_bytes": 84274628,
+      "strict_pass": true,
+      "verdict_sha256": "dd60d6db35a6c3cd42f0eb295a981075cd097ce98b8db3df07bba4fcb34819b4"
+    }
+  ],
+  "scope": "C8 fresh paired GPT strict encrypted-cache correctness; different packed/native checkpoint granularity is explicit",
+  "source_digest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa"
+}

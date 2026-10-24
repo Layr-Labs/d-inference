@@ -1,0 +1,48 @@
+{
+  "model": "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp",
+  "model_sha256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+  "test_stripe_tokens": 1024,
+  "embedded_mtp": true,
+  "donor_prompt_tokens": 7136,
+  "fork_prompt_tokens": 5776,
+  "shared_tokens": 5145,
+  "positions": [
+    1024,
+    5120,
+    6144
+  ],
+  "target_tensor_bytes": 261246972,
+  "target_encrypted_file_bytes": 261287014,
+  "extra_saved_tokens": 4096,
+  "before": {
+    "restored_tokens": 1024,
+    "ttft_seconds": 7.0151045,
+    "checkpoint_bytes_read": 93492672
+  },
+  "after": {
+    "restored_tokens": 5120,
+    "ttft_seconds": 1.165227292,
+    "checkpoint_bytes_read": 261324896
+  },
+  "cache_disabled": {
+    "restored_tokens": 0,
+    "ttft_seconds": 9.219309458
+  },
+  "donor": {
+    "ttft_seconds": 9.757257958,
+    "finish_to_done_seconds": 0.351732708
+  },
+  "identical_output": true,
+  "comparison": "same physical archive; demanded file withheld for old publication outcome; engine and store restarted per fork; two sequential samples",
+  "samples": 2,
+  "repeat": {
+    "before_ttft_seconds": 6.6999295,
+    "after_ttft_seconds": 1.08460825,
+    "cold_ttft_seconds": 8.098227584,
+    "donor_ttft_seconds": 9.607605625,
+    "donor_finish_to_done_seconds": 0.7347025,
+    "before_restored_tokens": 1024,
+    "after_restored_tokens": 5120,
+    "identical_output": true
+  }
+}

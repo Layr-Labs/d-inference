@@ -99,6 +99,23 @@ private final class NativeLoopControllerJoinObservation: @unchecked Sendable {
 }
 
 private extension ProviderLoop {
+    func nativePublicationCalibrationHandoff(modelID: String) async throws -> Bool {
+        guard let bridge = modelSlots[modelID]?.engineV2 else { throw NativeLoopTestFailure() }
+        isLoadingAny = true
+        modelsLoading.insert(modelID)
+        let activity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { activity.finish() }
+        try await finishNativeMiMoSlotPublication(modelID: modelID, deviceActivity: activity)
+        // Automatic scheduling retains its real posture gate. If that gate is
+        // closed on this host, directly request a probe without the posture
+        // gate to verify the construction receipt no longer blocks ownership.
+        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)
+        let attempted = await bridge.nativePublicationCalibrationAttempted()
+        let gateReleased = !isLoadingAny && !modelsLoading.contains(modelID)
+        await bridge.stopModelCalibration()
+        return gateReleased && (started || attempted)
+    }
+
     func nativeLifetimeBoundary(_ body: (@Sendable (String) async throws -> Void)?) {
         nativeMiMoBoundaryForTesting = body
     }
@@ -274,6 +291,27 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         await owner.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     }
 
+    /// Serve one real request through the native owner and let it finish, as a
+    /// provider does before an operator runs `darkbloom restart`. The payload
+    /// and Scheduler stay in this frame so neither outlives the request.
+    private func serveOneLocalRequestToCompletion(_ owner: ProviderLoop) async throws {
+        let modelID = self.modelID
+        let acquired = try await owner.acquireModelForLocal(modelID)
+        let lease = try XCTUnwrap(acquired.nativeConsumerLease)
+        let scheduler = MultiModelBatchSchedulerEngine(acquire: { _ in acquired },
+            tokenizerProvider: { _ in .init(tokenizer: acquired.tokenizer, modelType: acquired.modelType) },
+            availableModels: { [modelID] in [modelID] }, defaultMaxTokens: 2)
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: JSONSerialization.data(withJSONObject: [
+            "model": modelID, "messages": [["role": "user", "content": "x"]], "max_tokens": 2, "temperature": 0]))
+        var terminals = 0
+        for try await event in try await scheduler.streamChatCompletion(request: request) {
+            if case .info = event { terminals += 1 }
+        }
+        await lease.joinFromOutside()
+        XCTAssertEqual(terminals, 1)
+        XCTAssertEqual(lease.snapshot().phase, .completed)
+    }
+
     /// Keep the real acquired payload and Scheduler in a bounded frame. Once
     /// this returns, neither can retain model aliases during owner retirement.
     private func completeActuallyBoundRequestAcrossGracefulDrain(
@@ -401,6 +439,23 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertEqual(actualBudget.processLedger.state(for: before.owner), before)
         let retired = await owner.retireNativeMiMoOwner(modelID: modelID)
         XCTAssertTrue(retired)
+    }
+
+    func testNativePublicationReleasesConstructionActivityForCalibration() async throws {
+        try nativeLane()
+        let (owner, load, registry) = try await loaded()
+        try await isolateLifecycleState(owner)
+        let transaction = try XCTUnwrap(load.transaction)
+        do {
+            let scheduled = try await owner.nativePublicationCalibrationHandoff(modelID: modelID)
+            XCTAssertTrue(scheduled)
+            XCTAssertEqual(transaction.snapshot().phase, .published)
+            try await finish(owner, registry)
+            XCTAssertEqual(transaction.snapshot().phase, .retired)
+        } catch {
+            try await finish(owner, registry)
+            throw error
+        }
     }
 
     func testActualSealedCandidateCannotPublishAfterOwnerStop() async throws {
@@ -657,6 +712,29 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         }
     }
 
+    /// `darkbloom restart` and `stop` publish a graceful lifecycle drain. After
+    /// a served request, the native owner's retirement first waits on joining
+    /// that request's consumer; with nothing left in flight the drain must keep
+    /// retiring within its deadline and report `drained`, not an immediate
+    /// `timedOut` with zero unfinished requests.
+    func testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline() async throws {
+        try nativeLane()
+        let (owner, load, registry) = try await loaded()
+        try await isolateLifecycleState(owner)
+        let transaction = try XCTUnwrap(load.transaction)
+        do {
+            try await serveOneLocalRequestToCompletion(owner)
+            let identity = try XCTUnwrap(ProcessIdentity.current())
+            let status = await owner.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 30))
+            XCTAssertEqual(status.remaining, 0)
+            XCTAssertEqual(status.outcome, .drained)
+            XCTAssertEqual(transaction.snapshot().phase, .retired)
+        } catch {
+            _ = Unmanaged.passRetained(registry)
+            throw error
+        }
+    }
+
     func testForcedNativeDrainClosesGenerationBeforeBoundWorkCanSubmit() async throws {
         try nativeLane()
         let (owner, load, registry) = try await loaded()
@@ -888,5 +966,11 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
         let count = await owner.nativeLifetimeSlotCount()
         XCTAssertEqual(count, 0)
+    }
+}
+
+private extension EngineV2Bridge {
+    func nativePublicationCalibrationAttempted() -> Bool {
+        modelCalibration.task != nil || modelCalibration.nextAttempt != nil
     }
 }

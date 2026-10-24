@@ -7,15 +7,23 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 import unittest.mock as mock
 
+import provider_release_identity as release_identity
+
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("signing_validation", ROOT / "scripts/provider-signing-validation.py")
 VALIDATION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATION)
+PRODUCTS = release_identity.PRODUCTS
+MARKERS = release_identity.DOCUMENT["releaseVersionMarkers"]
+PROD, DEV, STAGING = "0.9.20", "0.9.20" + MARKERS["dev"] + "3", "0.9.20" + MARKERS["staging"] + "3"
+PROD_NAMES, DEV_NAMES, STAGING_NAMES = (release_identity.identity(v) for v in (PROD, DEV, STAGING))
 
 
 class SigningValidationTests(unittest.TestCase):
@@ -30,21 +38,33 @@ class SigningValidationTests(unittest.TestCase):
         build_job = workflow.split("  signing:", 1)[0]
         self.assertNotIn("secrets.", build_job)
         self.assertIn("provider-signing-validation.py cli-entitlements", workflow)
+        # Build, stage and sign use one set of names: the build job resolves
+        # them from the candidate, and the signing job receives them.
+        self.assertIn("provider_release_identity.py --source candidate", build_job)
+        signing_job = workflow.split("  signing:", 1)[1]
+        self.assertNotIn("provider_release_identity.py", signing_job)
+        for name in ["app_name", "cli_name", "enclave_name", "release_environment"]:
+            self.assertIn("${{ needs.build.outputs.%s }}" % name, signing_job)
 
-    def make_archive(self, directory, mutate=False, info_updates=None):
+    def make_archive(self, directory, mutate=False, info_updates=None, version="test-version",
+                     app=PROD_NAMES["appBundleName"], executable=PROD_NAMES["cliName"],
+                     name=PROD_NAMES["appDisplayName"], packaging=None):
         source = directory / "source"
         (source / "validation-inputs").mkdir(parents=True)
-        app_contents = source / "Darkbloom.app/Contents"
+        app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
-        info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": "test-version",
-                "CFBundleShortVersionString": "test-version", "CFBundleExecutable": "darkbloom"}
+        info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
+                "CFBundleShortVersionString": version, "CFBundleExecutable": executable,
+                "CFBundleName": name}
         info.update(info_updates or {})
         with (app_contents / "Info.plist").open("wb") as output:
             plistlib.dump(info, output)
         for name in ["entitlements.plist", "entitlements-enclave.plist"]:
             shutil.copy2(ROOT / "provider-swift" / name, source / "validation-inputs" / name)
         (source / "fixture.txt").write_text("synthetic unsigned archive fixture")
-        manifest = {"source_sha": "test-source", "version": "test-version", "files": VALIDATION.inventory(source)}
+        manifest = {"source_sha": "test-source", "version": version, "files": VALIDATION.inventory(source)}
+        if packaging is not None:
+            manifest["packaging"] = packaging
         (source / "unsigned-files.json").write_text(json.dumps(manifest))
         if mutate:
             (source / "fixture.txt").write_text("changed after manifest")
@@ -81,13 +101,154 @@ class SigningValidationTests(unittest.TestCase):
                 self.assertFalse((root / "escape").exists())
 
     def test_unpack_refuses_mismatched_bundle_identity_and_versions(self):
-        for key in ["CFBundleIdentifier", "CFBundleVersion", "CFBundleShortVersionString", "CFBundleExecutable"]:
+        for key in ["CFBundleIdentifier", "CFBundleVersion", "CFBundleShortVersionString", "CFBundleExecutable",
+                    "CFBundleName"]:
             with self.subTest(key=key), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = self.make_archive(root, info_updates={key: "wrong-value"})
                 with self.assertRaisesRegex(ValueError, "Info.plist"):
                     VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "output",
                         source_sha="test-source", version="test-version"))
+
+    def test_dev_version_requires_the_dev_app_identity(self):
+        layouts = {version: {"app": names["appBundleName"], "executable": names["cliName"],
+                             "name": names["appDisplayName"]}
+                   for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES), (STAGING, STAGING_NAMES)]}
+        for scenario, layout, version, valid in [
+                ("dev", layouts[DEV], DEV, True), ("prod", layouts[PROD], PROD, True),
+                ("staging", layouts[STAGING], STAGING, True),
+                ("prod-layout-dev-version", layouts[PROD], DEV, False),
+                ("dev-layout-prod-version", layouts[DEV], PROD, False),
+                ("staging-layout-dev-version", layouts[STAGING], DEV, False),
+                ("prod-layout-staging-version", layouts[PROD], STAGING, False)]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = self.make_archive(root, version=version, **layout)
+                arguments = argparse.Namespace(archive=archive, output=root / "output",
+                    source_sha="test-source", version=version)
+                if valid:
+                    VALIDATION.unpack(arguments)
+                else:
+                    with self.assertRaises(ValueError):
+                        VALIDATION.unpack(arguments)
+
+    def test_stage_renames_products_for_a_dev_release(self):
+        for version, names in [(PROD, PROD_NAMES), (DEV, DEV_NAMES)]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                products = root / "bin"
+                products.mkdir()
+                for product in [*PRODUCTS.values(), "darkbloom-fan-helper"]:
+                    (products / product).write_text(product)
+                (root / "mlx.metallib").write_text("metallib")
+                with mock.patch.object(VALIDATION.subprocess, "run"), \
+                        mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""):
+                    VALIDATION.stage(argparse.Namespace(source=ROOT, bin=products,
+                        metallib=root / "mlx.metallib", output=root / "stage", version=version))
+                app = root / "stage" / names["appBundleName"] / "Contents"
+                self.assertEqual({path.name: path.read_text() for path in (app / "MacOS").iterdir()}, {
+                    names["cliName"]: PRODUCTS["cli"], names["enclaveName"]: PRODUCTS["enclave"],
+                    "mlx.metallib": "metallib"})
+                info = plistlib.loads((app / "Info.plist").read_bytes())
+                self.assertEqual(info["CFBundleIdentifier"], VALIDATION.APP_ID)
+                self.assertEqual(info["CFBundleExecutable"], names["cliName"])
+                self.assertEqual(info["CFBundleName"], names["appDisplayName"])
+
+    def test_receipt_keeps_the_flat_product_names_for_a_dev_app(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / DEV_NAMES["appBundleName"] / "Contents"
+            (app / "MacOS").mkdir(parents=True)
+            for name in [DEV_NAMES["cliName"], DEV_NAMES["enclaveName"], "mlx.metallib"]:
+                (app / "MacOS" / name).write_text(name)
+            (app / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": DEV,
+                "CFBundleShortVersionString": DEV, "CFBundleExecutable": DEV_NAMES["cliName"],
+                "CFBundleName": DEV_NAMES["appDisplayName"]}))
+            (root / "unsigned-files.json").write_text(json.dumps(
+                {"source_sha": "s", "version": DEV, "submodules": []}))
+            notary = root / "notary.json"
+            notary.write_text(json.dumps({"status": "Accepted", "id": "n"}))
+            VALIDATION.receipt(argparse.Namespace(output=root, notary=notary))
+            self.assertEqual({path.name: path.read_text() for path in (root / "bin").iterdir()}, {
+                PRODUCTS["cli"]: DEV_NAMES["cliName"], PRODUCTS["enclave"]: DEV_NAMES["enclaveName"],
+                "mlx.metallib": "mlx.metallib"})
+
+    def candidate(self, root, document=None):
+        """A source checkout; without a document it predates the identity file."""
+        for name in ["entitlements.plist", "entitlements-enclave.plist"]:
+            (root / "provider-swift").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "provider-swift" / name, root / "provider-swift" / name)
+        if document is not None:
+            path = root / release_identity.RELATIVE_IDENTITY_FILE
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(document))
+        return root
+
+    def renamed_document(self):
+        document = json.loads(json.dumps(release_identity.DOCUMENT))
+        document["environments"]["dev"].update(
+            cliName="candidate-cli", enclaveName="candidate-enclave",
+            appBundleName="Candidate.app", appDisplayName="Candidate")
+        return document
+
+    def test_identity_falls_back_to_tooling_for_a_source_without_the_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            old = self.candidate(Path(temporary) / "old")
+            self.assertIs(release_identity.for_source(old), release_identity.DOCUMENT)
+            new = self.candidate(Path(temporary) / "new", self.renamed_document())
+            self.assertEqual(release_identity.identity(DEV, release_identity.for_source(new))["cliName"],
+                             "candidate-cli")
+            script = ROOT / "scripts/provider_release_identity.py"
+            for source, expected in [(old, PROD_NAMES["appBundleName"]), (new, PROD_NAMES["appBundleName"])]:
+                output = subprocess.run([sys.executable, str(script), "--source", str(source), PROD],
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertIn(f"APP_NAME={expected}\n", output)
+            output = subprocess.run([sys.executable, str(script), "--source", str(new), DEV],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertIn("APP_NAME=Candidate.app\n", output)
+            self.assertEqual(subprocess.run(
+                [sys.executable, str(script), "--environment", "--source", str(old), DEV],
+                capture_output=True, text=True, check=True).stdout, "dev\n")
+
+    def test_stage_records_the_candidates_names_and_unpack_uses_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.candidate(root / "candidate", self.renamed_document())
+            products = root / "bin"
+            products.mkdir()
+            for product in [*PRODUCTS.values(), "darkbloom-fan-helper"]:
+                (products / product).write_text(product)
+            (root / "mlx.metallib").write_text("metallib")
+            with mock.patch.object(VALIDATION.subprocess, "run"), \
+                    mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""):
+                VALIDATION.stage(argparse.Namespace(source=source, bin=products,
+                    metallib=root / "mlx.metallib", output=root / "stage", version=DEV))
+            manifest = json.loads((root / "stage/unsigned-files.json").read_text())
+            self.assertEqual(manifest["packaging"]["appBundleName"], "Candidate.app")
+            self.assertEqual(manifest["packaging"]["products"], PRODUCTS)
+            self.assertTrue((root / "stage/Candidate.app/Contents/MacOS/candidate-cli").is_file())
+
+    def test_unpack_checks_the_recorded_names(self):
+        packaged = {"cliName": "candidate-cli", "enclaveName": "candidate-enclave",
+                    "appBundleName": "Candidate.app", "appDisplayName": "Candidate", "products": PRODUCTS}
+        for scenario, layout, packaging, valid in [
+                ("recorded", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
+                 packaged, True),
+                ("layout-differs", {"app": "Candidate.app", "executable": "other-cli", "name": "Candidate"},
+                 packaged, False),
+                ("unsafe-name", {"app": "Candidate.app", "executable": "candidate-cli", "name": "Candidate"},
+                 dict(packaged, appBundleName="../Candidate.app"), False)]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = self.make_archive(root, version=DEV, packaging=packaging, **layout)
+                arguments = argparse.Namespace(archive=archive, output=root / "output",
+                    source_sha="test-source", version=DEV)
+                if valid:
+                    VALIDATION.unpack(arguments)
+                else:
+                    with self.assertRaises(ValueError):
+                        VALIDATION.unpack(arguments)
 
     def test_unpack_bounds_members_total_size_and_count(self):
         cases = [

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-23
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -10,15 +10,66 @@ memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
 
+Nemotron 3.5 Super (`nvidia-nemotron-3.5-super`) is registered for Apple M5 Max
+(128 GB) and M5 Ultra (`apple_m5`, at least 128 GB of unified memory). Its
+default eight-request speculating owner, serving the full 262,144-token
+context, leaves 13.9 GiB of a 128 GB Mac's cap beside its activation reserve,
+but a 16-image request beside it does not fit; with less memory available it
+loads a narrower owner, down to one request from 85.6 GiB available. Only
+256 GB (M3 Ultra) is measured on hardware. Plan about 75 GB of disk for its weights. The derivation
+is in
+[hardware support](../architecture/hardware-support.md#context); the slot is
+described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+Native live inference is the default. Independent checkpoint compression can
+reduce encoded older-row storage, not the native serving allocation or measured
+process RAM. Optional live-packed precision retains native recent, speculative,
+recurrent and assistant state; its actual rows, metadata and transient owners
+determine capacity. Neither mode reduces model-load quotations, OS reserves,
+activation floors or minimum serveable KV headroom. The RAM-tier table remains
+subject to the same load gate. Precision controls and fallback are in the
+[CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
+
+GLM-5.3-Flash (`glm-5.3-flash`) loads only on Apple M5 Max or M5 Ultra with at
+least 256 GB of unified memory. The provider reports runtime capability
+`glm5_next_v1` only on such a Mac, the catalog build additionally requires
+`apple_m5` and `mlx_nax`, and every other Mac refuses the load with its chip
+and memory in the reason (`GLM5NextHardwareRequirement`). On a 256 GiB host the
+post-load admission is about 56.8 GB: one 262,144-token request fits, and
+shorter requests run concurrently by their actual reserved tokens, at most two
+or three at once because the engine's step-scratch activation check caps
+running rows (`EngineV2Factory.glm5NextActivatableRows`). The provider also
+refuses GLM loads and prefetches when MTP is disabled. The
+[native implementation](../design/glm53-flash-native.md) does not reduce these
+memory safeguards.
+
+At full KV, GLM plans the whole 90% memory cap as GPU memory: about 247 GB on
+a 256 GB Mac. The macOS default GPU wired-memory limit (`iogpu.wired_limit_mb=0`)
+is Metal's recommended working set, about 222 GiB there, and Metal command
+buffers past it fail with "Insufficient Memory". Set the values the production
+256 GB hosts use: `iogpu.wired_limit_mb=245760` (physical memory less 16 GiB)
+and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
+(95% of physical memory), then restart the provider. The
+[troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
+keep them after a reboot. Only the 256 GB values are defined
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit.recommendation`); they change no admission or capacity
+figure.
+
+Current backend behavior is owned by the
+[platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).
+Immutable external citations below preserve evidence snapshots, not current
+source or proof of deployed policy.
+
 ## Registering interest for unsupported hardware
 
 | Earn-page behavior | Meaning | Code |
 |---|---|---|
-| Smaller-model or production-readiness notification action | Both register the same account's selected Mac hardware; selecting different hardware permits an update | `console-ui/src/app/earn/SmallModelsInterest.tsx`, `useSmallModelsInterest.ts` |
-| Pending sign-in or saving state | Registration has not been acknowledged; closing the sign-in modal keeps the visible intent pending until explicit cancellation or expiry | `console-ui/src/app/earn/useSmallModelsInterest.ts` (`useSmallModelsInterest`) |
-| Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | `coordinator/api/accounts/small_models_interest.go` (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
+| Smaller-model or production-readiness notification action | Both register the same account's selected Mac hardware; selecting different hardware permits an update | [console-ui/src/app/earn/SmallModelsInterest.tsx](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/app/earn/SmallModelsInterest.tsx), `useSmallModelsInterest.ts` |
+| Pending sign-in or saving state | Registration has not been acknowledged; closing the sign-in modal keeps the visible intent pending until explicit cancellation or expiry | [console-ui/src/app/earn/useSmallModelsInterest.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/app/earn/useSmallModelsInterest.ts) (`useSmallModelsInterest`) |
+| Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | [coordinator/api/accounts/small_models_interest.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/accounts/small_models_interest.go) (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
 
-Follow the [authenticated registration steps](../consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
+Follow the [authenticated registration steps](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
 
 ## Minimum requirements
 
@@ -37,7 +88,7 @@ or throughput guarantee follows from the capability flag.
 | Component | Requirement | Code |
 |---|---|---|
 | CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5`, `M6` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
-| Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
+| Architecture | `arm64` only; the installer refuses Intel Macs | [coordinator/api/install.sh](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/install.sh) |
 | RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
@@ -100,13 +151,26 @@ MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
 exact artifact ID; all existing admission checks remain in effect. The artifact
 contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 
+The 9B main payload is 3,462,149,260 bytes at revision
+`b94a52f3ce9047919dce00392a0fc6b8a7968abe`. It uses 4096-wide Hadamard blocks,
+so the 27B block-1024 constant-reuse estimate does not transfer. No measured
+activation floor or lower RAM tier is introduced. Text, single/multiple-image,
+concurrent prefill and cache-restoration peaks must be measured on the final
+source composition; all existing OS/activation/KV guards remain in effect.
+The explicit 9B MTP binding adds the separate head's existing artifact
+residency charge and F32 request-state reservations. Stored F16 head tensors
+do not justify pricing their runtime KV or hidden history as F16. See
+`Qwen35InlineMTPAssistant.requestStateAllocationSpecs` in
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift`; rounded allocations
+and temporary live owners remain included. This adds no minimum-RAM claim.
+
 ## Chip families
 
 | Family | Recognised as | Behaviour that differs |
 |---|---|---|
 | M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`) |
 | M3, M4 | `.m3`, `.m4` | MTP `maxRectangularTokens = 8` |
-| M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, `coordinator/registry/provider_capabilities.go`) |
+| M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, [coordinator/registry/provider_capabilities.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_capabilities.go)) |
 | M6 | `.m6` | Uses a conservative 153 GB/s nominal bandwidth and the 4-token MTP rectangle limit until physically qualified; a passing NAX diagnostic can advertise `mlx_nax`, but M6 does not claim the M5-specific `apple_m5` capability (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
 | Other | `.unknown` | Treated like M1/M2 for MTP |
 
@@ -116,7 +180,7 @@ does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareD
 
 ## New 2026 desktop identifiers
 
-The base-reward catalog (`coordinator/hardware/mac_models.go`,
+The base-reward catalog ([coordinator/hardware/mac_models.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/hardware/mac_models.go),
 `ModelMaxMemoryGB`) includes the three unambiguous identifiers below. It
 excludes the M5 Ultra's disputed identifier until the conflict is resolved.
 This catalog does not bypass serving authorization, model requirements or the
@@ -142,7 +206,7 @@ from enrolling or serving otherwise eligible models.
 
 Which model loads on a given Mac is decided twice: the coordinator routes only
 to boxes whose total memory is at least the catalog's `min_ram_gb`
-(`coordinator/registry/scheduler.go`, `modelFitsHardware`), and the provider
+([coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go), `modelFitsHardware`), and the provider
 then requires, at load time, free memory of at least the model's padded weights
 plus its activation reserve plus the minimum KV headroom
 (`requiredToLoadGb`, [load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)).
@@ -194,7 +258,7 @@ steady-state residency. It retains the same activation/minimum-KV headroom and
 all actual loading/post-load gates. The coordinator also keeps the raw catalog
 size floor. Unsupported or stale inventory retains conservative legacy pricing.
 See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
-(`estimate`) and `coordinator/registry/offloaded_weights.go`
+(`estimate`) and [coordinator/registry/offloaded_weights.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/offloaded_weights.go)
 (`advertisedOffloadedMemoryGBLocked`). A corrected quotation does not prove
 hardware serviceability or full-context operation.
 
@@ -210,7 +274,7 @@ allowance through `Qwen4ExpLoadFootprint.estimate`; all vision and MTP weights
 remain counted. Malformed or unsupported metadata retains the conservative
 padding. See the [loading bound and retirement window](../architecture/hardware-support.md#mechanism).
 The coordinator applies
-the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded-model-weights).
+the separate [offload declaration gate](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md#ssd-offloaded-model-weights).
 
 Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,
 GDN/PLE state, MTP history, restore scratch and concurrent requests add live
@@ -236,7 +300,7 @@ not certify space for a concurrently staged assistant replacement.
 Jitter spreads independent network-provider upgrades; it does not reserve spare
 fleet capacity or guarantee another provider remains available. Explicit MTP
 off/kill controls preserve target-only decoding; the cache disable is separate.
-See [exact model defaults](../consumer/models.md#gemma-4-26b-qat-runtime-defaults).
+See [exact model defaults](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/models.md#gemma-4-26b-qat-runtime-defaults).
 
 ## Nemotron embedded assistant memory
 
@@ -249,6 +313,10 @@ charges assistant pages/history, and ordinary runtime memory gates remain in for
 checkpoints preserve immutable trusted history and restore independent assistant
 state. Captured verification and adaptive depth do not imply a qualified device tier.
 See [engine MTP constraints](../architecture/inference.md#multi-token-prediction).
+Ordinary fixed-state engines can reduce their reported concurrency to preserve
+useful KV space rather than reserve every possible future workspace. See
+[per-slot memory admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#token-budget-admission-per-slot);
+the reduction does not lower the load, activation or operating-system reserves.
 
 ## Disk for the SSD prefix cache
 
@@ -257,7 +325,7 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
-| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Exact MiMo IDs default to native contiguous text-only COMPLETE checkpoints; media stays uncached. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+| When it is used at all | [Per-family layouts and reuse gates](../reference/ssd-kv-cache.md#per-family-reuse-capability); [model defaults and resident retention](../architecture/prefix-cache.md#invariants) | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 
 ## Storage
 
@@ -297,6 +365,25 @@ default).
 | Thermal state (`nominal`, `fair`, `serious`, `critical`) is sampled from `ProcessInfo.thermalState`, sent to the coordinator as `thermal_state`, and written to the daemon state file read by `darkbloom status` | `provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`, `provider-swift/Sources/ProviderCore/Protocol/Types.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
 | Optional experimental fan control (Macs with a fan and a validated GPU sensor) | [`fan-control.md`](./fan-control.md) |
 
+## Flint validation scope
+
+The [native Flint implementation](../architecture/inference.md#native-flint)
+accepts the official text-only artifact; physical verification currently targets
+one Apple M5 Max with 128 GiB RAM.
+
+| Contract or evidence | Scope | Source |
+|---|---|---|
+| Memory admission | No new minimum RAM tier or concurrency guarantee; full/sliding accounting remains in force | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift`, `ProductionModelAdapter`; [memory model](../architecture/hardware-support.md#flint-memory-admission) |
+| Context | Artifact context bound is retained; full 262,144-token qualification remains outstanding | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintConfiguration.swift`, `FlintConfiguration` |
+| Precision | Official package uses native BF16 KV; live and checkpoint selections must be native | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
+| NAX dispatch | Captured official INT4 layers 0–2 and head execute dense `affine_qmm_t_nax` and routed `affine_gather_qmm_rhs_nax_nt`; FP32 head uses a portable fallback. This establishes those operators' execution, not a whole-model speedup | SDK `FlintCaptureTests`; [validation procedure](../developer/test.md#flint-native-validation) |
+| NAX comparison | `MLX_METAL_NO_NAX` is a build-time definition; `MLX_ENABLE_TF32` is a process-start precision control. Initial numerical checks use `MLX_ENABLE_TF32=0` without changing fleet defaults | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp` |
+| Performance | New measurements of the prefill output optimization are pending. The 2× M3 Ultra prefill and 400 decode tok/s targets are not met | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/Flint+PrefillOutput.swift`, `cbv2Prefill`; [measurement requirements](../developer/test.md#flint-native-validation) |
+
+Existing system swap is distinct from swap growth during a measured run.
+Earlier throughput samples precede the current optimization and were taken with
+another inference service present; they do not qualify this revision.
+
 ## Related
 
 - [`../architecture/hardware-support.md`](../architecture/hardware-support.md) — the memory constants, cap formulas and load gate
@@ -304,4 +391,4 @@ default).
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — SSD cache paths, budget and knobs
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable
 - [`cli-reference.md`](./cli-reference.md) — `provider.toml` keys and their defaults
-- [`../consumer/models.md`](../consumer/models.md) — the model catalog as consumers see it
+- [../consumer/models.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/models.md) — the model catalog as consumers see it

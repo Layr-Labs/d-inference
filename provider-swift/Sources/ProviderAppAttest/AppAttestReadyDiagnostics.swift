@@ -199,7 +199,7 @@ public struct AppAttestProcessDiagnostics: Codable, Sendable, Equatable {
 
 extension AppAttestShadowPayload {
     /// Copies process diagnostics onto a `ready` reply. Never signed.
-    mutating func attach(_ diagnostics: AppAttestProcessDiagnostics) {
+    public mutating func attach(_ diagnostics: AppAttestProcessDiagnostics) {
         processStartedAt = diagnostics.processStartedAt
         previousExit = diagnostics.previousExit
         startReason = diagnostics.startReason

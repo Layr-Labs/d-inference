@@ -63,8 +63,8 @@ enum DeviceCheckEvidence {
     }
 
     static let accessDeniedFix =
-        "macOS lets only administrator accounts read the system log: run `darkbloom doctor` / `darkbloom report` "
-        + "from an administrator account, or `sudo darkbloom report` if this account is allowed to use sudo."
+        "macOS lets only administrator accounts read the system log: run `\(BuildEnvironment.current.cliName) doctor` / `\(BuildEnvironment.current.cliName) report` "
+        + "from an administrator account, or `sudo \(BuildEnvironment.current.cliName) report` if this account is allowed to use sudo."
 
     // MARK: - Collection
 
@@ -115,7 +115,7 @@ enum DeviceCheckEvidence {
         case .collected(let events):
             return Diagnostic(section: .appAttest, name: "devicecheckd log",
                               level: events.isEmpty ? .pass : .warn, message: summary(events),
-                              fix: events.isEmpty ? nil : "run `darkbloom report` to send this evidence to support.")
+                              fix: events.isEmpty ? nil : "run `\(BuildEnvironment.current.cliName) report` to send this evidence to support.")
         case .accessDenied:
             return Diagnostic(section: .appAttest, name: "devicecheckd log", level: .warn,
                               message: "macOS denied access to the unified log (Operation not permitted), so devicecheckd evidence is unavailable.",

@@ -3,11 +3,12 @@
 import Foundation
 import MLXLMCommon
 import Testing
-#if canImport(Darwin)
-import Darwin
-#endif
 
 @testable import ProviderCore
+
+#if canImport(Darwin)
+    import Darwin
+#endif
 
 @Suite("Paged kernel process preflight", .serialized)
 struct PagedKernelPreflightTests {
@@ -30,7 +31,7 @@ struct PagedKernelPreflightTests {
         try PagedKernelPreflight.run(
             layerKinds: [owner, borrower],
             executableURL: nil,
-            childRunner: { observed = $0 })
+            childRunner: { observed = $0.nativeShapes })
 
         #expect(observed.count == 2)
         #expect(observed.contains { $0.hasWrite })
@@ -53,6 +54,78 @@ struct PagedKernelPreflightTests {
                 executableURL: nil,
                 childRunner: { _ in throw ChildFailure() })
         }
+    }
+
+    @Test(
+        "packed child receives resolved profile and excludes native target owners",
+        arguments: [EngineV2KVQuantizationSelection.balanced, .k8v4, .k8v8])
+    func packedProfileAndNativeExemptions(precision: EngineV2KVQuantizationSelection) throws {
+        struct ChildFailure: Error {}
+        let full = layerKind()
+        let short = CBv2LayerKind(
+            attention: .slidingWindow(128), hasSinks: true, headDim: 64,
+            kvHeads: 8, queryHeads: 64)
+        let large = CBv2LayerKind(
+            attention: .slidingWindow(1024), hasSinks: true, headDim: 64,
+            kvHeads: 8, queryHeads: 64)
+        let native = CBv2LayerKind(
+            attention: .full, headDim: 256, kvHeads: 2, queryHeads: 16)
+        var request: PagedKernelPreflight.Request?
+        #expect(throws: ChildFailure.self) {
+            try PagedKernelPreflight.run(
+                layerKinds: [full, short, large, native], precision: precision,
+                nativeLayerIndices: [3], executableURL: nil,
+                childRunner: {
+                    request = $0
+                    throw ChildFailure()
+                })
+        }
+        let captured = try #require(request)
+        #expect(captured.precision == precision)
+        #expect(captured.packedShapes.count == 18)
+        #expect(captured.packedShapes.allSatisfy { $0.headDim == 64 })
+        #expect(captured.packedShapes.contains { $0.windowSize == nil })
+        #expect(captured.packedShapes.contains { $0.windowSize == 1024 })
+        #expect(!captured.packedShapes.contains { $0.windowSize == 128 })
+        #expect(
+            captured.arguments.prefix(3) == [
+                "runtime-smoke", "--kv-quantization", precision.rawValue,
+            ])
+    }
+
+    @Test("real child arguments carry packed specializations before native shapes")
+    func packedArgumentsReachSpawnedChild() throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paged-preflight-\(UUID().uuidString).arguments")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let child = try makeChild(
+            """
+            #!/bin/bash
+            printf '%s\\n' "$@" > "\(output.path)"
+            exit 19
+            """)
+        defer { try? FileManager.default.removeItem(at: child.directory) }
+        do {
+            try PagedKernelPreflight.run(
+                layerKinds: [layerKind()], precision: .k8v4,
+                executableURL: child.executable, childTimeout: 5)
+            Issue.record("failing child unexpectedly passed")
+        } catch PagedKernelPreflightError.childFailed(let status, _) {
+            #expect(status == 19)
+        }
+        let arguments = try String(contentsOf: output, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(Array(arguments.prefix(3)) == ["runtime-smoke", "--kv-quantization", "k8v4"])
+        #expect(arguments.filter { $0 == "--packed-shape" }.count == 9)
+        let packed = try stride(from: 4, to: 21, by: 2).map {
+            try PagedQuantizedKernelSmokeShape(argumentValue: arguments[$0])
+        }
+        #expect(packed.allSatisfy { $0.headDim == 64 && $0.hasSinks })
+        #expect(arguments.last == layerKindSmokeValue())
+    }
+
+    private func layerKindSmokeValue() -> String {
+        PagedAttentionKernel.smokeShapes(layerKinds: [layerKind()])[0].argumentValue
     }
 
     @Test("large child diagnostics cannot block the preflight")
@@ -89,10 +162,12 @@ struct PagedKernelPreflightTests {
             // all on a real compiler failure.
             let tail = try #require(tail, "the child's stderr must reach the caller")
             #expect(tail.contains("paged-kernel-compiler-diagnostic"))
-            #expect(tail.hasSuffix("paged-preflight-final-diagnostic"),
-                    "the final diagnostic must survive a full stderr buffer")
-            #expect(!tail.contains("paged-preflight-start-marker"),
-                    "the bounded result must retain the tail, not the head")
+            #expect(
+                tail.hasSuffix("paged-preflight-final-diagnostic"),
+                "the final diagnostic must survive a full stderr buffer")
+            #expect(
+                !tail.contains("paged-preflight-start-marker"),
+                "the bounded result must retain the tail, not the head")
             #expect(tail.count <= 2048, "tail must stay bounded on a chatty child")
         } catch {
             Issue.record("unexpected preflight error: \(error)")
@@ -162,10 +237,10 @@ struct PagedKernelPreflightTests {
             #expect(seconds == 2.0)
             #expect(ProcessInfo.processInfo.systemUptime - started < 12)
             #if canImport(Darwin)
-            let pidText = try String(contentsOf: pidFile, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let pid = try #require(Int32(pidText))
-            #expect(Darwin.kill(pid, 0) == -1)
+                let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let pid = try #require(Int32(pidText))
+                #expect(Darwin.kill(pid, 0) == -1)
             #endif
         } catch {
             Issue.record("unexpected preflight error: \(error)")

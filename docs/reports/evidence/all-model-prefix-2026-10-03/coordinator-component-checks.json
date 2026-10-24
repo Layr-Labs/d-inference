@@ -1,0 +1,170 @@
+{
+  "command": [
+    "mise",
+    "exec",
+    "go@1.25.0",
+    "--",
+    "make",
+    "coordinator"
+  ],
+  "startedUTC": "2026-10-03T21:59:23.369117+00:00",
+  "endedUTC": "2026-10-03T22:00:33.804443+00:00",
+  "elapsedSeconds": 70.435326,
+  "coordinatorSuiteSeconds": 66.084,
+  "exitCode": 0,
+  "hostBuild": "pass",
+  "runnerGuardTests": {
+    "pass": 14,
+    "fail": 0
+  },
+  "topLevelTestResults": {
+    "pass": 4249,
+    "skip": 107
+  },
+  "allTestResults": {
+    "pass": 7867,
+    "skip": 119
+  },
+  "failedTests": 0,
+  "packagesWithPassingTests": 37,
+  "packagesWithoutTests": 3,
+  "newGroupingTests": {
+    "topLevelPassed": 6,
+    "allLevelPassed": 23,
+    "failed": 0,
+    "skipped": 0,
+    "tests": [
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchChurnBound",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/all-zero-stage-keeps-matching-count",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/complete-ssd-before-memory",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/deepest",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/different-model",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/expired-deep",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/negative-deep-stage",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/old-measured-capability-expired",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/old-pointer",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/persisted-empty-chain",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/revoked-generation",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/stale-epoch",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/unnegotiated-dual-tier",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/whole-anchor-recompute",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/wrong-deep-chain",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchCompatibilityFallbacks/zero-deep-stage",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchMemoryOnlyAndQuarantine",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchMemoryOnlyAndQuarantine/memory-only-zero-stage",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchMemoryOnlyAndQuarantine/quarantine-preserves-matching-count",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchProviderBudget",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchRandomizedCompatibility",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/eigeninference/d-inference/coordinator/registry",
+        "test": "TestCacheMatchesRetainDeepestCompatibilityGroups",
+        "result": "pass"
+      }
+    ]
+  },
+  "skipReasons": {
+    "allLevel": {
+      "database_url_unset": 114,
+      "optional_qualification_or_performance_fixture": 5
+    },
+    "topLevel": {
+      "database_url_unset": 102,
+      "optional_qualification_or_performance_fixture": 5
+    }
+  },
+  "databaseConfiguration": {
+    "DATABASE_URL": "unset",
+    "EIGENINFERENCE_DATABASE_URL": "unset",
+    "mutation": "none; no test or production database configuration changed"
+  },
+  "scope": "Complete pinned coordinator unit suite and host build after bounded holder-grouping integration; distinct from prior focused race invocation. Final signed source/dependency publication and later required gates remain separate."
+}

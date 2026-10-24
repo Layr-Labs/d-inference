@@ -203,7 +203,7 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
         let build = try EngineV2Factory.makeProductionBuild(
             model: model, modelID: Self.modelID, tokenizer: tokenizer.inner,
             kvBytesCapacity: 16 << 30, maxConcurrentRequests: maxConcurrentRequests,
-            completePrefixCache: store, kvBackend: .auto,
+            completePrefixCache: store, kvBackend: .auto, checkpointQuantization: .native,
             environment: store == nil ? ["DARKBLOOM_PREFIX_CACHE": "0"] : [:])
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,
                      "default GPT-OSS serving must resolve to paged without fallback")

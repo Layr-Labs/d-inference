@@ -33,7 +33,7 @@ export function Footer({ disclaimer }: { disclaimer?: string }) {
       {disclaimer && <p className="footer-disclaimer">{disclaimer}</p>}
       <div className="footer-column">
         <p className="footer-label">About</p>
-        <Link href="/about#pricing">Pricing</Link>
+        <Link href="/pricing">Pricing</Link>
         <Link href="/about#privacy">Privacy</Link>
         <Link href="/about#security">Security</Link>
         <Link href="/about#compute">Compute</Link>
@@ -44,6 +44,8 @@ export function Footer({ disclaimer }: { disclaimer?: string }) {
         <div className="footer-legal-links">
           <Link href="/terms">Terms of service</Link>
           <Link href="/privacy">Privacy policy</Link>
+          <Link href="/developers">Developers</Link>
+          <Link href="/contact">Contact</Link>
         </div>
       </div>
       <div className="footer-column footer-column--connect">

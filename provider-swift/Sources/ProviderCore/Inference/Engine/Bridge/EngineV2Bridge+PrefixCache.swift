@@ -43,17 +43,29 @@ extension EngineV2Bridge {
     /// engine capacity — for co-resident slots.
     public func slotKVBytesClaim() -> Int {
         let snapshot = capacitySnapshot()
-        let engineClaim =
-            kvBackendKind == .paged && snapshot.kvBytesBackendCapacity > 0
-            ? snapshot.kvBytesBackendCapacity
-            : snapshot.kvBytesCapacity
-        return engineClaim
+        // A segmented pool follows the grant minus any bank carve, so a slot
+        // with a bank claims like contiguous storage; only a fixed-reference
+        // pool's physical capacity replaces the grant.
+        if kvBackendKind == .paged, snapshot.kvBytesBackendCapacity > 0,
+            snapshot.pagedStorage == nil || (ownedEngine as? EngineV2)?.hybridPrefixCache == nil {
+            return snapshot.kvBytesBackendCapacity
+        }
+        let claim = resliceAdmissionBytesClaim()
+        guard let cache = (ownedEngine as? EngineV2)?.hybridPrefixCache else { return claim }
+        // A forced shrink can leave pinned cache bytes above the logical grant.
+        let (retainedClaim, overflow) = snapshot.kvBytesCapacity.addingReportingOverflow(
+            cache.stats.retainedBytes)
+        return overflow ? Int.max : max(claim, retainedClaim)
     }
 
-    /// Current logical admission target. Re-slice rollback uses this exact
-    /// value; unlike `slotKVBytesClaim()`, it does
+    /// Current total logical target, including the engine-owned cache carve.
+    /// Re-slice rollback uses this exact value; unlike `slotKVBytesClaim()`, it does
     /// not replace a shrunk fixed-reference ledger with its larger physical pool.
     func resliceAdmissionBytesClaim() -> Int {
-        engine.capacity().kvBytesCapacity
+        let capacity = capacitySnapshot().kvBytesCapacity
+        guard let cache = (ownedEngine as? EngineV2)?.hybridPrefixCache else { return capacity }
+        if let lastRequestedKVBytesCapacity { return lastRequestedKVBytesCapacity }
+        let (total, overflow) = capacity.addingReportingOverflow(cache.config.maximumBytes)
+        return overflow ? Int.max : total
     }
 }

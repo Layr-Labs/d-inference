@@ -31,11 +31,22 @@ extension Start {
         // has no CBv2 adapter cannot serve at all. Say so per model, and
         // refuse to start when nothing serveable remains — a silent empty
         // catalog would 404 every request with no explanation.
-        let (advertised, unsupported) = EngineV2SupportedModels.partition(selected)
+        let (adapted, unsupported) = GLM5NextLocalQualification.partition(selected)
         for dropped in unsupported {
+            if let reason = GLM5NextLocalQualification.localSelectionRefusal(model: dropped) {
+                printError("Skipping \(dropped.id): \(reason)")
+                continue
+            }
             printError(
                 "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
                     + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
+        }
+        let (advertised, withoutNativeMTP) = GLM5NextLocalServing.partition(
+            adapted, mode: config.backend.mtpMode)
+        for dropped in withoutNativeMTP {
+            printError(
+                "Skipping \(dropped.id): GLM serves only with its embedded MTP, which is on by "
+                    + "default; remove backend mtp_mode = \"off\" and leave DARKBLOOM_CBV2_MTP enabled")
         }
         guard !advertised.isEmpty else {
             printError(
@@ -55,7 +66,7 @@ extension Start {
         }
 
         let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-        print("darkbloom \(ProviderCore.version) (local / direct mode)")
+        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version) (local / direct mode)")
         print("Preparing local server on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
@@ -73,7 +84,7 @@ extension Start {
             print("  API key:  (auth disabled — --no-auth)")
         }
         print()
-        print("  Shareable any time with: darkbloom local")
+        print("  Shareable any time with: \(BuildEnvironment.current.cliName) local")
         print()
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
@@ -98,9 +109,15 @@ extension Start {
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
+                engineV2KVQuantization: config.backend.engineV2KVQuantization,
+                engineV2KVQuantizationByModel: config.backend.engineV2KVQuantizationByModel,
+                engineV2KVCheckpointQuantization: config.backend.engineV2KVCheckpointQuantization,
+                engineV2KVCheckpointQuantizationByModel: config.backend.engineV2KVCheckpointQuantizationByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath,
+                mtpAcceptance: config.backend.mtpAcceptance,
+                mtpAcceptanceByModel: config.backend.mtpAcceptanceByModel,
                 coordinatorURL: config.coordinator.url
             ),
             models: advertised
@@ -190,16 +207,32 @@ extension Start {
         ProviderProcessRun.begin()
 
         let selectedIDs = Set(selectedModels.map(\.id))
-        let inventory = config.backend.modelAutopilot.hasConsent
+        let autopilot = config.backend.modelAutopilot
+        let inventory = autopilot.hasConsent
             ? snapshot.models.filter {
-                config.backend.modelAutopilot.allows($0.id)
+                autopilot.allows($0.id)
                     && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
             } : []
         let combined = selectedModels + inventory.filter { !selectedIDs.contains($0.id) }
-        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(to: combined)
+        let (verified, modelHashes, modelHashFingerprints) = attachWeightHashes(
+            to: combined, verifiedWeightHashesFile: VerifiedWeightHashStore.path())
         let models = verified.filter { selectedIDs.contains($0.id) }
-        let autopilotInventory = verified.filter {
-            config.backend.modelAutopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        // Saved consent: the Autopilot set is the persisted selection plus
+        // every verified catalog build in the cache this Mac can run. Builds
+        // hashed above join now; the provider verifies the others after
+        // registration, so start time does not grow with the cache.
+        let autopilotStart: AutopilotStartInventory? = autopilot.hasConsent && !config.coordinator.privateOnly
+            ? await AutopilotStartInventory.load(settings: autopilot, coordinatorURL: coordinatorURL,
+                configDirectory: snapshot.configPath.deletingLastPathComponent(),
+                memoryGb: Double(hardware.memoryGb), runtimeCapabilities: runtimeCapabilities)
+            : nil
+        let autopilotInventory = autopilotStart?.inventory(from: verified) ?? verified.filter {
+            autopilot.allows($0.id) && $0.weightHash?.isEmpty == false
+        }
+        let autopilotPending = autopilotStart?.pending(local: snapshot.models, hashed: Set(verified.map(\.id)))
+        if let autopilotStart, let autopilotPending {
+            print("  Autopilot set: \(autopilotInventory.count) verified, \(autopilotPending.models.count) cached build(s) to verify"
+                + (autopilotStart.catalog == nil ? " (catalog unavailable: recorded downloads only)" : ""))
         }
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
@@ -266,7 +299,7 @@ extension Start {
 
         let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }
 
-        print("darkbloom \(ProviderCore.version)")
+        print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Backend: mlx-swift")
         print("Config: \(describeConfigPath(snapshot))")
         print("Coordinator: \(coordinatorURL)")
@@ -296,13 +329,13 @@ extension Start {
                 do {
                     token = try LocalEndpoint.loadOrCreateToken()
                 } catch {
-                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
+                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/\(BuildEnvironment.current.installDirectoryName) permissions, or pass --no-auth for a trusted/airgapped setup.")
                     throw ExitCode.failure
                 }
             }
             localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
+            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `\(BuildEnvironment.current.cliName) local`)" : "  (auth disabled)")")
         }
 
         let loopConfig = ProviderLoopConfig(
@@ -317,7 +350,8 @@ extension Start {
             modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig,
             configPath: snapshot.configPath,
-            autopilotInventory: autopilotInventory
+            autopilotInventory: autopilotInventory,
+            autopilotPendingCandidates: autopilotPending
         )
 
         do {
@@ -452,6 +486,7 @@ extension Start {
                 }
             }
             if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
+            selection.noteAutopilotCachedBuilds(await loop.autopilotCachedBuildHashes)
         }
     }
 

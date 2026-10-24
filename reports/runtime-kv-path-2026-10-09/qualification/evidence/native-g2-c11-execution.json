@@ -1,0 +1,12 @@
+{
+  "candidateArtifacts": {
+    "darkbloom": "00f35e723a17951fb0c033c15c2dc5399d796c55e1041093f012ca56f993528b",
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+  },
+  "exitCode": 0,
+  "processSeconds": 16.897391375008738,
+  "reportSHA256": "33d1fa8b6e1c09daaae25efc07dcafb12ebf543a1ff273202c6fa44a85a7ed57",
+  "scope": "Actual bounded GateG2 GPT under ambient balanced: both arms native with observed native dtype. Only evaluated criteria count; unavailable controls retained.",
+  "sourceDigest": "1c3f7fe4d6c2784af0955cf6ca7a10aab90ea87a67097e242039da94bc1d39f9",
+  "stderrSHA256": "b5b41bd5563a0d2843b045583cdbb282961a9f9cb7277d5995773d6d052b044f"
+}

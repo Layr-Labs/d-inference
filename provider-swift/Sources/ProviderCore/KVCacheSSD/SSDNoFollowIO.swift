@@ -82,10 +82,16 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.read)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { throw posixError("openat read", url: url) }
-        guard isRegularFile(fd) else {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else {
+            let failure = posixError("fstat read target", url: url)
+            Darwin.close(fd)
+            throw failure
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
             Darwin.close(fd)
             throw SSDBlockStoreError.ioFailure("read target is not a regular file")
         }
@@ -96,7 +102,20 @@ enum SSDNoFollowIO {
     /// or any parent component. An indexed symlink/device/directory is invalid,
     /// not present cache data.
     static func regularFileStatus(at url: URL) -> SSDNoFollowFileStatus {
-        guard let (parentFD, name) = try? openVerifiedParent(of: url) else {
+        (try? checkedRegularFileStatus(at: url)) ?? .invalid
+    }
+
+    /// A failed lookup does not establish that a durable identity is invalid.
+    /// Callers which own such an identity must retry I/O failures rather than
+    /// treating the conservative active-file status as a refutation.
+    static func checkedRegularFileStatus(at url: URL) throws -> SSDNoFollowFileStatus {
+        let parentFD: Int32
+        let name: String
+        do {
+            (parentFD, name) = try openVerifiedParent(of: url)
+        } catch SSDBlockStoreError.posixFailure(_, let code) where code == ENOENT {
+            return .missing
+        } catch SSDBlockStoreError.posixFailure(_, let code) where code == ELOOP || code == ENOTDIR {
             return .invalid
         }
         defer { Darwin.close(parentFD) }
@@ -107,7 +126,8 @@ enum SSDNoFollowIO {
         if result == 0 {
             return (info.st_mode & S_IFMT) == S_IFREG ? .regular : .invalid
         }
-        return errno == ENOENT ? .missing : .invalid
+        if errno == ENOENT { return .missing }
+        throw posixError("fstatat file status", url: url)
     }
 
     static func writeAtomically(
@@ -252,11 +272,12 @@ enum SSDNoFollowIO {
         defer { Darwin.close(parentFD) }
         beforeOperation?(.touch)
         let fd = name.withCString {
-            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            openat(parentFD, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { return }
         defer { Darwin.close(fd) }
-        guard isRegularFile(fd) else { return }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return }
         let interval = modificationDate.timeIntervalSince1970
         let seconds = time_t(interval.rounded(.down))
         let nanoseconds = Int((interval - Double(seconds)) * 1_000_000_000)
@@ -300,30 +321,41 @@ enum SSDNoFollowIO {
         guard fanoutFD >= 0 else {
             throw posixError("openat fanout", url: fanoutURL)
         }
+        do { try CacheStorage.validateOpenedDirectory(fanoutFD, at: fanoutURL) }
+        catch { Darwin.close(fanoutFD); throw error }
         return (fanoutFD, name)
     }
 
-    private static func openDirectoryChain(_ directory: URL) throws -> Int32 {
-        let canonicalPath = canonicalDirectoryPath(directory)
+    static func prepareDirectory(_ directory: URL, configuration: CacheSettings? = nil) throws {
+        let fd = try openOrCreateDirectoryChain(directory, configuration: configuration)
+        Darwin.close(fd)
+    }
+
+    static func openDirectoryChain(_ directory: URL, enforceCacheVolume: Bool = true) throws -> Int32 {
+        let canonicalPath = CacheStorage.canonicalPath(directory.path)
         guard canonicalPath.hasPrefix("/") else {
             throw SSDBlockStoreError.ioFailure("cache path is not absolute")
         }
         var current = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard current >= 0 else { throw posixError("open root", url: directory) }
         do {
+            let configuration = CacheStorage.settings
+            var openedPath = URL(fileURLWithPath: "/", isDirectory: true)
             for component in URL(fileURLWithPath: canonicalPath).pathComponents.dropFirst() {
-                guard !component.isEmpty, component != ".", component != "..", component != "/"
+                guard validDirectoryComponent(component)
                 else { throw SSDBlockStoreError.ioFailure("unsafe cache path component") }
                 let next = component.withCString {
                     openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
                 }
                 guard next >= 0 else {
-                    throw SSDBlockStoreError.ioFailure(
-                        "openat directory \(component) under \(canonicalPath): "
-                            + String(cString: strerror(errno)))
+                    throw posixError("openat directory", url: directory)
                 }
                 Darwin.close(current)
                 current = next
+                openedPath.appendPathComponent(component, isDirectory: true)
+                if enforceCacheVolume {
+                    try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
+                }
             }
             return current
         } catch {
@@ -332,14 +364,18 @@ enum SSDNoFollowIO {
         }
     }
 
-    private static func openOrCreateDirectoryChain(_ directory: URL) throws -> Int32 {
-        let canonicalPath = canonicalDirectoryPath(directory)
+    private static func openOrCreateDirectoryChain(
+        _ directory: URL, configuration: CacheSettings? = nil
+    ) throws -> Int32 {
+        let configuration = configuration ?? CacheStorage.settings
+        let canonicalPath = CacheStorage.canonicalPath(directory.path)
         guard canonicalPath.hasPrefix("/") else {
             throw SSDBlockStoreError.ioFailure("cache path is not absolute")
         }
         var current = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard current >= 0 else { throw posixError("open root", url: directory) }
         do {
+            var openedPath = URL(fileURLWithPath: "/", isDirectory: true)
             for component in URL(fileURLWithPath: canonicalPath).pathComponents.dropFirst() {
                 guard validDirectoryComponent(component) else {
                     throw SSDBlockStoreError.ioFailure("unsafe cache path component")
@@ -348,6 +384,8 @@ enum SSDNoFollowIO {
                     openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
                 }
                 if next < 0, errno == ENOENT {
+                    try CacheStorage.validateCreation(at: openedPath.appendingPathComponent(component), configuration: configuration)
+                    try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
                     let created = component.withCString {
                         mkdirat(current, $0, S_IRWXU)
                     }
@@ -365,6 +403,8 @@ enum SSDNoFollowIO {
                 }
                 Darwin.close(current)
                 current = next
+                openedPath.appendPathComponent(component, isDirectory: true)
+                try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
             }
             return current
         } catch {
@@ -394,21 +434,9 @@ enum SSDNoFollowIO {
             }
         }
         guard fd >= 0 else { throw posixError("openat model root", url: url) }
+        do { try CacheStorage.validateOpenedDirectory(fd, at: url) }
+        catch { Darwin.close(fd); throw error }
         return fd
-    }
-
-    private static func canonicalDirectoryPath(_ directory: URL) -> String {
-        let rawPath = directory.path
-        // macOS exposes these immutable system aliases as symlinks. Normalize
-        // only those known aliases textually; never resolve a cache-controlled
-        // component before the O_NOFOLLOW descriptor walk.
-        if rawPath == "/var" || rawPath.hasPrefix("/var/") {
-            return "/private" + rawPath
-        }
-        if rawPath == "/tmp" || rawPath.hasPrefix("/tmp/") {
-            return "/private" + rawPath
-        }
-        return rawPath
     }
 
     private static func validDirectoryComponent(_ component: String) -> Bool {
@@ -425,11 +453,6 @@ enum SSDNoFollowIO {
             && (right.st_mode & S_IFMT) == S_IFDIR
             && left.st_dev == right.st_dev
             && left.st_ino == right.st_ino
-    }
-
-    private static func isRegularFile(_ fd: Int32) -> Bool {
-        var info = stat()
-        return fstat(fd, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
     }
 
     static func posixError(_ operation: String, url: URL) -> SSDBlockStoreError {
@@ -464,10 +487,16 @@ enum SSDNoFollowIO {
     }
 
     static func regularFileStatus(at url: URL) -> SSDNoFollowFileStatus {
-        guard let values = try? url.resourceValues(
-            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        else {
-            return FileManager.default.fileExists(atPath: url.path) ? .invalid : .missing
+        (try? checkedRegularFileStatus(at: url)) ?? .invalid
+    }
+
+    static func checkedRegularFileStatus(at url: URL) throws -> SSDNoFollowFileStatus {
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return .missing
         }
         return values.isRegularFile == true && values.isSymbolicLink != true
             ? .regular : .invalid

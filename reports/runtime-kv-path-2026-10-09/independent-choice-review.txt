@@ -1,0 +1,109 @@
+Decision note: the numerical-choice recommendation in this investigation preceded the packet comparison. The final selected policy is key-only signed block Hadamard plus affine K4/V4 with native recent/speculative state, as recorded in docs/design/runtime-kv-compression.md. Preserve the geometry and integration evidence below; do not treat the earlier nonuniform proposal as the final decision.
+
+# Independent choice review: runtime KV compression across the catalog
+
+Date: 2026-10-09. Research/review only; no repository or production edits. Scope is now live-inference attention KV, after the user accepted some quality loss. This supersedes the earlier recommendation to start with disk-only encoding for the user's new objective.
+
+## Chosen path
+
+Build **one model-independent compressed attention-KV backend**, for both full and sliding attention and both paged and contiguous storage, with one explicit numerical policy per loaded artifact/layer. The target policy should be:
+
+- **K4/V4**, post-RoPE randomized block Hadamard on keys, a fixed scalar Lloyd–Max key codebook with norm correction, **token/head-local affine values**, and the most recent 128 K/V tokens left in the actual native dtype.
+- Keep **K8/V4** and K8/V8 as precision fallbacks using the same layout/kernels. K8/V4 is a sensible fallback for an artifact that fails key-sensitive retrieval/reasoning tests; it is not an automatic better default for every model.
+- Keep recurrent/convolution state and independent assistant/MTP storage native. Keep unknown/indexer/latent special-state representations native until explicitly modeled and tested. Native fallback is a supported policy in the same backend.
+- Do **not** add QJL residual sketching to v1. Do not make nonuniform value quantization or a value rotation a v1 requirement; compare these variants on captured tensors and real models before adopting the extra operation and output inverse transform.
+
+The parent proposal of rotated, nonuniform K4/V4 is a reasonable aggressive candidate. My specific adjustment is **nonuniform rotated K, simple affine V first**. That aligns with a current deployed implementation, narrows the kernel/codec surface, and still leaves a low-bit value path. A fixed 16-entry scalar LUT is different from a large learned vector-codebook search; the latter is unnecessary here.
+
+This is a choice of the implementation path, not a claim that all catalog artifacts currently pass at 4 bits. The qualification output should be an exact-artifact policy table (K4/V4, K8/V4, K8/V8 or native for each owner). Never select a per-layer fallback dynamically after pages have already been written without a conversion/admission/identity transaction.
+
+## Evidence for the choice
+
+**vLLM/Red Hat's independent May 11 study** evaluates 30B–200B+ models on long retrieval, reasoning and coding. It finds 4-bit-norm-corrected TurboQuant the practical low-bit option when capacity is the binding constraint; K8/V4 has only modest capacity gain over FP8 while retaining latency/throughput penalties. The reported Qwen MoE burst-throughput penalty was 40–52%. Its tested models used standard attention, so that study does not qualify our sliding/hybrid models or Apple hardware. [Official study source](https://raw.githubusercontent.com/vllm-project/vllm-project.github.io/main/_posts/2026-05-11-turboquant.md).
+
+**Current vLLM implementation** rotates and scalar-quantizes keys, uses uniform values, supports norm correction, and intentionally omits QJL because its variance can harm attention after softmax. Its K8 mode is **FP8**, not our affine INT8; do not copy its quality/capacity numbers onto our K8 path. [vLLM implementation documentation](https://docs.vllm.ai/en/latest/api/vllm/model_executor/layers/quantization/turboquant/).
+
+**SAW-INT4** shows token-local affine INT4 plus block Hadamard is an effective systems-compatible approach. Its reported Qwen3-4B cell has key-only rotation at block128 scoring 73.78 versus 75.64 BF16, and rotating both K/V scored 73.11. It emphasizes in-kernel dequantization and regular paged layouts. These CUDA results support keeping the first design simple, not a Metal speed claim or a guarantee on Qwen3.6. [Paper](https://arxiv.org/abs/2604.19157).
+
+**Public Metal implementations demonstrate ingredients, not a drop-in production backend.** One experimental fused packed-KV attention kernel explicitly supports only B1, Q1, equal K/V widths, no native recent tier, and falls back for sinks/sliding attention. Its own history shows the un-fused Qwen3.6 cache path getting dramatically slower at long context because it materialized dequantized history every token. Another adapter reports exact long-context retrieval failures. These are reasons to retain our continuous batching semantics and implement the missing cases directly. [Experimental Metal kernel project](https://github.com/manjunathshiva/turboquant-mlx), [other Metal adapter](https://github.com/yzamari/mlx-turboquant).
+
+The September local prototype also remains useful negative evidence: Gemma D512 long prefill and Qwen B4 decode regressed; GPT INT8 had individual heldout regressions despite equal aggregate totals. The implementation must fix those mechanisms, not assume newer low-bit terminology resolves them.
+
+## Universal geometry and execution contract
+
+Resolve storage from the real layer-kind and dtype table after the loaded forward probe. Never infer dtype from the model's weight bit label. The universal layer policy needs independent K width, V width, KV/query-head counts, grouping, rotation block, full/windowed mode, sinks, owner index, native dtype, and packed format. Gemma shared-KV borrowers reuse an owner's pages and numerical policy; they do not own duplicated compressed tensors.
+
+Use a deterministic rotation block chosen from actual width: 128 where divisible, **64 for MiMo's K width192**, or an explicitly supported 128+64 block decomposition. Do not assume power-of-two head widths. MiMo's actual production geometry is **K192 / V128**, full or sliding-window128. The policy must support unequal K/V widths throughout dot-product and value accumulation. Qwen's D256, Gemma D512 and GPT D64 must each have tested kernels, not generic unbounded score fallbacks.
+
+With a native recent-128 tier, a window128 layer remains entirely native. That is a valid outcome of universal support; it produces no compression savings for that layer. Compress older Gemma window state without changing its chronological/modulo indexing, and test rollover at every frontier. Preserve attention sinks and exactly the model's causal/window mask.
+
+Keep RoPE and projections native. Apply the same post-RoPE orthogonal key transform to Q and K; norm correction is a numerical approximation choice bound to policy. If V rotation is later enabled, rotate the weighted result back exactly once, including the native-tier contribution in the appropriate basis. No per-request prompt-calibrated transform.
+
+## Kernel path that avoids the old regressions
+
+**Decode:** a fused packed-history + native-tail online-softmax Metal kernel; unpack codes and scales into registers/threadgroup tiles, accumulate attention in FP32, and output in the model-required dtype. Never build an all-history BF16/FP32 K/V array or a whole-context score vector/tensor on the ordinary path. Retain deterministic partition/merge order over paged segments and bound segment bindings. Implement B1/B4/B8, full/windowed, sinks, shared owners, asymmetric widths, and Q>1 target verification. A public B1/Q1 kernel is only a starting specimen.
+
+**Prefill and MTP verification:** native current-chunk Q/K/V with bounded compressed-history tiles, flash-style running maximum/denominator/output accumulators. Direct new-token attention can use native optimized SDPA where its dtype/shape is safe, but **Gemma BF16 D512 must not silently select an N×N materialized-score path**. Dequantize at most a declared history tile, never a full sequence. Keep fresh projection arrays temporary; pack once they age beyond the recent tier. Reserve scratch for both current chunk and history tiles before launch.
+
+A correctness-first bounded fallback may use score tiles of Q_tile×K_tile, but it is not the performance-qualified default. The memory expression must be O(Q_tile×K_tile + K_tile×(Dk+Dv)), not O(sequence²), and its throughput must be measured at 4K/16K/64K for D512. Do not repeat the earlier pattern of fixing memory bounds while accepting a 2x prefill slowdown.
+
+Tail flushing should use whole page-sized token runs (page size16, target native tail128), immutable packed pages, and a bounded pending-new-token staging area. New append, tail aging, trim/rollback, and release must preserve one token clock. No duplicate per-row quantized metadata cache that survives row retirement.
+
+## Minimum engineering sequence and accounting
+
+1. **Policy/format contract first:** resolved layer policy, deterministic encode/decode reference, exact packed strides and descriptor schema, immutable group keys and identities. Unit capsules for D64/128/192/256/512, unequal V width, constants, zeros/outliers, BF16/FP32, ragged groups, and masks.
+2. **Physical storage and lifecycle:** packed page backing and native tail, contiguous adapter using the same numerical codec, generation/fence/poison semantics, segmented buffers, append/trim/branch/rollback/cancel. Never advertise savings by counting logical codes while retaining native copies.
+3. **Decode and prefill kernels:** measure separately before changing model defaults; then target-verification and batching integration. Keep unsupported kernels observable and policy-native initially rather than silent full-history dequantization.
+4. **Admission and capacity:** price each layer's actual packed K/V payload, scales/offsets/norms, alignment, page tables/poison pages, native tail plus pending-flush staging, per-step scratch, recurrent/MTP reserves, and prefix import/export. Mirror the reported capacity and allocator ownership through provider/coordinator without lowering OS/activation floors. Update all capacity consumers in the same series.
+5. **Prefix/MTP/SSD:** exact compressed-state donation/adoption, historical owner/window mapping, authenticated numerical-policy identity; do not export to a native-only descriptor by hiding lossy dequantization. Store packed ancestry where possible to avoid repeated quantize/dequantize drift; version the complete manifest and disk namespace.
+
+For history with equal K/V widths and conservative group64 FP32 affine scale/offset, K4/V4 averages0.625B per element, K8/V4 0.875B, K8/V8 1.125B. A scalar-key norm/codebook scheme has different overhead; calculate it from the actual format. Each layer also needs `native_tail_tokens × KV_heads × (Dk+Dv) × native_element_bytes`, allocator alignment, pending flush and scratch. Whole-model savings depend on fixed recurrence/MTP and window sizes; never use raw 4x for admission.
+
+Use a fixed loaded policy per layer/owner, rather than mixed arbitrary precision within one page group. Different policies get separate pool groups. Cold admission reserves the worst required capacity before publishing a row; shrink waits for live ownership to drain rather than evicting active state.
+
+MTP assistants may remain native, but target verification must read compressed target KV with the same new numerical policy. Speculation is then verified against the compressed target distribution. Preserve rollback/commit clocks and make lowered acceptance rate visible. Gemma drafter shared-target K/V capture requires a bounded materialization adapter or native draft policy; it cannot assume compressed target pages are ordinary native arrays.
+
+Identity fields should include encoding version; K/V bits; per-owner resolved policy; grouping/axes; rotation algorithm/block/sign seed; codebook hash; norm-correction rule and metadata dtype; residual count and flush rule; boundary/sink native policy; per-layer actual dtype; widths/window/owner; paged or contiguous layout; assistant codec and MTP verification policy; binary/metallib. Change the stored fingerprint even when only the storage approximation changes. Wrong/missing identity fails closed to recompute.
+
+## Exact catalog coverage and qualification
+
+The saved live catalog at `/Users/gaj/.codex/worktrees/runtime-kv-compression/d-inference/reports/runtime-kv-path-2026-10-09/catalog.json` was observed at 08:51 UTC. It contains 11 IDs but **10 unique weight hashes**. `gemma-4-26b` and `gemma-4-26b-8bit` share the same weight artifact; test both aliases' resolved runtime/prompt policies before sharing a qualification result.
+
+| Exact model ID | Artifact hash prefix | Required extra coverage |
+|---|---|---|
+| gpt-oss-20b | 61bfc04e4016 | Native BF16/FP32 promotion, sinks, sliding128, reasoning/output caps |
+| Qwen3.5-9B | 127de76b4ef8 | Dense hybrid, recurrence/convolution, inline MTP, images |
+| ternary-bonsai-2-27b | ea1e901e4946 | Prism FP32 promotion, native recurrent state, no MTP, images |
+| qwen3.6-35b-a3b-vl-mtp-mxfp8 | d932e96b0040 | Hybrid MoE, serial target MTP, images |
+| EigenLabs/Qwen3.8-27B-4bit-mtp | bbd0e0adcfe7 | Dense hybrid, exact artifact's MTP, images |
+| gemma-4-26b | a4722b6020ad | KV ownership/sharing, D512, windows, configured assistant |
+| gemma-4-26b-qat-4bit | 2468a0cb3049 | Separate QAT artifact, shared KV, images/video and assistant |
+| qwen3.5-35b-a3b | 95811153b3bb | Hybrid MoE, inline MTP qualification independently, images |
+| nvidia-nemotron-3.5-lightning | 366d9285ec36 | Mamba2 recurrence, sparse attention rows, configured trained MTP |
+| gemma-4-26b-8bit | a4722b6020ad | Same weights as earlier alias, confirm prompt/runtime policy parity |
+| mimo-v2.6-flash-mopd | 2334547d8acc | Asymmetric K192/V128, sinks, sliding128, MTP, long context |
+
+Store full hashes from the catalog in the qualification manifest; the table abbreviates only for readability. Catalog context limits are architectural limits, not proof that one test machine can admit the full context.
+
+For each unique artifact:
+
+- Re-probe actual native dtypes/geometry after load. Run native and compressed full-model controls with the same prompt/sampling/MTP contracts; capsule parity is a prerequisite, not the final evidence.
+- Test B1/B4/B8 at 512, 4K, 16K, 64K and the longest admitted context, including nonmultiples of 16/128/256, rollover, last-page partial writes, chunked/mixed prefill and MTP verification. Longer-than-machine-capacity cells must be labeled unavailable and qualified on suitable hardware before claiming them supported.
+- Use cache-miss, resident-hit, SSD restore, restart, multi-turn shared-prefix continuation, and repeated donation/import controls. Lossy state must use the new identity. Test policy mismatch, corruption, epoch invalidation, cancel/shrink and failure retirement.
+- Quality screen: paired executable coding, multi-round needle retrieval with distractors, reasoning, structured/tool outputs and multimodal cases. Cached-continuation NLL/KL diagnoses errors; it does not replace task answers. Record every native-correct/candidate-wrong case, token count and finish reason.
+- Compare K4/V4 against K8/V4 on the same frozen corpus. Choose fallback only on development data, then freeze and run a separate heldout set. An aggregate score tie can conceal code/retrieval failures. A small 100–200 case screen can reject a bad policy but does not statistically establish <1 percentage point loss.
+- Performance gates: actual resident bytes and allocator peak, prefill TTFT, decode TPOT, p95 under arrivals, B4/B8 throughput and MTP acceptance. Accepting modest quality loss does not authorize unbounded memory or known large latency regressions. Measure native→candidate→native paired repeats to expose thermal/runtime drift.
+
+The fresh offline Qwen owner packet showed a native recent128tier materially reducing single-query error with small overhead. It does **not** establish model-level loss, key/value rotation choice, throughput or all-artifact quality. Use it as the first reference capsule, then collect additional owner/query/position captures.
+
+## Concrete next step for the proposed-design deliverable
+
+The minimum bounded engineering step is a **reference codec proof**, not engine integration: use the existing authenticated public Qwen packet to encode actual K4/V4 and K8/V4 bytes, with the chosen key rotation/scalar codebook/norm correction, affine V, and native128tail; decode them; compare FP32 reference attention to native; report packed bytes and every query-head error. Include K8/V8 as a conservative control. Bind exact codec parameters and packet/source hashes in the result. Label it `offline_operator_proof`; it has no full-model quality or serving-performance status.
+
+Add geometry/semantics proof cells for K64/V64, K192/V128, D256/D512, full/windowed masks, sinks, shared owner references, tail0/128 and arbitrary frontier positions. The later Metal path must prove the same numerical contract for B1/B4/B8 and Q1/Q>1. Do not touch or resume the old paused worktree; read its failed results and preserve it as evidence.
+
+For the user's accepted quality loss, my proposed promotion budget is **at most 2 absolute percentage points average task-score loss and at most 3 points on any benchmark**, with no severe long-context collapse, malformed tool protocol, or systematic length/truncation regression. A failed K4/V4 artifact falls back first to K8/V4, then K8/V8, then native. Resolve precision at load time from its frozen qualification record. Apply the budget to repeated paired heldout results; include confidence intervals and do not label a small screen statistically qualified. On very small benchmarks, individual failures can exceed 3 points by themselves, so report counts and uncertainty rather than hiding them in a weighted aggregate.
+
+The design/status output should say `Proposed; reference codec proof only; runtime integration not serving`. The first integration stage after that is physical format + ownership + byte admission, followed by fused decode, bounded prefill/verification, then prefix/SSD/MTP integration and exact-artifact qualification. Reduced bytes must enter actual allocator receipts and runtime admission before any claim of higher concurrency.
+
+Historical memory provenance: `MEMORY.md:2389–2416`, `rollout_summaries/2026-09-07T10-00-30-Qyuq-paged_kv_quantization_implementation_paused_with_open_regres.md:27–33,58–70`; rollout ID `01a07b4f-ec9c-7461-b5a0-a683e0744026`. Preserved source and PAUSED evidence were independently read this session.

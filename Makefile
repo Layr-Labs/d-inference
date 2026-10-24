@@ -1,49 +1,14 @@
 .DEFAULT_GOAL := help
-.PHONY: help \
-        coordinator-test coordinator-build coordinator-build-linux coordinator \
-        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
+.PHONY: help provider-build provider-test provider \
+        benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         landing-install landing-build landing-lint landing-test landing \
-        e2e-integration e2e-benchmark e2e \
-        docs-check docs-impact-check docs-stamp \
+        docs-check docs-impact-check docs-stamp changelog-check changelog-preview \
         test build all clean
 
 help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n"} \
 	     /^[a-zA-Z0-9_-]+:.*##/ {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-
-# ---- Coordinator (Go) ------------------------------------------------------
-
-coordinator-test: ## Run Go unit tests for the coordinator
-	python3 scripts/test-coordinator-tests.py
-	python3 scripts/run-coordinator-tests.py
-
-coordinator-build: ## Build the coordinator binary for the host platform
-	cd coordinator && go build ./cmd/coordinator
-
-coordinator-build-linux: ## Cross-compile coordinator for linux/amd64 (EigenCloud)
-	cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-	    go build -o coordinator-linux ./cmd/coordinator
-
-coordinator: coordinator-test coordinator-build ## Test + build coordinator
-
-# ---- Prompt-contract sidecar (Rust) ---------------------------------------
-
-prompt-sidecar-format: ## Check Rust sidecar formatting
-	cd coordinator/promptsidecar && cargo fmt --all -- --check
-
-prompt-sidecar-check: ## Check and lint all Rust sidecar targets
-	cd coordinator/promptsidecar && cargo check --locked --all-targets
-	cd coordinator/promptsidecar && cargo clippy --locked --all-targets -- -D warnings
-
-prompt-sidecar-test: ## Run Rust sidecar tests
-	cd coordinator/promptsidecar && cargo test --locked --all-targets
-
-prompt-sidecar-build: ## Build the Rust sidecar for the host platform
-	cd coordinator/promptsidecar && cargo build --locked --release --bin promptsidecar
-
-prompt-sidecar: prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build ## Format + lint + test + build Rust sidecar
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
@@ -54,7 +19,9 @@ provider-build: ## Build the Swift provider CLI with its source-matched metallib
 	    ./scripts/fetch-metallib.sh "$$bin_path"
 
 provider-test: ## Build and run Swift provider tests with source-matched metallibs
+	python3 provider-swift/Tests/test_protocol_fixture_resources.py
 	python3 scripts/test-stage-test-metallib.py
+	python3 scripts/test-stage-swiftpm-resource-bundles.py
 	cd provider-swift && swift build --build-tests
 	@set -eu; \
 	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \
@@ -63,14 +30,35 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 
 provider: provider-build provider-test ## Build + test provider
 
-benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
+benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 	cd scripts && python3 -m unittest discover -s serving_performance -t . -p 'test_*.py'
+	python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+	python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+	python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
-# ---- Console UI (Next.js 16) ----------------------------------------------
+# ---- Desktop frontend ------------------------------------------------------
+.PHONY: desktop-install desktop-build desktop-test desktop-package desktop-api-test
+
+desktop-install: ## Install Electron app dependencies
+	cd desktop-app && npm ci
+
+desktop-build: ## Build the Electron frontend and native bridge
+	cd desktop-app && npm run build
+
+desktop-test: ## Test desktop user journeys and IPC boundaries
+	cd desktop-app && npm test
+
+desktop-package: ## Create a macOS app for review without publishing
+	cd desktop-app && npm run package
+
+desktop-api-test: ## Test the real Swift desktop API with isolated local fixtures
+	python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
+
+# ---- Retained Console UI (Next.js 16) --------------------------------------
 
 ui-install: ## npm install for console-ui
 	cd console-ui && npm install
@@ -84,7 +72,7 @@ ui-lint: ## eslint check for console-ui sources
 ui-test: ## vitest for console-ui
 	cd console-ui && npm test
 
-ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
+ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build retained console-ui
 
 # ---- Marketing site (Next.js 16) ------------------------------------------
 
@@ -102,18 +90,7 @@ landing-test: landing-build ## Test landing routes against its production server
 
 landing: landing-install landing-lint landing-test ## Install, lint, build and test landing
 
-# ---- E2E integration tests -------------------------------------------------
-# Requires Postgres + Swift provider binary + MLX model downloaded.
-
-e2e-integration: ## go test ./e2e/... -run TestIntegration
-	go test ./e2e/... -run TestIntegration -v
-
-e2e-benchmark: ## go test ./e2e/... -run TestBenchmark (load benchmarks)
-	go test ./e2e/... -run TestBenchmark -v
-
-e2e: e2e-integration ## Run the integration suite
-
-# ---- Docs -------------------------------------------------------------------
+# ---- Docs ----------------------------------------------------------------
 
 docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
 	./scripts/docs-check.sh
@@ -124,15 +101,21 @@ docs-impact-check: ## Check source changes have their mapped canonical docs (BAS
 docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
 	./scripts/docs-stamp.sh $(FILES)
 
+changelog-check: ## Validate independent pending changelog fragments
+	python3 scripts/changelog.py check
+
+changelog-preview: ## Preview pending release notes without changing files
+	python3 scripts/changelog.py preview
+
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check ## Run all tests + docs lint
+test: provider-test ui-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run provider, retained console and landing tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build landing-build ## Build all components
+build: provider-build ui-build landing-build ## Build provider, retained console and landing
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
-	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf provider-swift/.build
+	rm -rf console-ui/.next console-ui/node_modules
 	rm -rf landing/.next landing/node_modules

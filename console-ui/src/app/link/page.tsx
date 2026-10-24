@@ -1,8 +1,11 @@
 "use client";
 
 import { DeviceLinkForm } from "./DeviceLinkForm";
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 
-export default function LinkPage() {
+function LinkContent() {
+  const desktopAccount = useSearchParams().get("purpose") === "desktop_account";
   return (
     <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -19,15 +22,20 @@ export default function LinkPage() {
 
         <div className="text-center mb-8">
           <h1 className="text-3xl font-semibold text-ink">
-            Link Your Device
+            {desktopAccount ? "Sign In to the Desktop App" : "Link Your Device"}
           </h1>
           <p className="text-text-secondary mt-2">
-            Connect your Mac to your Darkbloom account to receive
-            earnings for providing compute.
+            {desktopAccount
+              ? "Authorize the app to view your account without changing how your Mac serves requests."
+              : "Connect your Mac to your Darkbloom account to receive earnings for providing compute."}
           </p>
         </div>
-        <DeviceLinkForm />
+        <DeviceLinkForm purpose={desktopAccount ? "desktop_account" : "provider"} />
       </div>
     </div>
   );
+}
+
+export default function LinkPage() {
+  return <Suspense fallback={<div className="p-8 text-center">Loading...</div>}><LinkContent /></Suspense>;
 }

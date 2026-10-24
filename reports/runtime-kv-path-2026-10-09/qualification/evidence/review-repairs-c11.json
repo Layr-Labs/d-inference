@@ -1,0 +1,45 @@
+{
+  "allAffectedSwiftTestsPassed": true,
+  "benchmarkConfigControlsPassed": true,
+  "buildSeconds": {
+    "combined": 73.6,
+    "finalTests": 30.6,
+    "nativeDtype": 27.4,
+    "restored": 7.71
+  },
+  "finalSwiftFunctions": 157,
+  "finalSwiftSuites": 10,
+  "goOldBlanketExpectedPagedAndDroppedHostPrecisionNegativeControlsPassed": true,
+  "goTestbedPassed": true,
+  "logSHA256": {
+    "benchmarkConfig": "6302ad81960ff1128c8116f5b287337405d98b80679afcebef108e17e321c9c9",
+    "combinedBuild": "77721de8821fbd7975d7495876507b559de678f710f683b97100b414abfe3bae",
+    "finalTestsBuild": "fb22421a6486f1020f31ec910e43746c0d2696ca224d90b52031ad83ebdaf77b",
+    "nativeDtypeBuild": "f28b6066bd6b69a7075b4b9a0b2a0d177a609a19ff334b65cb309426819fdced",
+    "negative19": "48928a5594ae7426e14ae450d0361145e7879aacefeeb5ec3fc827faca4da035",
+    "positive157": "97fe1825af57b2282268ee45ebe8cfd65a4a87a1dced562fb9510149b18f1de6",
+    "restoredBuild": "239f1d50d4edc77dd4e2697b8a8aeb31b01e63e0c24e6102751e6142d138a228",
+    "testbed": "65c5e225005112d788230d796ec46035035cfaac756b5c2f47af78f6d0feca9e",
+    "workflow": "49626c5cfdb90d4b9341d8591da0d5edb762b5a36c19924576b71bdeb4ef35a3"
+  },
+  "negativeOldDiffusionAndMissingNativePinAssertions": 7,
+  "negativeSourceRestoredByteExact": true,
+  "realNativeParity": {
+    "evaluatedCriteria": 1,
+    "model": "gpt-oss-20b",
+    "rawGeneratedTokensPerBackend": 24,
+    "threePrompts": true,
+    "tokenIDsExact": true,
+    "unavailableCriteria": 4
+  },
+  "reviewComments": [
+    4233857861,
+    4233857864,
+    4233857870,
+    4233857875,
+    4233857881
+  ],
+  "reviewedHead": "1d036a6e4564330d12e48b2842c1da8c0bbe62cf",
+  "scope": "Five validated current-head benchmark/default/report review repairs; no production cache operator or SDK math change. Dedicated combined refactor review clean.",
+  "workflowFunctionsPassed": 7
+}

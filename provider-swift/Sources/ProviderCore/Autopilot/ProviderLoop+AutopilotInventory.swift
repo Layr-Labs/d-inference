@@ -7,11 +7,12 @@ extension ProviderLoop {
 
     /// Revocation only removes loadability. Actual resident ownership remains
     /// in the capacity snapshot and memory reserve until normal cleanup.
+    /// Validly adopted inventory keeps serving without a lease.
     func withdrawInactiveAutopilotModels() {
         guard !modelAutopilotEnabled else { return }
         for id in Array(advertisedModels.keys)
         where autopilotInventoryModels[id] != nil && !ordinaryServingModelIDs.contains(id)
-            && autopilotCommand?.loadModelId != id {
+            && autopilotCommand?.loadModelId != id && !autopilotAdoptionIsValid(id) {
             advertisedModels.removeValue(forKey: id)
         }
     }
@@ -20,7 +21,7 @@ extension ProviderLoop {
     /// to the reserve basis; cold candidates require an explicit owned command.
     func restoreAutopilotResidentModels() {
         guard modelAutopilotEnabled else { return }
-        for id in modelSlots.keys where autopilotSettings.allows(id) && advertisedModels[id] == nil {
+        for id in modelSlots.keys where autopilotSetAllows(id) && advertisedModels[id] == nil {
             if let model = autopilotInventoryModels[id], failedSelfTestHashes[id] == nil,
                 !retiringModels.contains(id) { advertisedModels[id] = model }
         }
@@ -65,6 +66,7 @@ extension ProviderLoop {
             throw InferenceError.modelLoadFailed("autopilot_activation_reserve")
         }
         try checkAutopilotLoadOwnership(command.commandId)
+        beginModelAdvertisementOccurrence(target)
         pendingAdvertise.insert(target)
         await pushActivationReserve(reserve)
         do {

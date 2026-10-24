@@ -212,6 +212,8 @@ export function withdrawSuccessMessage(resp: {
   eta?: string;
   message?: string;
 }): string {
+  if (resp.status === "queued") return "Your withdrawal is queued until payout funding is available. Your earnings are reserved; no need to submit it again.";
+  if (resp.status === "pending") return resp.message || "Your withdrawal is awaiting confirmation. Your earnings are reserved; check Recent withdrawals before submitting again.";
   if (resp.payout_rail === "global") return resp.status === "posted"
     ? "Your bank transfer has been sent. Your bank may take several business days to credit it."
     : "Your withdrawal is being processed. Track its status in Recent withdrawals.";
@@ -277,13 +279,15 @@ export function withdrawalStatusPresentation(
   refunded?: boolean,
   reason?: string,
 ): WithdrawalStatusPresentation {
-  if (status === "pending" && reason === "manual_reconciliation_required") {
+  if (status === "pending" && (reason === "manual_reconciliation_required" || reason?.startsWith("funding_queue_persistence_failed:"))) {
     return { label: "Needs review", detail: "Contact support to check this withdrawal. Your funds remain reserved; do not submit another payment." };
   }
   if (status === "processing" && reason === "under_review") {
     return { label: "Under review", detail: "Stripe is reviewing this withdrawal. You do not need to submit it again." };
   }
   switch (status) {
+    case "queued":
+      return { label: "Queued", detail: "Waiting for payout funding. Your earnings are reserved and this withdrawal will retry automatically." };
     case "processing":
     case "pending":
       return { label: "Processing", detail: "Your withdrawal is being processed." };

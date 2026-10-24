@@ -121,6 +121,8 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .vlmExtractionFailed
         case EngineV2ProductionError.pagedUnavailable:
             return .pagedBackendUnavailable
+        case EngineV2KVQuantizationPolicy.Failure.requiresPagedBackend:
+            return .pagedBackendUnavailable
         case EngineV2ProductionError.invalidPagedPoolDType:
             return .pagedKVDTypeInvalid
         default:
@@ -174,11 +176,14 @@ public enum EngineV2Factory {
         ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
+        prefixCacheConstructionFailure: SSDPrefixCacheConstructionFailure? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
+        var glmOwner: GLM5NextNativeOperationOwner?
         do {
             let build = try makeEngine()
+            glmOwner = build.glm5NextNativeOwner
             let charges = try EngineV2MTPAdmissionCharges.resolve(
                 resolution: build.mtpAdmissionResolution,
                 legacyMTPBytesPerToken: build.legacyMTPBytesPerToken,
@@ -191,8 +196,9 @@ public enum EngineV2Factory {
                 modelId: modelId,
                 kind: build.kvBackendKind,
                 fallbackReason: build.kvBackendFallbackReason,
+                kvQuantization: build.kvQuantization,
                 emitTelemetry: emitTelemetry)
-            return EngineV2Bridge(
+            let bridge = EngineV2Bridge(
                 engine: build.engine,
                 modelId: modelId,
                 tokenizer: tokenizer,
@@ -218,6 +224,7 @@ public enum EngineV2Factory {
                     environment: runtimePolicyEnvironment),
                 kvBytesPerToken: charges.kvBytesPerToken,
                 fixedRequestBytes: charges.fixedRequestBytes,
+                admissionWatermarkFraction: build.admissionWatermarkFraction,
                 auxiliaryBytesPerToken: charges.auxiliaryBytesPerToken,
                 auxiliaryTokenGranularity: charges.auxiliaryTokenGranularity,
                 auxiliaryTokenAllocationPadding: charges.auxiliaryTokenAllocationPadding,
@@ -229,17 +236,24 @@ public enum EngineV2Factory {
                 ssdHybridCheckpointStore: ssdHybridCheckpointStore,
                 residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
+                prefixCacheConstructionFailure: prefixCacheConstructionFailure,
                 kvBackendKind: build.kvBackendKind,
+                kvQuantization: build.kvQuantization,
+                kvCheckpointQuantization: build.kvCheckpointQuantization,
                 pagedPageSize: pagedPageSize,
                 // Same value the INFO event below reports, but on a channel
                 // that cannot be dropped: the bridge republishes it on every
                 // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
                 kvBackendFallbackReason: build.kvBackendFallbackReason,
                 advertisedContextTokens: advertisedContextTokens
+                    ?? build.glm5NextMaximumContextTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
+                glm5NextNativeOwner: glmOwner,
                 emitTelemetry: emitTelemetry
             )
+            try glmOwner?.bind(to: bridge)
+            return bridge
         } catch {
             // A failed v2 init must not leak the SSD tier's background
             // tasks/registration (the refusal unloads the slot — there is
@@ -252,6 +266,7 @@ public enum EngineV2Factory {
                 error: error,
                 emitTelemetry: emitTelemetry
             )
+            if let glmOwner { throw GLM5NextNativeConstructionFailure(owner: glmOwner, cause: error) }
             throw error
         }
     }
@@ -298,6 +313,7 @@ public enum EngineV2Factory {
         modelId: String,
         kind: EngineV2KVBackendKind,
         fallbackReason: String?,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) {
         let reason =
@@ -314,7 +330,7 @@ public enum EngineV2Factory {
                 operation: "engine_v2_kv_backend",
                 model: modelId,
                 kvBackend: kind.rawValue,
-                extra: ["reason": .string(reason)]),
+                extra: ["reason": .string(reason), "kv_quantization": .string(kvQuantization.rawValue)]),
             sink: emitTelemetry)
     }
 }

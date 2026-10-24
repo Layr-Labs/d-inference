@@ -119,6 +119,52 @@ struct ModelAutopilotTests {
         #expect(residents.first?["resident_gb"] as? Double == 10)
     }
 
+    @Test func holdSecondsIsOptionalBoundedAndOnlyForALoadedTarget() {
+        var c = command()
+        #expect(c.holdSeconds == nil)
+        #expect(reject(c, snapshot()) == nil)
+        for valid in [0, 1, 86_400] {
+            c.holdSeconds = valid
+            #expect(reject(c, snapshot()) == nil)
+        }
+        for invalid in [-1, 86_401, Int.max] {
+            c.holdSeconds = invalid
+            #expect(reject(c, snapshot()) == "invalid_command")
+        }
+        var unloadOnly = command()
+        unloadOnly.loadModelId = nil
+        unloadOnly.holdSeconds = 0
+        #expect(reject(unloadOnly, snapshot()) == nil)
+        unloadOnly.holdSeconds = 60
+        #expect(reject(unloadOnly, snapshot()) == "invalid_command")
+    }
+
+    @Test func holdSecondsAndBusyDetailAreOptionalOnTheWire() throws {
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        let legacy = try encoder.encode(CoordinatorMessage.modelAutopilot(command()))
+        let legacyObject = try #require(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        #expect(legacyObject["hold_seconds"] == nil)
+        #expect(try decoder.decode(CoordinatorMessage.self, from: legacy) == .modelAutopilot(command()))
+
+        var held = command()
+        held.holdSeconds = 600
+        let heldWire = try encoder.encode(CoordinatorMessage.modelAutopilot(held))
+        let heldObject = try #require(JSONSerialization.jsonObject(with: heldWire) as? [String: Any])
+        #expect(heldObject["hold_seconds"] as? Int == 600)
+        #expect(try decoder.decode(CoordinatorMessage.self, from: heldWire) == .modelAutopilot(held))
+
+        let busy = ProviderMessage.modelAutopilotStatus(.init(commandId: "one", status: .failed,
+            error: "provider_busy", detail: "startup_preload", modelAutopilot: snapshot()))
+        let busyWire = try encoder.encode(busy)
+        let busyObject = try #require(JSONSerialization.jsonObject(with: busyWire) as? [String: Any])
+        #expect(busyObject["detail"] as? String == "startup_preload")
+        #expect(try decoder.decode(ProviderMessage.self, from: busyWire) == busy)
+        let plain = try encoder.encode(ProviderMessage.modelAutopilotStatus(.init(commandId: "one", status: .failed,
+            error: "minimum_dwell", modelAutopilot: snapshot())))
+        let plainObject = try #require(JSONSerialization.jsonObject(with: plain) as? [String: Any])
+        #expect(plainObject["detail"] == nil)
+    }
+
     @Test func terminalHeartbeatCannotCombineWithEarlierCapacity() {
         let state = ProviderState()
         var running = snapshot(); running.activeCommandId = "one"
@@ -141,6 +187,40 @@ struct ModelAutopilotTests {
 
 @Suite("ModelAutopilot runtime")
 struct ModelAutopilotRuntimeTests {
+    @Test(arguments: [false, true], [false, true])
+    func initialRegistrationReportsSavedConsent(enabled: Bool, consentRecorded: Bool) async throws {
+        let loop = try await autopilotTestLoop(enabled: enabled, activeControl: false,
+            consentRecorded: consentRecorded)
+        await loop.publishModelAutopilotSnapshot()
+        let snapshot = try #require(await loop.state.modelAutopilot)
+        #expect(snapshot.consentEnabled == (enabled && consentRecorded))
+        #expect(snapshot.enabled == (enabled && consentRecorded))
+        #expect(snapshot.active == false)
+        #expect(snapshot.sessionId == nil)
+
+        let config = await loop.loopConfig
+        let data = try CoordinatorClientCodec.encodeRegistration(from: .init(
+            url: config.coordinatorURL, hardware: config.hardware, models: config.models,
+            backendName: "mlx-swift"), modelAutopilot: snapshot)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedSnapshot = try #require(object["model_autopilot"] as? [String: Any])
+        #expect(encodedSnapshot["consent_enabled"] as? Bool == (enabled && consentRecorded))
+        guard case .register(let registration) = try ProviderProtocolCodec.decodeProviderMessage(from: data) else {
+            Issue.record("Expected registration message")
+            return
+        }
+        #expect(registration.modelAutopilot == snapshot)
+    }
+
+    @Test func privateOnlyReadinessDoesNotChangeSavedConsent() async throws {
+        let loop = try await autopilotTestLoop(enabled: true, activeControl: false, privateOnly: true)
+        await loop.publishModelAutopilotSnapshot()
+        #expect(await loop.autopilotSettings.hasConsent)
+        #expect(await loop.state.modelAutopilot?.consentEnabled == true)
+        #expect(await loop.state.modelAutopilot?.enabled == false)
+        #expect(await loop.state.modelAutopilot?.active == false)
+    }
+
     @Test func unconsentedCommandsNeverStartAndDuplicateIsIdempotent() async throws {
         let loop = try await autopilotTestLoop(enabled: false), recorder = AutopilotRecorder()
         let command = ModelAutopilotCommand(commandId: "denied", loadModelId: "uncached",

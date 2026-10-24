@@ -1,0 +1,7 @@
+model,startedAt,endedAt,exitCode,elapsedSeconds,status,reason
+nvidia/nemotron-3.5-lightning,2026-10-03T22:09:47.771212+00:00,2026-10-03T22:11:15.867850+00:00,0,88.09576054103673,pass,
+prism-ml/ternary-bonsai-2-27b,2026-10-03T22:11:15.871667+00:00,2026-10-03T22:16:26.061452+00:00,0,310.18727937497897,pass,
+qwen/qwen3.5-35b-a3b,2026-10-03T22:16:26.069229+00:00,2026-10-03T22:17:53.201735+00:00,1,87.13167383399559,failed_parity,
+qwen/qwen3.5-9b,2026-10-03T22:17:53.202901+00:00,2026-10-03T22:19:13.930166+00:00,0,80.72649258299498,pass,
+qwen/qwen3.6-35b-a3b,2026-10-03T22:19:13.932033+00:00,2026-10-03T22:20:41.232587+00:00,1,87.29968545900192,failed_parity,
+qwen/qwen3.8-27b,,,,,unavailable,exact current artifact requires Apple M5 and MLX NAX; local host is Apple M4 Max

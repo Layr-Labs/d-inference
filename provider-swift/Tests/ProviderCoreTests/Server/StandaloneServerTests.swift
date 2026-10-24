@@ -412,6 +412,43 @@ private struct ThrowingResponder<E: Error>: HTTPResponder {
         "CORS allow-origin must be set on the rendered error response")
 }
 
+private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendable {
+    var bytes = ByteBuffer()
+    func write(_ buffer: ByteBuffer) async throws {
+        var buffer = buffer
+        bytes.writeBuffer(&buffer)
+    }
+    func finish(_ trailingHeaders: HTTPFields?) async throws {}
+}
+
+@Test func corsResponderNamesTheFixGLMReasoningRefusalNeedsWithoutEchoingRequests() async throws {
+    let context = BasicRequestContext(
+        source: ApplicationRequestContextSource(
+            channel: EmbeddedChannel(), logger: Logger(label: #function)))
+    func render(_ error: MultiModelBatchSchedulerEngineError) async throws -> (HTTPResponse.Status, [String: Any]) {
+        let request = Request(
+            head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+            body: .init(buffer: ByteBuffer()))
+        let response = try await CORSResponder(inner: ThrowingResponder(error: error))
+            .respond(to: request, context: context)
+        let body = CollectedResponseBody()
+        try await response.body.write(body)
+        let envelope = try #require(
+            JSONSerialization.jsonObject(with: Data(String(buffer: body.bytes).utf8)) as? [String: Any])
+        return (response.status, try #require(envelope["error"] as? [String: Any]))
+    }
+    let (status, refusal) = try await render(.reasoningExclusionUnsupported)
+    #expect(status == .badRequest)
+    #expect(refusal["message"] as? String == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
+    #expect(refusal["code"] as? String == "unsupported_value")
+    #expect(refusal["type"] as? String == "invalid_request_error")
+    // Other GLM policy refusals keep the closed, content-free message.
+    let (otherStatus, other) = try await render(.invalidToolPayload("GLM5: caller-detail"))
+    #expect(otherStatus == .badRequest)
+    #expect(other["message"] as? String == InferenceFailureCode.invalidRequest.message)
+    #expect(other["code"] == nil)
+}
+
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
         models: models

@@ -1,0 +1,156 @@
+{
+  "preparedAtUTC": "2026-10-03T20:47:27.698268+00:00",
+  "sourceRevisions": {
+    "baseline": "48d2be458b3ce511a2a9006238b923295c9c6718",
+    "candidate": "e8ca1dcf9a51d5f6cd98fd201fb9e8f6d0eb6c33"
+  },
+  "toolchain": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+  "machine": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "benchmark": {
+    "path": "coordinator/promptsidecar/tests/planner_performance.rs",
+    "sha256": "7e6c6308a9165d545066a2958b33ea9f6c15e6344538be2151fbbbaf7a09b42d",
+    "fixture_contract": "Four verified current prompt-role source files; local aggregate all-zero. Serving aggregate separately recorded; no weights needed.",
+    "scalar_allocation_tracking": true,
+    "burst_allocation_tracking": false,
+    "warmup_plans": 20,
+    "scalar_samples": {
+      "short": 250,
+      "tools": 250,
+      "long": 250,
+      "wide": 50
+    },
+    "burst_width": 16,
+    "burst_batches": 128,
+    "model_order": [
+      "gemma-4-26b-qat-4bit",
+      "gpt-oss-20b",
+      "mimo-v2.6-flash-mopd",
+      "nvidia-nemotron-3.5-lightning",
+      "ternary-bonsai-2-27b",
+      "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "qwen3.5-35b-a3b",
+      "Qwen3.5-9B"
+    ],
+    "rounds": [
+      "forward models baseline then candidate",
+      "reverse models candidate then baseline"
+    ],
+    "comparison": "Exact serialized PlanResponse fingerprints/counts across revisions; timings are CPU planner overhead, not generation TPS."
+  },
+  "binaries": {
+    "baseline": {
+      "bytes": 8204720,
+      "sha256": "fccccf2e594e765336039012a7149aa9634e21b51115c52676b9f61c5ca680af"
+    },
+    "candidate": {
+      "bytes": 8255936,
+      "sha256": "4e152c65cf0fcf7883ca3a4d1ea2d6935fedb127ef8ad9920535b17fb189e1f8"
+    }
+  },
+  "nativeBaselineDrivers": [
+    {
+      "scope": "pilot-receipts",
+      "startedAtUTC": "2026-10-03T21:39:40.818659+00:00",
+      "endedAtUTC": "2026-10-03T21:49:48.645335+00:00",
+      "method": "serial same-artifact MTP-off fixed128 greedy output",
+      "binarySHA256Before": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "binarySHA256After": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "runs": [
+        {
+          "model": "google/gemma-4-26b-a4b-it",
+          "startedAt": "2026-10-03T21:39:40.957516+00:00",
+          "endedAt": "2026-10-03T21:41:02.361042+00:00",
+          "exitCode": 0,
+          "elapsedSeconds": 81.40277941699605,
+          "rows": 8
+        },
+        {
+          "model": "nvidia/nemotron-3.5-lightning",
+          "startedAt": "2026-10-03T21:41:02.362322+00:00",
+          "endedAt": "2026-10-03T21:42:24.508100+00:00",
+          "exitCode": 0,
+          "elapsedSeconds": 82.14507704199059,
+          "rows": 8
+        },
+        {
+          "model": "openai/gpt-oss-20b",
+          "startedAt": "2026-10-03T21:42:24.509417+00:00",
+          "endedAt": "2026-10-03T21:43:40.682953+00:00",
+          "exitCode": 1,
+          "elapsedSeconds": 76.17287379095796,
+          "rows": 8
+        },
+        {
+          "model": "prism-ml/ternary-bonsai-2-27b",
+          "startedAt": "2026-10-03T21:43:40.684517+00:00",
+          "endedAt": "2026-10-03T21:48:10.464832+00:00",
+          "exitCode": 0,
+          "elapsedSeconds": 269.77860287501244,
+          "rows": 8
+        },
+        {
+          "model": "qwen/qwen3.5-35b-a3b",
+          "startedAt": "2026-10-03T21:48:10.466047+00:00",
+          "endedAt": "2026-10-03T21:49:37.356360+00:00",
+          "exitCode": 0,
+          "elapsedSeconds": 86.88958587503294,
+          "rows": 8
+        },
+        {
+          "model": "qwen/qwen3.6-35b-a3b",
+          "startedAt": "2026-10-03T21:49:37.358025+00:00",
+          "endedAt": "2026-10-03T21:49:48.644129+00:00",
+          "exitCode": 1,
+          "elapsedSeconds": 11.285749292001128
+        }
+      ]
+    },
+    {
+      "scope": "retry-receipts",
+      "startedAtUTC": "2026-10-03T21:53:11.232760+00:00",
+      "endedAtUTC": "2026-10-03T21:54:34.758196+00:00",
+      "method": "serial same-artifact MTP-off fixed128 greedy output",
+      "binarySHA256Before": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "binarySHA256After": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "runs": [
+        {
+          "model": "qwen/qwen3.6-35b-a3b",
+          "startedAt": "2026-10-03T21:53:11.367496+00:00",
+          "endedAt": "2026-10-03T21:54:34.757245+00:00",
+          "exitCode": 0,
+          "elapsedSeconds": 83.38906629104167,
+          "rows": 8
+        }
+      ]
+    },
+    {
+      "scope": "diagnostic-receipts",
+      "startedAtUTC": "2026-10-03T21:55:16.946361+00:00",
+      "endedAtUTC": "2026-10-03T21:56:28.253774+00:00",
+      "method": "serial same-artifact MTP-off fixed128 greedy output",
+      "binarySHA256Before": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "binarySHA256After": "d882e4a3dd22d1069d9b7c1d264adaa1d1c5ad7252b02b75d9ead50b4da1059f",
+      "sourceUnchanged": true,
+      "binaryUnchanged": true,
+      "runs": [
+        {
+          "model": "openai/gpt-oss-20b",
+          "startedAt": "2026-10-03T21:55:17.081616+00:00",
+          "endedAt": "2026-10-03T21:56:28.250974+00:00",
+          "exitCode": 1,
+          "elapsedSeconds": 71.16879645799054,
+          "rows": 12
+        }
+      ]
+    }
+  ]
+}

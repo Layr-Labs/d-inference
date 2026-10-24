@@ -1,12 +1,24 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-23
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
-type, the Swift type, and the presence rule for each field. Go is the canon
-(`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`, `model_autopilot.go`); Swift mirrors
+type, the Swift type, and the presence rule for each field. Go is the canon in
+the sibling [darkbloom-platform repository](https://github.com/Layr-Labs/darkbloom-platform/tree/master/coordinator/protocol),
+not this provider repository. Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
 `InferenceProfile.swift`, `Autopilot/ModelAutopilot.swift`). The message inventory and additive lifecycle/attestation sections enumerate the accepted types.
+
+Immutable backend links below, including
+[coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go),
+preserve source evidence at the cited revision; they are not claims about current
+platform behavior. Consult the platform default branch above for current contracts.
+
+Local tests consume public fixed vectors under
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/`. They check the Swift
+implementation against recorded expectations, not a running Go implementation.
+Private cross-implementation qualification remains a separately recorded platform
+gate at explicit revisions; no backend checkout or build is required here.
 
 Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
 `encodeIfPresent` (absent when nil, and for scalars when zero/empty unless a
@@ -22,21 +34,85 @@ This does not add a message type or change the public error code.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
-App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by [coordinator/protocol/app_attest_error.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_error.go) (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. [coordinator/protocol/app_attest_client_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_client_diagnostic.go) (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; [coordinator/protocol/app_attest_runtime_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_runtime_diagnostic.go) (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
 
-`ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
+`ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; [coordinator/protocol/app_attest_deep_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_deep_diagnostic.go) strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
 
 Non-streaming response limits are enforced by the coordinator after decryption.
 An over-limit attempt uses the existing `cancel` frame; no provider wire field
 or failure-code vocabulary changes. The internal `response_limit` cause has
 `json:"-"` and cannot be claimed by provider JSON. See the
-[API limits](api-contracts.md#limits-and-validation).
+[API limits](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#limits-and-validation).
+
+## App Attest endpoint resumption candidate
+
+This provider-side Stage C addition is separate from Apple App Attest protocol
+3 and legacy APNs `code_attestation_resume_challenge`. It requires a matching
+implementation in [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform),
+which owns backend authorization, revocation and retained-proof policy. Provider
+support alone does not establish deployed backend support or native qualification.
+
+| Surface | Fields / presence | Provider source |
+|---|---|---|
+| Registration | `app_attest_resume_protocol: 1` and `app_attest_resume_nonce`: canonical base64 of 32 fresh random bytes, paired and omitted when no responder is installed | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`); `ProviderProtocolCodec.encodeRegisterPreservingRawAttestation` in `provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift` |
+| Coordinator to provider | `{"type":"app_attest_resume","payload":{"protocol":1,"action":"challenge","id":"...","encrypted_challenge":{"ephemeral_public_key":"...","ciphertext":"..."}}}` | `provider-swift/Sources/ProviderCore/Protocol/AppAttestResume.swift` (`AppAttestResumeChallenge`) |
+| Provider to coordinator | `{"type":"app_attest_resume","payload":{"protocol":1,"action":"response","id":"...","ciphertext":"..."}}` | Same file, `AppAttestResumeResponse`; `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+AppAttestResume.swift` (`answerAppAttestResume`) |
+
+Both directions use NaCl Box: the challenge is sealed to the existing process
+X25519 endpoint and the response is sealed back to the challenge sender's
+ephemeral public key. `ciphertext` is canonical base64 of nonce-prefixed Box
+bytes, at least 40 decoded bytes. `id` and `ephemeral_public_key` each decode to
+32 bytes. These are not bearer grants.
+
+`AppAttestResumeWire` strictly limits each accepted envelope and decrypted
+request to 4 KiB (`maximumBytes = 4096`), accepts only the specified members and
+rejects duplicates, unknown members, trailing data and non-integer numbers.
+`ProviderProtocolCodec` identifies the top-level resume type with a bounded-allocation
+byte scan and applies the wire validator before full Codable decoding in both directions;
+the live responder validates its encoded response before exact-socket submission.
+Both codec `Data` decode APIs reject UTF-16/32 JSON before Foundation can transcode
+it past the UTF-8 scan. Ordinary UTF-8 inference frames retain their existing limits.
+
+The decrypted request has exactly these fields, checked by
+`NodeKeyPair.appAttestResumeResponse` in
+`provider-swift/Sources/ProviderCore/Crypto/AppAttestResumeCustody.swift`:
+
+| Field(s) | Required binding / form |
+|---|---|
+| `domain` | `darkbloom.app-attest.endpoint-resume.request.v1` |
+| `id`, `instance`, `client_nonce`, `record`, `endpoint`, `challenge` | Canonical base64 of 32 bytes each; `id` equals the outer ID, `endpoint` equals this process's key, `client_nonce` equals this socket's registration nonce |
+| `account`, `identity` | 64 lowercase hexadecimal characters each; opaque coordinator bindings, not locally granted identity |
+| `connection` | Nonempty string, at most 64 UTF-8 bytes |
+| `issued_at`, `expires_at` | Integer Unix milliseconds; `issued_at > 0`, `expires_at > issued_at`, span at most `30_000`; accept only while `issued_at <= now < expires_at` |
+
+The response plaintext is UTF-8
+`darkbloom.app-attest.endpoint-resume.response.v1`, one NUL byte, then the raw
+SHA-256 digest of the **exact decrypted request bytes**, not re-encoded JSON.
+The provider does not independently validate the coordinator's record/account
+policy; the backend must validate those bindings and current authorization.
+
+`CoordinatorClient.connectAndRun` creates a fresh nonce for every `NWConnection`
+and clears it on teardown. `answerAppAttestResume` answers at most once on that
+registered socket, synchronously without Apple work, and never routes a reply
+onto a replacement socket. The normal `ProviderLoop` installs this responder
+independently of the default-off worker candidate. Resume does not grant local
+trust, refresh an Apple proof, reset the assertion cadence, or extend proof
+validity. It does not change the responsive model-work split.
+
+Ordinary `app_attest_shadow` replies also carry an originating-socket capability:
+`AppAttestShadowReply` in
+`provider-swift/Sources/ProviderCore/Coordinator/AppAttestShadowReply.swift`
+checks session, protocol and matching action, then current connection identity
+and registration immediately before writing. A late Apple result on an old
+reply capability cannot move through the stable outbound router into the next
+connection. Sending is not acknowledgement or authorization. See
+[provider reconnect lifecycle](../architecture/components/provider.md#reconnect-and-attestation-lifecycle).
 
 ## Provider lifecycle drain
 
 | Direction | Type | Required fields | Behavior / source |
 |---|---|---|---|
-| Provider → coordinator | `provider_drain` | `request_id`: nonempty random barrier ID, at most 64 bytes | `coordinator/protocol/provider_drain.go` (`ProviderDrainMessage`), Swift `ProviderMessage.drainBarrier` |
+| Provider → coordinator | `provider_drain` | `request_id`: nonempty random barrier ID, at most 64 bytes | [coordinator/protocol/provider_drain.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/provider_drain.go) (`ProviderDrainMessage`), Swift `ProviderMessage.drainBarrier` |
 | Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
 
 The registered provider closes admission first, then sends a barrier over the
@@ -62,10 +138,10 @@ drain TTL cannot reopen this connection. Only a committing `models_replace`
 (`validate_only` omitted or false) against the latest settled drain, followed by
 successful receipt delivery and matching provider readiness, resumes the same connection; a restart instead
 registers and authorizes a new connection. Code:
-`coordinator/internal/provider/session/provider_completion_barrier.go` (`providerCompletionBarrier`),
-`coordinator/internal/provider/session/provider_drain_ack.go` (`providerDrainAcker`),
-`coordinator/api/provider/session.go` (`providerReadLoop`),
-`coordinator/registry/drain_state.go` (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
+[coordinator/internal/provider/session/provider_completion_barrier.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/session/provider_completion_barrier.go) (`providerCompletionBarrier`),
+[coordinator/internal/provider/session/provider_drain_ack.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/session/provider_drain_ack.go) (`providerDrainAcker`),
+[coordinator/api/provider/session.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/session.go) (`providerReadLoop`),
+[coordinator/registry/drain_state.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/drain_state.go) (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
 (`acknowledgeDrain`).
 
@@ -80,7 +156,7 @@ without App Attest serving enabled; this is a current registry verdict, not a
 change to legacy eligibility.
 When public authorization is absent, `authorization.path = self_route` reports
 an authenticated owner's existing private/preferred-owner liveness and privacy
-checks (`ProviderOwnerServingAuthorized` in `coordinator/registry/owner_authorization.go`).
+checks (`ProviderOwnerServingAuthorized` in [coordinator/registry/owner_authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/owner_authorization.go)).
 It relaxes only the existing owner trust floor; it does not grant public routing,
 change dispatch policy, or infer authorization from an `online` status.
 
@@ -100,10 +176,10 @@ deliver a graceful-drain acknowledgement.
 | Rule | Go | Swift |
 |---|---|---|
 | Discriminator | top-level `"type"` string | same |
-| Decode | `DecodeProviderMessage` first tries the single-walk chunk scanner (`coordinator/internal/wire/chunk_scan.go`, `ScanChunkFrame`); unsupported shapes fall back to `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`), which reads `type` with `ScanTopLevelString` (`coordinator/internal/wire/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
+| Decode | `DecodeProviderMessage` first tries the single-walk chunk scanner ([coordinator/internal/wire/chunk_scan.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/wire/chunk_scan.go), `ScanChunkFrame`); unsupported shapes fall back to `ProviderMessage.UnmarshalJSON` ([coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go)), which reads `type` with `ScanTopLevelString` ([coordinator/internal/wire/type_scan.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/wire/type_scan.go)), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
 | Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
 | Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
-| Tests | `coordinator/tests/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` |
+| Tests | [coordinator/tests/protocol/type_scan_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/protocol/type_scan_test.go) (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` |
 
 ## Message inventory
 
@@ -161,7 +237,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
@@ -185,8 +261,8 @@ A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
 no inference work while recovery is pending. The provider's normal reconnect
 retries registration; this is a transient store failure, not failed attestation
-(`coordinator/api/provider/`, `VerifyProviderAttestation`;
-`coordinator/api/provider/provider_restore.go`, `RestorePersistedProviderState`).
+([coordinator/api/provider/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider), `VerifyProviderAttestation`;
+[coordinator/api/provider/provider_restore.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/provider_restore.go), `RestorePersistedProviderState`).
 
 #### `hardware`
 
@@ -216,26 +292,26 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
-| `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
+| `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Qwen4 SSD-offload allowance or exact `mimo_v2` supplement above raw stored bytes: at least 1 GiB. Exact `glm5_next` likewise adds its supplement to raw source bytes (no disk × 1.2): native copies, tokenizer allowance and a `ceil(disk / 32)` residual, at least 1 GiB + 321 MiB, with no SSD subtraction; see [raw GLM quotation](model-registry-format.md#raw-glm-discovery-quotation). Checked addition and source/catalog floors apply; invalid/missing declarations retain platform legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
-Both memory fields are defined by `coordinator/protocol/messages.go`
+Both memory fields are defined by [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go)
 (`ModelInfo`) and `provider-swift/Sources/ProviderCore/Protocol/Types.swift`
 (`ModelInfo`). The coordinator accepts the offload estimate only for native
 Qwen4 types, an ID matching the requested model, finite positive memory, and a positive offloaded
 payload smaller than the artifact; it floors the estimate against padded
-remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
+remaining weight bytes ([coordinator/registry/offloaded_weights.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/offloaded_weights.go),
 `advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
 existing catalog/measurement policy. Exact `mimo_v2` additionally requires zero
 SSD offload, positive source bytes, a checked supplement and a full estimate no
 smaller than their sum. Its load floor retains the greater raw catalog/source
 size plus the supplement once; callers supply raw decimal catalog GB, not GiB,
-minimum RAM or a padded estimate. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
+minimum RAM or a padded estimate. See [offloaded-weight admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 
@@ -247,26 +323,26 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 
 | Object | Fields |
 |---|---|
-| `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
+| `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. [coordinator/registry/cache_capabilities_v2.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_capabilities_v2.go), `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
-| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel`}; `count` (`uint64`, monotonic per process). `cache_maintenance_busy` is emitted only by providers older than the per-file eviction change. Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel`}; `count` (`uint64`, monotonic per process). `cache_maintenance_busy` is emitted only by providers older than the per-file eviction change. Unknown future outcomes are ignored individually by older coordinators. [coordinator/registry/cache_eligibility.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_eligibility.go), `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`
 
 Go `HeartbeatMessage` · Swift `ProviderMessage.Heartbeat`. Built by
 `buildHeartbeatJSON` (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`);
-consumed by `Registry.Heartbeat` (`coordinator/registry/heartbeat.go`). The
+consumed by `Registry.Heartbeat` ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/heartbeat.go)). The
 default cadence is the `heartbeat_interval_secs` row of
 [`cli-reference.md` → `provider.toml` keys](../provider/cli-reference.md#providertoml-keys-read-by-the-cli);
 the liveness timeout and what happens when heartbeats stop (stale → evicted,
 in-flight requests) are owned by
-[`scheduling.md` → Heartbeat cadence and eviction](../architecture/scheduling.md#heartbeat-cadence-and-eviction);
-the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md).
+[scheduling.md → Heartbeat cadence and eviction](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md#heartbeat-cadence-and-eviction);
+the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
-| `status` | `string` | `ProviderStatus` | req | `"idle"`, `"serving"` or `"draining"` (`Protocol/Enums.swift`, `ProviderStatus`; Go `HeartbeatStatusDraining`). A draining heartbeat excludes the provider from new routing; idle/serving clears the mark (`coordinator/registry/drain_state.go`, `applyHeartbeatDrainStateLocked`). |
+| `status` | `string` | `ProviderStatus` | req | `"idle"`, `"serving"` or `"draining"` (`Protocol/Enums.swift`, `ProviderStatus`; Go `HeartbeatStatusDraining`). A draining heartbeat excludes the provider from new routing; idle/serving clears the mark ([coordinator/registry/drain_state.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/drain_state.go), `applyHeartbeatDrainStateLocked`). |
 | `active_model` | `*string` (**no** `omitempty`) | `String?` (`encodeIfPresent`) | see note | **Intentional asymmetry.** Go always emits the key and writes `null` when nil; Swift omits the key when nil. Both decode to nil = no model is generating right now, and the coordinator treats `null` and absent identically |
 | `stats` | `HeartbeatStats` | `ProviderStats` | req | [`stats`](#stats) |
 | `warm_models` | `[]string` | `[String]` | opt | resident models; Swift omits when empty |
@@ -275,7 +351,7 @@ the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md
 | `backend_capacity` | `*BackendCapacity` | `BackendCapacity?` | opt | nil on old providers; [`backend_capacity`](#backend_capacity) |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
 | `prefix_cache_v2_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted (old provider) vs authoritative `[]` (v2 provider clearing its live set) |
-| `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, `coordinator/registry/cache_snapshot.go` |
+| `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, [coordinator/registry/cache_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_snapshot.go) |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 
@@ -294,7 +370,7 @@ Swift; cumulative per provider session and delta-merged by the registry.
 #### `backend_capacity`
 
 Go `BackendCapacity` · Swift `BackendCapacity` (`Types.swift`). Slot semantics
-and how the scheduler reads them: [`../architecture/scheduling.md`](../architecture/scheduling.md).
+and how the scheduler reads them: [../architecture/scheduling.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
@@ -315,7 +391,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 
 #### Service reservation correlation
 
-Go `WholeMacServiceReservation` (`coordinator/protocol/whole_mac_service.go`) ·
+Go `WholeMacServiceReservation` ([coordinator/protocol/whole_mac_service.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/whole_mac_service.go)) ·
 Swift `WholeMacServiceReservation`
 (`provider-swift/Sources/ProviderCore/Protocol/WholeMacServiceReservation.swift`).
 Each `whole_mac_service_reservations[]` entry has this shape:
@@ -352,7 +428,7 @@ routing on them.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `model` | `string` | `String` | req | |
-| `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
+| `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` ([coordinator/registry/gate_reason.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/gate_reason.go)) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go)); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
 | `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
@@ -365,10 +441,10 @@ routing on them.
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
-| `kv_bytes_per_token` | `int64` | `Int64` | opt | |
+| `kv_bytes_per_token` | `int64` | `Int64` | opt | Capacity price per reserved token (prompt + max output), excluding fixed per-request bytes; it divides `active_token_budget_max`. A GLM slot reports target KV plus native step scratch and embedded-MTP state per token; its capacity also excludes one step's setup |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
 | `kv_backend` | `*string` | `String?` | ptr | resolved KV kind `"paged"` or `"contiguous"`. **Nil = unknown** (pre-0.8.0 provider), never read as `contiguous`; a non-nil `""` still marshals as `"kv_backend":""` |
-| `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) folds it to a bounded class before any metric tag |
+| `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` ([coordinator/registry/kv_backend.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/kv_backend.go)) folds it to a bounded class before any metric tag |
 | `steps_executed`, `admits`, `first_tokens_emitted` | `int64` | `Int64` | opt | cumulative engine-health counters |
 | `seconds_since_last_step`, `seconds_since_last_first_token` | `float64` | `Double` | opt | |
 | `wedge_suspected` | `bool` | `Bool` | opt | provider-computed: ≥ N consecutive admits, 0 first tokens, ≥ T s |
@@ -379,10 +455,10 @@ routing on them.
 
 #### `slots[].prefix_cache`
 
-Optional `PrefixCacheTelemetry` (`coordinator/protocol/prefix_cache_telemetry.go`,
+Optional `PrefixCacheTelemetry` ([coordinator/protocol/prefix_cache_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prefix_cache_telemetry.go),
 `provider-swift/Sources/ProviderCore/Protocol/PrefixCacheTelemetry.swift`). Absence
 means uninstrumented; all numbers are unsigned 64-bit integers. The console
-mirror is `PrefixCacheTelemetry` in `console-ui/src/app/providers/types.ts`.
+mirror is `PrefixCacheTelemetry` in [console-ui/src/app/providers/types.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/app/providers/types.ts).
 These heartbeat-only additions do not change canonical registration signatures.
 
 | JSON fields | Meaning |
@@ -399,21 +475,21 @@ These heartbeat-only additions do not change canonical registration signatures.
 | `io.files_read_total`, `read_bytes_total`, `stage_read_bytes_total`, `donation_read_bytes_total` | Store-lifetime read attempts/bytes, with stage and donor-authentication byte components |
 | `io.stage_us_total`, `write_us_total` | Cumulative wall time in microseconds; stage includes refused attempts, write includes donor authentication and maintenance. These are not latency samples |
 
-`ClampPrefixCacheTelemetry` (`coordinator/internal/registry/capacityvalue/prefix_cache_telemetry.go`)
-and `reconcileCapacitySamples` (`coordinator/registry/capacity_sample_freshness.go`)
+`ClampPrefixCacheTelemetry` ([coordinator/internal/registry/capacityvalue/prefix_cache_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/capacityvalue/prefix_cache_telemetry.go))
+and `reconcileCapacitySamples` ([coordinator/registry/capacity_sample_freshness.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/capacity_sample_freshness.go))
 drop unknown kinds/zero sequence,
 cap entries at `1 << 32`, gauge bytes at `1 << 50` and other measurements at
 `1 << 60`, and prevent repeated/reordered observations rolling back a live
 baseline. Samples older than `capacitySampleFreshMS = 5 * 60 * 1000`
 remain visible with age but do not produce current gauges or counter deltas
-(`coordinator/internal/provider/heartbeat/provider_prefix_cache_telemetry.go`). None of these values
+([coordinator/internal/provider/heartbeat/provider_prefix_cache_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/heartbeat/provider_prefix_cache_telemetry.go)). None of these values
 change routing or memory admission.
 
 #### `slots[].paged_storage`
 
-Optional `PagedStorageTelemetry` (`coordinator/protocol/paged_storage_telemetry.go`),
+Optional `PagedStorageTelemetry` ([coordinator/protocol/paged_storage_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/paged_storage_telemetry.go)),
 mirrored in `provider-swift/Sources/ProviderCore/Protocol/PagedStorageTelemetry.swift`
-and `console-ui/src/app/providers/types.ts`. `PagedStorageTelemetryAdapter` reads
+and [console-ui/src/app/providers/types.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/app/providers/types.ts). `PagedStorageTelemetryAdapter` reads
 the immutable native queue capture through `EngineV2Bridge.backendSlotCapacity`. The object is observational, outside canonical registration signature
 inputs. Older peers can omit or ignore it. All numeric fields are unsigned
 64-bit integers; the optional fields distinguish missing instrumentation from
@@ -441,7 +517,7 @@ Off-queue grant changes update the separate slot capacity fields immediately
 and leave the entire `paged_storage` observation unchanged until a queue capture.
 Missing instrumentation is omitted; it does not manufacture zero ownership.
 
-`ClampPagedStorageTelemetry` (`coordinator/internal/registry/capacityvalue/paged_storage_telemetry.go`)
+`ClampPagedStorageTelemetry` ([coordinator/internal/registry/capacityvalue/paged_storage_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/capacityvalue/paged_storage_telemetry.go))
 caps byte gauges at `1 << 50`, segment/address counts at `1 << 32`, and age and
 counters at `1 << 60`. `reconcileCapacitySamples` uses the same freshness policy
 as prefix-cache observations: repeated or regressed sequences retain the old
@@ -450,7 +526,7 @@ the baseline; a changed generation seeds a new one. No unbounded pool history
 is retained. `reconcileCapacitySamplesLocked` keeps a separate accepted-sample
 clock: rejected capacity frames update liveness without resetting sample age.
 `recordPagedStorageTelemetry`
-(`coordinator/internal/provider/heartbeat/provider_paged_storage_telemetry.go`) emits age/freshness even
+([coordinator/internal/provider/heartbeat/provider_paged_storage_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/heartbeat/provider_paged_storage_telemetry.go)) emits age/freshness even
 for repeated samples, but emits ownership gauges and positive counter deltas
 only for new samples within the existing five-minute freshness limit. The
 first observation, reload, missing optional counter, or decreasing counter
@@ -458,11 +534,11 @@ contributes no delta. These values do not affect routing or admission.
 
 #### `slots[].telemetry`
 
-Go `SlotTelemetry` (`coordinator/protocol/profile.go`) · Swift `SlotTelemetry`
+Go `SlotTelemetry` ([coordinator/protocol/profile.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/profile.go)) · Swift `SlotTelemetry`
 (`InferenceProfile.swift`). Every numeric is `*T` + `omitempty` in Go and
 optional in Swift; inside a present object an absent numeric reads as 0.
 Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
-([`../architecture/system-profiler.md`](../architecture/system-profiler.md)).
+([../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md)).
 
 | JSON key | Type | Meaning |
 |---|---|---|
@@ -488,19 +564,26 @@ assistant artifact and effective decode settings (`enabled`, `artifact_sha256`,
 `verification_mode`, `max_automatic_rectangular_tokens`). Omission means plain
 target execution. The reference carries no self-certified curve or margin.
 The coordinator resolves the reference against its own catalog and registered
-model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
+model artifact. Go [coordinator/protocol/performance_profile.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/performance_profile.go) and Swift
 `provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
 define the mirror.
 
 `performance_measurements` is defined in
-`coordinator/protocol/performance_measurements.go` and
+[coordinator/protocol/performance_measurements.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/performance_measurements.go) and
 `provider-swift/Sources/ProviderCore/Protocol/PerformanceMeasurements.swift`:
 
 | Key | Meaning |
 |---|---|
 | `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
-| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time since the newest observation at snapshot, even if an older completed observation arrives later |
 | `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation`, and optional `concurrent_requests` (peak observed request overlap; 1–64; omitted by legacy providers) |
+
+The Swift producer applies the same age rule independently to each workload
+bucket and current-posture series
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePerformanceMeasurements.observe`).
+Completed samples retain the existing receipt-order EWMA and sample counts;
+snapshot time does not replace observation time. Wire fields are unchanged.
 
 `native_media_prefill` records the target decoder's actual computed suffix for
 owner-bound native media, after encoder preparation. It retains cache and
@@ -527,7 +610,7 @@ numeric-only provider telemetry.
 
 #### `slots[].prompt_work_identity`
 
-`PromptWorkIdentity` in `coordinator/protocol/prompt_work.go` mirrors
+`PromptWorkIdentity` in [coordinator/protocol/prompt_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prompt_work.go) mirrors
 `provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`. The optional
 object contains lowercase SHA-256 `model_artifact_hash` and `prompt_contract_id`
 strings from the loaded engine's verified factory identity. It contains no
@@ -544,7 +627,7 @@ do not change physical reservations, consumer usage or billing.
 #### `slots[].deadline_profile`
 
 Go `DeadlinePerformanceProfileReference` in
-`coordinator/protocol/deadline_profile.go` mirrors
+[coordinator/protocol/deadline_profile.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/deadline_profile.go) mirrors
 `provider-swift/Sources/ProviderCore/Protocol/DeadlinePerformanceProfileReference.swift`.
 The coordinator resolves this reference against a separate reviewed deadline
 catalog. It cannot change serving width, mixed-prefill policy or memory limits.
@@ -570,7 +653,7 @@ nominal thermal state and `backend_capacity.telemetry.low_power_mode=false`.
 #### `slots[].deadline_work`
 
 Optional Go `DeadlineWork` / Swift `DeadlineWork`, defined in
-`coordinator/protocol/deadline_work.go` and
+[coordinator/protocol/deadline_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/deadline_work.go) and
 `provider-swift/Sources/ProviderCore/Protocol/DeadlineWork.swift`.
 
 | Key | Meaning |
@@ -607,7 +690,7 @@ Go `CapacityTelemetry` · Swift `CapacityTelemetry`. Same presence rules as
 
 #### `backend_capacity.telemetry.process_memory`
 
-Go `ProcessMemoryTelemetry` (`coordinator/protocol/process_memory_telemetry.go`)
+Go `ProcessMemoryTelemetry` ([coordinator/protocol/process_memory_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/process_memory_telemetry.go))
 and the Swift/TypeScript mirrors report the same scalar snapshot. This object
 is diagnostic and does not authorize admission, routing, or prefix reuse.
 
@@ -623,14 +706,14 @@ is diagnostic and does not authorize admission, routing, or prefix reuse.
 | `owner_count`, `closing_owner_count` | `uint64` | Live ledger owners and the subset retiring existing resources |
 | `system_available_bytes` | `*uint64` | Optional OS free-memory observation; omitted when unavailable |
 
-`ValidProcessMemoryTelemetry` (`coordinator/internal/registry/capacityvalue/process_memory_telemetry.go`)
+`ValidProcessMemoryTelemetry` ([coordinator/internal/registry/capacityvalue/process_memory_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/capacityvalue/process_memory_telemetry.go))
 discards inconsistent ownership identities and oversized samples instead of
 clamping C and M independently. `reconcileCapacitySamples`
-(`coordinator/registry/capacity_sample_freshness.go`) retains and ages repeated
+([coordinator/registry/capacity_sample_freshness.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/capacity_sample_freshness.go)) retains and ages repeated
 or regressed samples within a generation, including providers with no loaded
 slots. Only accepted capacity replacements advance the reconciliation clock.
 New fresh captures emit gauges; repeated or stale captures emit only age and
-freshness (`coordinator/internal/provider/heartbeat/provider_process_memory_telemetry.go`,
+freshness ([coordinator/internal/provider/heartbeat/provider_process_memory_telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/heartbeat/provider_process_memory_telemetry.go),
 `recordProcessMemoryTelemetry`).
 
 ### `service_reservation_released`
@@ -678,6 +761,15 @@ Go `InferenceResponseChunkMessage` · Swift `InferenceResponseChunk`.
 | `data` | `string` | `String` | opt | SSE chunk text; empty when E2E encryption is active |
 | `encrypted_data` | `*EncryptedPayload` | `EncryptedPayload?` | opt | [`EncryptedPayload`](#encryptedpayload) |
 
+A [streamed `auto` tool call](../architecture/inference.md#streamed-auto-tool-calls)
+spans several chunks whose `choices[].delta.tool_calls` entries share one
+`index`: the first carries `id`, `type`, `function.name` and an empty
+`function.arguments`, later ones only `index` and a `function.arguments`
+fragment. Consumers concatenate the fragments by `index`. Every other call is
+one entry carrying the complete call
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`,
+`streamChatCompletionFrames`).
+
 ### `inference_complete`
 
 Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
@@ -689,21 +781,21 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
-| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`coordinator/internal/observation/profile/profiler_provider.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
+| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker ([coordinator/internal/observation/profile/profiler_provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider.go)). Observability only. Field list and validation: [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) |
 
 ### `inference_error`
 
 Go `InferenceErrorMessage` · Swift `InferenceError`. Outcome classification of
-these fields: [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md).
+these fields: [../architecture/request-outcome-observability.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/request-outcome-observability.md).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | |
-| `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/internal/inference/failure/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
+| `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` ([coordinator/internal/inference/failure/inference_error_sanitize.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/failure/inference_error_sanitize.go)) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/inference/consumer.go`, `noteInferenceError`; `coordinator/api/inference/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
-| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
-| `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/inference/terminal_cause.go`); platform-policy terminals never strike health breakers |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `media_memory_unavailable`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge ([coordinator/api/inference/consumer.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/consumer.go), `noteInferenceError`; [coordinator/api/inference/dispatch.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/dispatch.go), `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum ([coordinator/protocol/inference_failure.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/inference_failure.go)): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
+| `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric ([coordinator/api/inference/terminal_cause.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/terminal_cause.go)); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
 | `available_token_budget` | `*int64` | `Int64?` | ptr | **an explicit zero is encoded** (busy slot, zero free tokens); nil/absent = legacy frame |
@@ -720,6 +812,12 @@ normal terminal handling instead of this exemption. The provider emits it
 through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
 the contract in `sanitizeProviderInferenceError`.
 
+A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
+`token_budget_exhausted`, enriched like other capacity rejections
+(`rejection_reason` `token_budget`); its internal
+`request_exceeds_slot_capacity`/`slot_capacity_committed` marker never reaches
+the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
+
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
@@ -729,7 +827,7 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 |---|---|---|---|---|
 | `nonce` | `string` | `String` | req | echoed |
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
-| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
+| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, [coordinator/attestation/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/attestation)). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
 | `public_key` | `string` | `String` | req | base64 |
 | `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time; Swift always sends all three, and an omitted value fails the challenge |
 | `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
@@ -744,7 +842,7 @@ never a key carried in this message.
 
 ### `model_autopilot_status`
 
-Go `ModelAutopilotStatusMessage` (`coordinator/protocol/model_autopilot.go`) ·
+Go `ModelAutopilotStatusMessage` ([coordinator/protocol/model_autopilot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/model_autopilot.go)) ·
 Swift `ModelAutopilotStatus`
 (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`).
 
@@ -753,12 +851,13 @@ Swift `ModelAutopilotStatus`
 | `command_id` | `string` / `String` | req | Identifies the immutable command on this provider session |
 | `status` | `string` / `State` | req | `started`, `succeeded`, `failed` |
 | `error` | `string` / `String?` | opt | Diagnostic failure text; not an authorization or capacity signal |
+| `detail` | — / `String?` | opt; Swift only; with consent | With `provider_busy`, the first [busy reason](#model_autopilot-state); `autopilot_operation` when another accepted command owns residency. Absent otherwise; older coordinators ignore it |
 | `model_autopilot` | `*ModelAutopilotState` / `ModelAutopilotSnapshot` | opt in Go; current Swift includes it | Provider command/residency state; status alone never changes scheduler capacity |
 
 `Registry.HandleAutopilotStatus` accepts only the matching current session and
 pending command. Completion requires a later accepted capacity sequence paired
 with the same terminal command ID and matching actual residents
-(`coordinator/registry/autopilot_provider_state.go`,
+([coordinator/registry/autopilot_provider_state.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_provider_state.go),
 `reconcileAutopilotHeartbeatLocked`). Repeated status messages are acknowledgements,
 not additional completed operations.
 
@@ -776,6 +875,26 @@ Go `PrefetchModelStatusMessage` · Swift `PrefetchModelStatus`. `model_id`
 is the terminal success: on disk, hash-checked, **not** loaded; `bytes_done`,
 `bytes_total` (`int64`, opt; Swift omits 0); `error` (opt).
 
+For an Autopilot download (below), `verified` also means the build joined the
+Autopilot set, and `failed` carries a closed `error`
+(`provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownload.swift`,
+`AutopilotDownloadRefusal`). A refusal that needs no catalog arrives as the only
+reply; the others follow `started`:
+
+| `error` | Meaning |
+|---|---|
+| `model_not_selected` | No saved consent (or a `private_only` Mac), downloads turned off by the operator, or consent was revoked before the build joined; unchanged from earlier providers |
+| `autopilot_paused` | Saved consent, Autopilot paused |
+| `model_not_supported` | Not an active catalog build with a manifest that this Mac can run: unknown or inactive, RAM floor, runtime capabilities, engine family, load budget, unreportable ID, a failed self-test, or the 256-ID bound |
+| `model_limit_reached` | The operator's `max_models` cap is reached |
+| `storage_limit_reached` | The download would exceed the operator's `max_storage_gb` cap |
+| `insufficient_disk` | The download would leave less free disk than the reserve (`reserve_gb`, default `50` GiB) |
+| `catalog_unavailable` | The catalog or manifest could not be fetched; retryable |
+| `download_failed` | Transfer, verification, scan or hash failed, or the model was loaded when the download verified; retryable |
+
+Shutdown and drain refusals keep their existing text (`provider is shutting
+down`, `provider draining for update`).
+
 ### `models_update`
 
 Go `ModelsUpdateMessage` · Swift `ModelsUpdate`. `models` (`[]ModelInfo`, same
@@ -792,10 +911,10 @@ merge semantics.
 
 | Message | Fields | Contract / source |
 |---|---|---|
-| `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
-| `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
-| `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
-| `models_replace_resumed` | exact `request_id`, `drain_request_id`, and `capacity_seq` from the accepted readiness frame | `coordinator/protocol/messages.go` (`ModelsReplaceResumedMessage`); Swift `ModelsReplaceResumed` |
+| `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go) (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
+| `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go) (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
+| `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go) (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
+| `models_replace_resumed` | exact `request_id`, `drain_request_id`, and `capacity_seq` from the accepted readiness frame | [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go) (`ModelsReplaceResumedMessage`); Swift `ModelsReplaceResumed` |
 
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
@@ -803,14 +922,14 @@ Every model ID must be unique and nonempty and meet the attested runtime
 capability floor. When the catalog pins a hash, the model must carry the active
 or an explicitly retained revision hash for that same model. Both validation
 and commit check the current approvals, so retirement between those phases
-rejects the replacement (`coordinator/registry/provider_models_replace.go`,
+rejects the replacement ([coordinator/registry/provider_models_replace.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models_replace.go),
 `ReplaceProviderModels`).
 As with registration, off-catalog local models may be advertised regardless of
 `private_only` or whether the provider has a linked owner; advertising them does
 not grant trust or ownership. With a configured catalog, they are eligible only
 for their owner's self-route or preferred-owner requests, never public routing.
-Sources: `coordinator/registry/provider_lifecycle.go` (`Register`),
-`coordinator/registry/model_catalog.go` (`modelServableForOwnerLocked`,
+Sources: [coordinator/registry/provider_lifecycle.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_lifecycle.go) (`Register`),
+[coordinator/registry/model_catalog.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_catalog.go) (`modelServableForOwnerLocked`,
 `providerServesCatalogModelLocked`).
 The tool allowlist must contain unique selected IDs and use protocol 1; protocol
 0 has no tool allowlist. The coordinator validates the entire set before mutation.
@@ -854,8 +973,8 @@ resumed; retrying the same readiness frame on that connection resends the
 receipt without repeating the routing transition. A newer drain invalidates
 that retry. A drain remains reusable
 after validation but not after commit or disconnect. Sources:
-`coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
-`coordinator/internal/provider/inventory/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
+[coordinator/registry/provider_models_replace.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models_replace.go) (`ReplaceProviderModels`, `ResumeProviderModels`),
+[coordinator/internal/provider/inventory/provider_models_replace.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/provider/inventory/provider_models_replace.go) (`handleModelsReplace`, `handleModelsReplaceReady`).
 
 Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
 `validateModelSelectionAfterDrain(_:drainID:timeout:)` checks the candidate before
@@ -903,7 +1022,7 @@ Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`. Accepted only
 for `tier = ssd` or `memory` with that tier's separately advertised capability.
 Both require the exact nonce-bound prompt proof; memory cannot borrow an SSD
 lookup or sequence. Acceptance: `applyLookupV2Result`,
-`coordinator/registry/cache_receipts_v2.go`.
+[coordinator/registry/cache_receipts_v2.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_receipts_v2.go).
 
 | JSON key | Go | Presence |
 |---|---|---|
@@ -926,7 +1045,7 @@ Memory requires a published resident checkpoint and its own live
 capability. Every explicit checkpoint must match an input boundary in the nonce-bound
 coordinator plan; a shorter actual checkpoint is valid even when the longest
 prompt boundary is not reusable. Acceptance: `applyReadyV2Result`,
-`coordinator/registry/cache_receipts_v2.go`.
+[coordinator/registry/cache_receipts_v2.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_receipts_v2.go).
 
 For a complete-checkpoint slot, a pre-v2 coordinator's legacy attempt is settled
 with `skipped_policy`; no count-only HIT/READY is emitted. Protocol v2 without
@@ -946,23 +1065,30 @@ inference responses continue in both cases (`ProviderLoop+InferenceHandler.swift
 | `stage_ms` | `float64` | opt |
 
 Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
-`coordinator/registry/cache_tiers.go`). `stage_ms = 0` means no external disk
+[coordinator/registry/cache_tiers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_tiers.go)). `stage_ms = 0` means no external disk
 staging for resident KV. Sequences increase independently per tier/model/epoch;
 nonce, connection, model/hash/contract, epoch, order, and replay checks still
 apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
-removal uses bounded TTL and exact-miss invalidation; there is no per-anchor
+removal, and routine owned retirement in active SSD stores, use bounded TTL and
+verified-miss invalidation; there is no per-anchor
 eviction frame. Unload/reconnect replaces the capability snapshot.
+
+An SSD epoch describes reusable-state identity, not guaranteed presence of every
+previously advertised file. An accepted absent/corrupt lookup removes the
+provider's hints for all boundaries in that attempt's plan. Native authentication,
+nonce/sequence/scope/connection checks and generation-wide invalidation on unsafe
+changes remain required; a stale routing hint never grants a cache hit.
 
 ### `capacity_quote`
 
-Go `CapacityQuoteMessage` (`coordinator/protocol/capacity.go`) · Swift
+Go `CapacityQuoteMessage` ([coordinator/protocol/capacity.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/capacity.go)) · Swift
 `CapacityQuote`. Answer to one [`capacity_probe`](#capacity_probe). Quotes are
 drift correction for the coordinator's ledger, not reservations.
 
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
 | `quote_id` | `string` | req | echo of the probe's random, request-local id |
-| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; `applyFirstContentQuote` (`coordinator/registry/first_content_plan.go`) rejects older accepted-capacity sequences and newer local reservations; response correlation remains bounded by `capacityProbeWindow` |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; `applyFirstContentQuote` ([coordinator/registry/first_content_plan.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/first_content_plan.go)) rejects older accepted-capacity sequences and newer local reservations; response correlation remains bounded by `capacityProbeWindow` |
 | `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
 | `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
 | `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |
@@ -986,11 +1112,11 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
-| `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/internal/inference/providerwire/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
-| `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
+| `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; [coordinator/internal/inference/providerwire/provider_wire.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/inference/providerwire/provider_wire.go), `snapshotProviderInferenceFrame` / `wireMessage`; [coordinator/registry/cache_receipts.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_receipts.go), `ForgetCacheAttempt` |
+| `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 
-`prompt_work` is defined in `coordinator/protocol/prompt_work.go` and
+`prompt_work` is defined in [coordinator/protocol/prompt_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prompt_work.go) and
 `provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
 
 | Key | Meaning |
@@ -1003,11 +1129,61 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `calibration_id` | Required printable reviewed-corpus identity for `calibrated_template`; absent for exact counts |
 
 The fields contain no content, token IDs, cache keys or consumer identity.
+The coordinator may reconcile the SLA input-token term from current verified
+exact work matching the serving candidate's advertised artifact and renderer
+before dispatch, keeping the original ingress anchor and any earlier
+caller cutoff. The provider inherits the resulting remaining budget; its recount
+and calibrated uncertainty cannot extend that deadline or change billing usage.
 An exact count must equal the provider's actual tokenization; a calibrated
 count must bound it. Invalid identity, unknown source or an exceeded bound
-withdraws calibrated admission and preserves the conservative fallback.
+withdraws calibrated admission and preserves the conservative fallback. The
+coordinator retains the fallback deadline for candidates without matching
+identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
+
+#### MiMo Chat tool-schema preservation
+
+The decrypted Chat body adds no envelope field or schema-metadata trust grant.
+Loaded exact `mimo_v2` selects restoration of the original typed tool declarations;
+caller model names do not select this behavior. The public fixture is a fixed
+provider contract, not evidence of a deployed platform implementation.
+
+| Boundary | Contract | Provider source |
+|---|---|---|
+| Original tools | Preserve typeless enums and Boolean property schemas before native rendering, serving, recount and benchmark preparation. Other loaded families retain existing normalization. | `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift` (`restoring`); [native inference](../architecture/inference.md#native-mimo-v26-candidate) |
+| Hosted-tool fallback | Share the existing function-object/string-name structural filter. Malformed retained declarations still fail SDK decoding; unsupported hosted entries follow existing ingress repair. | `provider-swift/Sources/ProviderCore/InboundChatNormalization.swift` (`isRepresentableTool`); `MiMoV26ToolEvidence.OriginalTool` |
+| Reserved metadata | Reject client-authored reserved schema metadata before tool-choice handling, including `none`. No new caller trust or forced-tool capability follows from capture. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`rejectReservedSchemaMetadata`); `MiMoV26ToolEvidence.restoring` |
+| Public regression | Two newly authored reproductions exercise exact provider/local prompt IDs through scripted generation. Historical external-corpus and live platform qualification remain separate. | `fixtures/prompt-contract/mimo-v26-schema-parity-v1.json`; [fixture procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions) |
+
+#### GLM native prompt contract
+
+GLM-5.3-Flash (catalog `glm-5.3-flash` and the local qualification download)
+adds no WebSocket message or trusted caller field. `GLM5NextPromptPolicy`
+selects its text prompt rules only from the loaded model's `model_type`; caller
+model names cannot authorize the raw-schema path.
+
+| Request-body control | Native text contract | Provider source |
+|---|---|---|
+| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and `off` are thinking-off requests (below); other invalid values reject even when shadowed. `reasoning: null` and null `reasoning` members are unset; `reasoning.summary` and `reasoning.generate_summary` accept `auto`, `concise` or `detailed` as no-ops, because the full reasoning is returned. Other `reasoning` members are refused. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`, `Effort`) |
+| `reasoning.max_tokens` | Positive integer. Selects the nearest effort when no effort alias is present: at most 1,024 renders `low`, at most 8,192 `high`, otherwise `max` (the budgets OpenAI-compatible APIs give `low` and `medium`). The template does not enforce a token budget. | Same source (`Effort.init(reasoningBudget:)`) |
+| `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, top-level `thinking` | Boolean only, except top-level `thinking`, which also takes GLM's API object `{"type": "enabled"\|"disabled", "clear_thinking": Boolean}` (both members optional; other members refused); null top-level `thinking` is unset. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a `reasoning.max_tokens` budget is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
+| `include_reasoning`, `reasoning.exclude` | Boolean or null (unset). `include_reasoning: true` and `reasoning.exclude: false` are no-ops. The opposite value refuses with 400 `MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported`: the provider has no per-request seam to withhold reasoning it generates. Local HTTP returns the fixed `GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage` with code `unsupported_value`; the coordinator frame keeps the closed `invalid_request` / `client_error` vocabulary. | Same source (`RawControls`, `validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `clear_thinking`, `chat_template_kwargs.clear_thinking`, `thinking.clear_thinking` | Boolean only; top-level, then template value, then the `thinking` object; default `false`. This clears historical reasoning, not newly generated reasoning. | Same source and symbols |
+| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as OpenRouter's `reasoning` string, else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
+| `response_format` `json_object` / `json_schema` | Text requests without tools. GLM's native engine refuses sampler constraints, so this is not constrained decoding: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, `json_schema` must compile to the shared fail-closed subset with explicit types and the value must satisfy it. Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content; a JSON format with tools, an unsupported schema, or image/video input is refused with 400. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
+| `tool_choice` `required` / named function | Text requests. Served by structured post-validation, as Qwen 3.5/3.8 and Nemotron are: `ToolChoicePromptPolicy` renders its forcing instruction in the system and last user turns, a named choice offers only that function, reasoning streams on a separate typed channel, and the native GLM parser withholds the call until end of stream. It is exposed only after it parses and passes `ToolConstraintValidation.validate` (declared or named function, compiled schema, cardinality); visible text, a missing, malformed, truncated or schema-invalid call is a 422 `tool_noncompliance` with nothing exposed. Advertised under tool-constraint protocol v1 for the managed GLM identities, so the coordinator routes these requests to such providers. Image or video input with a forced choice is refused with 400. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift` (`forcedStrategy`, `validateParser`, `advertisesCapability`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift` (`checkNativeToolFailure`) |
+| Unqualified modes | Reject `preserve_thinking`, other `reasoning` or `chat_template_kwargs` keys and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+
+`LocalResponseRequest` retains request-local raw controls for the same later
+loaded-model check; capture alone grants no capability
+(`provider-swift/Sources/ProviderCore/Server/LocalResponseRequest.swift`). The
+fixtures under `fixtures/prompt-contract/glm53-flash/` keep the official template
+as the golden authority and separately identify the `EigenLabs` artifact template
+recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
+template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not
+prove full HTTP/sidecar parity.
+See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 
@@ -1036,7 +1212,7 @@ accepts for that name.
 
 ### `model_autopilot`
 
-Go `ModelAutopilotMessage` (`coordinator/protocol/model_autopilot.go`) · Swift
+Go `ModelAutopilotMessage` ([coordinator/protocol/model_autopilot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/model_autopilot.go)) · Swift
 `ModelAutopilotCommand` (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`).
 Sent only for explicit, compatible provider consent under live control after
 whole-device reservation. Shadow leases cannot authorize this message.
@@ -1049,8 +1225,9 @@ whole-device reservation. Shadow leases cannot authorize this message.
 | `load_model_id` | `string` / `String?` | opt | One advertised local cached build; omitted for unload-only commands |
 | `unload_model_ids` | `[]string` / `[String]` | req | Explicit victims within `selected_models`, unique and at most32; `[]` means no eviction |
 | `expected_resident_models` | `[]string` / `[String]` | req | Complete unique resident set expected before mutation, at most32 |
-| `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](configuration.md#model-autopilot) |
+| `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#model-autopilot) |
 | `lease_seconds` | `int` / `Int` | req | `0...86400`; minimum hold lease on a newly loaded target, separate from provider residence/idle dwell |
+| `hold_seconds` | — / `Int?` | opt; Swift only | `0...86400` placement hold on the loaded target; absent or `0` records none and leaves an earlier hold; a positive value replaces it; without `load_model_id` it is `invalid_command`. A succeeded operation's hold keeps the target out of LRU eviction and idle unload after its lease ends; another operation may still unload it. Honoured only by providers reporting `placement_holds` |
 
 The provider rejects a changed resident set, busy device, pinned/young victim,
 active lease, unsupported hardware, missing local primary/assistant or infeasible
@@ -1068,11 +1245,11 @@ is not permission for a coordinator command to unload an unselected model.
 The provider caches a bounded command history. An identical active/completed
 command returns its existing status; reused IDs with altered payload are
 rejected. Same-ID recovery never extends the original expiration. See
-[autopilot ownership](../architecture/model-autopilot.md#invariants).
+[autopilot ownership](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/model-autopilot.md#invariants).
 
 ### `model_autopilot_control`
 
-Go `ModelAutopilotControl` (`coordinator/protocol/model_autopilot.go`) · Swift
+Go `ModelAutopilotControl` ([coordinator/protocol/model_autopilot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/model_autopilot.go)) · Swift
 `ModelAutopilotControl` (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`).
 Sent only to protocol-3 explicit enrollments, bound to the current connection and
 approved configuration.
@@ -1083,7 +1260,7 @@ approved configuration.
 | `session_id`, `revision` | `string` / `String` | req | Current control connection and approved consent revision |
 | `enabled` | `bool` / `Bool` | req | Whether this lease permits participation; consent is independently required |
 | `observe_only` | `bool` / `Bool` | req; always emitted | `true` is shadow observation only and grants no residency ownership; `false` can activate live control after a matching acknowledgement |
-| `expires_at_ms` | `int64` / `Int64` | req | Unix-millisecond lease expiry; bounds are in [configuration](configuration.md#model-autopilot) |
+| `expires_at_ms` | `int64` / `Int64` | req | Unix-millisecond lease expiry; bounds are in [configuration](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#model-autopilot) |
 
 A matching unexpired shadow lease reports mode without activating control;
 absent/expired control leaves ordinary policy in force unless the user explicitly
@@ -1099,8 +1276,22 @@ Active or explicitly paused Autopilot providers block this legacy residency path
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
-(`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+(`int`, opt, advisory). Download + verify only, no GPU load; for a build in
+ordinary serving the provider replies with `prefetch_model_status` and then
+`models_update`.
+
+With saved Autopilot consent and downloads not turned off by the operator
+(capability `inventory_downloads`; on by default), a build outside ordinary
+serving is an Autopilot
+download, even under a live lease: the provider downloads and
+verifies it through the same pipeline, adds it to `selected_models` and the
+registration inventory, and sends **no** `models_update`, because that would make
+it ordinary and publicly routable. It never loads or advertises the build; an
+Autopilot operation may load it. With consent but downloads off, such a request
+is refused `model_not_selected` and never takes the ordinary path. The provider then re-registers once when idle (no busy reason,
+operation, live lease or other download)
+so `register.autopilot_inventory` carries the build's `ModelInfo`
+([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 
 ### `desired_models`
 
@@ -1108,7 +1299,7 @@ Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEnt
 `model_name` (public alias or concrete model ID), `desired_build` (concrete build ID),
 `previous_build` (optional; still acceptable mid-rollout), `revision` (optional version),
 `aggregate_sha256` (optional artifact hash). `DesiredModelsForProvider` in
-`coordinator/registry/model_commands.go` adds the revision fields and unaliased
+[coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) adds the revision fields and unaliased
 concrete-model entries only for providers reporting `model_revisions_v1` in
 `runtime_capabilities`. This is protocol feature detection, not a new trust grant.
 
@@ -1120,7 +1311,7 @@ whose desired, previous, or retired build is in the provider's advertised invent
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
 Both announce completed updates through `models_update`. Source:
-`coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
+[coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 See [revision lifecycle](../architecture/model-revisions.md).
 
 ### `trust_status`
@@ -1131,10 +1322,10 @@ Go `TrustStatusMessage` · Swift `TrustStatus`. `trust_level` ∈ {`none`,
 
 ### `capacity_probe`
 
-Go `CapacityProbeMessage` (`coordinator/protocol/capacity.go`) · Swift
+Go `CapacityProbeMessage` ([coordinator/protocol/capacity.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/capacity.go)) · Swift
 `CapacityProbe`. Sent on the bounded data lane to shortlist candidates in
 parallel with the primary dispatch. Carries request **shape** only; the field
-set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/tests/protocol/capacity_test.go`).
+set is pinned by `TestCapacityProbeShapeClosed` ([coordinator/tests/protocol/capacity_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/protocol/capacity_test.go)).
 
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
@@ -1157,7 +1348,7 @@ only transcript: cached-response recovery resumes only a protocol-3 enrollment.
 These fields
 are app measurements, not Apple-certified hardware. See
 [the App Attest reference](app-attest-shadow.md) and
-`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).
+[coordinator/protocol/app_attest_hardware.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_hardware.go) (`AppAttestShadowHashV3`).
 
 ## Shared objects
 
@@ -1180,12 +1371,13 @@ support.
 | JSON key | Go / Swift | Presence | Meaning |
 |---|---|---|---|
 | `protocol` | `int` / `Int` | req | `3` for separate planning inventory and session activation |
-| `enabled`, `cached_only` | `bool` / `Bool` | req | Explicit consent and cached-only scope; both must be true for planning |
+| `enabled`, `cached_only` | `bool` / `Bool` | req | Current scheduling participation and cached-only scope; both must be true for planning |
+| `consent_enabled` | `*bool` / `Bool?` | opt; absent remains unknown | Saved `ModelAutopilotSettings.hasConsent`, independent of readiness, inventory refresh, pause, shadow mode or control lease; explicit false is distinct from missing/null |
 | `active`, `paused` | `bool` / `Bool` | req | Acknowledged live control and explicit local pause |
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
 | `session_id` | `string` / `String?` | opt | Acknowledged control connection; shadow acknowledgement is not live ownership |
 | `revision` | `string` / `String` | req | Approved consent configuration |
-| `selected_models` | `[]string` / `[String]` | req | Consent requires `1...256` exact verified cached network build IDs, each nonempty and at most `256` UTF-8 bytes; static until explicit inventory refresh, empty never grants permission |
+| `selected_models` | `[]string` / `[String]` | req | The Autopilot model set. Consent requires `1...256` IDs, each nonempty and at most `256` UTF-8 bytes. With saved consent: the persisted selection plus every verified catalog build in the local cache (`AutopilotModelSet`), at most `256`, persisted selection first, sorted. It grows when a download or prefetch verifies and shrinks when a build leaves the cache, under an unchanged `revision`. Without consent: the persisted selection, unchanged. Empty never grants permission |
 | `min_idle_seconds` | `int` / `Int` | req | Inactivity guard separate from minimum residence |
 | `load_history` | `[]ModelAutopilotLoadTiming` / `[ModelAutopilotLoadTiming]?` | opt | At most64 `{model_id, weight_hash, load_ms, measured_at_ms}` measurements; only recent matching bytes influence estimates |
 | `last_elapsed_ms`, `last_release_ms`, `last_load_ms` | `int64` / `Int64?` | opt | Measured last operation phases; no ETA guarantee |
@@ -1196,6 +1388,35 @@ support.
 | `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
 | `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
 | `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
+| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`, and `inventory_downloads` unless the operator turned downloads off. Absent on older providers, which do not adopt, hold or download |
+| `download_storage` | — / `ModelAutopilotDownloadStorage?` | opt; only with `inventory_downloads` | `{disk_free_bytes, reserve_bytes, used_bytes, used_models, limit_bytes?, limit_models?}`, int64 bytes. Free space on the model cache volume (0 when unknown), the reserve a download keeps, the builds Autopilot downloaded that are still on disk, and the operator's caps (absent = no cap). Measured at most once a minute and after each download |
+| `adopted_models` | — / `[String]?` | opt; with consent | Cached inventory targets of succeeded operations that keep serving without a lease; each is resident. Absent when none |
+| `held_models` | — / `[ModelAutopilotHold]?` | opt; with consent | Active holds `{model_id, expires_at_ms}` (Unix milliseconds); each held model is resident and is never evicted for an ordinary cold load. Absent when none |
+| `busy_reasons` | — / `[String]?` | opt; with consent | Every condition that would make the provider answer `provider_busy` now, in report order; absent when not busy |
+| `busy_reason` | — / `String?` | opt; with consent | The first of `busy_reasons` |
+| `busy_since_ms` | — / `Int64?` | opt; with consent | Unix milliseconds since `busy_reason` has been continuously observed |
+| `transition_stalls` | — / `[ModelAutopilotTransitionStall]?` | opt; with consent | Cumulative watchdog stalls in this process, `{transition, count, last_age_ms}`; absent before the first |
+
+The consent-gated fields above are additive: a provider without saved consent
+omits all of them, and coordinators that predate them ignore them because they
+decode provider frames without rejecting unknown keys
+([coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/protocol/messages.go),
+`ProviderMessage.UnmarshalJSON`). `protocol` stays `3`: the coordinator accepts
+inventory only from protocol `3`. A coordinator may rely on adoption or holds
+only after a provider reports the matching capability.
+
+Closed vocabularies (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilotBusyReason.swift`).
+Report order lists an owner before the work it owns:
+
+| Field | Values |
+|---|---|
+| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
+| `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
+| `capabilities` (`ModelAutopilotCapability`) | `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads` |
+| Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `model_limit_reached`, `storage_limit_reached`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |
+
+Bounds and the watchdog's cancellation rules are in the
+[Autopilot architecture](../architecture/model-autopilot.md#busy-reasons-and-stalled-transitions).
 
 Resident entries:
 
@@ -1207,33 +1428,62 @@ Resident entries:
 | `resident_gb` | `*float64` / `Double?` | opt | Actual slot-owned weight bytes expressed in GiB; the only victim reclaim credit, not OS RSS |
 
 State validation and malformed-report fencing are in
-`coordinator/registry/autopilot_provider_state.go` (`validAutopilotState`,
+[coordinator/registry/autopilot_provider_state.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_provider_state.go) (`validAutopilotState`,
 `cloneAutopilotState`, `autopilotStateMatchesCapacity`). A status frame cannot
 replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
-Provider `enabled` reports eligible consent, not activation. Saved consent stays
-local when an ordinary successor extends serving permission beyond cached
-consent: the provider reports `enabled=false` and local phase `waiting_inventory`
-until explicit inventory refresh, preserving ordinary serving with old peers.
+Provider `enabled` reports eligible scheduling participation, not activation.
+When an ordinary successor extends serving permission beyond the Autopilot
+set, the provider reports `enabled=false` and local phase `waiting_inventory`
+until the successor joins the set (its verified prefetch, or an explicit
+inventory refresh), preserving ordinary serving with old peers.
+Saved consent remains independently visible as `consent_enabled=true`.
 It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
 explicit mode/status but no residency commands. Shadow lease acknowledgement is
 not live ownership or actual capacity credit.
 
-The `selected_models` allowlist is populated by verified active downloaded network
-inventory, not a model picker, arbitrary local/off-catalog discovery or a download
-request. It can be broader than saved `enabled_models`; its metadata is carried
+The saved declaration is defined in [coordinator/protocol/model_autopilot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/model_autopilot.go)
+(`ModelAutopilotState.ConsentEnabled`) and
+`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilot.swift`
+(`ModelAutopilotSnapshot.consentEnabled`).
+`ModelAutopilotSnapshot+Decoding.swift` in that Swift directory preserves old
+omission as `nil` and accepts the local daemon reader's converted key too.
+`publishModelAutopilotSnapshot`
+(`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`)
+emits the saved setting explicitly, including false for unenrolled state.
+
+`AutopilotRewardConsentSnapshot`
+([coordinator/registry/autopilot_reward_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_reward_snapshot.go)) reads the accepted registry
+state, not an unaccepted raw heartbeat. A supported protocol-3 explicit false
+is a valid opt-out even without a selected inventory. True additionally requires
+cached-only scope, a nonempty revision of at most 64 bytes, and the bounded
+nonempty selection above; it does not require `enabled=true`. Missing,
+unsupported or malformed declarations are nonqualifying unknown history, never
+proof that no earlier opt-in occurred. Saved-consent capture uses the authenticated
+socket account and server receive time, with no trusted client opt-in timestamp.
+See [history and payout limits](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/billing.md#autopilot-rewards).
+This additive field does not change protocol-3 control negotiation; qualifying
+reward declarations require an updated provider build to be released separately.
+
+With saved consent, the `selected_models` set is the persisted selection plus
+every verified active catalog build in the local cache, including builds
+downloaded on the operator's behalf; never arbitrary local or off-catalog
+builds. The operator can turn downloads on their behalf off or limit them
+(`[backend.autopilot_downloads]`). It can be broader than saved `enabled_models`; its metadata is carried
 in optional `register.autopilot_inventory` (`[]ModelInfo`, at most 256 entries),
-not in ordinary `register.models`. Only consented IDs with a nonempty verified
+not in ordinary `register.models`. The inventory is built from the same
+snapshot as that frame's `selected_models`, and the provider records which IDs
+a registration carried. Only consented IDs with a nonempty verified
 weight hash are accepted. Ordinary models win duplicate IDs and weight identity.
 Observation-only models do not grant public/owner routing, capacity or legacy
 load permission until a matching live lease is acknowledged. Shadow planning
 can inspect that metadata without granting permission. Old coordinators ignore
 the additive field and cannot activate protocol 3. Both the ordinary JSON encoder
-and the raw-attestation registration encoder preserve this separation. Ordinary
-restarts reuse the recorded inventory rather than automatically consenting to
-new catalog builds. Implementation: `coordinator/registry/autopilot_inventory.go`,
+and the raw-attestation registration encoder preserve this separation. A
+restart recomputes the set from the cache and the catalog under the same saved
+consent; no new consent step applies. Implementation: [coordinator/registry/autopilot_inventory.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_inventory.go),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift`.
 
 ### `EncryptedPayload`
@@ -1261,7 +1511,9 @@ There is no separate generic unload command. The provider's ordinary idle timer
 is paused during active control or an explicit pause. Recorded consent alone
 does not pause it during shadow, while waiting or after lease expiry. Commands cannot fall through to implicit LRU
 victims. Standalone surplus unloading follows the configured quiet window; load-driven replacement
-still requires all dwell, memory, pin and donor protections.
+still requires all dwell, memory, pin and donor protections. A succeeded operation's
+`hold_seconds` keeps its target out of the idle timer and LRU eviction until expiry, and its
+adopted inventory serves after the lease; see [placements](../architecture/model-autopilot.md#placements-after-an-operation).
 
 Non-enrolled providers keep their existing idle and legacy model lifecycle.
 `desired_models` release reconciliation remains independent, is deferred behind
@@ -1274,16 +1526,16 @@ backend-capacity heartbeat. See [autopilot architecture](../architecture/model-a
 
 | Layer | Files |
 |---|---|
-| Go shape and envelope | `coordinator/tests/protocol/messages_register_heartbeat_test.go`, `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
-| Autopilot command/state | `coordinator/tests/protocol/model_autopilot_test.go`; `provider-swift/Tests/ProviderCoreTests/Autopilot/ModelAutopilotTests.swift` |
-| Go ↔ Swift key pinning | `coordinator/tests/api/inference/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
-| `profile` fixture | `coordinator/tests/protocol/testdata/profiler_wire_fixture.json` — written by Go, loaded by Swift |
+| Go shape and envelope | [coordinator/tests/protocol/messages_register_heartbeat_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/protocol/messages_register_heartbeat_test.go), `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
+| Autopilot command/state and saved consent | [coordinator/tests/protocol/model_autopilot_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/protocol/model_autopilot_test.go); `provider-swift/Tests/ProviderCoreTests/Autopilot/ModelAutopilotTests.swift`, `AutopilotSnapshotCodingTests.swift`, `AutopilotInventoryTests.swift` in the same directory |
+| Go ↔ Swift key pinning | [coordinator/tests/api/inference/provider_wire_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/api/inference/provider_wire_test.go); `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
+| `profile` fixture | [profiler_wire_fixture.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/profiler_wire_fixture.json) — written by Go, loaded by Swift |
 
 ## Related
 
-- [`../architecture/scheduling.md`](../architecture/scheduling.md) — how slot state and budgets drive admission
-- [`../architecture/routing.md`](../architecture/routing.md) — gate reasons and candidate selection
-- [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — the `profile` object, `request_profiles`, `fleet_snapshots`
+- [../architecture/scheduling.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md) — how slot state and budgets drive admission
+- [../architecture/routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/routing.md) — gate reasons and candidate selection
+- [../architecture/system-profiler.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md) — the `profile` object, `request_profiles`, `fleet_snapshots`
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
-- [`telemetry-inventory.md`](telemetry-inventory.md) — producer, sink and cadence of every datum
-- [`api-contracts.md#headers`](api-contracts.md#headers) — the `X-Timing` header
+- [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md) — producer, sink and cadence of every datum
+- [api-contracts.md#headers](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#headers) — the `X-Timing` header

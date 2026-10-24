@@ -37,6 +37,8 @@ private func qwenTargetFixtureJSON(
             "full_attention_interval": \(fullAttentionInterval),
             "num_experts": \(numExperts),
             "num_experts_per_tok": \(numExperts > 0 ? 2 : 0),
+            "moe_intermediate_size": 64,
+            "shared_expert_intermediate_size": 64,
             "mtp_num_hidden_layers": \(mtpLayers)
           },
           "vision_config": {
@@ -55,7 +57,7 @@ private func qwenTargetFixtureJSON(
         """.utf8)
 }
 
-private func qwen3VLMoEFixture() throws -> MLXVLM.Qwen3VL {
+private func qwen3VLMoEFixture(headDim: Int = 8) throws -> MLXVLM.Qwen3VL {
     let data = Data(
         """
         {
@@ -67,7 +69,7 @@ private func qwen3VLMoEFixture() throws -> MLXVLM.Qwen3VL {
             "num_hidden_layers": 1,
             "num_attention_heads": 1,
             "num_key_value_heads": 1,
-            "head_dim": 8,
+            "head_dim": \(headDim),
             "max_position_embeddings": 64,
             "vocab_size": 32,
             "num_experts": 4,
@@ -311,6 +313,27 @@ struct QwenVLMTargetExtractionTests {
                 == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
+    @Test("short demanded capture requires the actual dense paged SSD store and keeps its floor")
+    func shortDemandedCaptureRequiresDensePagedSSD() async throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+        let fixture = try SSDHybridCheckpointTestFixture(paged: true)
+        defer { fixture.remove() }
+        let store = try fixture.makeStore()
+        defer { store.close() }
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: store) == store.config.minEffectiveTokens)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: moe, backend: .paged, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .contiguous, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: nil) == nil)
+        await store.closeAndWait()
+    }
+
     @Test("benchmark resolution uses the same extracted Qwen target")
     func benchmarkServingModelUsesQwenExtraction() throws {
         let configData = qwenTargetFixtureJSON()
@@ -348,7 +371,8 @@ struct QwenVLMTargetExtractionTests {
                 mtpEnabled: false,
                 kvBudget: ScriptedProviderMemory.budget(modelIDs: ["tiny/qwen-benchmark-budget"]),
                 kvBackendConfig: "contiguous",
-                environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"],
+                environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+                              EngineV2KVQuantizationPolicy.environmentKey: "native"],
                 memorySnapshotForTesting: { (physical, 0) })
             let snapshot = await session.cacheSnapshot()
             #expect(oversized == false)
@@ -407,33 +431,39 @@ struct QwenVLMTargetExtractionTests {
         #expect(sizing.fp16KVBytesPerToken == expectedKVRate)
     }
 
-    @Test("Qwen3-VL MoE constructs the contiguous production backend and vetoes paged KV")
-    func qwen3VLProductionBackend() throws {
+    @Test("Qwen3-VL MoE retains native contiguous control and supports balanced paged preparation")
+    func qwen3VLProductionBackend() async throws {
         let wrapper = try qwen3VLMoEFixture()
         let build = try EngineV2Factory.makeProductionBuild(
             model: wrapper,
             tokenizer: StubBridgeTokenizer(),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
-            kvBackend: .contiguous)
+            kvBackend: .contiguous,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "native"])
         #expect(build.kvBackendKind == .contiguous)
         #expect(EngineV2Factory.cbv2LayerKinds(model: wrapper)?.count == 1)
+        await build.engine.shutdown()
 
         var preflightCalled = false
         let paged = try EngineV2Factory.prepareProductionBackend(
-            model: try qwen3VLMoEFixture(),
+            model: try qwen3VLMoEFixture(headDim: 64),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
-            kvBackend: .paged,
+            kvBackend: .auto,
+            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null",
+                          EngineV2KVQuantizationPolicy.environmentKey: "balanced"],
             pagedPreflightOverride: { _ in preflightCalled = true })
-        #expect(paged.kind == .contiguous)
-        #expect(paged.fallbackReason == "model_capability")
+        #expect(paged.kind == .paged && paged.kvQuantization == .balanced)
+        #expect(paged.fallbackReason == nil)
         #expect(paged.modelCapabilities.supportsPrefixReuse == false)
-        #expect(paged.modelCapabilities.supportsPagedKV == false)
+        #expect(paged.modelCapabilities.supportsPagedKV)
         #expect(paged.modelCapabilities.supportsCompiledDecode == false)
         #expect(paged.modelCapabilities.supportsPackedPrefill == false)
         #expect(paged.modelCapabilities.supportsMTP == false)
-        #expect(preflightCalled == false)
+        #expect(preflightCalled)
+        #expect(paged.pagedPoolConfig?.quantization?.keyBits == 4)
+        #expect(paged.pagedPoolConfig?.quantization?.valueBits == 4)
     }
 
 
@@ -446,7 +476,8 @@ struct QwenVLMTargetExtractionTests {
             model: target,
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
-            kvBackend: EngineV2KVBackendSelection.contiguous)
+            kvBackend: EngineV2KVBackendSelection.contiguous,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "native"])
 
         #expect(prepared.kind == EngineV2KVBackendKind.contiguous)
         #expect(prepared.layerKinds.count == 1)
@@ -457,7 +488,8 @@ struct QwenVLMTargetExtractionTests {
             model: Qwen35Model(config),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
-            kvBackend: EngineV2KVBackendSelection.contiguous)
+            kvBackend: EngineV2KVBackendSelection.contiguous,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "native"])
 
         #expect(dense.kind == EngineV2KVBackendKind.contiguous)
         #expect(dense.layerKinds.count == 1)
@@ -475,6 +507,7 @@ struct QwenVLMTargetExtractionTests {
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.paged,
+            environment: [EngineV2KVQuantizationPolicy.environmentKey: "native"],
             pagedPreflightOverride: { _ in preflightCalled = true })
 
         #expect(prepared.kind == EngineV2KVBackendKind.paged)
@@ -487,6 +520,36 @@ struct QwenVLMTargetExtractionTests {
         #expect(paged.pool.config.layerDTypes == [.float32])
         #expect(EngineV2.backendCapabilityViolation(
             capabilities: prepared.modelCapabilities, backend: backend) == nil)
+    }
+
+    @Test("Native probes retain actual dtypes across fresh dense and MoE targets")
+    func nativeProbesAcrossFreshTargets() throws {
+        for dtype in [DType.float32, .bfloat16, .float32] {
+            for numExperts in [0, 4] {
+                let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+                    configData: qwenTargetFixtureJSON(
+                        mtpLayers: 0, fullAttentionInterval: 2, numExperts: numExperts))
+                let target: any LanguageModel =
+                    numExperts > 0 ? Qwen35MoEModel(config) : Qwen35Model(config)
+                let parameters = target.parameters().flattened()
+                for (name, parameter) in parameters {
+                    // Missing MoE widths default to zero and send empty tensors
+                    // through compiled activations during the real probe.
+                    try #require(parameter.size > 0, "empty fixture parameter: \(name)")
+                }
+                target.update(parameters: ModuleParameters.unflattened(
+                    parameters.map { ($0.0, $0.1.asType(dtype)) }))
+
+                let observed = try EngineV2Factory.inspectNativeKVTypes(model: target)
+                #expect(observed.layerDTypes == [dtype])
+                #expect(observed.observations.map(\.phase) == [.prefill, .decode])
+                #expect(observed.observations.map(\.keysShape) == [
+                    [1, 1, 2, 64], [1, 1, 1, 64],
+                ])
+                let repeated = try EngineV2Factory.inspectNativeKVTypes(model: target)
+                #expect(repeated == observed)
+            }
+        }
     }
 
     @Test("Qwen rejects attention-only SSD and requires verified identity for complete checkpoints")
@@ -522,7 +585,7 @@ struct QwenVLMTargetExtractionTests {
                 fp16KVBytesPerToken: 256,
                 maxContextLength: 2_048,
                 defaultMaxTokens: 32),
-            kvBytesCapacity: 8 << 20,
+            kvBytesCapacity: 2 << 30, // Logical grant covers fixed state and the serving KV floor.
             maxConcurrentRequests: 2,
             kvBudget: nil,
             weightHash: String(repeating: "a", count: 64),
@@ -554,7 +617,7 @@ struct QwenVLMTargetExtractionTests {
         let modelID = "tiny-qwen-hybrid"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let bankBytes = 1 << 20
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(mtpLayers: 0, fullAttentionInterval: 2))
@@ -598,6 +661,7 @@ struct QwenVLMTargetExtractionTests {
             assemblyOverrides: .init(promptContractID: contract),
             environment: [
                 "DARKBLOOM_PREFIX_CACHE": "1",
+                EngineV2KVQuantizationPolicy.environmentKey: "native",
                 "DARKBLOOM_PREFIX_CACHE_MEMORY": "1",
                 "DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": hybridEnabled ? "1" : "0",
                 "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bankBytes),
@@ -710,7 +774,7 @@ struct QwenVLMTargetExtractionTests {
             ? "qwen3.5-35b-a3b" : "EigenLabs/Qwen3.8-27B-4bit-mtp"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("complete-checkpoint-seam-\(UUID().uuidString)", isDirectory: true)
         defer {
@@ -722,6 +786,7 @@ struct QwenVLMTargetExtractionTests {
             buildID: String(repeating: "c", count: 64), numericsFingerprint: String(repeating: "d", count: 64))
         var environment = [
             "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+            EngineV2KVQuantizationPolicy.environmentKey: "native",
             SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
             "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": "0",
             KVBackendGuardStore.pathEnvKey: "/dev/null",

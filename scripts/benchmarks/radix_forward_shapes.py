@@ -4,6 +4,35 @@ PHASES = {"prefill", "decode", "mtp_verification", "mixed_prefill_decode"}
 COMPONENTS = {"siluProduct", "weightedExpertSum", "gelu", "swiGLU", "geGLU",
               "gemmaGelu", "gemmaSoftcap", "gptossExperts"}
 MAX_COUNT = (1 << 64) - 1
+TIMING_FIELDS = {"completed_step_timings", "confirmed_token_timings",
+                 "dropped_step_timings", "dropped_token_timings"}
+
+
+def timing_fields(value):
+    """Current opt-in SDK receipts are bounded scalar metadata, never tokens."""
+    for key in ("dropped_step_timings", "dropped_token_timings"):
+        if not integer(value.get(key)):
+            raise ValueError("invalid_timing_drop_counter")
+    steps = value.get("completed_step_timings")
+    if not isinstance(steps, list) or len(steps) > 8192:
+        raise ValueError("unbounded_step_timings")
+    for step in steps:
+        if (not isinstance(step, dict) or set(step) != {"phase", "wall_nanos"}
+                or step.get("phase") not in PHASES or not integer(step.get("wall_nanos"), 1)):
+            raise ValueError("invalid_step_timing")
+    tokens = value.get("confirmed_token_timings")
+    if not isinstance(tokens, list) or len(tokens) > 65_536:
+        raise ValueError("unbounded_token_timings")
+    last = 0
+    for index, receipt in enumerate(tokens):
+        if (not isinstance(receipt, dict)
+                or set(receipt) != {"row_ordinal", "token_count", "relative_nanos"}
+                or not integer(receipt.get("row_ordinal"), 0, 255)
+                or not integer(receipt.get("token_count"), 1, 8)
+                or not integer(receipt.get("relative_nanos"), last)
+                or (index == 0 and receipt["relative_nanos"] != 0)):
+            raise ValueError("invalid_token_timing")
+        last = receipt["relative_nanos"]
 
 
 def integer(value, minimum=0, maximum=MAX_COUNT):
@@ -49,12 +78,15 @@ def entries(values):
 def snapshot(value):
     allowed = {"schema", "scope", "enabled", "entries", "pending_steps", "abandoned_steps",
                "unobserved_dispatches", "dropped_calls"}
-    if (not isinstance(value, dict) or set(value) != allowed or not integer(value.get("schema"), 1, 1)
+    if (not isinstance(value, dict) or set(value) not in (allowed, allowed | TIMING_FIELDS)
+            or not integer(value.get("schema"), 1, 1)
             or value.get("enabled") is not True or not integer(value.get("scope"), 1)):
         raise ValueError("disabled_or_invalid_snapshot")
     for key in ("pending_steps", "abandoned_steps", "unobserved_dispatches", "dropped_calls"):
         if not integer(value.get(key)):
             raise ValueError("invalid_snapshot_counter")
+    if TIMING_FIELDS <= set(value):
+        timing_fields(value)
     return entries(value.get("entries"))
 
 
@@ -72,6 +104,15 @@ def validate_packet(packet, requested):
     for key in ("abandoned_steps", "unobserved_dispatches", "dropped_calls"):
         if after[key] != before[key]:
             raise ValueError(key)
+    if bool(TIMING_FIELDS & set(before)) != bool(TIMING_FIELDS & set(after)):
+        raise ValueError("timing_observation_changed")
+    if TIMING_FIELDS <= set(before):
+        for key in ("dropped_step_timings", "dropped_token_timings"):
+            if before[key] != after[key]:
+                raise ValueError(key)
+        for key in ("completed_step_timings", "confirmed_token_timings"):
+            if after[key][:len(before[key])] != before[key]:
+                raise ValueError("timing_counter_regression")
     expected = {}
     for key in old.keys() | new.keys():
         a, b = old.get(key, (0, 0)), new.get(key, (0, 0))

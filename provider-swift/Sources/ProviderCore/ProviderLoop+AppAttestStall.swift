@@ -14,7 +14,8 @@ extension ProviderLoop {
     /// when an unanswered Apple call can be holding admission. One monitor per
     /// process; it ends as soon as Apple's callback releases the gate.
     internal func startAppAttestStallMonitorIfNeeded() {
-        guard appAttestStallMonitorTask == nil, !isShuttingDown else { return }
+        guard serveUsesHostServices, !usesAppAttestWorker,
+              appAttestStallMonitorTask == nil, !isShuttingDown else { return }
         appAttestStallMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, await self.evaluateAppAttestStallRestart() else { return }

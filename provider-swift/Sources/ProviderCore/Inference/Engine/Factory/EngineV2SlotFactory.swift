@@ -42,6 +42,7 @@ enum EngineV2SlotFactory {
     /// callers use the empty value and execute only concrete production code.
     struct AssemblyOverrides {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
+        var checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
         var promptContractID: String? = nil
         var deadlineProfiles: [DeadlinePerformanceProfile]? = nil
         var deadlineHardware: HardwareInfo? = nil
@@ -126,6 +127,12 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "native",
+        kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
+        mtpAcceptanceConfig: String? = nil,
+        mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
@@ -148,6 +155,12 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            kvQuantizationConfig: kvQuantizationConfig,
+            kvQuantizationConfigByModel: kvQuantizationConfigByModel,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
+            mtpAcceptanceConfig: mtpAcceptanceConfig,
+            mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
             modelArtifactSHA256: modelArtifactSHA256,
             weightHash: weightHash,
@@ -180,6 +193,12 @@ enum EngineV2SlotFactory {
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "native",
+        kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
+        mtpAcceptanceConfig: String? = nil,
+        mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
@@ -196,6 +215,16 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        var environment = environment
+        let kvPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, global: kvQuantizationConfig,
+            byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, global: checkpointQuantizationConfig,
+            byModel: checkpointQuantizationConfigByModel, modelID: modelId,
+            environment: environment, purpose: .checkpoint)
+        environment[EngineV2KVQuantizationPolicy.environmentKey] = kvPrecision.rawValue
+        logInfo("engine_v2: \(modelId) live KV precision \(kvPrecision.rawValue)")
         // Check explicit fixture ownership before any cache or model preparation.
         try deadlineQualificationCacheIsolation?.validate(environment: environment)
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
@@ -234,6 +263,7 @@ enum EngineV2SlotFactory {
                 modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: preparation,
+                maximumContextLength: sizing.maxContextLength,
                 assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
@@ -241,6 +271,11 @@ enum EngineV2SlotFactory {
         }
         let snapshot = prepared.snapshot
         let servingModel = prepared.servingModel
+        // Flint's decoded configuration validates the artifact context bound.
+        // Keep backend sizing and pre-submit admission on that same authority,
+        // even when the generic sizing snapshot is absent or stale.
+        let flintContextTokens = (servingModel as? FlintModel)?.configuration.maxPositionEmbeddings
+        let maxContextLength = flintContextTokens ?? sizing.maxContextLength
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
@@ -253,12 +288,25 @@ enum EngineV2SlotFactory {
                 assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
             hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+        let mtpAcceptance = MTPAcceptancePolicy.resolve(
+            global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
+        if let unrecognized = mtpAcceptance.unrecognized {
+            logWarning(
+                "engine_v2: unrecognized mtp_acceptance value "
+                    + "\"\(unrecognized)\" for \(modelId) — using \"exact\"")
+        }
+        if assistantHandle != nil, case .typical(let delta) = mtpAcceptance.acceptance {
+            logInfo(
+                "engine_v2: \(modelId) MTP acceptance typical delta=\(delta) "
+                    + "(sampled output is not distribution-exact; greedy rows unchanged)")
+        }
         var mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
             maxDraftTokens: draftDepth.maximum,
             fixedDraftTokens: draftDepth.fixed,
             verificationMode: mtpVerification.mode,
-            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
+            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
+            acceptance: mtpAcceptance.acceptance)
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
@@ -318,14 +366,17 @@ enum EngineV2SlotFactory {
                     performanceQualificationAllowed: !mtpConfig.effectiveEnabled
                         || mtpPerformanceConfiguration != nil,
                     mtpPerformanceConfiguration: mtpPerformanceConfiguration,
+                    kvBudget: kvBudget,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
-                    maxContextLength: sizing.maxContextLength > 0
-                        ? sizing.maxContextLength : nil,
+                    maxContextLength: maxContextLength > 0 ? maxContextLength : nil,
                     environment: environment,
                     residentPrefixCache: residentPrefixCache,
                     hybridPrefixCache: hybridPrefixCache,
+                    nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
+                        layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
+                        gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -356,6 +407,7 @@ enum EngineV2SlotFactory {
         // VLM slots use the resolved serving text tower's layer kinds.
         let completePreparation = await prepareCompletePrefixCache(
             modelId: modelId, model: servingModel, preparedBackend: preparedBackend,
+            checkpointQuantization: checkpointPrecision.configuration,
             weightHash: weightHash, promptContractID: promptContractID,
             mtpDrafter: assistantHandle?.drafter, mtpConfig: mtpConfig,
             kvBudget: kvBudget, environment: environment,
@@ -409,25 +461,44 @@ enum EngineV2SlotFactory {
                     tokenizer: tokenizer.inner,
                     prefixCache: enginePrefixCache,
                     completePrefixCache: ssdHybridCheckpointStore,
+                    checkpointQuantization: completePreparation?.checkpointQuantization,
                     maxConcurrentRequests: maxConcurrentRequests,
                     mtpDrafter: assistantHandle?.drafter,
                     mtpConfig: mtpConfig,
                     preparedBackend: preparedBackend,
-                    kvBudget: kvBudget)
+                    kvBudget: kvBudget,
+                    constructionPurpose: constructionPurpose,
+                    checkpointPartition: assemblyOverrides.checkpointPartition)
             }
         }
 
-        let targetKVBytesPerToken: Int
+        var targetKVBytesPerToken: Int
         if let preparedBackend {
             targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
-                pagedLayerDTypes: preparedBackend.pagedLayerDTypes,
+                nativeLayerDTypes: preparedBackend.nativeLayerDTypes,
+                pagedPoolConfig: preparedBackend.pagedPoolConfig,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
+        }
+        // GLM step scratch grows with each row's context, so it is reported and
+        // reserved per token beside KV; its setup envelope is not per token.
+        let glm5NextTarget = EngineV2Factory.glm5NextTarget(model: servingModel)
+        var glm5NextStepSetupBytes = 0
+        if glm5NextTarget != nil, let preparedBackend {
+            guard let scratch = try preparedBackend.glm5NextStepScratch(),
+                let rate = GLM5NextCoordinatorServing.requestBytesPerToken(
+                    kvBytesPerToken: targetKVBytesPerToken,
+                    stepScratchBytesPerToken: scratch.bytesPerContextToken)
+            else {
+                throw EngineV2ProductionError.pagedUnavailable("GLM step-scratch price unavailable")
+            }
+            targetKVBytesPerToken = rate
+            glm5NextStepSetupBytes = scratch.setupBytes
         }
         let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
         let assistantStateTokenGranularity =
@@ -459,7 +530,7 @@ enum EngineV2SlotFactory {
         // evidence can never feed back into these construction decisions.
         let deadlineRuntime = preparedBackend.map { backend in
             DeadlineRuntimeConfiguration(
-                configuredContextTokens: sizing.maxContextLength,
+                configuredContextTokens: maxContextLength,
                 effectiveMaxConcurrency: backend.schedulerConfig.maxConcurrentRequests,
                 prefillChunkSize: backend.schedulerConfig.prefillChunkSize,
                 maxConcurrentPartialPrefills: backend.schedulerConfig.maxConcurrentPartialPrefills ?? 0,
@@ -468,7 +539,8 @@ enum EngineV2SlotFactory {
         }
         let deadlineProfiles = assemblyOverrides.deadlineProfiles ?? DeadlinePerformanceProfiles.reviewed
         let deadlineProfile = deadlineRuntime.flatMap { runtime in
-            constructionPurpose == .serving && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
+            constructionPurpose == .serving && preparedBackend?.kvQuantization == .native
+                && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
                 ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
                     artifactSHA256: modelArtifactSHA256 ?? weightHash,
                     kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
@@ -502,9 +574,12 @@ enum EngineV2SlotFactory {
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
-            advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
+            advertisedContextTokens: glm5NextTarget != nil ? sizing.maxContextLength
+                : flintContextTokens ?? Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
+                ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
+                    nativeContextTokens: sizing.maxContextLength)
                 ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,
@@ -523,8 +598,27 @@ enum EngineV2SlotFactory {
             ssdHybridCheckpointStore: ssdHybridCheckpointStore,
             residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
+            prefixCacheConstructionFailure: attentionPreparation.status.failure,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
+        await bridge.installGLM5NextStepSetup(bytes: glm5NextStepSetupBytes)
+
+        do {
+            try await bridge.requireServiceableOrdinaryGrant()
+        } catch {
+            try await GLM5NextRetirement.beforeRelease(bridge)
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId, reason: .noKVHeadroom, error: error, emitTelemetry: emitTelemetry)
+            throw error
+        }
+        do {
+            try await bridge.glm5NextNativeOwner?.startResidency()
+        } catch {
+            // The owner retains its model/resources; retain the actual bridge
+            // as well so a failed start cannot escape as a published bundle.
+            GLM5NextLoadFaultState.retain([bridge])
+            throw GLM5NextManagedLoadError.retirementUnproven
+        }
 
         if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
@@ -533,6 +627,10 @@ enum EngineV2SlotFactory {
         reportGemmaOptimizations(
             model: servingModel, modelId: modelId,
             emitTelemetry: emitTelemetry, logInfo: logInfo)
+        if let store = bridge.ssdHybridCheckpointStore {
+            logInfo("engine_v2: \(modelId) checkpoint KV precision \(bridge.kvCheckpointQuantization.rawValue) "
+                + "layout=\(store.config.backendLayout)")
+        }
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
@@ -558,22 +656,26 @@ enum EngineV2SlotFactory {
     }
 
     /// Full-attention marginal KV rate used by shared request admission and
-    /// token-capacity reporting. Normal paged construction supplies the exact
-    /// per-layer table from the pool; shared rows own no storage. The scalar
-    /// branch preserves low-level fixed-pool callers. Contiguous GPT-OSS keeps
-    /// its existing native full-row adjustment. Window storage and recurrent
-    /// fixed charges are separate from this marginal rate.
+    /// token-capacity reporting. Production supplies the observed native types
+    /// for both backends; shared rows own no storage. Window storage and
+    /// recurrent fixed charges are separate from this marginal rate.
     static func slotKVBytesPerToken(
         resolvedKind: EngineV2KVBackendKind,
         pagedPoolDType: String?,
-        pagedLayerDTypes: [DType]? = nil,
+        nativeLayerDTypes: [DType]? = nil,
+        pagedPoolConfig: PagedKVPoolConfig? = nil,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
         servingModelIsGPTOSS: Bool
     ) -> Int {
-        if resolvedKind == .paged, let pagedLayerDTypes {
+        if let nativeLayerDTypes {
+            if resolvedKind == .paged, let pagedPoolConfig {
+                return (try? EngineV2Factory.physicalFullKVBytesPerToken(
+                    layerKinds: layerKinds, dtypes: nativeLayerDTypes,
+                    config: pagedPoolConfig)) ?? Int.max
+            }
             return EngineV2Factory.nativeFullKVBytesPerToken(
-                layerKinds: layerKinds, dtypes: pagedLayerDTypes)
+                layerKinds: layerKinds, dtypes: nativeLayerDTypes)
         }
         let capability = CBv2PrefixReuseCapability.derive(
             layerKinds: layerKinds,

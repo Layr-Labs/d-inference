@@ -16,8 +16,7 @@ public final class TelemetryOverflowQueue: @unchecked Sendable {
         if let path {
             self.path = path
         } else {
-            self.path = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".darkbloom")
+            self.path = BuildEnvironment.current.installDirectory()
                 .appendingPathComponent("telemetry-queue.jsonl")
         }
     }

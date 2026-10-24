@@ -680,6 +680,11 @@ struct ProviderModelSwitchTests {
         let result = await switching.value
         #expect(result.outcome == (dropConnection ? .timedOut : .failed))
         #expect(await loop.state.refusingNewWork == dropConnection)
+        // Either failure releases the switch task; only the unconfirmed
+        // commit keeps admission closed.
+        let busy = await loop.autopilotBusyReasons()
+        #expect(!busy.contains(.modelSwitch))
+        #expect(busy.contains(.draining) == dropConnection)
         let expectedHash = dropConnection ? newHash : oldHash
         let expectedSnapshot = dropConnection ? newSnapshot : oldSnapshot
         let kept = try await loop.captureWeightHashForTesting(modelId: "old-model", modelPath: expectedSnapshot)

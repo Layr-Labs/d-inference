@@ -43,6 +43,10 @@ private let dtypeTestCapacity = 8 << 20
 private let dtypeTestConcurrency = 2
 private let dtypeTestContext = 2048
 
+private func nativeDTypeEnvironment(_ overrides: [String: String] = [:]) -> [String: String] {
+    [EngineV2KVQuantizationPolicy.environmentKey: "native"].merging(overrides) { _, explicit in explicit }
+}
+
 /// Prepare a PAGED backend through the real production path and hand back
 /// the pool it built. `pagedPreflightOverride` is the gate suite's idiom
 /// for keeping the assertion on THIS seam rather than on Metal resource
@@ -59,7 +63,7 @@ private func preparedPagedPool(
         maxConcurrentRequests: dtypeTestConcurrency,
         kvBackend: .paged,
         maxContextLength: dtypeTestContext,
-        environment: environment,
+        environment: nativeDTypeEnvironment(environment),
         pagedPreflightOverride: { _ in })
     #expect(prepared.kind == .paged)
     let (backend, _) = try prepared.consume(
@@ -103,7 +107,7 @@ struct EngineV2PagedPoolDTypeEnvTests {
                 model: try dtypeFixtureModel(), tokenizer: StubBridgeTokenizer(),
                 kvBytesCapacity: dtypeTestCapacity, maxConcurrentRequests: dtypeTestConcurrency,
                 kvBackend: .paged, maxContextLength: dtypeTestContext,
-                environment: environment, pagedPreflightOverride: { _ in })
+                environment: nativeDTypeEnvironment(environment), pagedPreflightOverride: { _ in })
             #expect(build.kvBackendKind == .paged)
             #expect(build.pagedPoolDType == "float32")
             await build.engine.shutdown()
@@ -116,7 +120,7 @@ struct EngineV2PagedPoolDTypeEnvTests {
             model: try dtypeFixtureModel(), tokenizer: StubBridgeTokenizer(),
             kvBytesCapacity: dtypeTestCapacity, maxConcurrentRequests: dtypeTestConcurrency,
             kvBackend: .paged, maxContextLength: dtypeTestContext,
-            environment: [:], pagedPreflightOverride: { _ in })
+            environment: nativeDTypeEnvironment(), pagedPreflightOverride: { _ in })
         let native = try #require(build.engine.capacity().pagedStorage)
         #expect(native.captureSequence > 0)
         let bridge = EngineV2Bridge(engine: build.engine, modelId: "fixture",
@@ -166,12 +170,12 @@ struct EngineV2PagedPoolDTypeEnvTests {
                 maxConcurrentRequests: dtypeTestConcurrency,
                 kvBackend: .auto,
                 maxContextLength: dtypeTestContext,
-                environment: [
+                environment: nativeDTypeEnvironment([
                     EngineV2Factory.pagedPoolDTypeEnvKey: raw,
                     // Hermetic: a dev box's real crash-loop guard must not
                     // preempt the resolution under test.
                     KVBackendGuardStore.pathEnvKey: "/dev/null",
-                ],
+                ]),
                 pagedPreflightOverride: { _ in })
             #expect(build.kvBackendKind == .contiguous)
             #expect(build.kvBackendFallbackReason == nil)
@@ -195,10 +199,10 @@ struct EngineV2PagedPoolDTypeEnvTests {
             maxConcurrentRequests: dtypeTestConcurrency,
             kvBackend: .paged,
             maxContextLength: dtypeTestContext,
-            environment: [
+            environment: nativeDTypeEnvironment([
                 EngineV2Factory.pagedPoolDTypeEnvKey: "float32",
                 KVBackendGuardStore.pathEnvKey: "/dev/null",
-            ],
+            ]),
             pagedPreflightOverride: { _ in })
         #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
@@ -264,7 +268,7 @@ struct EngineV2PagedPoolDTypeEnvTests {
             maxContextLength: dtypeTestContext,
             // Deliberately hostile: a value that WOULD refuse on paged.
             // Contiguous has no pages, so it never reads the knob.
-            environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "fp32"],
+            environment: nativeDTypeEnvironment([EngineV2Factory.pagedPoolDTypeEnvKey: "fp32"]),
             pagedPreflightOverride: { _ in })
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.pagedPoolDType == nil)
@@ -291,10 +295,10 @@ struct EngineV2PagedPoolDTypeEnvTests {
             maxConcurrentRequests: dtypeTestConcurrency,
             kvBackend: .paged,
             maxContextLength: dtypeTestContext,
-            environment: [
+            environment: nativeDTypeEnvironment([
                 EngineV2Factory.pagedPoolDTypeEnvKey: "float32",
                 EngineV2KVBackendPolicy.killSwitchEnvKey: "0",
-            ],
+            ]),
             pagedPreflightOverride: { _ in })
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == "kill_switch")

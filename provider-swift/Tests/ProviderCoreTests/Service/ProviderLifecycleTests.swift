@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ProviderAppAttest
 @testable import ProviderCore
 
 private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
@@ -15,6 +16,7 @@ private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
 }
 
 private extension ProviderLoop {
+    func installAppAttestWorker(_ worker: any AppAttestWorkerExchangeClient) { appAttestWorkerClient = worker }
     func holdLifecycleRequests(_ ids: Set<String>) { acceptedLifecycleRequests.formUnion(ids) }
     func completeLifecycleRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
     func installCancellableLifecycleRequest(_ id: String) {
@@ -27,8 +29,76 @@ private extension ProviderLoop {
     }
 }
 
+private actor LifecycleWorker: AppAttestWorkerExchangeClient {
+    var stopCalls = 0
+    var failStop = false
+    var blocked = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    func respond(to request: AppAttestShadowPayload, status: AppAttestStatus) async throws -> AppAttestWorkerReply {
+        throw AppAttestWorkerError.stopped
+    }
+    func cancelExchange() async throws {}
+    func configure(blocked: Bool = false, failStop: Bool = false) {
+        self.blocked = blocked
+        self.failStop = failStop
+    }
+    func stop() async throws {
+        stopCalls += 1
+        if failStop { throw AppAttestWorkerError.childWouldNotExit }
+        if blocked { await withCheckedContinuation { waiter = $0 } }
+    }
+    func release() { blocked = false; waiter?.resume(); waiter = nil }
+}
+
 @Suite("Provider lifecycle drain")
 struct ProviderLifecycleTests {
+    @Test func shutdownWaitsForAppAttestWorkerRetirement() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = LifecycleWorker()
+        await worker.configure(blocked: true)
+        await loop.installAppAttestWorker(worker)
+        let identity = try #require(ProcessIdentity.current())
+        let draining = Task { await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 3)) }
+        for _ in 0..<200 {
+            if await worker.stopCalls > 0 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await worker.stopCalls == 1)
+        #expect(await loop.lifecycleStatus.outcome == .draining)
+        #expect(await loop.servingDrain.phase != .drained)
+        await worker.release()
+        #expect(await draining.value.outcome == .drained)
+        #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
+    }
+
+    @Test func failedWorkerRetirementCannotAcknowledgeForcedShutdown() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = LifecycleWorker()
+        await worker.configure(failStop: true)
+        await loop.installAppAttestWorker(worker)
+        let identity = try #require(ProcessIdentity.current())
+        let status = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 0, force: true))
+        #expect(status.outcome == .timedOut)
+        #expect(await !loop.drainAndShutdown(timeoutSeconds: 0))
+        await worker.configure()
+        #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
+    }
+
+    @Test func failedUpdateReopensWorkerOnlyAfterConfirmedRetirement() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = LifecycleWorker()
+        await loop.installAppAttestWorker(worker)
+        await loop.beginUpdateDraining()
+        #expect(await loop.stopAppAttestWorkerForUpdateAndWait())
+        #expect(await loop.appAttestWorkerStopped)
+        await loop.resumeServingAfterUpdate()
+        #expect(await !loop.appAttestWorkerStopped)
+        #expect(await loop.appAttestWorkerClient == nil)
+    }
+
     @Test func concurrentAcceptedWorkAndLocalResponsesFinishBeforeDrain() async throws {
         let (loop, root) = try await lifecycleLoop()
         defer { try? FileManager.default.removeItem(at: root) }

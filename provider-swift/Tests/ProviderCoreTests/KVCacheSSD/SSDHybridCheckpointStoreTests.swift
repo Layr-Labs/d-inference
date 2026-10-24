@@ -183,7 +183,7 @@ struct SSDHybridCheckpointStoreTests {
                 // Block in a synchronous disk-worker seam, never on engine queue.
                 func block() { release.wait() }
                 block()
-                store.write(job)
+                await store.write(job)
             })
         let donation = Task { try await f.donate(store) }
         func enteredWithoutBlocking() -> Bool { entered.wait(timeout: .now()) == .success }

@@ -17,6 +17,7 @@
 // sweep signals BEFORE the threshold gate, so no multi-GiB real MLX pool is
 // needed in the test process.
 
+import Dispatch
 import Foundation
 import Testing
 
@@ -79,6 +80,77 @@ struct KVPoolSweepWiringTests {
         }
         #expect(quiesced, "the sweep task must stop with the server")
     }
+
+    @Test("the proactive sweep waits for an idle calibration or shape warmup session")
+    func sweepWaitsForIdleCalibrationSession() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let reclaimer = await budget.reclaimerForTesting
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let session = try #require(budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { true }) {
+            for await _ in held {}
+        })
+        // A flush is device work and would cancel the session mid-cell.
+        budget.proactiveReclaimSweep()
+        try? await taskSleep(.milliseconds(50))
+        #expect(await reclaimer.sweepSignalCount == 0)
+        release.finish()
+        await session.value
+        budget.proactiveReclaimSweep()
+        #expect(await pollUntil { await reclaimer.sweepSignalCount == 1 })
+    }
+
+    @Test("a sweep signalled before a session starts does not flush when it runs after the start")
+    func queuedSweepRechecksIdleCalibrationSession() async throws {
+        let flushes = HeldFirstFlush()
+        // A pool over the 2 GiB proactive threshold and no rate-limit window:
+        // only the session check can stop the queued flush.
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 4 << 30, systemAvailable: 64 << 30) },
+            clearCache: { flushes.flush() }, selfHealMinInterval: .zero)
+        let reclaimer = await budget.reclaimerForTesting
+        // The first flush holds the reclaimer, so the next signal queues behind it.
+        budget.proactiveReclaimSweep()
+        #expect(flushes.waitUntilFirstFlushStarted())
+        budget.proactiveReclaimSweep()
+        // As in the provider tick: the session starts after the sweep was signalled.
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let session = try #require(budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { true }) {
+            for await _ in held {}
+        })
+        flushes.releaseFirstFlush()
+        // The isolated count reads after the queued sweep's whole synchronous step.
+        #expect(await pollUntil { await reclaimer.sweepSignalCount == 2 })
+        #expect(flushes.count == 1)
+        #expect(!session.isCancelled)
+        #expect(budget.serviceBudget.idleCalibration.cancellationSource == nil)
+        release.finish()
+        await session.value
+    }
+}
+
+/// Blocks the first flush on the reclaimer actor until released; later flushes return at once.
+private final class HeldFirstFlush: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var flushes = 0
+
+    var count: Int { lock.withLock { flushes } }
+
+    func flush() {
+        let first = lock.withLock { () -> Bool in
+            flushes += 1
+            return flushes == 1
+        }
+        guard first else { return }
+        started.signal()
+        release.wait()
+    }
+
+    func waitUntilFirstFlushStarted() -> Bool { started.wait(timeout: .now() + 10) == .success }
+    func releaseFirstFlush() { release.signal() }
 }
 
 private func makeSweepWiringLoop() throws -> ProviderLoop {

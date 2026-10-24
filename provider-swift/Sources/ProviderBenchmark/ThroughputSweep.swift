@@ -71,8 +71,13 @@ public enum ThroughputSweep {
         kvBackend: EngineV2KVBackendSelection = .auto,
         gemmaOptimizations: GemmaOptimizationSettings,
         hardware: HardwareInfo,
-        efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
+        efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency,
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> ThroughputSweepReport {
+        let checkpointQuantization = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: ModelBenchmark.decodedModelType(
+                from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))),
+            global: checkpointQuantizationConfig, modelID: modelID, purpose: .checkpoint)
         // This entry point loads the factory directly, without the serving
         // scheduler that normally installs these limits. Use the same bounded
         // allocator cache before any model allocation: long-prompt shape churn
@@ -115,8 +120,16 @@ public enum ThroughputSweep {
 
         let quantBits = readQuantBits(modelDirectory: modelDirectory)
 
-        let prefill = await measurePrefill(
-            container: container, baseTokens: baseTokens, lengths: promptLengths)
+        let modelType = try ModelBenchmark.decodedModelType(
+            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        let prefill: [ThroughputSweepReport.PrefillSample]
+        if measuresScalarPrefill(modelType: modelType) {
+            prefill = await measurePrefill(
+                container: container, baseTokens: baseTokens, lengths: promptLengths)
+        } else {
+            log("prefill sweep skipped: \(modelType ?? "model") is paged-only; use --scheduler-prefill")
+            prefill = []
+        }
         let decodeOutcome = try await measureDecode(
             container: container,
             modelID: modelID,
@@ -128,7 +141,8 @@ public enum ThroughputSweep {
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            checkpointQuantization: checkpointQuantization
         )
         let decode = decodeOutcome.samples
 
@@ -186,6 +200,13 @@ public enum ThroughputSweep {
     }
 
     // MARK: - Prefill
+
+    /// The sweep's prefill pass runs the model's own scalar caches, which are
+    /// not paged. Flint is served only on paged attention, so its paged prefill
+    /// is measured by the scheduler-prefill benchmark instead.
+    static func measuresScalarPrefill(modelType: String?) -> Bool {
+        modelType != "flint"
+    }
 
     /// For each requested length L, run a single forward pass over an L-token
     /// prompt and report `L / prefill_seconds`. The whole sweep runs inside one
@@ -342,7 +363,8 @@ public enum ThroughputSweep {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection
     ) async throws -> DecodeOutcome {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
         guard !sizes.isEmpty else { return DecodeOutcome() }
@@ -364,7 +386,8 @@ public enum ThroughputSweep {
                 container: container, modelID: modelID, baseTokens: baseTokens,
                 batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                 weightBytes: weightBytes, isVLM: isVLM,
-                modelDirectory: modelDirectory, kvBackend: kvBackend)
+                modelDirectory: modelDirectory, kvBackend: kvBackend,
+                checkpointQuantization: checkpointQuantization)
             return (warmUp.constructionFailure, warmUp.submitFailure)
         }
 
@@ -374,7 +397,8 @@ public enum ThroughputSweep {
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM,
-                    modelDirectory: modelDirectory, kvBackend: kvBackend)
+                    modelDirectory: modelDirectory, kvBackend: kvBackend,
+                    checkpointQuantization: checkpointQuantization)
                 if outcome.record(resolved), let resolved {
                     log("  engine resolved kv backend: \(resolved)")
                 }
@@ -437,7 +461,8 @@ public enum ThroughputSweep {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
         constructionFailure: String?, submitFailure: String?,
@@ -477,7 +502,8 @@ public enum ThroughputSweep {
                     maxConcurrentRequests: max(batchSize, 1),
                     constructionPurpose: .benchmark,
                     kvBudget: BenchmarkMemoryBudget.shared,
-                    kvBackend: kvBackend)
+                    kvBackend: kvBackend,
+                    checkpointQuantization: checkpointQuantization)
                 return EngineParts(
                     engine: build.engine,
                     resolvedBackend: build.resolvedKVBackendDescriptor,

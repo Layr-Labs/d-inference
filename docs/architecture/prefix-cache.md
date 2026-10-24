@@ -656,6 +656,37 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
 
+GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
+no solo stripe and its prefill chunk shares one 2,048-token step budget with
+the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).
+Beside a decoding request every range is 2,044–2,047 tokens and none ends on
+the 256-token grid, so such a donor captured nothing, with no disarm or counter
+(one of six donors in a concurrent burst). The protected GLM engine with its
+GLM store therefore sets `CBv2SchedulerConfig.demandedCaptureBoundaryMinimumTokens`
+to the store floor (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`). A
+request the store would write (a hint at or above the floor, or no hint) ends a
+range at its hinted fork target and at the deepest aligned boundary below its
+prompt end, whatever chunk its company left it. A range that would stop less
+than one 128-token query block short of such a boundary ends on the query grid
+instead, so the range that reaches the boundary keeps the ordinary prefill
+kernels. A hint below the floor marks a fleet-novel prompt and keeps the
+ordinary geometry. The same cut lowers GLM's reuse granularity from 2,048 to
+256 tokens (a 32,682-token prompt publishes 32,512 instead of 30,720). GLM
+adopters resume under ordinary chunking: a forced donor-sized chunk waited
+whenever decode rows shortened the budget and cold-restarted the hit after
+three waits
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
+`completeCheckpointLookup`). GLM's cold prefill depends
+on its partition (the KDA four-token groups, the attention history/current
+split and MoE routing), so as for the MoE Qwen a checkpoint is exactly the
+state its own donor computed. On an M5 Ultra, solo donors of one prompt wrote
+bit-identical checkpoints; a donor beside decoding requests differed from its
+first partial KDA group on (relative L2 about 0.1 in the deepest layers), and
+first-token logprobs of three partitions spread over 0.1 nat while each
+partition repeated exactly. The partition is `demandedCaptureBoundaryRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+it shares `demandedCheckpointRange` with the first-token projection.
+
 The benchmark SPI can explicitly select
 `EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure
 other actual recurrent paged complete-checkpoint models and longer demanded

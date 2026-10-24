@@ -122,6 +122,12 @@ struct GLM5NextProtectedFactoryTests {
             #expect(engine.completePrefixCache === store)
             #expect(engine.completeCheckpointCodec?.isNativePagedGLM5Next == true)
             #expect(engine.schedulerConfig.enablePrefixCache)
+            #expect(
+                engine.schedulerConfig.demandedCaptureBoundaryMinimumTokens
+                    == store.config.minEffectiveTokens)
+            #expect(
+                store.config.writeQueueJobs
+                    == SSDPrefixCachePolicy.glm5NextCompleteCheckpointWriteQueueJobs)
             #expect(engine.schedulerConfig.maxConcurrentRequests == 2)
             let context = fixture.sizing.maxContextLength
             #expect(engine.schedulerConfig.maxBatchedTokensPerStep

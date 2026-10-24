@@ -807,7 +807,12 @@ the page table and runs the contiguous arithmetic over it
 so its retained reads are bounded by the history, not the chunk. The GLM
 scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
 and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
-`glm5NextServingScheduler`). The price splits into setup bytes for the step
+`glm5NextServingScheduler`). Decode rows share that step budget and push every
+prefill range off the 256-token checkpoint grid, so with the GLM complete store
+the scheduler also ends a cacheable request's range on its checkpoint
+boundaries (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`; see
+[streamed complete checkpoints](prefix-cache.md#streamed-complete-checkpoints)).
+The price splits into setup bytes for the step
 geometry and a rate per context token of each request, which covers the
 request's index metadata reads, pooled index planes, latent reads and page
 tables in both its step and the chained decode successor

@@ -142,7 +142,9 @@ enum SSDHybridCheckpointStoreFactory {
             minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
             ttlSeconds: ttl, strictFsync: SSDPrefixCachePolicy.strictFsync(environment: environment),
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: budget,
-            maintainWholeRoot: maintain), kekKey: material.key, kvBudget: kvBudget,
+            maintainWholeRoot: maintain,
+            writeQueueJobs: SSDPrefixCachePolicy.completeCheckpointWriteQueueJobs(
+                backendLayout: backendLayout)), kekKey: material.key, kvBudget: kvBudget,
             maxWriteBytesPerDay: maxWriteBytesPerDay,
             usesEphemeralKey: material.ephemeral,
             writeBudget: writeBudget)

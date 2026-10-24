@@ -228,6 +228,10 @@ struct GLM5NextRealLogprobsQualificationTests {
             #expect(solo.entries.map(\.token) == decoded, "the relay changed the target-path tokens")
             #expect(solo.text == target.text, "the relay changed the target-path text")
             #expect(solo.entries.map(\.logprob) == target.logprobs.map(\.logprob), "the relay changed the logprobs")
+            // The prompt opens a thought, so the served entries and the judged
+            // positions below start with reasoning tokens.
+            let reasoningPositions = decoded.firstIndex { $0.contains("</think>") } ?? decoded.count
+            #expect(reasoningPositions > 0, "no served entry is a reasoning token")
 
             // (4) Values along the served tokens. The MTP stream may leave
             // them only where the reference has a near-tie.
@@ -309,7 +313,8 @@ struct GLM5NextRealLogprobsQualificationTests {
             // Drafts counted before the snapshot include rounds of the plain
             // row outside the logprob row's decode steps: before its prefill
             // finished, and after its last step but before its consumer ended.
-            try harness.write("logprobs-qualification", ["schema": 3, "tolerance": Self.tolerance,
+            try harness.write("logprobs-qualification", ["schema": 4, "tolerance": Self.tolerance,
+                "reasoningPositions": reasoningPositions,
                 "batchedAlternativeBound": Self.batchedAlternativeBound,
                 "promptTokens": prompt.count, "promptSHA256": GLM5NextRealModelHarness.tokenHash(prompt),
                 "generatedSHA256": GLM5NextRealModelHarness.tokenHash(target.tokens),

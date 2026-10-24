@@ -260,13 +260,21 @@ struct NemotronSuperManagedSlotTests {
         #expect(relayed.logprobs.count == pieces.count)
         #expect(relayed.logprobs.allSatisfy { $0.top.count == 2 && $0.top.first == $0.logprob })
         #expect(try #require(engine.mtpMetricsSnapshot()).draftedTokens == draftedBefore)
-        // Entries ride the reasoning frames too, so a response that ends
-        // while reasoning still carries one per token.
-        let thinking = SuperSSE(try await Self.send(Self.body(["Plan", " it."], script: script,
-            ["logprobs": true, "chat_template_kwargs": ["enable_thinking": true]]), to: loop,
-            recorder: recorder, consumer: consumer).sse)
+        // With thinking on, entries cover reasoning tokens too and ride the
+        // reasoning frames: a response that ends while reasoning still
+        // carries one per token, and a mixed reply one per generated token.
+        let thinkingOn: [String: Any] = ["logprobs": true, "chat_template_kwargs": ["enable_thinking": true]]
+        let thinking = SuperSSE(try await Self.send(Self.body(["Plan", " it."], script: script, thinkingOn),
+            to: loop, recorder: recorder, consumer: consumer).sse)
         #expect(thinking.reasoning == "Plan it." && thinking.content.isEmpty)
         #expect(thinking.finishReason == "length" && thinking.logprobs.count == 2)
+        #expect(thinking.reasoningFrameLogprobs == 2)
+        let mixedPieces = ["Plan", " it.", "</think>", "Hello", " there."]
+        let mixed = SuperSSE(try await Self.send(Self.body(mixedPieces, script: script, thinkingOn),
+            to: loop, recorder: recorder, consumer: consumer).sse)
+        #expect(mixed.reasoning == "Plan it." && mixed.content == "Hello there.")
+        #expect(mixed.logprobs.count == mixedPieces.count)
+        #expect(mixed.reasoningFrameLogprobs > 0 && mixed.textlessFrameLogprobs == 0)
 
         // The unified local endpoint serves the same owner identically.
         let app = makeLocalInferenceApplication(

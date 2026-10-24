@@ -239,9 +239,9 @@ checkpoint through the production bundle and the `EngineV2Bridge` relay channel
 `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
 `DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
 `DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
-32-token `top_logprobs: 5` request must return one entry per token, starting
-with reasoning tokens because the prompt opens a thought (`reasoningPositions`),
-never draft, equal the same row submitted to the raw engine, and match a
+32-token `top_logprobs: 5` request at the template-default effort, which opens
+with reasoning tokens (`reasoningPositions`; at low effort GLM closes the thought
+at once), must return one entry per token, never draft, equal the same row submitted to the raw engine, and match a
 teacher-forced dense-cache log-softmax along its own tokens within the larger
 of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
 bf16 spacings of the step's largest logit. A logprob row decodes one-token

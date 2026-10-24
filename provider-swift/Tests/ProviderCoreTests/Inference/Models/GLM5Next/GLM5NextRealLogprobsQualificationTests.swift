@@ -199,7 +199,8 @@ struct GLM5NextRealLogprobsQualificationTests {
             let engine = session.rawEngine
             let bridge = try #require(harness.bundle).bridge
             let model = harness.plan.weights.catalog.id
-            let prompt = try await harness.prompt(Self.promptText)
+            // Template-default effort: the reply opens with reasoning tokens.
+            let prompt = try await harness.prompt(Self.promptText, effort: nil)
             #expect(engine.acceptsLogprobRows)
 
             // (1) MTP greedy without logprobs: the row must speculate.
@@ -228,8 +229,8 @@ struct GLM5NextRealLogprobsQualificationTests {
             #expect(solo.entries.map(\.token) == decoded, "the relay changed the target-path tokens")
             #expect(solo.text == target.text, "the relay changed the target-path text")
             #expect(solo.entries.map(\.logprob) == target.logprobs.map(\.logprob), "the relay changed the logprobs")
-            // The prompt opens a thought, so the served entries and the judged
-            // positions below start with reasoning tokens.
+            // The served entries and the judged positions below start with
+            // reasoning tokens (at low effort GLM closes the thought at once).
             let reasoningPositions = decoded.firstIndex { $0.contains("</think>") } ?? decoded.count
             #expect(reasoningPositions > 0, "no served entry is a reasoning token")
 

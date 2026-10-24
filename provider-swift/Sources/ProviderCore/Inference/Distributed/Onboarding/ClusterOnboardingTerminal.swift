@@ -7,9 +7,10 @@ import Darwin
 /// line editing and echo off; ^C still ends the command, and the terminal's
 /// mode is put back on every way out, a signal included.
 ///
-/// With colour on a UTF-8 terminal at least 40 columns wide, the setup opens
-/// with the Darkbloom mark, headings carry a step meter and long work shows a
-/// live line that the next said line replaces. The mark blooms and the live
+/// With colour on a UTF-8 terminal at least 40 columns wide, headings carry a
+/// step meter and long work shows a one-row live line that the next said line
+/// replaces; where the mark and its text fit on one row each, the setup opens
+/// with the Darkbloom mark. The mark blooms and the live
 /// line turns unless DARKBLOOM_NO_ANIMATION or CI is set. Without colour
 /// (NO_COLOR, TERM=dumb, a pipe) every byte is the plain transcript.
 public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
@@ -20,6 +21,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let decorates: Bool
     /// The mark blooms and live work turns (never in a transcript).
     private let animates: Bool
+    /// The window's width in columns when the setup started (0 when unknown).
+    private let columns: Int
     private let brand: String
     /// The live work line on screen, if any; the next said line replaces it.
     private var working: String?
@@ -40,6 +43,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
             outputIsTerminal: isatty(output) == 1, environment: environment)
         var window = winsize()
         let columns = ioctl(output, TIOCGWINSZ, &window) == 0 ? Int(window.ws_col) : 0
+        self.columns = columns
         decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
         animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
         brand = ClusterOnboardingBrand.colour(environment)
@@ -84,11 +88,15 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     /// The setup's opening: the mark beside its name where the terminal can
     /// draw it (blooming when it animates), else the plain heading lines.
     public func banner(_ title: String, _ subtitle: String) {
-        guard decorates else { heading(title); say(subtitle); return }
         let words = title.split(separator: " ", maxSplits: 1).map(String.init)
-        let beside = ["\u{1B}[1m\(words.first ?? title)\u{1B}[0m",
-                      "\u{1B}[2m\(words.count > 1 ? words[1] : "")\u{1B}[0m",
-                      "\u{1B}[2m\(subtitle)\u{1B}[0m", ""]
+        let texts = [words.first ?? title, words.count > 1 ? words[1] : "", subtitle]
+        // Each row is the mark, then its text. A row wider than the window
+        // wraps, and the bloom's climb of `height` rows would leave the top
+        // behind: such a window keeps the heading lines (and the meter).
+        let widest = 2 + ClusterOnboardingBrand.width + 3 + (texts.map(\.count).max() ?? 0)
+        guard decorates, widest < columns else { heading(title); say(subtitle); return }
+        let beside = ["\u{1B}[1m\(texts[0])\u{1B}[0m", "\u{1B}[2m\(texts[1])\u{1B}[0m",
+                      "\u{1B}[2m\(texts[2])\u{1B}[0m", ""]
         func draw(_ revealed: Int) {
             let rows = ClusterOnboardingBrand.rows(revealed: revealed)
             write(zip(rows, beside).map { "  \u{1B}[\(brand)m\($0)\u{1B}[0m   \($1)" }.joined(separator: "\n") + "\n")
@@ -123,7 +131,12 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         guard force || frame != drawnFrame else { return }
         drawnFrame = frame
         let petal = animates ? ClusterOnboardingBrand.spin(now) : ClusterOnboardingBrand.spinner[0]
-        write("\r\u{1B}[K  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(text)\u{2026}\u{1B}[0m")
+        // One row only: the return and erase that replace the line reach just
+        // the cursor's row, so a wrapped line would leave its start behind.
+        // Room: the indent, petal and space, the ellipsis and the last column.
+        let room = max(1, columns - 6)
+        let shown = text.count > room ? String(text.prefix(room)) : text
+        write("\r\u{1B}[K  \u{1B}[\(brand)m\(petal)\u{1B}[0m \u{1B}[2m\(shown)\u{2026}\u{1B}[0m")
     }
 
     static func supportsColor(inputIsTerminal: Bool, outputIsTerminal: Bool,

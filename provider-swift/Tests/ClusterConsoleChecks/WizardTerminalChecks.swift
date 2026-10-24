@@ -153,13 +153,13 @@ extension ClusterConsoleCheck {
         a.terminal.send([0x03])
         expect(a.end().map { if case .success(let exit) = $0 { return exit.code == 0 } else { return false } } == true, "Ctrl-C closes")
 
-        // RDMA off: step 1 with the Recovery steps, at 80x24, scrollable.
+        // RDMA off: step 1 with macOS 27's System Settings steps, at 80x24, scrollable.
         var off = F.linkA; off.state = "rdmaDisabled"; off.port = nil
         let rdma = WizardScriptedOperations([F.snapshot(F.reportA(link: off), pair: nil, record: .init())])
         let b = try WizardRun(rdma)
         expect(b.see("RDMA over Thunderbolt is turned off"), "step 1 says RDMA is off: \(b.terminal.screenText)")
         b.terminal.send("\u{1B}[6~")
-        expect(b.see("rdma_ctl enable"), "page down shows the Recovery command: \(b.terminal.screenText)")
+        expect(b.see("Turn on RDMA over Thunderbolt"), "page down shows the System Settings switch: \(b.terminal.screenText)")
         b.terminal.send("\r")
         expect(b.called("snapshot", times: 2), "enter reads again")
         b.terminal.send("q")

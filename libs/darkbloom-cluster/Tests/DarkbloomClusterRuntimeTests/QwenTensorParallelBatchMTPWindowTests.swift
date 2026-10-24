@@ -324,6 +324,68 @@ struct QwenTensorParallelBatchMTPWindowTests {
         }
     }
 
+    /// Each GPU family gets the layout measured faster than MLX's own calls
+    /// and byte-equal there; unmeasured families keep MLX's calls.
+    @Test func wideKernelLayoutFollowsTheMeasuredFamilies() {
+        typealias Kernel = Qwen35WideQuantizedKernel
+        let one = Kernel.Layout(rowsPerThread: 1, maximumVectors: 8), two = Kernel.Layout(rowsPerThread: 2, maximumVectors: 8)
+        #expect(Kernel.layout(input: .bfloat16, architecture: "applegpu_g17s") == one)
+        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g17s") == one)
+        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g15d") == two)
+        #expect(Kernel.layout(input: .bfloat16, architecture: "applegpu_g15d") == nil)
+        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g16s") == nil)
+        #expect(Kernel.layout(input: .float32, architecture: "applegpu_g14d") == nil)
+        #expect(Kernel.layout(input: .float32, architecture: "") == nil)
+    }
+
+    /// The wide verify kernel at Qwen27's projection shapes, in both layouts
+    /// (one or two output rows a thread) on whatever GPU runs the check: every
+    /// row of one call over a cohort's windows equals that row's own MLX call
+    /// ([1, S, H], qmv_wide) byte for byte, bf16 activations and FP32 partial
+    /// inputs (with bf16 scales, as the row-parallel shards use them), 1-8
+    /// rows, S of 2-5.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func wideKernelRowsEqualEachRowsOwnWindowCall() throws {
+        try Device.withDefaultDevice(.gpu) {
+            func random(_ shape: [Int], seed: UInt64, scale: Float) -> MLXArray {
+                withRandomState(MLXRandom.RandomState(seed: seed)) { (MLXRandom.normal(shape) * scale).asType(.bfloat16) }
+            }
+            let shapes = [(5120, 6144), (5120, 8704), (8704, 5120), (3072, 5120), (2048, 2048), (5120, 124_160)]
+            for (index, (inputs, outputs)) in shapes.enumerated() {
+                let linear = QuantizedLinear(weight: random([outputs, inputs], seed: UInt64(140 + index), scale: 0.02),
+                    bias: nil, groupSize: 64, bits: 4)
+                eval(linear.weight, linear.scales, linear.biases!)
+                for columns in 2...5 {
+                    for rows in [1, 3, 4, 8] {
+                        for dtype in [DType.bfloat16, .float32] {
+                            let x = random([rows, columns, inputs], seed: UInt64(190 + 7 * index + columns + 31 * rows),
+                                scale: 1).asType(dtype)
+                            let alone = concatenated((0..<rows).map { linear(x[$0 ..< $0 + 1]) }, axis: 0)
+                            for perThread in [1, 2] {
+                                let layout = Qwen35WideQuantizedKernel.Layout(rowsPerThread: perThread, maximumVectors: 8)
+                                let wide = try #require(Qwen35WideQuantizedKernel.project(x, weight: linear.weight,
+                                    scales: linear.scales, biases: linear.biases, groupSize: 64, bits: 4, mode: .affine,
+                                    layout: layout))
+                                eval(wide, alone)
+                                #expect(wide.shape == alone.shape && wide.dtype == alone.dtype
+                                        && wide.asData(access: .copy).data == alone.asData(access: .copy).data,
+                                    "[\(inputs) -> \(outputs)] S=\(columns) rows=\(rows) \(dtype) R=\(perThread) differs from each row's own call")
+                            }
+                        }
+                    }
+                }
+            }
+            // Where MLX would not use qmv_wide for one window, the kernel declines in any layout.
+            let any = Qwen35WideQuantizedKernel.Layout(rowsPerThread: 1, maximumVectors: 8)
+            let small = QuantizedLinear(weight: random([64, 128], seed: 7, scale: 0.02), bias: nil, groupSize: 64, bits: 4)
+            #expect(Qwen35WideQuantizedKernel.project(random([2, 3, 128], seed: 8, scale: 1), weight: small.weight,
+                scales: small.scales, biases: small.biases, groupSize: 64, bits: 4, mode: .affine, layout: any) == nil)
+            let eight = QuantizedLinear(weight: random([64, 256], seed: 9, scale: 0.02), bias: nil, groupSize: 64, bits: 8)
+            #expect(Qwen35WideQuantizedKernel.project(random([2, 3, 256], seed: 10, scale: 1), weight: eight.weight,
+                scales: eight.scales, biases: eight.biases, groupSize: 64, bits: 8, mode: .affine, layout: any) == nil)
+        }
+    }
+
     /// Concurrent verification must not change a request's tokens. Installed
     /// c28 cohorts of four three-column windows (12 rows) left qmv_wide for
     /// split-K QMM on the M3 and changed near-tie tokens; here eight rows of

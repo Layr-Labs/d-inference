@@ -199,7 +199,9 @@ extension ClusterConsoleCheck {
         expect(screen(exporting).contains("Export diagnostics is running and has not reported yet.") && !screen(exporting).contains("Nothing has been run from this screen."),
             "while the first action is out the screen does not say nothing was run")
         let disabled = screen(state(ConsoleFixtures.snapshot(link: ConsoleFixtures.disabledLink)))
-        expect(disabled.contains("Readiness: link rdmaDisabled") && disabled.contains("rdma_ctl enable"), "RDMA off shows the probe's guidance")
+        let words = disabled.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let how = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? "System Settings, Privacy & Security" : "rdma_ctl enable"
+        expect(disabled.contains("Readiness: link rdmaDisabled") && words.contains(how), "RDMA off shows the probe's guidance: \(disabled)")
 
         // A saved setup: who the peer is, by label and fingerprint, and the model.
         let saved = screen(state(ConsoleFixtures.snapshot(saved: ConsoleFixtures.savedSetup())))

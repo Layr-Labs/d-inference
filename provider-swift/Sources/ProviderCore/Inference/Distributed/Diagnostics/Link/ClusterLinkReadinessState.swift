@@ -31,7 +31,7 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
         case .ready:
             return nil
         case .rdmaDisabled:
-            return "RDMA over Thunderbolt is turned off on this Mac; an administrator must start the Mac in macOS Recovery and run `rdma_ctl enable` there (Darkbloom will not change that setting for you), then restart and run `darkbloom cluster` again."
+            return Self.rdmaDisabledGuidance(macOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
         case .rdmaUnavailable:
             return "The macOS RDMA tools are missing or list no RDMA device, so this Mac cannot use RDMA over Thunderbolt as it is; use a Mac with Thunderbolt 5 on macOS 26.2 or later, because Darkbloom cannot add RDMA support for you."
         case .noActivePort:
@@ -45,5 +45,15 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
         case .probeFailed:
             return "Darkbloom could not read this Mac's cable state: check the cable, restart this Mac, then run `darkbloom cluster` again."
         }
+    }
+
+    /// RDMA off, said for the macOS that turns it on: from macOS 27 Apple's
+    /// own switch in System Settings (Privacy & Security, RDMA over
+    /// Thunderbolt, on after a restart); before that only `rdma_ctl enable`
+    /// in macOS Recovery.
+    public static func rdmaDisabledGuidance(macOSMajor: Int) -> String {
+        macOSMajor >= 27
+            ? "RDMA over Thunderbolt is turned off on this Mac; an administrator must turn on RDMA over Thunderbolt in System Settings, Privacy & Security (Darkbloom will not change that setting for you), then restart and run `darkbloom cluster` again."
+            : "RDMA over Thunderbolt is turned off on this Mac; an administrator must start the Mac in macOS Recovery and run `rdma_ctl enable` there (Darkbloom will not change that setting for you), then restart and run `darkbloom cluster` again."
     }
 }

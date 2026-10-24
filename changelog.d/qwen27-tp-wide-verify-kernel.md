@@ -1,0 +1,3 @@
+### Fewer weight reads for concurrent Qwen27 verification
+
+Concurrent Qwen27 tensor-parallel speculative windows now go through an exact four-bit projection kernel where it is faster than MLX's own calls: it reads each projection's weights once for up to eight verify rows (two four-column windows), where MLX's vector kernel reads them once for every five. On the M5 Max it keeps one output row per thread (up to 20% faster); on the M3 Ultra the row-parallel FP32 partials use two rows per thread (1.5-2.1x faster) and other projections keep MLX's calls. Each row keeps MLX's own `qmv_wide` reduction, so every request still gets byte-identical results to running alone; other GPU families keep MLX's calls.

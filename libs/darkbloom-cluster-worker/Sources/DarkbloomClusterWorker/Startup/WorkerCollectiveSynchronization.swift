@@ -12,11 +12,14 @@ import Foundation
 /// only changes how the CPU waits, never what the GPU computes.
 ///
 /// Set before any native initialization (MLX reads it once, on first use).
-/// Qwen3.8 27B owners with more than one lane use the event path: the fast
-/// fence can stall after real two-row progress. Capacity is fixed at process
-/// birth; automatic widening launches replacement workers. This does not
-/// serialize requests or alter their decode width. Single-lane and other
-/// models keep fast synchronization. A launcher value is always kept.
+/// Every tensor-parallel owner, multi-lane Qwen3.8 27B included, uses fast
+/// fences: the event path cost each of a round's ~140 sealed sums about
+/// 230 us on the pair (a widened owner's one-request round 99.7 vs 67.4 ms,
+/// installed c30). The earlier multi-lane stall (c14/c17) came before the
+/// c34 rule that never evaluates independent rows' collectives together;
+/// the installed c37 acceptance runs widened owners this way. The capacity
+/// is still parsed, so an invalid Qwen27 capacity refuses before anything
+/// changes. A launcher value is always kept.
 enum WorkerCollectiveSynchronization {
     static let variable = "MLX_METAL_FAST_SYNCH"
 
@@ -29,9 +32,8 @@ enum WorkerCollectiveSynchronization {
         }
         // Use the runtime's own lane parser; do not silently turn an invalid
         // Qwen27 capacity into a different synchronization policy.
-        let batch = modelID == "registered_qwen38_27b"
-            ? try QwenBatchSettings.fromEnvironment(environment) : .single
-        let value = batch.batching ? "0" : "1"
+        if modelID == "registered_qwen38_27b" { _ = try QwenBatchSettings.fromEnvironment(environment) }
+        let value = "1"
         setenv(variable, value, 1)
         return "darkbloom-collective-sync-v1 fast_synch=\(value) source=worker"
     }

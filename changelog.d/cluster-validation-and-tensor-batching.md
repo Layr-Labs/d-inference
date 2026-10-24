@@ -39,7 +39,7 @@
 
 - Preserve an explicit local fast-synchronization diagnostic choice through both installed TP owner and native worker launches. Only canonical `0` or `1` is forwarded; normal defaults and placement remain unchanged.
 
-Qwen3.8 27B tensor-parallel workers with more than one configured lane now default to event synchronization to avoid a fast-fence collective stall. Native batching and model capabilities remain enabled. Single-lane and other-model defaults, including GLM, remain unchanged; explicit local synchronization choices still take precedence.
+Tensor-parallel workers keep fast synchronization at every lane count; explicit local synchronization choices still take precedence. Native batching and model capabilities remain enabled.
 
 Authenticated Qwen3.8 27B TP owners now use the same fully priced request-owned execution at one lane and wider capacities. Automatic capacity changes preserve the tensor split, preventing capacity changes from switching the attention path or repartitioning arithmetic. The original exact-output acceptance gate remains required.
 

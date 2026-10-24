@@ -27,9 +27,9 @@ final class WorkerCollectiveSynchronizationTests: XCTestCase {
         XCTAssertEqual(getenv(variable).map { String(cString: $0) }, expectedEnvironment, file: file, line: line)
     }
 
-    func testOnlyBatchedQwen27DefaultsToEvents() throws {
+    func testBatchedQwen27KeepsFastSynchronization() throws {
         for raw in ["2", "3", "4", "5", "6", "7", "8", " 2 ", "+2", "02"] {
-            try check(model: qwen27, environment: [lanes: raw], expected: "0")
+            try check(model: qwen27, environment: [lanes: raw], expected: "1")
         }
         for environment in [[:], [lanes: "1"], [lanes: ""], [lanes: " \n"]] {
             try check(model: qwen27, environment: environment, expected: "1")

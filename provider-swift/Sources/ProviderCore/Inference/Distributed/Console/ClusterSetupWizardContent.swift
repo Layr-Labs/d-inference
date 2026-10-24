@@ -120,8 +120,13 @@ enum ClusterSetupContent {
         var problems = 0
         if local.link.rdmaDisabled {
             problems += 1
-            b.verdict(g.blocked, "RDMA over Thunderbolt is turned off. macOS lets you turn it on only from Recovery, and Darkbloom never changes it for you:", .bad, from: .wired("link.rdma"))
-            for (index, step) in recoverySteps.enumerated() { b.text("\(index + 1). \(step)", indent: 6, from: .frame) }
+            if mac.osMajor >= 27 {
+                b.verdict(g.blocked, "RDMA over Thunderbolt is turned off. Turn it on in System Settings; Darkbloom never changes it for you:", .bad, from: .wired("link.rdma"))
+                for (index, step) in settingsSteps.enumerated() { b.text("\(index + 1). \(step)", indent: 6, from: .frame) }
+            } else {
+                b.verdict(g.blocked, "RDMA over Thunderbolt is turned off. This macOS turns it on only from Recovery, and Darkbloom never changes it for you:", .bad, from: .wired("link.rdma"))
+                for (index, step) in recoverySteps.enumerated() { b.text("\(index + 1). \(step)", indent: 6, from: .frame) }
+            }
         } else if local.link.rdmaUnavailable {
             problems += 1
             b.verdict(g.blocked, mac.osSupportsRDMA
@@ -157,7 +162,15 @@ enum ClusterSetupContent {
         }
     }
 
-    /// The Recovery steps for `rdma_ctl enable`, which only an administrator at the Mac can run.
+    /// From macOS 27 RDMA over Thunderbolt is Apple's switch in System Settings, on after a restart.
+    static let settingsSteps = [
+        "Open System Settings and choose Privacy & Security (or search for RDMA).",
+        "Turn on RDMA over Thunderbolt. Sign in as an administrator if asked.",
+        "Restart when macOS asks: RDMA is on after the restart.",
+        "Run `darkbloom cluster` again: it opens here and checks again.",
+    ]
+
+    /// Before macOS 27, the Recovery steps for `rdma_ctl enable`, which only an administrator at the Mac can run.
     static let recoverySteps = [
         "Choose Apple menu, Shut Down, and wait until the Mac is off.",
         "Press and hold the power button until \u{201C}Loading startup options\u{201D} appears.",
@@ -941,7 +954,7 @@ enum ClusterSetupContent {
         switch step {
         case .thisMac:
             return ["What this Mac brings: its chip, the memory a model can use (the GPU's working set and what the load gate admits now), disk, macOS and whether RDMA over Thunderbolt is on.",
-                    "RDMA can only be turned on from macOS Recovery (`rdma_ctl enable`); Darkbloom never changes it. Memory left wired by a crashed run is reported here: only a restart frees it."]
+                    "RDMA is turned on in System Settings, Privacy & Security from macOS 27, and only from macOS Recovery (`rdma_ctl enable`) before that; Darkbloom never changes it. Memory left wired by a crashed run is reported here: only a restart frees it."]
         case .cable:
             return ["The Thunderbolt port that carries the cluster: whether it is ready for RDMA, the link speed (Thunderbolt 5 links run at 80 Gb/s or more; 40 Gb/s is Thunderbolt 4 or USB4 and cannot carry RDMA), and whether the port belongs to the cluster alone.",
                     "Fix link shows the exact commands first. Only after y does macOS ask once for an administrator; Darkbloom never uses sudo and never changes Internet Sharing."]

@@ -730,7 +730,7 @@ for exclusions, rollback and the unchanged singleton preference at initial setup
 
 | Variable | Installed behavior | Source |
 |---|---|---|
-| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: event synchronization for exact Qwen3.8 27B TP capacity above one, fast synchronization for single-lane Qwen27 and other TP models. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: fast synchronization for every TP model and capacity. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
 | `MLX_EAGER_FENCE_COMMIT` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values are not forwarded; MLX keeps its existing off default. Explicit values are reported before MLX initializes. | `DistributedInstalledPlan.eagerFenceCommit`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerEagerFenceCommit.report` |
 
 These settings are read from each Mac's own cluster service process; they are not taken
@@ -970,7 +970,7 @@ prints that sentence before the scope line. The doctor's `localLink` and
 | State | Meaning |
 |---|---|
 | `ready` | An active port publishes an IPv4-mapped GID, the condition JACCL checks before it uses a device. Local state only: it does not show that the peer is reachable |
-| `rdmaDisabled` | `rdma_ctl status` printed `disabled`. RDMA is enabled from macOS Recovery with `rdma_ctl enable` |
+| `rdmaDisabled` | `rdma_ctl status` printed `disabled`. RDMA is enabled in System Settings, Privacy & Security (RDMA over Thunderbolt, after a restart) on macOS 27 or later, and from macOS Recovery with `rdma_ctl enable` on macOS 26 |
 | `rdmaUnavailable` | `rdma_ctl` or `ibv_devinfo` is missing or exited non-zero, as `ibv_devinfo` does when there is no RDMA device |
 | `noActivePort` | No RDMA device has an active port |
 | `portWithoutIPv4Address` | The active port's interface has no IPv4 address and is not a bridge member. `--fix` applies |

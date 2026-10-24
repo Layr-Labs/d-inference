@@ -20,6 +20,7 @@ import Darwin
         terminalPresentationFallbacks()
         colourSetupDrawsTheMarkAndKeepsTheTranscript()
         narrowOrPlainLocaleColourKeepsPlainLines()
+        narrowColourWindowKeepsOneRowLines()
         failedTestDoesNotClaimSetupSuccess()
         modelPresentationPreservesEveryFamilyAndBlocker()
         pairingStateMachine()
@@ -194,6 +195,51 @@ import Darwin
             expect(rows.count == stages.count && rows == rows.sorted(), "\(label): stages in order")
             expect(recorder.all.last == "testRequest", "\(label): the setup ran to its test: \(recorder.all)")
         }
+    }
+
+    /// A colour window narrower than the mark's widest row (the steps beside
+    /// the mark need 57 columns) keeps the meter and live lines without the
+    /// mark, so the bloom never climbs past a wrapped row; and a live line
+    /// wider than the window is cut to one row, so the line that replaces it
+    /// erases all of it.
+    static func narrowColourWindowKeepsOneRowLines() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+            .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")),
+            environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8"], columns: 45)
+        expect(run.waitFor("Does the other Mac show 123 456?"), "45 columns: the code question")
+        run.type("y")
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "45 columns: the model choice")
+        run.type("\r")
+        let code = run.finish()
+        expect(code == 0, "45 columns: exit 0, got \(String(describing: code))")
+        let screen = visible(run.text)
+        expect(!run.text.contains("\u{2588}") && !run.text.contains("\u{1B}[\(ClusterOnboardingBrand.height)A"),
+            "45 columns: no mark and no bloom climb")
+        expect(screen.contains { $0.contains("1 / 5  Connect the Macs") && $0.contains("\u{25CF}\u{25CB}\u{25CB}\u{25CB}\u{25CB}") },
+            "45 columns: headings keep the meter")
+        expect(recorder.all.last == "testRequest", "45 columns: the setup ran to its test: \(recorder.all)")
+        // A live line wider than a 44-column window, drawn directly.
+        var primary: Int32 = -1, secondary: Int32 = -1
+        var window = winsize(ws_row: 24, ws_col: 44, ws_xpixel: 0, ws_ypixel: 0)
+        precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
+        _ = fcntl(primary, F_SETFL, fcntl(primary, F_GETFL) | O_NONBLOCK)
+        let console = ClusterOnboardingTerminal(input: secondary, output: secondary,
+            environment: ["TERM": "xterm-256color", "LANG": "en_US.UTF-8", "DARKBLOOM_NO_ANIMATION": "1"])
+        console.working("Loading Gemma 4 26B (gemma-4-26b-qat-4bit) on both Macs")
+        console.settle()
+        console.restore()
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        let count = Darwin.read(primary, &bytes, bytes.count)
+        let drawn = String(decoding: bytes.prefix(max(0, count)), as: UTF8.self)
+        let rows = drawn.components(separatedBy: "\r")
+            .map { $0.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression) }
+            .filter { !$0.isEmpty }
+        expect(!rows.isEmpty && rows.allSatisfy { $0.count <= 43 }, "44 columns: the live line stays on one row: \(rows)")
+        expect(rows.contains { $0.contains("Loading Gemma 4 26B") && $0.hasSuffix("\u{2026}") },
+            "44 columns: the cut line keeps its start and its ellipsis: \(rows)")
+        close(primary); close(secondary)
     }
 
     /// What a person reads: escapes removed and each row as it was last written.

@@ -12,9 +12,11 @@ Remote Login, no IP address and no network setting is typed anywhere.
 - Two Macs with Thunderbolt 5 and macOS 26.2 or later, each with Darkbloom
   installed (the same version), and one Thunderbolt 5 cable between them.
 - RDMA over Thunderbolt enabled on each Mac. This is Apple's own switch and only
-  an administrator can turn it on, once, in macOS Recovery: start the Mac in
-  Recovery, open Terminal, run `rdma_ctl enable`, restart. `darkbloom cluster`
-  says whether it is needed.
+  an administrator can turn it on, once. On macOS 27 or later it is in System
+  Settings, Privacy & Security: turn on RDMA over Thunderbolt, then restart when
+  macOS asks. On macOS 26 it is turned on only in macOS Recovery: start the Mac
+  in Recovery, open Terminal, run `rdma_ctl enable`, restart. `darkbloom cluster`
+  says whether it is needed, with the steps for the Mac's macOS.
 - Nothing to download by hand. The cluster keeps its models in its own store
   beside the product's model cache (`darkbloom-cluster-models`, same volume).
   Models single-Mac Darkbloom already installed are cloned in (APFS clones, no
@@ -40,8 +42,10 @@ carries a step meter (`●●○○○`). Long work (checking the cable, reading
 planning, loading the model, waiting for the first tokens) shows a live line
 with a turning petal; the next line of the transcript replaces it.
 `DARKBLOOM_NO_ANIMATION=1` or `CI` keeps the mark and meter but stops the motion.
-A narrower window or a non-UTF-8 locale (an SSH session in a split pane, say)
-keeps colored headings only. `NO_COLOR`, `TERM=dumb` and redirected output print
+The mark needs room for its widest row (57 columns); a window from 40 columns
+up keeps the meter and live lines without it, and a live line is cut to one row
+so the next line erases all of it. A window under 40 columns or a non-UTF-8
+locale (an SSH session in a split pane, say) keeps colored headings only. `NO_COLOR`, `TERM=dumb` and redirected output print
 the plain transcript, byte for byte. Nothing clears the screen, so trust codes and
 recovery steps stay in scrollback, and no credential is printed: the API key line
 names `darkbloom local`, which shows it.

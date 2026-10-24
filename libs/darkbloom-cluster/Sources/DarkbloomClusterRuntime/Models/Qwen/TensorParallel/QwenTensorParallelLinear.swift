@@ -52,14 +52,21 @@ final class QwenTensorParallelRowLinear: QuantizedLinear, Qwen35BatchDecodeProje
     /// each independent row. The collective sees the whole [B,1,H] tensor;
     /// it is not repeated once per row. Ordinary/prefill dispatch is unchanged.
     /// A scoped verify rectangle [B,S,H] takes each row's partial exactly as
-    /// that row's own [1,S,H] window computes it, then one collective. Rows
-    /// share a quantized call while their B·S vectors stay below MLX's vector
-    /// limit (`Qwen35QuantizedVectorLimit`), so they share its weight pass.
+    /// that row's own [1,S,H] window computes it, then one collective: the
+    /// rows go through one `Qwen35WideQuantizedKernel` call (MLX's qmv_wide
+    /// arithmetic, up to eight vectors per weight read) where it applies,
+    /// else share MLX's own calls below its vector limit.
     func qwen35BatchDecode(_ x: MLXArray) -> MLXArray {
         if x.ndim == 3, (2...8).contains(x.dim(0)), (2...5).contains(x.dim(1)) {
             let input = partialDType == .float32 ? x.asType(.float32) : x
-            let shared = Qwen35QuantizedVectorLimit.sharedWindows(input, outputs: weight.dim(0), mode: mode)
-            let partial = Qwen35QuantizedVectorLimit.rows(input, by: shared) { super.callAsFunction($0) }
+            let partial: MLXArray
+            if let wide = Qwen35WideQuantizedKernel.project(input, weight: weight, scales: scales, biases: biases,
+                                                              groupSize: groupSize, bits: bits, mode: mode) {
+                partial = bias.map { wide + $0 } ?? wide
+            } else {
+                let shared = Qwen35QuantizedVectorLimit.sharedWindows(input, outputs: weight.dim(0), mode: mode)
+                partial = Qwen35QuantizedVectorLimit.rows(input, by: shared) { super.callAsFunction($0) }
+            }
             if timing == .explicit {
                 eval(partial)
                 Stream.gpu.synchronize()

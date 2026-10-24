@@ -207,8 +207,15 @@ extension ClusterLinkCheck {
         }
         expectEqual(ClusterLinkReadinessState.allCases.filter(\.fixableByAddingAddress),
             [.portWithoutIPv4Address, .portBridgedWithoutAddress], "the two states the fix can act on")
-        let disabled = ClusterLinkReadinessState.rdmaDisabled.guidance ?? ""
-        expect(disabled.contains("macOS Recovery") && disabled.contains("rdma_ctl enable"), "disabled guidance names the Recovery command")
+        let settings = ClusterLinkReadinessState.rdmaDisabledGuidance(macOSMajor: 27)
+        expect(settings.contains("System Settings, Privacy & Security") && settings.contains("turn on RDMA over Thunderbolt")
+            && settings.contains("restart") && !settings.contains("Recovery") && !settings.contains("rdma_ctl"),
+            "macOS 27 disabled guidance names the System Settings switch, not Recovery")
+        let recovery = ClusterLinkReadinessState.rdmaDisabledGuidance(macOSMajor: 26)
+        expect(recovery.contains("macOS Recovery") && recovery.contains("rdma_ctl enable"), "macOS 26 disabled guidance names the Recovery command")
+        expectEqual(ClusterLinkReadinessState.rdmaDisabled.guidance,
+            ClusterLinkReadinessState.rdmaDisabledGuidance(macOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion),
+            "disabled guidance follows this Mac's macOS")
         expect((ClusterLinkReadinessState.portBridgedWithoutAddress.guidance ?? "").contains("Thunderbolt Bridge"),
             "bridged guidance names the bridge")
         expect((ClusterLinkReadinessState.portWithoutIPv4Address.guidance ?? "").contains("not set up for the cluster yet"), "unaddressed guidance")

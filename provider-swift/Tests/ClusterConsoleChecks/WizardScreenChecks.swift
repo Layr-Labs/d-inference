@@ -16,6 +16,7 @@ extension ClusterConsoleCheck {
         bridged.port?.hasIPv4Address = false
         var noProfile = F.mac(F.profileA); noProfile.profile = nil; noProfile.profileError = "darkbloom-cluster-plan beside the worker: not installed"
         var lowDisk = F.mac(F.profileA, disk: 8 * F.gib)
+        var macOS26 = F.mac(F.profileA); macOS26.osVersion = "26.4 (25E246)"; macOS26.osMajor = 26; macOS26.osMinor = 4
         lowDisk.diskTotalBytes = 1_800 * F.gib
         let leaking = ClusterSetupMemoryGuard(decision: .refused, wiredBytes: 92 * F.gib, baselineBytes: Int(25.6 * Double(F.gib)),
             detail: "92 GiB of memory is wired on this Mac and no other Darkbloom process is running; restart this Mac.")
@@ -36,6 +37,7 @@ extension ClusterConsoleCheck {
             ("reading", ClusterSetupState(size: .init(columns: 80, rows: 24))),
             ("1 ready", make(F.snapshot(F.reportA()), step: .thisMac)),
             ("1 rdma off", make(F.snapshot(F.reportA(link: off)), step: .thisMac)),
+            ("1 rdma off, macOS 26", make(F.snapshot(F.reportA(link: off, mac: macOS26)), step: .thisMac)),
             ("1 no plan tool", make(F.snapshot(F.reportA(mac: noProfile)), step: .thisMac)),
             ("1 low disk", make(F.snapshot(F.reportA(mac: lowDisk)), step: .thisMac)),
             ("1 left wired", make(F.snapshot(F.reportA(memoryGuard: leaking)), step: .thisMac)),
@@ -180,7 +182,10 @@ extension ClusterConsoleCheck {
         for word in ["Apple M3 Ultra", "60 GPU cores", "256 GiB", "resident", "on the models volume", "enabled", "Darkbloom", "idle baseline"] {
             expect(ready.contains(word), "step 1 shows \(word): \(ready)")
         }
-        expect(text("1 rdma off").contains("rdma_ctl enable"), "RDMA off gives the Recovery command")
+        let switchedOff = text("1 rdma off")
+        expect(switchedOff.contains("System Settings and choose Privacy & Security") && switchedOff.contains("Turn on RDMA over Thunderbolt")
+            && !switchedOff.contains("rdma_ctl"), "RDMA off on macOS 27 gives the System Settings switch: \(switchedOff)")
+        expect(text("1 rdma off, macOS 26").contains("rdma_ctl enable"), "RDMA off on macOS 26 gives the Recovery command")
         expect(text("1 no plan tool").contains("plan tool beside the worker did not answer"), "a missing plan tool is said")
         expect(text("1 low disk").contains("Little disk space"), "low disk is said")
         expect(text("1 left wired").contains("restart"), "left-wired memory says restart")

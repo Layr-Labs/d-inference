@@ -5,12 +5,14 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-/// Complete SSD checkpoints of the Super owner, the default exact prefix
-/// reuse. A routed owner without a bank keeps its chunk checkpoints in an
-/// encrypted store: they restore exactly within the owner and, after the
-/// owner is retired, in a new installation, engine and store on the same root
-/// and key (a restart). Lookups and publications carry the SSD tier, another
-/// scope never hits, and the store holds no shared-budget reservation.
+/// Complete SSD checkpoints of the Super owner, the default prefix reuse. A
+/// routed owner without a bank keeps its chunk checkpoints in an encrypted
+/// store: they restore within the owner and, after the owner is retired, in a
+/// new installation, engine and store on the same root and key (a restart).
+/// Native checkpoints restore exactly (the cold text); `balanced` ones, the
+/// default, code older attention rows and restore the same state every time.
+/// Lookups and publications carry the SSD tier, another scope never hits, and
+/// the store holds no shared-budget reservation.
 struct NemotronSuperDurablePrefixCacheTests {
     typealias Evidence = NemotronSuperPrefixCacheEvidenceTests
     typealias Prefix = NemotronSuperLocalPrefixCache
@@ -29,7 +31,7 @@ struct NemotronSuperDurablePrefixCacheTests {
         let directory: URL
         let environment: [String: String]
 
-        init() throws {
+        init(checkpointQuantization: String) throws {
             directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("super-durable-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
@@ -47,6 +49,7 @@ struct NemotronSuperDurablePrefixCacheTests {
                 SSDDebugCacheKeyFile.environmentKey: key.path,
                 // The fixture's 256-token chunks: write from the second one up.
                 SSDPrefixCachePolicy.minEffectiveTokensFlag: String(2 * Evidence.chunk),
+                EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: checkpointQuantization,
             ]
         }
 
@@ -79,9 +82,17 @@ struct NemotronSuperDurablePrefixCacheTests {
                                        routingIdentity: Self.routing) == Self.routing)
     }
 
-    @Test(.timeLimit(.minutes(4)), arguments: [false, true])
-    func durableCheckpointsRestoreExactlyAcrossAnOwnerRestart(speculates: Bool) async throws {
-        let disk = try Disk()
+    /// The store layout for a checkpoint precision: `balanced` codes the
+    /// attention rows, beside the speculating owner's exact assistant history.
+    static func layout(profile: String, speculates: Bool) -> String {
+        guard profile != "native" else { return CBv2CompleteCheckpointManifest.pagedLayout }
+        return speculates ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
+            : CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+    }
+
+    @Test(.timeLimit(.minutes(4)), arguments: [false, true], ["native", "balanced"])
+    func durableCheckpointsRestoreAcrossAnOwnerRestart(speculates: Bool, profile: String) async throws {
+        let disk = try Disk(checkpointQuantization: profile)
         defer { disk.remove() }
         let budget = Evidence.budget()
         let firstFixture = try SuperMTPInstalledFixture().make()
@@ -92,6 +103,7 @@ struct NemotronSuperDurablePrefixCacheTests {
             completeCheckpointIdentity: Self.disk)
         let store = try #require(first.bridge.ssdHybridCheckpointStore,
             "\(first.bridge.prefixCacheModelStatus()) \(String(describing: first.bridge.prefixCacheConstructionFailure))")
+        #expect(store.config.backendLayout == Self.layout(profile: profile, speculates: speculates))
         #expect(first.prefixBankBytes == 0 && first.bridge.residentPrefixCacheEvidence == nil)
         #expect(await Self.ready(first))
         let advertised = try #require(first.bridge.durablePrefixCacheEvidenceSource?
@@ -114,7 +126,8 @@ struct NemotronSuperDurablePrefixCacheTests {
         #expect(store.stats().filesWritten > 0)
 
         // The next turn restores 512 tokens from the store; another tenant is
-        // cold. A restored assistant history drafts as the cold one does.
+        // cold. A native restore, including its assistant history, drafts as
+        // the cold request does.
         let warm = Evidence.Receipts()
         var restored = ""
         let restoredDrafting = try await Self.drafting(first) {
@@ -129,9 +142,13 @@ struct NemotronSuperDurablePrefixCacheTests {
             cold = try await Evidence.run(first, prompt: Evidence.adopter, scope: "tenant-b", receipts: other)
         }
         #expect(other.lookups.first?.outcome == .missAbsent && other.lookups.first?.cachedTokens == 0)
-        #expect(!cold.isEmpty && restored == cold)
-        #expect(restoredDrafting == coldDrafting)
+        #expect(!cold.isEmpty && !restored.isEmpty)
+        if profile == "native" {
+            #expect(restored == cold)
+            #expect(restoredDrafting == coldDrafting)
+        }
         #expect(!speculates || coldDrafting[0] > 0, "\(coldDrafting)")
+        #expect(!speculates || restoredDrafting[0] > 0, "\(restoredDrafting)")
         try await first.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
         #expect(await budget.finishPendingLoad(firstLease))
@@ -153,8 +170,9 @@ struct NemotronSuperDurablePrefixCacheTests {
         let restartHit = try #require(again.lookups.first)
         #expect(restartHit.outcome == .hit && restartHit.tier == .ssd && restartHit.cachedTokens == 512,
                 "\(restartHit)")
-        #expect(afterRestart == cold)
-        #expect(restartDrafting == coldDrafting)
+        // The same file restores the same state after the restart.
+        #expect(afterRestart == restored)
+        #expect(restartDrafting == restoredDrafting)
         try await second.closeAfterDrain()
         #expect(await budget.reservationBytesSnapshot().isEmpty)
         #expect(await budget.finishPendingLoad(secondLease))

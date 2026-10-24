@@ -76,11 +76,13 @@ struct NemotronSuperManagedSlotTests {
     /// loader sizes its prefix bank for, so no result depends on the host.
     /// `decodeGate` holds the engine's detokenization while closed.
     /// `environment` is the provider process environment the plan reads.
-    /// `tokenizer` replaces the scripted three-token prompt tokenizer.
+    /// `checkpointQuantizationByModel` is the `[backend]` per-model checkpoint
+    /// precision table. `tokenizer` replaces the scripted three-token prompt tokenizer.
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
                         decodeGate: DecodeGate? = nil,
                         environment: [String: String] = [:],
+                        checkpointQuantizationByModel: [String: String] = [:],
                         tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil)
         async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -92,10 +94,11 @@ struct NemotronSuperManagedSlotTests {
             cpuCores: .init(total: 28, performance: 20, efficiency: 8), gpuCores: 60, memoryBandwidthGbs: 819)
         let model = ModelInfo(id: modelID, modelType: "nemotron_h_omni", sizeBytes: 1 << 20,
                               estimatedMemoryGb: 0.01)
+        var backend = BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode)
+        backend.engineV2KVCheckpointQuantizationByModel = checkpointQuantizationByModel
         let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
             hardware: hardware, models: [model], config: .init(provider: .init(name: "super-managed"),
-                backend: .init(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode),
-                coordinator: .init(heartbeatIntervalSecs: 60))),
+                backend: backend, coordinator: .init(heartbeatIntervalSecs: 60))),
             attestationSigner: nil, kvBudgetForTesting: budget)
         let script = SuperOutputScript()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
@@ -160,6 +163,8 @@ struct NemotronSuperManagedSlotTests {
             routingIdentity: request.modelAggregateHash.map {
                 .init(modelAggregateHash: $0, promptContractID: fixturePromptContractID)
             },
+            checkpointQuantizationConfig: request.checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: request.checkpointQuantizationConfigByModel,
             completeCheckpointIdentity: request.modelAggregateHash.map {
                 CBv2CompleteCheckpointIdentity(modelAggregateHash: $0, promptContractID: fixturePromptContractID,
                     buildID: "super-managed-fixture", numericsFingerprint: "super-managed-fixture")

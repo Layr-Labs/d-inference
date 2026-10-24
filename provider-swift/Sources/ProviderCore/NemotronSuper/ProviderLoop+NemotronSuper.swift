@@ -82,11 +82,14 @@ extension ProviderLoop {
         let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: kvBytesCapacity)
         let owner: NemotronSuperSlotOwner
         do {
+            let backend = loopConfig.config.backend
             owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
                 kvBytesCapacity: kvBytesCapacity, admissionKVBytes: plan.admissionKVBytes,
                 defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
                 environment: plan.environment, budget: kvBudget,
-                physicalBytes: nemotronSuperSlotLoader.physicalBytes, modelAggregateHash: before.hash))
+                physicalBytes: nemotronSuperSlotLoader.physicalBytes, modelAggregateHash: before.hash,
+                checkpointQuantizationConfig: backend.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: backend.engineV2KVCheckpointQuantizationByModel))
         } catch {
             // Retained weights stay resident, with the lane, round and bank
             // the plan reserves beside them: survivors keep their shrunk

@@ -53,7 +53,7 @@ extension EngineV2Factory {
     model: any LanguageModel, store: (any CBv2CompletePrefixCache)?
   ) -> Int? {
     guard model is GLM5NextProtectedModel, let store = store as? SSDHybridCheckpointStore,
-      store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+      CBv2CompleteCheckpointManifest.isGLM5NextLayout(store.config.backendLayout)
     else { return nil }
     return store.config.minEffectiveTokens
   }

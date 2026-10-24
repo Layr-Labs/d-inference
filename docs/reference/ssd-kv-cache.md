@@ -122,7 +122,7 @@ and MTP codec. No public header field exposes those token boundaries
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
 | Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
 | Durable ready | Only supplied actual input checkpoint after committed write and engine donor/export retirement; requires request mode echo | `SSDHybridCheckpointStore+Write.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
-| Ready stage estimate | `stage_ms` is the largest ready file's bytes at `conservativeStageBytesPerSecond` plus an exponentially weighted average (newest weight 0.25) of how much longer this store's first-attempt restores took than their byte price. The first restore replaces the layout's prior: `glm5NextPriorOverheadMilliseconds = 935` for GLM5-Next (median of nine M5 Ultra restores), 0 otherwise. The coordinator scores a holder with it until a hit's measured lookup `stage_ms` replaces it ([`Holder.StageCostAt`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7be846198448baded8c933cacce63f20541f7ed/coordinator/internal/registry/cachetracker/holder.go)) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointStageCost.swift`, `SSDHybridCheckpointStore+Maintenance.swift` (`publishReady`), `SSDHybridCheckpointStore+Read.swift` (`stage`) |
+| Ready stage estimate | `stage_ms` is the largest ready file's bytes at `conservativeStageBytesPerSecond` plus an exponentially weighted average (newest weight 0.25) of how much longer this store's first-attempt restores took than their byte price. The first restore replaces the layout's prior: `glm5NextPriorOverheadMilliseconds = 935` for both GLM5-Next layouts (median of nine M5 Ultra restores of the exact layout), 0 otherwise. The coordinator scores a holder with it until a hit's measured lookup `stage_ms` replaces it ([`Holder.StageCostAt`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7be846198448baded8c933cacce63f20541f7ed/coordinator/internal/registry/cachetracker/holder.go)) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointStageCost.swift`, `SSDHybridCheckpointStore+Maintenance.swift` (`publishReady`), `SSDHybridCheckpointStore+Read.swift` (`stage`) |
 | Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype, effective checkpoint profile and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
 
@@ -135,6 +135,8 @@ and MTP codec. No public header field exposes those token boundaries
 | `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
 | `native-contiguous-historical-attention-v1` | Exact native owning full/window rows, imported into contiguous native capacity | Loaded historical capability and explicitly observed native types; assistant absent or stateless |
 | `native-paged-affine-checkpoint-full-recurrent-v1` | Older attention rows encoded, exact native recent rows and recurrent state; native paged restore | Eligible native segmented pool and recurrent complete codec; no persistent assistant |
+| `native-paged-affine-checkpoint-full-recurrent-mtp-v1` | Same payload plus the assistant's exact typed MTP history and its codec ID | Same, beside an assistant declaring `CBv2MTPExactHistoryPrefixCheckpointCoding` (the Nemotron Super assistant) |
+| `native-paged-glm5next-affine-checkpoint-full-state-v1` | GLM5-Next full state with only the older latent rows encoded; see below | Eligible GLM latent geometry, unquantized segmented pool, assistant absent or exact-history (`resolveGLM5Next`) |
 | `native-paged-affine-checkpoint-historical-attention-v1` | Encoded older owning full/window rows and native recent rows; native paged restore | Eligible loaded historical capability and native segmented pool |
 | `native-contiguous-affine-checkpoint-full-recurrent-v1` | Same lossy/native recurrent payload; native contiguous restore | Eligible native contiguous recurrent complete codec; no persistent assistant |
 | `native-contiguous-affine-checkpoint-historical-attention-v1` | Same lossy/native historical payload; native contiguous restore | Eligible loaded historical capability and observed native types |
@@ -142,7 +144,8 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
-GLM5-Next uses `native-paged-glm5next-full-state-v2`: asymmetric
+Without an effective checkpoint profile, GLM5-Next uses
+`native-paged-glm5next-full-state-v2`: asymmetric
 latent/index/gate/validity rows, the KDA convolution history and the exact FP32
 KDA recurrent state, plus the MTP prefix tensors at their own native dtypes. The
 live pool and state keep these rows in FP32, but the latent keys, the `[index
@@ -165,6 +168,25 @@ removes them. The shared narrowing/widening helper is
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHalfPrecision.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
 
+With an effective checkpoint profile GLM5-Next writes
+`native-paged-glm5next-affine-checkpoint-full-state-v1` instead. Only the latent
+keys role changes: a `uint8` stream per layer of the older coded rows followed
+by the last `min(recentTokenCount, retainedTokens)` rows at the latent wire dtype
+(BF16 for `glm-5.3-flash`). Import decodes the coded rows and widens the band
+into the FP32 pages. The odd-width values row, the convolution history, the FP32
+recurrent state and the MTP prefix tensors keep the v2 payload and restore bit
+for bit; older latent rows are approximate
+(`CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next`,
+`CBv2GLM5NextCompleteCheckpointLayout.latentQuantization`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointStorageQuantization.swift`).
+
+| `glm-5.3-flash` checkpoint (DBK3 file, M5 Ultra, 2026-10-24) | `native` | `balanced` |
+|---|---:|---:|
+| 1,024 tokens (the donation anchor) | 168.2 MB | 161.3 MB |
+| 1,792 tokens | 182.4 MB | 169.5 MB |
+| 8,192 tokens | 300.5 MB | 238.1 MB |
+| 32,768 tokens | 754.2 MB | 501.5 MB |
+
 | `glm-5.3-flash` checkpoint (DBK3 file, measured on an M5 Ultra) | Size |
 |---|---:|
 | 2,048 tokens | 187.1 MB |
@@ -177,17 +199,36 @@ A donation also writes the 2,048-token anchor, so a 30,720-token donation
 writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
 the 7 GiB large-memory staging cap.
 See the [GLM integration gates](../design/glm53-flash-native.md).
+
+The managed `nvidia-nemotron-3.5-super` slot writes
+`native-paged-affine-checkpoint-full-recurrent-mtp-v1` while it speculates and
+`native-paged-affine-checkpoint-full-recurrent-v1` target-only at the default
+`balanced` precision. Its 8 attention layers (2 KV heads × 128) shrink from
+8 KiB to 2.5 KiB per token past the exact 128-token band; the MTP history
+(1 KiB per token) and the fixed part (the FP32 SSM state, convolution state and
+MTP frontier, 173.9 MB) stay exact.
+
+| `nvidia-nemotron-3.5-super` checkpoint (DBK3 file, measured on an M3 Ultra) | `native` | `balanced` |
+|---|---:|---:|
+| 2,048 tokens | 192.8 MB | 182.0 MB |
+| 8,192 tokens | 249.5 MB | 204.0 MB |
+| 30,720 tokens | 457.2 MB | 284.9 MB |
+| Per token | 9.2 KB | 3.6 KB |
+
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
 
-The four `native-*-affine-checkpoint-*` layouts set `checkpointQuantization`
-and `checkpointNativeDTypes` in the encrypted manifest.
+The six lossy layouts (the four `native-*-affine-checkpoint-*` layouts, the
+`-mtp-v1` recurrent variant and the GLM5-Next variant) set
+`checkpointQuantization` and `checkpointNativeDTypes` in the encrypted manifest.
 `CBv2CompleteCheckpointManifest.usesLossyNativeCheckpoint` identifies those
 layouts; it is a derived property, not another serialized field. Other layouts
-reject the new fields rather than reinterpret their payloads. The codec checks
-exact profile, native types, layout, identity, tenant salt, prefix and tensor
-descriptors before creating an import stage.
+reject the new fields rather than reinterpret their payloads. The `-mtp-v1`
+variant requires an assistant codec ID and the GLM5-Next variant may carry one;
+the other four refuse it.
+The codec checks exact profile, native types, layout, identity, tenant salt,
+prefix and tensor descriptors before creating an import stage.
 
 For these lossy layouts, an encoded K/V head is a `uint8` stream of older coded
 rows followed by the exact last `min(recentTokenCount, retainedTokens)` native

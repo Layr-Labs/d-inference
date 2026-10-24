@@ -53,6 +53,7 @@ enum SSDHybridCheckpointStoreFactory {
                 || backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
@@ -63,6 +64,7 @@ enum SSDHybridCheckpointStoreFactory {
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricMTPLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
         else { return refuse(.layoutUnavailable) }
         guard backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout

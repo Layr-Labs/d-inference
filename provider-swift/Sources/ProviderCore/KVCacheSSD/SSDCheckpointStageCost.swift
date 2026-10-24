@@ -22,8 +22,9 @@ final class SSDCheckpointStageCost: @unchecked Sendable {
     /// 187, 301 and 716 MB BF16 checkpoints, of the stage beyond the byte price.
     static let glm5NextPriorOverheadMilliseconds = 935.0
 
+    /// Both GLM full-state layouts start from it; the first restore replaces it.
     static func priorOverheadMilliseconds(backendLayout: String) -> Double {
-        backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+        CBv2CompleteCheckpointManifest.isGLM5NextLayout(backendLayout)
             ? glm5NextPriorOverheadMilliseconds : 0
     }
 

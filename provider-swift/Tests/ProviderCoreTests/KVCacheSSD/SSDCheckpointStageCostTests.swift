@@ -11,9 +11,12 @@ struct SSDCheckpointStageCostTests {
 
     @Test("a GLM store starts from its measured fixed part; other layouts price bytes only")
     func priorFollowsLayout() {
-        #expect(SSDCheckpointStageCost.priorOverheadMilliseconds(
-            backendLayout: CBv2CompleteCheckpointManifest.glm5NextPagedLayout) == 935)
+        for layout in [CBv2CompleteCheckpointManifest.glm5NextPagedLayout,
+                       CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout] {
+            #expect(SSDCheckpointStageCost.priorOverheadMilliseconds(backendLayout: layout) == 935)
+        }
         for layout in [CBv2CompleteCheckpointManifest.layout, CBv2CompleteCheckpointManifest.pagedLayout,
+                       CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout,
                        CBv2CompleteCheckpointManifest.historicalAttentionLayout] {
             #expect(SSDCheckpointStageCost.priorOverheadMilliseconds(backendLayout: layout) == 0)
         }

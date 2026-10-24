@@ -208,12 +208,23 @@ extension EngineV2Factory {
             if model is FlintModel, requested != .native {
                 throw EngineV2KVQuantizationPolicy.Failure.flintRequiresNative
             }
-            storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
-                requested.configuration, layerKinds: preparedBackend.layerKinds,
-                layerDTypes: preparedBackend.nativeLayerDTypes,
-                pagedConfig: preparedBackend.pagedPoolConfig,
-                hasAssistantState: mtpDrafter is any CBv2MTPPrefixCheckpointCoding
-                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter)
+            if model is GLM5NextProtectedModel {
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    pagedConfig: preparedBackend.pagedPoolConfig, assistant: mtpDrafter)
+            } else {
+                let persistent = mtpDrafter is any CBv2MTPPrefixCheckpointCoding
+                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    layerDTypes: preparedBackend.nativeLayerDTypes,
+                    pagedConfig: preparedBackend.pagedPoolConfig,
+                    hasAssistantState: persistent
+                        && !CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget(
+                            besideAssistant: mtpDrafter,
+                            pagedRecurrent: preparedBackend.kind == .paged
+                                && preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse))
+            }
         } else {
             storageQuantization = nil
         }
@@ -255,9 +266,11 @@ extension EngineV2Factory {
         }
         var mtpConfig = mtpConfig
         if let protected = model as? GLM5NextProtectedModel {
+            // A checkpoint profile only ever accompanies its complete store.
             guard preparedBackend.glm5NextModel === protected,
                 prefixCache == nil, !preparedBackend.residentPrefixCacheEnabled,
-                preparedBackend.hybridPrefixCache == nil, checkpointQuantization == nil else {
+                preparedBackend.hybridPrefixCache == nil,
+                checkpointQuantization == nil || completePrefixCache != nil else {
                 throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
             }
             mtpConfig = try protected.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter)

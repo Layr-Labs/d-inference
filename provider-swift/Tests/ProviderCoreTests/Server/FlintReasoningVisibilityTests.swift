@@ -313,7 +313,7 @@ private final class RelayRecorder: @unchecked Sendable {
 }
 
 private final class VisibilityContainerModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

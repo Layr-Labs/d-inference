@@ -115,7 +115,7 @@ func vlmDataFromDataURIBadBase64Throws() {
 @Test("decodeImage decodes a base64 data: URI into a CIImage")
 func vlmDecodeImageDataURI() throws {
     let image = try MediaIngest.decodeImage(tinyPNGDataURI)
-    guard case .ciImage(let ci) = image else {
+    guard case .ciImage(let ci) = image.source else {
         Issue.record("expected .ciImage, got \(image)")
         return
     }
@@ -182,7 +182,7 @@ func decodeImageAppliesExifOrientation() throws {
     #expect(CGImageDestinationFinalize(dest))
 
     let decoded = try MediaIngest.decodeImageData(destData as Data)
-    guard case .ciImage(let image) = decoded else {
+    guard case .ciImage(let image) = decoded.source else {
         Issue.record("expected .ciImage, got \(decoded)")
         return
     }
@@ -206,7 +206,7 @@ func vlmDecodeVideoDataURIStaysInMemory() async throws {
     // plaintext file: another parallel suite may legitimately delete a stale
     // pre-existing `vlm-*.mp4` between these snapshots.
     let (video, framePixels) = try await MediaIngest.decodeVideo(tinyMP4DataURI)
-    guard case .memoryBacked(let memoryAsset) = video else {
+    guard case .memoryBacked(let memoryAsset) = video.source else {
         Issue.record("expected .memoryBacked, got \(video)")
         return
     }
@@ -763,7 +763,7 @@ func vlmDecodeVideoRejectsOverFrameCap() async {
 func vlmDecodeVideoWithinFrameCapPasses() async throws {
     let (video, framePixels) = try await MediaIngest.decodeVideo(
         tinyMP4DataURI, maxFramePixels: 10_000)
-    guard case .memoryBacked(let memoryAsset) = video else {
+    guard case .memoryBacked(let memoryAsset) = video.source else {
         Issue.record("expected .memoryBacked, got \(video)")
         return
     }

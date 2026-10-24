@@ -547,7 +547,8 @@ final class DistributedAutomaticBatchPlannerTests {
     @Test func automaticQuotePinsNativeInventoryAndCompleteWidthOneScope() throws {
         let (_, cap, _, _) = try fixture()
         func quote(_ verification: ClusterQwenTensorAssistantPolicy.Verification = .admittedCohort,
-                   depth: Int = 2, artifact: String? = nil, assistant: Bool = true) throws -> ClusterPlacementTensorBatchQuote {
+                   depth: Int = ClusterPlacementTensorAssistantSelection.automaticDepth, artifact: String? = nil,
+                   assistant: Bool = true) throws -> ClusterPlacementTensorBatchQuote {
             let original = try assistantQuote(1, depth: depth, verification: verification)
             let request = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
                 artifactSHA256: artifact ?? cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
@@ -561,7 +562,7 @@ final class DistributedAutomaticBatchPlannerTests {
         let native = try quote()
         try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(native, capability: cap, chunkTokens: 128)
         #expect(native.assistant?.policy.inventorySHA256 == hash("8"))
-        for invalid in [try quote(.singleton), try quote(depth: 3), try quote(artifact: hash("9"))] {
+        for invalid in [try quote(.singleton), try quote(depth: 2), try quote(artifact: hash("9"))] {
             #expect(throws: (any Error).self) {
                 try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(invalid, capability: cap, chunkTokens: 128)
             }
@@ -573,14 +574,14 @@ final class DistributedAutomaticBatchPlannerTests {
         }
         let args = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
             promptTokens: 32768, outputTokens: 32768, chunkTokens: 128)
-        #expect(args.suffix(4) == ["--mtp-depth", "2", "--tp-mtp-verification", "admitted_target_cohort_v1"])
+        #expect(args.suffix(4) == ["--mtp-depth", "3", "--tp-mtp-verification", "admitted_target_cohort_v1"])
         #expect(!args.contains(ClusterQwenTensorAssistantPolicy.inventoryArgument))
         let plainArgs = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
             promptTokens: 32768, outputTokens: 32768, chunkTokens: 128, assistant: false)
         #expect(!plainArgs.contains("--mtp-depth") && plainArgs.contains("--batch-lanes"))
     }
 
-    private func assistantQuote(_ lanes: Int, depth: Int = 2,
+    private func assistantQuote(_ lanes: Int, depth: Int = ClusterPlacementTensorAssistantSelection.automaticDepth,
                                 verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton) throws -> ClusterPlacementTensorBatchQuote {
         let (_, _, _, scope) = try fixture()
         return try .init(request: scope.request, lanes: lanes, chunkTokens: 128,
@@ -654,7 +655,7 @@ final class DistributedAutomaticBatchPlannerTests {
         // full-context assistant reservation is on a busy M5.
         let assistant = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
             perLaneStateBytes: 100 * gib, sharedBytesExcludingCollectives: 200 * gib, allowance: try allowance(300 * gib),
-            assistant: .init(policy: .init(depth: 2, inventorySHA256: hash("8"), verification: .admittedCohort),
+            assistant: .init(policy: .init(depth: 3, inventorySHA256: hash("8"), verification: .admittedCohort),
                 residentBytes: gib, loadBytes: 2 * gib, largestAllocationBytes: gib))
         let target = try ClusterPlacementTensorBatchQuote(request: scope.request, lanes: 1, chunkTokens: 128,
             perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib, allowance: try allowance(2 * gib))
@@ -708,11 +709,11 @@ final class DistributedAutomaticBatchPlannerTests {
                     #expect(initial.batchLanes == nil && widened.batchLanes == width)
                     try ClusterAutomaticSetupHandoff.requireCompatible(initial, widened)
                     let argv = try DistributedInstalledGenerationSelection.workerArguments(configuration: widened, capability: cap)
-                    let expected = ["--mtp-depth", "2", ClusterQwenTensorAssistantPolicy.inventoryArgument, hash("8")] + policy.verificationArguments
+                    let expected = ["--mtp-depth", "3", ClusterQwenTensorAssistantPolicy.inventoryArgument, hash("8")] + policy.verificationArguments
                     #expect(Array(argv.suffix(expected.count)) == expected)
                     let quoteArguments = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model",
                         policy: policy, promptTokens: 1024, outputTokens: 128, lanes: width, chunkTokens: 128)
-                    let quoteSuffix = ["--mtp-depth", "2"] + policy.verificationArguments
+                    let quoteSuffix = ["--mtp-depth", "3"] + policy.verificationArguments
                     #expect(Array(quoteArguments.suffix(quoteSuffix.count)) == quoteSuffix)
                     let expectedReady = try ClusterQwenTensorAssistantReady(policy: policy, capacity: width)
                     #expect(expectedReady.maximumSpeculativeWidth == (verification == .admittedCohort ? width : 1))
@@ -725,7 +726,7 @@ final class DistributedAutomaticBatchPlannerTests {
                     let dropped = try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: object),
                         capability: cap, capabilitySHA256: pair.capabilitySHA256)
                     #expect(throws: (any Error).self) { try ClusterAutomaticSetupHandoff.requireCompatible(widened, dropped) }
-                    object["tensorAssistant"] = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("8")).object
+                    object["tensorAssistant"] = try ClusterQwenTensorAssistantPolicy(depth: 4, inventorySHA256: hash("8")).object
                     let changed = try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject: object),
                         capability: cap, capabilitySHA256: pair.capabilitySHA256)
                     #expect(throws: (any Error).self) { try ClusterAutomaticSetupHandoff.requireCompatible(widened, changed) }
@@ -756,8 +757,10 @@ final class DistributedAutomaticBatchPlannerTests {
         try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["inventorySHA256"] = self.hash("G"); $0["tensorAssistant"] = a }
         try rejects { var a = $0["tensorAssistant"] as! [String: Any]; a["extra"] = "ignored"; $0["tensorAssistant"] = a }
         let text = String(decoding: bytes, as: UTF8.self)
+        let depthKey = "\"depth\":\(ClusterPlacementTensorAssistantSelection.automaticDepth)"
+        #expect(text.contains(depthKey))
         #expect(throws: (any Error).self) {
-            _ = try ClusterConfigurationCodec.decode(Data(text.replacingOccurrences(of: "\"depth\":2", with: "\"depth\":2,\"depth\":2").utf8),
+            _ = try ClusterConfigurationCodec.decode(Data(text.replacingOccurrences(of: depthKey, with: depthKey + "," + depthKey).utf8),
                 capability: cap, capabilitySHA256: pair.capabilitySHA256)
         }
         var features = DistributedInstalledWorkerFeatures(hasProgressGuard: true, acceptsStartupDeadline: true,
@@ -776,7 +779,7 @@ final class DistributedAutomaticBatchPlannerTests {
         for width in [1, 2, 4, 8] {
             let args = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model", policy: policy,
                 promptTokens: 32768, outputTokens: 32768, lanes: width, chunkTokens: 128)
-            #expect(args.suffix(2) == ["--mtp-depth", "2"])
+            #expect(args.suffix(2) == ["--mtp-depth", "3"])
         }
         #expect(throws: (any Error).self) {
             _ = try ClusterPlacementTensorAssistantSelection.arguments(modelDirectory: "/fixture/model", policy: policy,

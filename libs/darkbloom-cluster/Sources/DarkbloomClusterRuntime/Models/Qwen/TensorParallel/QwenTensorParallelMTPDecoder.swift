@@ -4,6 +4,41 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
+/// Wall-clock split of one speculative round on this rank, for the
+/// `darkbloom-tp-mtp-profile-v1` diagnostic (never fields of the audited
+/// round marker). Each phase ends at a host synchronization, so GPU work is
+/// counted in the phase whose evaluation waited for it.
+struct QwenTensorParallelMTPRoundProfile: Equatable {
+    var rows = 0
+    /// Assistant proposals: draft steps, their evaluation and exchange.
+    var draft: UInt64 = 0
+    /// Target window graph construction.
+    var build: UInt64 = 0
+    /// Target window evaluation and its confirmation.
+    var verify: UInt64 = 0
+    /// Target logits gathered across the ranks.
+    var gather: UInt64 = 0
+    /// Rank 0's choices, their exchange and the acceptance decision.
+    var choose: UInt64 = 0
+    /// Rollback, assistant history, their evaluation and confirmation.
+    var settle: UInt64 = 0
+
+    var fields: String {
+        "rows=\(rows) draft_us=\(draft / 1000) build_us=\(build / 1000) verify_us=\(verify / 1000)"
+            + " gather_us=\(gather / 1000) choose_us=\(choose / 1000) settle_us=\(settle / 1000)"
+    }
+
+    /// Nanoseconds since the previous lap.
+    struct Clock {
+        private var last = DispatchTime.now().uptimeNanoseconds
+        mutating func lap() -> UInt64 {
+            let now = DispatchTime.now().uptimeNanoseconds
+            defer { last = now }
+            return now - last
+        }
+    }
+}
+
 /// One text request's assistant and target state. Both ranks execute each
 /// announced round together; only rank0 samples and publishes. The enclosing
 /// owner checks request cancellation at shared round boundaries, never halfway
@@ -30,6 +65,8 @@ final class QwenTensorParallelMTPDecoder {
     private(set) var retired = false
     private var failed = false
     private(set) var statistics: QwenMTPStatistics
+    /// The last speculative round this request took part in.
+    private(set) var lastProfile: QwenTensorParallelMTPRoundProfile?
     private var request: QwenLayerStageGenerationRequest { target.request }
 
     init(target: any QwenTensorParallelMTPTarget, head: QwenTensorParallelMTPHead,
@@ -116,32 +153,46 @@ final class QwenTensorParallelMTPDecoder {
                 var feed = (tokens: seed, hidden: carry?.hidden)
                 var drafted: [MLXArray] = []
                 let started = DispatchTime.now().uptimeNanoseconds
+                var clock = QwenTensorParallelMTPRoundProfile.Clock(), profile = QwenTensorParallelMTPRoundProfile(rows: 1)
                 for _ in 0..<count {
                     let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden!, shortlist: nil,
                         requestState: state)
                     eval([next.tokens, next.hidden] + head.assistant.evaluationTargets(for: state)); try checked()
-                    // Even proposal IDs are authoritative, so a peer's local
-                    // argmax can never change the following collective graph.
-                    let token = try broadcast(next.tokens.reshaped([1]), count: 1, check: checked).reshaped([1, 1])
+                    // Both ranks read the proposal from the same exchanged
+                    // (maximum, index) pairs (`QwenTensorParallelMTPProjection`),
+                    // so their argmax is the same token without a broadcast.
+                    let token = next.tokens.reshaped([1, 1])
                     drafted.append(token); feed = (token, next.hidden)
                 }
                 let drafts = drafted.isEmpty ? nil : concatenated(drafted, axis: 1)
                 let inputs = drafts.map { concatenated([seed, $0], axis: 1) } ?? seed
+                profile.draft = clock.lap()
                 let built = try target.beginWindow(tokens: inputs, offset: target.state.committedTokens)
+                profile.build = clock.lap()
                 eval(built.outputs + built.roots); try checked(); try target.confirmWindow(check: checked)
-                let full = try gathered(built.outputs[0], count: count + 1, check: checked)
-                let choices: MLXArray
-                if group.rank == 0 {
-                    if speculative { choices = request.sampler?.verifyRound(full) ?? argMax(full, axis: -1) }
-                    else { choices = request.sampler?.sample(full[0..., 0, 0...]) ?? argMax(full[0..., 0, 0...], axis: -1) }
-                } else { choices = MLXArray.zeros([count + 1], dtype: .int32) }
-                let selected = try broadcast(choices.reshaped([count + 1]), count: count + 1, check: checked)
+                profile.verify = clock.lap()
+                let selected: MLXArray
+                if request.sampling == nil {
+                    // Greedy: both ranks derive the same choices from one exchange.
+                    selected = try greedyChoices(built.outputs[0], count: count + 1, check: checked).reshaped([count + 1])
+                    profile.gather = clock.lap()
+                } else {
+                    let full = try gathered(built.outputs[0], count: count + 1, check: checked)
+                    profile.gather = clock.lap()
+                    let choices: MLXArray
+                    if group.rank == 0 {
+                        if speculative { choices = request.sampler?.verifyRound(full) ?? argMax(full, axis: -1) }
+                        else { choices = request.sampler?.sample(full[0..., 0, 0...]) ?? argMax(full[0..., 0, 0...], axis: -1) }
+                    } else { choices = MLXArray.zeros([count + 1], dtype: .int32) }
+                    selected = try broadcast(choices.reshaped([count + 1]), count: count + 1, check: checked)
+                }
                 let targetIDs = selected.asArray(Int32.self).map(Int.init)
                 let draftIDs = drafts?.asArray(Int32.self).map(Int.init) ?? []
                 let decision = try Self.accept(drafts: draftIDs, targets: targetIDs, remaining: remaining,
                     stopTokens: stops, vocabularySize: request.profile.vocabularySize)
                 let emitted = decision.tokens.count
                 let evaluated = DispatchTime.now().uptimeNanoseconds
+                profile.choose = clock.lap()
                 let roots = try target.settleWindow(keeping: emitted)
                 if speculative {
                     let trustedDrafts = min(decision.accepted, emitted - 1)
@@ -183,6 +234,8 @@ final class QwenTensorParallelMTPDecoder {
                 } else { statistics.plainSteps += 1 }
                 statistics.evaluateNanoseconds += evaluated - started
                 statistics.settleNanoseconds += DispatchTime.now().uptimeNanoseconds - evaluated
+                profile.settle = clock.lap()
+                lastProfile = speculative ? profile : nil
                 return .init(tokens: decision.tokens, logprobs: logprobs, speculative: speculative)
             }
         } catch { failed = true; throw error }
@@ -215,43 +268,69 @@ final class QwenTensorParallelMTPDecoder {
                     throw ProbeError("Qwen TP speculative cohort reuses target history")
                 }
                 let columns = first.depth + 1, started = DispatchTime.now().uptimeNanoseconds
-                var drafts: [MLXArray] = [], inputs: [MLXArray] = []
-                for (row, decoder) in decoders.enumerated() {
-                    let seed = MLXArray([Int32(lastTokens[row])]).reshaped([1, 1])
-                    var feed = (tokens: seed, hidden: decoder.carry!.hidden)
-                    var proposed: [MLXArray] = []
-                    for _ in 0..<decoder.depth {
-                        let next = decoder.head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden,
+                var clock = QwenTensorParallelMTPRoundProfile.Clock()
+                var profile = QwenTensorParallelMTPRoundProfile(rows: decoders.count)
+                // Each row drafts through its own B=1 assistant state with the
+                // same graphs as alone, evaluated on its own in request order: a
+                // draft step holds two collectives (rank 0's hidden, then the
+                // score exchange), and rows evaluated together would leave the
+                // order of independent rows' collectives to each rank's graph
+                // schedule, which differs by rank.
+                let seeds = lastTokens.map { MLXArray([Int32($0)]).reshaped([1, 1]) }
+                var feeds = decoders.indices.map { (tokens: seeds[$0], hidden: decoders[$0].carry!.hidden) }
+                var proposed = [[MLXArray]](repeating: [], count: decoders.count)
+                for _ in 0..<first.depth {
+                    var next: [(tokens: MLXArray, hidden: MLXArray)] = []
+                    for (row, decoder) in decoders.enumerated() {
+                        let step = decoder.head.assistant.draftStep(tokens: feeds[row].tokens, hidden: feeds[row].hidden,
                             shortlist: nil, requestState: decoder.state)
-                        eval([next.tokens, next.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
+                        eval([step.tokens, step.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
                         try checked()
-                        let token = try decoder.broadcast(next.tokens.reshaped([1]), count: 1, check: checked).reshaped([1, 1])
-                        proposed.append(token); feed = (token, next.hidden)
+                        next.append(step)
                     }
-                    let proposedTokens = concatenated(proposed, axis: 1)
-                    drafts.append(proposedTokens); inputs.append(concatenated([seed, proposedTokens], axis: 1))
+                    // Both ranks read every proposal from the same exchanged
+                    // (maximum, index) pairs, so no broadcast is needed.
+                    for row in decoders.indices {
+                        let token = next[row].tokens.reshaped([1, 1])
+                        proposed[row].append(token); feeds[row] = (token, next[row].hidden)
+                    }
                 }
+                let drafts = proposed.map { concatenated($0, axis: 1) }
+                let inputs = decoders.indices.map { concatenated([seeds[$0], drafts[$0]], axis: 1) }
+                profile.draft = clock.lap()
                 let built = try QwenTensorParallelBatchSession.beginWindows(sessions,
                     tokens: concatenated(inputs, axis: 0))
+                profile.build = clock.lap()
                 eval(built.outputs + built.roots); try checked()
                 try QwenTensorParallelBatchSession.confirmWindows(sessions, check: checked)
-                let full = try first.gathered(built.outputs[0], count: columns, rows: decoders.count, check: checked)
-                let choices: MLXArray
-                if first.group.rank == 0 {
-                    let rows = decoders.enumerated().map { row, decoder -> MLXArray in
-                        let logits = full[row..<row + 1]
-                        return (decoder.request.sampler?.verifyRound(logits) ?? argMax(logits, axis: -1)).reshaped([columns])
-                    }
-                    choices = concatenated(rows, axis: 0)
-                } else { choices = MLXArray.zeros([decoders.count * columns], dtype: .int32) }
-                let selected = try first.broadcast(choices, count: decoders.count * columns, check: checked)
-                    .reshaped([decoders.count, columns])
+                profile.verify = clock.lap()
+                let selected: MLXArray
+                if decoders.allSatisfy({ $0.request.sampling == nil }) {
+                    // A greedy cohort: both ranks derive the same choices from one exchange.
+                    selected = try first.greedyChoices(built.outputs[0], count: columns, rows: decoders.count,
+                        check: checked)
+                    profile.gather = clock.lap()
+                } else {
+                    let full = try first.gathered(built.outputs[0], count: columns, rows: decoders.count, check: checked)
+                    profile.gather = clock.lap()
+                    let choices: MLXArray
+                    if first.group.rank == 0 {
+                        let rows = decoders.enumerated().map { row, decoder -> MLXArray in
+                            let logits = full[row..<row + 1]
+                            return (decoder.request.sampler?.verifyRound(logits) ?? argMax(logits, axis: -1)).reshaped([columns])
+                        }
+                        choices = concatenated(rows, axis: 0)
+                    } else { choices = MLXArray.zeros([decoders.count * columns], dtype: .int32) }
+                    selected = try first.broadcast(choices, count: decoders.count * columns, check: checked)
+                        .reshaped([decoders.count, columns])
+                }
                 let decisions = try decoders.enumerated().map { row, decoder in
                     try accept(drafts: drafts[row].asArray(Int32.self).map(Int.init),
                         targets: selected[row].asArray(Int32.self).map(Int.init), remaining: remaining[row],
                         stopTokens: decoder.stops, vocabularySize: decoder.request.profile.vocabularySize)
                 }
                 let evaluated = DispatchTime.now().uptimeNanoseconds
+                profile.choose = clock.lap()
                 var roots = try QwenTensorParallelBatchSession.settleWindows(sessions,
                     keeping: decisions.map { $0.tokens.count })
                 for (row, decoder) in decoders.enumerated() {
@@ -287,6 +366,8 @@ final class QwenTensorParallelMTPDecoder {
                     result.append(.init(tokens: decision.tokens, logprobs: logprobs, speculative: true))
                 }
                 try checked()
+                profile.settle = clock.lap()
+                decoders.forEach { $0.lastProfile = profile }
                 return result
             }
         } catch { decoders.forEach { $0.failed = true }; throw error }
@@ -348,6 +429,37 @@ final class QwenTensorParallelMTPDecoder {
             throw ProbeError("Qwen TP MTP authoritative token exchange is invalid")
         }
         return result.asType(.int32)
+    }
+
+    /// Greedy rows (no sampling state, agreed on both ranks) need only each
+    /// logit row's first maximum. Each rank reduces its vocabulary interval to
+    /// (maximum, first global index, non-finite count) and one small sum gives
+    /// both ranks the same bits; the lower interval wins an equal maximum, so
+    /// the choice is the gathered row's first argmax, with no second exchange.
+    /// A non-finite logit on either rank fails both, as `gathered` does.
+    private func greedyChoices(_ logits: MLXArray, count: Int, rows: Int = 1,
+                               check: () throws -> Void) throws -> MLXArray {
+        let range = target.model.vocabularyRange
+        guard (1...8).contains(rows), logits.shape == [rows, count, range.count] else {
+            throw ProbeError("Qwen TP MTP shard logits differ")
+        }
+        let values = logits.asType(.float32)
+        let mine = stacked([values.max(axis: -1),
+            argMax(values, axis: -1).asType(.float32) + Float(range.lowerBound),
+            (1 - isFinite(values).asType(.float32)).sum(axis: -1)], axis: -1)
+        let empty = MLXArray.zeros(mine.shape, dtype: .float32)
+        let both = group.allSum(concatenated(group.rank == 0 ? [mine, empty] : [empty, mine], axis: -1))
+        let choices = which(both[0..., 0..., 3] .> both[0..., 0..., 0], both[0..., 0..., 4], both[0..., 0..., 1])
+        eval(both, choices); try check()
+        guard both.shape == [rows, count, 6],
+              all((both[0..., 0..., 2] .== 0) .&& (both[0..., 0..., 5] .== 0)).item(Bool.self) else {
+            throw ProbeError("Qwen TP MTP gathered target rows are invalid")
+        }
+        let tokens = choices.asType(.int32)
+        guard all((tokens .>= 0) .&& (tokens .< request.profile.vocabularySize)).item(Bool.self) else {
+            throw ProbeError("Qwen TP MTP greedy choice is outside the vocabulary")
+        }
+        return tokens
     }
 
     private func gathered(_ logits: MLXArray, count: Int, rows: Int = 1, check: () throws -> Void) throws -> MLXArray {

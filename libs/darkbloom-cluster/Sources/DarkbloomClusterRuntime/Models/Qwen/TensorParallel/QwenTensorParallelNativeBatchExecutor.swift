@@ -57,6 +57,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     private let assistant: QwenTensorParallelBatchAssistant?
     private let openedLane: (UUID, String) -> Void
     private let completedSpeculation: (UUID, Int, QwenMTPStatistics) -> Void
+    private let profiledRound: (QwenTensorParallelMTPRoundProfile) -> Void
     private var incompleteOpenings: [UUID: Lane] = [:]
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
@@ -73,7 +74,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
          prefixObserved: @escaping (String, Int, Int) -> Void = { _, _, _ in },
          assistant: QwenTensorParallelBatchAssistant? = nil,
          openedLane: @escaping (UUID, String) -> Void = { _, _ in },
-         completedSpeculation: @escaping (UUID, Int, QwenMTPStatistics) -> Void = { _, _, _ in }) throws {
+         completedSpeculation: @escaping (UUID, Int, QwenMTPStatistics) -> Void = { _, _, _ in },
+         profiledRound: @escaping (QwenTensorParallelMTPRoundProfile) -> Void = { _ in }) throws {
         guard case .shard(let rank, let size) = model.role, size == 2, rank == group.rank, size == group.size,
               !model.plan.routedExperts, sha256(configuration) == model.configurationSHA256,
               model.plan.vocabularySize < (1 << 24),
@@ -99,6 +101,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
         }
         self.assistant = assistant; self.openedLane = openedLane; self.completedSpeculation = completedSpeculation
+        self.profiledRound = profiledRound
         self.rank = rank; self.model = model; self.configuration = configuration; self.host = host
         self.prefix = prefix; self.prefixBudget = prefixBudget; self.prefixScope = prefixScope
         self.prefixDisk = prefixDisk; self.prefixDiskScope = prefixDiskScope
@@ -304,6 +307,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
                 for (row, index) in eligible.enumerated() {
                     completedSpeculation(lanes[index].session.request.requestID, eligible.count, decoders[row].statistics)
                 }
+                if let profile = decoders.first?.lastProfile { profiledRound(profile) }
                 completedDecode(eligible.count)
             } else if let index = eligible.first, let decoder = lanes[index].assistant {
                 let result = try decoder.step(lastToken: tokens[index],
@@ -312,6 +316,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
                 try lanes[index].accepted.append(input: tokens[index], tokens: result.tokens,
                     logprobs: result.logprobs, depth: context.depth, vocabulary: model.plan.vocabularySize)
                 completedDecode(1); completedSpeculation(lanes[index].session.request.requestID, 1, decoder.statistics)
+                if let profile = decoder.lastProfile { profiledRound(profile) }
             }
         }
         // Without a complete cohort quote, preserve singleton-ready-set
@@ -326,6 +331,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             try lanes[0].accepted.append(input: tokens[0], tokens: result.tokens, logprobs: result.logprobs,
                 depth: context.depth, vocabulary: model.plan.vocabularySize)
             completedDecode(1); completedSpeculation(lanes[0].session.request.requestID, 1, decoder.statistics)
+            if let profile = decoder.lastProfile { profiledRound(profile) }
         }
         let ordinary = lanes.indices.filter { lanes[$0].accepted.isEmpty }
         var selections = [Int?](repeating: nil, count: lanes.count)

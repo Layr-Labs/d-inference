@@ -71,40 +71,55 @@ struct QwenTensorParallelMTPSessionTests {
         }
     }
 
-    @Test func proposalHeadUsesRankZeroHiddenAndActualVocabularyShards() throws {
+    /// The proposal head drafts greedily: both ranks project rank 0's hidden
+    /// row through their own vocabulary interval, and one small exchange
+    /// chooses the complete row's first maximum. The scores keep that maximum
+    /// at its global index and -inf elsewhere; an equal maximum in both
+    /// intervals goes to the lower index, as the complete row's argmax does.
+    @Test func proposalHeadUsesRankZeroHiddenAndChoosesTheCompleteRowsFirstMaximum() throws {
         try Device.withDefaultDevice(.cpu) {
             let elements: [Float] = (0..<8192).map { index in
                 let value = (index * 13) % 29 - 14
                 return Float(value) / Float(19)
             }
-            let weights = MLXArray(elements).reshaped([128, 64]).asType(.bfloat16)
-            let full = QuantizedLinear(weight: weights, bias: nil, groupSize: 64, bits: 4)
-            eval(full)
-            for dtype in [DType.bfloat16, .float16, .float32] {
-                let wire = Rendezvous()
-                let row: [Float] = (0..<64).map { index in Float(index % 7 - 3) / Float(11) }
-                let authoritative = MLXArray(row).reshaped([1, 1, 64]).asType(dtype)
-                let owners = try (0..<2).map { rank -> ProjectionOwner in
-                    let rows = (rank * 64)..<((rank + 1) * 64)
-                    let local = QuantizedLinear(weight: weights[rows], bias: nil, groupSize: 64, bits: 4)
-                    eval(local)
-                    let projection = try QwenTensorParallelMTPProjection(local: local,
-                        vocabulary: rows, vocabularySize: 128, reduction: Rank(rank, wire))
-                    return ProjectionOwner(projection, rank == 0 ? authoritative : -authoritative + 2)
-                }
-                DispatchQueue.concurrentPerform(iterations: 2) { rank in
-                    Device.withDefaultDevice(.cpu) {
-                        let output = owners[rank].projection(owners[rank].input)
-                        eval(output); owners[rank].output = output
+            for tied in [false, true] {
+                let distinct = MLXArray(elements).reshaped([128, 64]).asType(.bfloat16)
+                // Tied: the upper interval repeats the lower one row for row.
+                let weights = tied ? concatenated([distinct[0..<64], distinct[0..<64]], axis: 0) : distinct
+                let full = QuantizedLinear(weight: weights, bias: nil, groupSize: 64, bits: 4)
+                eval(full)
+                for dtype in [DType.bfloat16, .float16, .float32] {
+                    let wire = Rendezvous()
+                    let row: [Float] = (0..<64).map { index in Float(index % 7 - 3) / Float(11) }
+                    let authoritative = MLXArray(row).reshaped([1, 1, 64]).asType(dtype)
+                    let owners = try (0..<2).map { rank -> ProjectionOwner in
+                        let rows = (rank * 64)..<((rank + 1) * 64)
+                        let local = QuantizedLinear(weight: weights[rows], bias: nil, groupSize: 64, bits: 4)
+                        eval(local)
+                        let projection = try QwenTensorParallelMTPProjection(local: local,
+                            vocabulary: rows, vocabularySize: 128, reduction: Rank(rank, wire))
+                        return ProjectionOwner(projection, rank == 0 ? authoritative : -authoritative + 2)
                     }
-                }
-                let expected = full(authoritative); eval(expected)
-                #expect(wire.step == 2)
-                for owner in owners {
-                    let output = try #require(owner.output)
-                    #expect(output.shape == expected.shape && output.dtype == expected.dtype)
-                    #expect(output.asData().data == expected.asData().data)
-                    #expect(owner.projection.local.weight.dim(0) == 64)
+                    DispatchQueue.concurrentPerform(iterations: 2) { rank in
+                        Device.withDefaultDevice(.cpu) {
+                            let output = owners[rank].projection(owners[rank].input)
+                            eval(output); owners[rank].output = output
+                        }
+                    }
+                    let expected = full(authoritative); eval(expected)
+                    let complete = expected[0, 0].asType(.float32).asArray(Float.self)
+                    let winner = complete.indices.first { complete[$0] == complete.max()! }!
+                    #expect(wire.step == 2)
+                    if tied { #expect(winner < 64 && complete[winner + 64] == complete[winner]) }
+                    for owner in owners {
+                        let output = try #require(owner.output)
+                        #expect(output.shape == expected.shape && output.dtype == expected.dtype)
+                        let scores = output[0, 0].asType(.float32).asArray(Float.self)
+                        #expect(argMax(output[0, 0], axis: -1).asType(.int32).item(Int32.self) == Int32(winner))
+                        #expect(scores[winner] == complete[winner])
+                        #expect(scores.indices.allSatisfy { $0 == winner || scores[$0] == -Float.infinity })
+                        #expect(owner.projection.local.weight.dim(0) == 64)
+                    }
                 }
             }
         }

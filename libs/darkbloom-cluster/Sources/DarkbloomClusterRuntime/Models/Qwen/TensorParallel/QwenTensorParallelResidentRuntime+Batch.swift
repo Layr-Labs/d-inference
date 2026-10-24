@@ -207,6 +207,9 @@ extension QwenTensorParallelResidentRuntime {
             completedSpeculation: { [self] requestID, verifiedWidth, statistics in
                 log("darkbloom-tensor-parallel-mtp-round-v1 rank=\(collective.rank) scope=\(records.requestID)"
                     + " request=\(requestID) verified_width=\(verifiedWidth) capacity=\(batchLanes) maximum_speculative_width=\(batchMTPBudget?.maximumSpeculativeWidth ?? 1) " + statistics.diagnosticFields.joined(separator: " "))
+            },
+            profiledRound: { [self] profile in
+                log("darkbloom-tp-mtp-profile-v1 rank=\(collective.rank) scope=\(records.requestID) capacity=\(batchLanes) " + profile.fields)
             })
         let driver = try QwenTensorParallelBatchDriver(executor: executor, book: batchBook,
             capacity: batchLanes, vocabulary: admission.profile.vocabularySize)

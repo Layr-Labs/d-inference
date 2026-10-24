@@ -30,7 +30,11 @@ enum ClusterPlacementTensorAssistantSelection {
     /// Discovery chooses a bounded depth; it never manufactures an inventory
     /// fingerprint. The native helper validates the exact registered artifact
     /// and headers before returning the policy and complete admission quote.
-    static let automaticDepth = 2
+    /// Three: on the installed pair (c30) the head's first and second drafts
+    /// were accepted 87% and 84% of the time, so a third proposal adds about
+    /// 0.6 tokens a round for one more draft step, while the verify window
+    /// stays bound by one weight pass.
+    static let automaticDepth = 3
 
     static func automaticCandidate(mode: MTPMode, runtimeModelID: String,
                                    modelDirectory: URL, publicModelID: String,

@@ -259,6 +259,71 @@ struct QwenTensorParallelBatchMTPWindowTests {
         }
     }
 
+    /// MLX's vector limit as mirrored for shared verify calls: the M3 Ultra
+    /// (family 15, Ultra) switches to QMM at 12 rows of Qwen27's widths and
+    /// the M5 Max (family 17) at 13. Off the GPU, outside affine mode and for
+    /// the 64/128-wide quad kernel every window keeps its own call.
+    @Test func vectorLimitMirrorsMLXPerArchitectureAndSharesOnlyOnTheGPU() throws {
+        let big = (inputs: 5120, outputs: 6144), medium = (inputs: 4096, outputs: 4096), small = (inputs: 2048, outputs: 2048)
+        let expected: [(String, [Int])] = [
+            ("applegpu_g15d", [12, 18, 32]), ("applegpu_g17s", [13, 25, 33]), ("applegpu_g16s", [13, 15, 13]),
+            ("applegpu_g14s", [6, 10, 14]), ("applegpu_g14d", [12, 18, 32]), ("applegpu_g12x", [10, 12, 18]),
+            ("", [10, 12, 18])]
+        for (architecture, limits) in expected {
+            let got = [big, medium, small].map {
+                Qwen35QuantizedVectorLimit.limit(inputs: $0.inputs, outputs: $0.outputs, architecture: architecture)
+            }
+            #expect(got == limits, "\(architecture)")
+        }
+        Device.withDefaultDevice(.cpu) {
+            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 5120]), outputs: 6144, mode: .affine) == 1)
+        }
+        Device.withDefaultDevice(.gpu) {
+            for columns in 2...5 {
+                let shared = Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, columns, 5120]),
+                    outputs: 6144, mode: .affine)
+                #expect(shared >= 1 && shared * columns < Qwen35QuantizedVectorLimit.limit(inputs: 5120, outputs: 6144))
+            }
+            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 128]), outputs: 6144, mode: .affine) == 1)
+            #expect(Qwen35QuantizedVectorLimit.sharedWindows(MLXArray.zeros([8, 3, 5120]), outputs: 6144, mode: .mxfp4) == 1)
+        }
+        let rows = Qwen35QuantizedVectorLimit.rows(MLXArray((0..<30).map { Float($0) }, [10, 3, 1]), by: 4) { $0 * 2 }
+        #expect(rows.shape == [10, 3, 1] && rows.asArray(Float.self) == (0..<30).map { Float($0 * 2) })
+    }
+
+    /// Shared verify calls at Qwen27's projection shapes (hidden into the
+    /// attention, recurrent and MLP shards, those shards back to hidden, and a
+    /// vocabulary shard of the head): every row of a shared call equals that
+    /// row's own `[1, S, H]` call byte for byte, bf16 activations and FP32
+    /// partial inputs alike, for every window width.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func sharedWindowCallsKeepEveryRowsQuantizedArithmetic() throws {
+        try Device.withDefaultDevice(.gpu) {
+            func random(_ shape: [Int], seed: UInt64, scale: Float) -> MLXArray {
+                withRandomState(MLXRandom.RandomState(seed: seed)) { (MLXRandom.normal(shape) * scale).asType(.bfloat16) }
+            }
+            let shapes = [(5120, 6144), (5120, 8704), (8704, 5120), (3072, 5120), (2048, 2048), (5120, 124_160)]
+            for (index, (inputs, outputs)) in shapes.enumerated() {
+                let linear = QuantizedLinear(weight: random([outputs, inputs], seed: UInt64(40 + index), scale: 0.02),
+                    bias: nil, groupSize: 64, bits: 4)
+                eval(linear.weight, linear.scales, linear.biases!)
+                for columns in 2...5 {
+                    for dtype in [DType.bfloat16, .float32] {
+                        let x = random([8, columns, inputs], seed: UInt64(90 + 7 * index + columns), scale: 1).asType(dtype)
+                        let shared = Qwen35QuantizedVectorLimit.sharedWindows(x, outputs: outputs, mode: .affine)
+                        #expect(shared * columns < Qwen35QuantizedVectorLimit.limit(inputs: inputs, outputs: outputs))
+                        let together = Qwen35QuantizedVectorLimit.rows(x, by: shared) { linear($0) }
+                        let alone = concatenated((0..<8).map { linear(x[$0 ..< $0 + 1]) }, axis: 0)
+                        eval(together, alone)
+                        #expect(together.shape == alone.shape
+                                && together.asData(access: .copy).data == alone.asData(access: .copy).data,
+                            "[\(inputs) -> \(outputs)] S=\(columns) \(dtype) shared=\(shared) differs from row-by-row")
+                    }
+                }
+            }
+        }
+    }
+
     /// Concurrent verification must not change a request's tokens. Installed
     /// c28 cohorts of four three-column windows (12 rows) left qmv_wide for
     /// split-K QMM on the M3 and changed near-tie tokens; here eight rows of

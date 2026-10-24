@@ -5,14 +5,22 @@ import MLXLMCommon
 import MLXNN
 
 /// The assistant is replicated, but its target output head remains genuinely
-/// vocabulary-sharded. Every draft step reconstructs complete logits through
-/// an authoritative-hidden exchange and one score gather; no rank stores
-/// another copy of the full head.
+/// vocabulary-sharded; no rank stores another copy of the full head. The
+/// trained head drafts greedily (`draftToken` takes the argmax of these
+/// scores; shortlists are off), so a draft step needs only the row's first
+/// maximum: after the authoritative-hidden exchange each rank reduces its own
+/// interval to (maximum, first global index) and one four-value sum gives both
+/// ranks both pairs. The lower interval wins an equal maximum, which is the
+/// gathered row's first argmax. The returned scores keep that maximum at its
+/// index and -inf elsewhere, so the assistant's argmax chooses exactly the
+/// token the complete row would.
 final class QwenTensorParallelMTPProjection: Linear {
     let local: Linear
     let vocabulary: Range<Int>
     let vocabularySize: Int
     let reduction: any QwenTensorParallelReduction
+    /// Every global vocabulary index (exact in float32 below 2^24).
+    private let positions: MLXArray
 
     init(local: Linear, vocabulary: Range<Int>, vocabularySize: Int,
          reduction: any QwenTensorParallelReduction) throws {
@@ -23,6 +31,8 @@ final class QwenTensorParallelMTPProjection: Linear {
         }
         self.local = local; self.vocabulary = vocabulary
         self.vocabularySize = vocabularySize; self.reduction = reduction
+        positions = MLXArray((0 ..< vocabularySize).map(Float.init))
+        eval(positions)
         super.init(weight: MLXArray.zeros([1, 1]), bias: nil)
     }
 
@@ -34,18 +44,16 @@ final class QwenTensorParallelMTPProjection: Linear {
             : -MLXArray.zeros(input.shape, dtype: .float32)
         let authoritative = reduction.allSum(contribution).asType(input.dtype)
         let selected = local(authoritative)
-        var shape = selected.shape
-        var pieces: [MLXArray] = []
-        // Negative zero also preserves the sign of a selected zero. FP32
-        // transport exactly represents every BF16/F16 head result.
-        func empty(_ count: Int) -> MLXArray {
-            shape[shape.count - 1] = count
-            return -MLXArray.zeros(shape, dtype: .float32)
-        }
-        if vocabulary.lowerBound > 0 { pieces.append(empty(vocabulary.lowerBound)) }
-        pieces.append(selected.asType(.float32))
-        if vocabulary.upperBound < vocabularySize { pieces.append(empty(vocabularySize - vocabulary.upperBound)) }
-        return reduction.allSum(concatenated(pieces, axis: -1)).asType(selected.dtype)
+        // FP32 exactly represents every BF16/F16 head result and index.
+        let values = selected.asType(.float32)
+        let mine = concatenated([values.max(axis: -1, keepDims: true),
+            argMax(values, axis: -1, keepDims: true).asType(.float32) + Float(vocabulary.lowerBound)], axis: -1)
+        let empty = MLXArray.zeros(mine.shape, dtype: .float32)
+        let both = reduction.allSum(concatenated(reduction.rank == 0 ? [mine, empty] : [empty, mine], axis: -1))
+        let upper = both[.ellipsis, 2 ..< 3] .> both[.ellipsis, 0 ..< 1]
+        let winner = which(upper, both[.ellipsis, 3 ..< 4], both[.ellipsis, 1 ..< 2])
+        let maximum = which(upper, both[.ellipsis, 2 ..< 3], both[.ellipsis, 0 ..< 1])
+        return which(positions .== winner, maximum, MLXArray(-Float.infinity)).asType(selected.dtype)
     }
 }
 

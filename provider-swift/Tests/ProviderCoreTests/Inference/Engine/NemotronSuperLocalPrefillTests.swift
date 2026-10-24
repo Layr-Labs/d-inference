@@ -30,7 +30,11 @@ struct NemotronSuperLocalPrefillTests {
 
     @Test func policyIsExplicitBoundedAndKeepsChunksWhole() throws {
         #expect(try Prefill.Policy.resolve(environment: [:], prefillLimit: 4096)
-            == .init(chunkTokens: 2048, decodeStepsBetweenChunks: 0))
+            == .init(chunkTokens: 2048, decodeStepsBetweenChunks: 4))
+        #expect(Prefill.defaultDecodeStepsBetweenChunks == 4)
+        #expect(try Prefill.Policy.resolve(environment: [Prefill.decodeStepsKey: "0"], prefillLimit: 4096)
+            .decodeStepsBetweenChunks == 0)
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(Prefill.decodeStepsKey))
         #expect(try Prefill.Policy.resolve(environment: [:], prefillLimit: 512).chunkTokens == 512)
         #expect(try Prefill.Policy.resolve(
             environment: [Prefill.chunkKey: " 1024 ", Prefill.decodeStepsKey: "3"], prefillLimit: 4096)

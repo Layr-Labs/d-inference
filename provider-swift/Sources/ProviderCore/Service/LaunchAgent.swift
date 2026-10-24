@@ -332,7 +332,7 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
-    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLLM`.
+    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLMCommon`.
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
@@ -349,6 +349,10 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
+    /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
+    /// Super owner run decode-only steps between prompt chunks by default; `0`
+    /// is each rollback.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
@@ -374,6 +378,8 @@ public enum LaunchAgent: Sendable {
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        EngineV2Factory.glm5NextDecodeStepsKey,
+        NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys

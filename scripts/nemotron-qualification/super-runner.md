@@ -156,7 +156,7 @@ to N requests in one captured window per round (`1`…`8`); request N + 1 gets 4
 Prompts prefill in chunks of `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens
 (default 2048, at most the calibrated limit), one chunk per step beside every
 decode or verify row; `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`
-(`0`…`64`, default 0) adds decode-only steps between chunks while requests
+(`0`…`64`, default 4) adds decode-only steps between chunks while requests
 decode. Chunk geometry never depends on concurrency, so outputs match solo
 serving. The speculative grant default is the managed slot's admission for N
 requests at `--max-context` (`NemotronSuperServingPolicy.admissionKVBytes`,

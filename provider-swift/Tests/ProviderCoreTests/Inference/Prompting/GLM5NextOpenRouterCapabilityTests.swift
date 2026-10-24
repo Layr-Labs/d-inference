@@ -338,6 +338,78 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
+    // MARK: - reasoning-content-return
+
+    /// OpenRouter's current `reasoning-content-return` prompt. Its earlier
+    /// `get_time` call returns reasoning that holds the secret word, so the
+    /// answer can repeat it only when the returned reasoning renders.
+    static let secretWordPrompt = "Call the get_time tool. While thinking, choose a secret word. After the tool returns, reply with exactly \"SECRET: <word>\" using the secret word from your thinking. If you cannot see your earlier thinking, reply \"SECRET: unknown\"."
+    static let secretWordThought = "I must call get_time first. My secret word is zephyr."
+
+    /// The secret-word turn with the reasoning returned in `carrier`
+    /// (`reasoning`, Darkbloom's streamed `reasoning_details` entry, or both).
+    /// `strict` declares `get_time` in OpenAI's strict form and returns the
+    /// call's arguments as `""`; otherwise as `{}`.
+    static func secretWordBody(carrier: String, strict: Bool, controls: String) throws -> [String: Any] {
+        let detail: [String: Any] = [
+            "type": "reasoning.text", "text": secretWordThought, "id": "reasoning-text-0", "format": "unknown",
+            "index": 0, "signature": NSNull(),
+        ]
+        var assistant: [String: Any] = [
+            "role": "assistant", "content": NSNull(),
+            "tool_calls": [["id": "call_get_time", "type": "function", "index": 0,
+                            "function": ["name": "get_time", "arguments": strict ? "" : "{}"]]],
+        ]
+        if carrier != "reasoning_details" { assistant["reasoning"] = secretWordThought }
+        if carrier != "reasoning" { assistant["reasoning_details"] = [detail] }
+        var function: [String: Any] = ["name": "get_time", "description": "Get the current time",
+            "parameters": ["type": "object", "properties": [String: Any]()]]
+        if strict {
+            function["parameters"] = ["type": "object", "properties": [String: Any](), "required": [String](),
+                                      "additionalProperties": false]
+            function["strict"] = true
+        }
+        var body: [String: Any] = [
+            "model": model, "stream": true, "stream_options": ["include_usage": true],
+            "messages": [
+                ["role": "user", "content": secretWordPrompt], assistant,
+                ["role": "tool", "tool_call_id": "call_get_time", "content": "2026-10-24T05:12:00Z"],
+            ],
+            "tools": [["type": "function", "function": function]],
+        ]
+        let merged = try #require(JSONSerialization.jsonObject(with: Data(controls.utf8)) as? [String: Any])
+        body.merge(merged) { _, added in added }
+        return body
+    }
+
+    /// The secret-word form of `reasoning-content-return` with each reasoning
+    /// carrier, the OpenAI strict declaration and empty-string arguments, and
+    /// OpenRouter's reasoning controls, `reasoning.context` and
+    /// `reasoning.mode` included (both refused with 400 before). The returned
+    /// reasoning renders in the call's thinking block and the answer is served.
+    @Test(arguments: [
+        ("reasoning", false, "{}"),
+        ("reasoning_details", true, #"{"reasoning":{"enabled":true}}"#),
+        ("both", true, #"{"reasoning":{"effort":"high"},"tool_choice":"auto","parallel_tool_calls":true}"#),
+        ("reasoning_details", false, #"{"reasoning":{"max_tokens":2048,"exclude":false},"include_reasoning":true}"#),
+        ("both", true, #"{"reasoning":{"enabled":true,"context":"all_turns"}}"#),
+        ("reasoning", true, #"{"reasoning":{"effort":"medium","context":"current_turn","mode":"standard"}}"#),
+    ])
+    func openRouterSecretWordReasoningReturnIsServed(carrier: String, strict: Bool, controls: String) async throws {
+        let prompts = PromptCapture()
+        let served = try await serve(
+            Self.secretWordBody(carrier: carrier, strict: strict, controls: controls),
+            output: ["The tool returned the time; my word was zephyr.", "</think>", "SECRET: zephyr"],
+            prompts: prompts)
+        #expect(served.error == nil)
+        #expect(served.reasoning == "The tool returned the time; my word was zephyr.")
+        #expect(served.content == "SECRET: zephyr" && served.finishReason == "stop")
+        let prompt = try #require(prompts.prompts.first)
+        #expect(prompt.contains(
+            "<|assistant|><think>\(Self.secretWordThought)</think><tool_call>get_time</tool_call><|observation|>"))
+        #expect(prompt.hasSuffix("<tool_response>2026-10-24T05:12:00Z</tool_response><|assistant|><think>"))
+    }
+
     // MARK: - Forced tool_choice
 
     /// OpenRouter's captured `orIncidentAuto` request, byte for byte as the

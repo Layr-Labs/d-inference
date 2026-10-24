@@ -16,8 +16,12 @@ struct CompleteCheckpointStorageIdentity: Sendable {
     let fingerprintFields: [String: String]
     let checkpointQuantization: PagedKVQuantizationConfig?
 
+    /// `assistantHistory`: a paged recurrent checkpoint also carries an
+    /// exact-history assistant's tensors, so a lossy profile selects the
+    /// distinct MTP layout.
     init?(kind: EngineV2KVBackendKind, layerDTypes: [DType], pagedConfig: PagedKVPoolConfig?,
-          target: Target = .recurrentFull, checkpointQuantization: PagedKVQuantizationConfig? = nil) {
+          target: Target = .recurrentFull, checkpointQuantization: PagedKVQuantizationConfig? = nil,
+          assistantHistory: Bool = false) {
         guard !layerDTypes.isEmpty,
             layerDTypes.allSatisfy({ $0 == .float16 || $0 == .bfloat16 || $0 == .float32 }),
             checkpointQuantization == nil || pagedConfig?.quantization == nil
@@ -59,14 +63,16 @@ struct CompleteCheckpointStorageIdentity: Sendable {
             else { return nil }
             switch target {
             case .glm5Next(let kinds):
-                guard checkpointQuantization == nil, pagedConfig.quantization == nil,
+                guard pagedConfig.quantization == nil,
                     pagedConfig.prefixSharingBlockSize == nil,
                     layerDTypes == Array(repeating: .float32, count: kinds.count),
                     let limits = pagedConfig.gatheredAttention,
                     limits.admissionMode == .stepOwned(.pinnedMetal),
                     let layers = try? CBv2CheckpointAttentionLayer.resolvePagedAsymmetric(
                         layerKinds: kinds, dtypes: layerDTypes) else { return nil }
-                backendLayout = CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+                backendLayout = checkpointQuantization == nil
+                    ? CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+                    : CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout
                 Self.appendAttentionFields(layers, includeValueHeadDimension: true, to: &fields)
                 fields["storage.nativeProfile"] = "glm5_next_native_paged_full_state_serial_mtp_v1"
                 // Arithmetic choices are not bitwise across policies; never
@@ -79,7 +85,9 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                 fields["storage.inFlightGraphs"] = String(limits.maximumInFlightGraphs)
             case .recurrentFull:
                 backendLayout = checkpointQuantization != nil
-                    ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                    ? (assistantHistory
+                        ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
+                        : CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout)
                     : (pagedConfig.quantization == nil
                         ? CBv2CompleteCheckpointManifest.pagedLayout
                         : CBv2CompleteCheckpointManifest.quantizedPagedLayout)

@@ -309,7 +309,12 @@ decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py
 71–91% of drafts were accepted; aggregate tok/s against the plain owner was
 57.0 / 32.5 at one client (depth 3), 65.0 / 50.7 at two and 78.4 / 67.2 at four
 (depth 2) and 86.9 / 82.8 at eight (depth 1), hence the managed default
-`3,2,2,2,1`. Sources:
+`3,2,2,2,1`. The M5 Ultra measured differently (384-token greedy and sampled
+requests; per-request tok/s against target-only decode): +20% to +24% alone at
+depth 3, a tie at two (depth 2: greedy +3%, sampled -4%), at four depth 1 within
+2% where depth 2 costs 7% to 9%, and at eight depth 1 costs 13% to 15% of
+aggregate. An M5 therefore defaults to `3,2,1,1,0`: five or more decoding
+requests run target-only. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
 
 ### Nemotron Super logprobs
@@ -513,7 +518,7 @@ survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
-requests (`off` or `DARKBLOOM_CBV2_MTP=0`
+requests, `3,2,1,1,0` on an M5 (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above

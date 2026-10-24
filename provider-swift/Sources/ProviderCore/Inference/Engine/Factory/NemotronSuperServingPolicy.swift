@@ -45,6 +45,21 @@ enum NemotronSuperServingPolicy {
     static let defaultDraftDepth = 3
     static let defaultDepthByRequests = [3, 2, 2, 2, 1]
     static let defaultConcurrentRequests = 8
+    /// Measured M5 Ultra default (256 GB, greedy and sampled requests, 384
+    /// output tokens): drafting pays alone (+20% to +24% per request at depth
+    /// 3) and ties target-only at two requests (depth 2: greedy +3%, sampled
+    /// -4%). At four requests depth 1 matches target-only (-1% to -2%) where
+    /// depth 2 costs 7% to 9%, and at eight any drafting costs 13% to 15% of
+    /// aggregate, so five or more requests decode target-only.
+    static let m5DepthByRequests = [3, 2, 1, 1, 0]
+
+    /// The measured depth table for the serving Mac's chip family:
+    /// `m5DepthByRequests` on an M5, `defaultDepthByRequests` elsewhere. The
+    /// latter drafts at least as deep at every width, so estimates without a
+    /// chip (`speculativeOwnerBoundBytes` with no depth key) bound both.
+    static func defaultDepthByRequests(chipFamily: ChipFamily) -> [Int] {
+        chipFamily == .m5 ? m5DepthByRequests : defaultDepthByRequests
+    }
 
     /// Exact registry id and canonical `model_type`; no alias or substring.
     static func isServingIdentity(modelID: String, modelType: String?) -> Bool {
@@ -98,7 +113,8 @@ enum NemotronSuperServingPolicy {
     }
 
     /// Speculation and concurrency come from provider policy and replace any
-    /// value of those keys; the depth defaults to `defaultDepthByRequests`.
+    /// value of those keys; the depth defaults to `depthByRequests`, the
+    /// serving chip's table (`defaultDepthByRequests(chipFamily:)`).
     /// Verification, prefill chunk, decode-step and KV storage keys keep the
     /// operator's value, else the default above or the builder's; the builder
     /// serves paged KV only and refuses other storage
@@ -111,7 +127,8 @@ enum NemotronSuperServingPolicy {
     /// requests and keys. The global prefix-cache kill switch turns both off.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int, pinned: Bool = true,
-                         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
+                         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+                         depthByRequests: [Int] = defaultDepthByRequests) -> LoadPlan {
         let speculates = Self.speculates(mode: mode, environment: base)
         let requests = concurrentRequests(configured: configuredConcurrency, speculates: speculates)
         var environment = base
@@ -120,7 +137,7 @@ enum NemotronSuperServingPolicy {
             environment[NemotronSuperLocalMTP.enabledKey] = "1"
             if environment[NemotronSuperLocalMTP.depthKey] == nil {
                 environment[NemotronSuperLocalMTP.depthKey] =
-                    defaultDepthByRequests.map(String.init).joined(separator: ",")
+                    depthByRequests.map(String.init).joined(separator: ",")
             }
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)

@@ -820,14 +820,16 @@ engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
 with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
-across 11 DSA layers). Every paged read launches once per 64 MiB segment that
-holds the row's pages: index metadata and latent-history reads cover only that
-segment's pages, one threadgroup per page, with no zero fill, and a selection
-read copies each row with one SIMD-group (`GLM5NextPagedTransfers`). Plain
-decode steps (every row one token) and MTP rounds whose rows are all decode or
-verification rows (at most 8 tokens) commit a Metal command buffer every 100
-operations with no input-size bound, as Nemotron Super and Flint do for plain
-decode (`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer row whose selection rows would read at least
+across 11 DSA layers). Each paged read launch binds up to 17 of the 64 MiB
+segments that hold the row's pages (`PagedSegmentDispatchPlan.maximumBindings`):
+index metadata and latent-history reads cover only those segments' pages, one
+threadgroup per page, with no zero fill, and a selection read copies each row
+with one SIMD-group (`GLM5NextPagedTransfers`). Plain decode steps (every row
+one token) and MTP rounds whose rows are all decode or verification rows (at
+most 8 tokens) commit a Metal command buffer every 100 operations with no
+input-size bound, as Nemotron Super and Flint do for plain decode
+(`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer
+row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
 the page table and runs the contiguous arithmetic over it
 (`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),

@@ -76,10 +76,13 @@ struct NemotronSuperManagedSlotTests {
     /// loader sizes its prefix bank for, so no result depends on the host.
     /// `decodeGate` holds the engine's detokenization while closed.
     /// `environment` is the provider process environment the plan reads.
+    /// `tokenizer` replaces the scripted three-token prompt tokenizer.
     static func fixture(mode: MTPMode, totalGiB: UInt64 = 64, physicalGiB: UInt64? = nil,
                         memory: ReturningMemory? = nil, probe: InstallationProbe? = nil,
                         decodeGate: DecodeGate? = nil,
-                        environment: [String: String] = [:]) async throws -> Fixture {
+                        environment: [String: String] = [:],
+                        tokenizer makeTokenizer: ((SuperOutputScript) -> any MLXLMCommon.Tokenizer)? = nil)
+        async throws -> Fixture {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: totalGiB << 30, active: 0, cache: 0,
                   systemAvailable: memory?.available(total: totalGiB << 30) ?? totalGiB << 30)
@@ -97,7 +100,7 @@ struct NemotronSuperManagedSlotTests {
         let script = SuperOutputScript()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
                                         options: .ignoreUnknownCharacters))
-        let scripted = SuperScriptedTokenizer(script: script)
+        let scripted = makeTokenizer?(script) ?? SuperScriptedTokenizer(script: script)
         let tokenizer: any MLXLMCommon.Tokenizer = decodeGate.map { GatedTokenizer(base: scripted, gate: $0) }
             ?? scripted
         await loop.setNemotronSuperSlotLoaderForTesting(
@@ -146,10 +149,17 @@ struct NemotronSuperManagedSlotTests {
             eosTokenIDs: [], sizing: sizing, kvBytesCapacity: request.kvBytesCapacity,
             admissionKVBytes: request.admissionKVBytes, backendAllowanceBytes: 1 << 20,
             modelID: request.modelID, environment: request.environment,
-            physicalBytes: request.physicalBytes)
+            physicalBytes: request.physicalBytes,
+            routingIdentity: request.modelAggregateHash.map {
+                .init(modelAggregateHash: $0, promptContractID: fixturePromptContractID)
+            })
         return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
             tokenizer: tokenizer, sizing: sizing, templateBytes: template)
     }
+
+    /// The fixture directory has no real prompt files; its bank advertises
+    /// this contract beside the aggregate the provider published.
+    static let fixturePromptContractID = String(repeating: "c", count: 64)
 
     static func body(_ pieces: [String], script: SuperOutputScript,
                              _ extra: [String: Any] = [:]) throws -> Data {
@@ -164,15 +174,17 @@ struct NemotronSuperManagedSlotTests {
     /// One encrypted coordinator request: the decrypted SSE and its terminal.
     static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
         consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
-        toolSchemaMetadataProtocol: Int? = nil,
+        toolSchemaMetadataProtocol: Int? = nil, cacheReceiptNonce: String? = nil,
+        prefixCacheProtocol: Int? = nil,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
         let ciphertext = try consumer.encrypt(recipientPublicKey: await loop.keyPair.publicKeyBytes,
                                               plaintext: body)
         await loop.handleInferenceRequest(requestId: id, ciphertext: ciphertext,
-            senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: nil,
-            authenticatedCacheScope: scope, toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+            senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: cacheReceiptNonce,
+            authenticatedCacheScope: scope, prefixCacheProtocol: prefixCacheProtocol,
+            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
             send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
         let deadline = ContinuousClock.now + .seconds(seconds)
@@ -219,7 +231,8 @@ struct NemotronSuperManagedSlotTests {
         #expect(script.prompt.hasSuffix("<|im_start|>assistant\n<think></think>"))
         let usage = try #require(Self.usage(text.terminal))
         #expect(usage.promptTokens == 3 && usage.completionTokens == 3)
-        #expect(usage.cacheOutcome == nil && usage.cachedTokens == nil)
+        // Shorter than one prompt chunk: the bank has no checkpoint for it.
+        #expect(usage.cacheOutcome == .missAbsent && usage.cacheTier == .memory && usage.cachedTokens == 0)
         // Tools are held until validated, then returned as tool calls.
         let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
             "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]

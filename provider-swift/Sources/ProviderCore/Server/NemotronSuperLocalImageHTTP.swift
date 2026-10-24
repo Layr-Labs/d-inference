@@ -61,12 +61,16 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// The engine for one immutable raw request body. `cacheScope` partitions
     /// prefix reuse (nil: none); the hook's single local operator shares one
     /// partition. Image requests reuse only within their image identity.
-    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`.
+    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`. A text request
+    /// reports its prefix-cache outcome to `usageSignal` (the coordinator
+    /// request's, which also carries its cache receipts), else to its own.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
-                trustsSchemaMetadata: Bool = false) -> any MLXServerEngine {
+                trustsSchemaMetadata: Bool = false,
+                usageSignal: EngineV2RequestUsageSignal? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
-                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata)
+                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
+                               usageSignal: usageSignal)
     }
 }
 
@@ -84,6 +88,9 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let owner: NemotronSuperLocalBridgeBuilder.Owner
     let cacheScope: String?
     let trustsSchemaMetadata: Bool
+    /// The caller's signal for this request's prefix-cache outcome; a text
+    /// request without one submits under its own.
+    let usageSignal: EngineV2RequestUsageSignal?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -110,6 +117,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
+        // The engine records reused prompt tokens here before terminal usage.
+        var textUsage: EngineV2RequestUsageSignal?
         do {
             let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID,
                                                     trustsSchemaMetadata: trustsSchemaMetadata)
@@ -128,15 +137,17 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 // translate keeps the request's max_tokens (nil: the bridge default).
                 let translated = MultiModelBatchSchedulerEngine.translate(
                     openAIRequest: plan.request, defaultMaxTokens: 1)
-                let cacheScope = self.cacheScope
+                let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
+                textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
-                                          cacheScope: cacheScope, onEvent: onEvent)
+                                          cacheScope: cacheScope, usageSignal: usageSignal, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
+        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output,
+                                        usageSignal: textUsage)
         let scope = LocalRequestCancellation.current
         let task = Task {
             let registration = scope?.register { relay.cancel() }
@@ -241,12 +252,16 @@ actor SuperImageHTTPRelay {
     private var failure: Error?
     private let startedAt = Date()
     private var firstChunkAt: Date?
+    /// Where the engine recorded the request's reused prompt tokens before
+    /// its terminal usage; nil reports none.
+    private let usageSignal: EngineV2RequestUsageSignal?
     private nonisolated let cancellation = SuperImageHTTPCancellation()
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
-         output: NemotronSuperLocalOutput) {
+         output: NemotronSuperLocalOutput, usageSignal: EngineV2RequestUsageSignal? = nil) {
         self.continuation = continuation
         self.output = output
+        self.usageSignal = usageSignal
     }
     nonisolated func installCancellation(_ action: @escaping @Sendable () -> Void) { cancellation.install(action) }
     nonisolated func cancel() { cancellation.cancel() }
@@ -282,7 +297,7 @@ actor SuperImageHTTPRelay {
             terminal = .init(promptTokens: prompt, completionTokens: completion,
                 promptTime: (firstChunkAt ?? Date()).timeIntervalSince(startedAt),
                 generationTime: firstChunkAt.map { Date().timeIntervalSince($0) } ?? 0,
-                stopReason: reason ?? "stop", cachedPromptTokens: 0)
+                stopReason: reason ?? "stop", cachedPromptTokens: usageSignal?.prefixCacheHitTokens ?? 0)
         case .error(let message):
             failure = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         case .terminal(let cause, let message, let prompt, let completion):

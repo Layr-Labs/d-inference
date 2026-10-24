@@ -360,7 +360,8 @@ enum NemotronSuperLocalBridgeBuilder {
     /// until restart. `mtp` installs speculation for text requests; image
     /// requests on that owner stay target-only. nil keeps the target-only
     /// owner. Either owner may have `NemotronSuperLocalPrefixCache`'s exact
-    /// prefix reuse.
+    /// prefix reuse; with a `routingIdentity` its bank also advertises and
+    /// proves its checkpoints to the coordinator.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -371,6 +372,7 @@ enum NemotronSuperLocalBridgeBuilder {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         leaseShares: OwnerShares? = nil,
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
         let leaseWeightBytes = leaseShares.map { $0.total ?? -1 } ?? installed.receipt.payloadBytes
@@ -427,6 +429,9 @@ enum NemotronSuperLocalBridgeBuilder {
                 advertisedContextTokens: sizing.maxContextLength,
                 runtimePolicyEnvironment: environment,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken, kvBudget: kvBudget,
+                // The bridge keeps it only when the engine built the bank.
+                residentPrefixCacheEvidence: prefixCache == nil
+                    ? nil : routingIdentity?.evidence(modelID: modelID),
                 makeEngine: {
                     try EngineV2Factory.makeProductionBuild(
                         model: target, modelID: modelID,

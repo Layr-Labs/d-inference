@@ -238,9 +238,12 @@ struct GLM5NextProtectedFactoryTests {
                     enabled: true,
                     maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,
                     verificationMode: .rectangular), drafter: model.assistant)
+            // Two decode rows speculate together; wider steps decode target-only.
+            #expect(model.execution.maximumSpeculativeBatch == 2)
+            #expect(model.assistant.maximumSpeculativeBatch == 2)
             #expect(
                 resolved.maxDraftTokens == 3 && resolved.fixedDraftTokens == 2
-                    && resolved.maxSpeculativeBatch == 1 && resolved.verificationMode == .rectangular)
+                    && resolved.maxSpeculativeBatch == 2 && resolved.verificationMode == .rectangular)
             let baseline = try model.resolvedMTPConfiguration(
                 .init(enabled: true, verificationMode: .serialTarget), drafter: model.assistant)
             #expect(
@@ -251,6 +254,7 @@ struct GLM5NextProtectedFactoryTests {
                 root: model.root, maximumContextLength: model.maximumContextLength,
                 environment: [GLM5NextProtectedModel.rectangularVerifyEnvironmentKey: " Off "])
             #expect(serial.execution.verification == .serialTarget)
+            #expect(serial.execution.maximumSpeculativeBatch == 1)
             let serialResolved = try serial.resolvedMTPConfiguration(
                 .init(
                     enabled: true, maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,

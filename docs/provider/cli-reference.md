@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -45,7 +45,10 @@ an adaptive depth; its greedy output is not token-identical to target-only
 decode. `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` selects serial single-proposal
 verification instead.
 Prefill chunks and steps are each at most 2,048 tokens, and solo prefill stripes are off, including
-`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. Requests that omit sampling fields use the
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`. While other requests decode, each prompt chunk is followed by
+decode-only steps; `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets how many
+([default and range](../reference/configuration.md#engine-and-scheduler)), and `0` restores a chunk in
+every step. Requests that omit sampling fields use the
 artifact's `generation_config.json` (temperature 1.0, top_p 0.95). Image input
 runs through the native GLM media path; the embedded-MTP serving engine accepts
 prepared causal media, so image rows prefill and decode target-only (no MTP

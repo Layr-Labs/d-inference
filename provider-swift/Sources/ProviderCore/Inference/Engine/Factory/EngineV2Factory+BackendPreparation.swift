@@ -266,6 +266,8 @@ extension EngineV2Factory {
             let maximumBuffer = MLX.GPU.deviceInfo().maxBufferSize
             guard maximumBuffer > 0 else { throw EngineV2ProductionError.noKVHeadroom }
             var scheduler = glm5NextServingScheduler(policy.scheduler, context: context)
+            scheduler.decodeStepsBetweenPrefillChunks = try glm5NextDecodeStepsBetweenChunks(
+                environment: environment)
             // The native MTP profile verifies up to its speculative batch of rows in
             // one window, so the gathered-attention batch must hold it even when an
             // operator narrows the serving width below it.

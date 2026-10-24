@@ -13,6 +13,7 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     case noKVHeadroom
     case pagedUnavailable(String)
     case invalidPagedPoolDType(String)
+    case invalidDecodeStepsBetweenChunks(key: String, value: String, maximum: Int)
 
     var description: String {
         switch self {
@@ -26,6 +27,9 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .invalidPagedPoolDType(let raw):
             return "engine_v2: \(EngineV2Factory.pagedPoolDTypeEnvKey)=\"\(raw)\" is not a "
                 + "recognized paged page dtype (expected float16 or float32)"
+        case .invalidDecodeStepsBetweenChunks(let key, let value, let maximum):
+            return "engine_v2: \(key)=\"\(value)\" is not a decode-step count "
+                + "(expected an integer from 0 to \(maximum))"
         }
     }
 }

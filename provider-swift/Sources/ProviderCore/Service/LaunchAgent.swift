@@ -349,6 +349,8 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS`: GLM runs decode-only steps
+    /// between prompt chunks by default; `0` is the rollback.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
@@ -374,6 +376,7 @@ public enum LaunchAgent: Sendable {
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        EngineV2Factory.glm5NextDecodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys

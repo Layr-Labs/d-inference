@@ -812,7 +812,19 @@ prefill range off the 256-token checkpoint grid, so with the GLM complete store
 the scheduler also ends a cacheable request's range on its checkpoint
 boundaries (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`; see
 [streamed complete checkpoints](prefix-cache.md#streamed-complete-checkpoints)).
-The price splits into setup bytes for the step
+While other requests decode, each prompt chunk is
+followed by eight decode-only steps
+(`EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks`,
+`CBv2SchedulerConfig.decodeStepsBetweenPrefillChunks`;
+`DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64, and any other value
+refuses the load). A chunk step takes about a second on an M5 Ultra, so without
+them a decoding request got about one token per chunk while another request
+prefilled: 2.8 tok/s beside an 8K prefill and 1.2 to 1.5 with two decoders.
+Eight steps measured 19.5 and 7.1 to 7.2 tok/s, and the prefilling request's
+first token 6 to 20% later (5.3 to 5.6 s at 8K beside one decoder, 18.6 to
+21.2 s at 32K beside two). A step without decode rows is never held, so a
+request served alone prefills as before, and the
+[deadline projection](#deadlines) charges every held step. The price splits into setup bytes for the step
 geometry and a rate per context token of each request, which covers the
 request's index metadata reads, pooled index planes, latent reads and page
 tables in both its step and the chained decode successor
@@ -892,10 +904,10 @@ not token-identical to target-only decode (near-ties can flip). The speculative
 batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
 two requests decode, every decoding row drafts and one captured forward verifies
 all windows; with three or more decoding rows the step decodes target-only. On
-an M5 Ultra two concurrent requests decode at about 47 tok/s each instead of 38
-target-only, while at three or four rows the wider verify cost about as much as
-the accepted drafts saved. The paged backend's gathered-attention batch holds at
-least the speculative batch. The profile composes with the complete-prefix store
+an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
+target-only, while speculating three or four rows cost about 5% of aggregate
+throughput. The paged backend's gathered-attention batch holds at least the
+speculative batch. The profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
@@ -1420,7 +1432,15 @@ exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
-prefill estimate is available. The ordinary admission path uses valid measured
+prefill estimate is available. The engine's projection replays decode-only
+steps between prompt chunks (`decodeStepsBetweenPrefillChunks`, GLM's
+default) from the scheduler's live owed count and charges each held step as a
+decode step of the rows decoding then
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`SchedulerV2.firstTokenWorkProjection`). A prompt-row ceiling
+(`maxPrefillRowsPerStep`) is not projected (`unsupported_scheduler`); the
+Nemotron Super owner, which sets it, submits without a first-content deadline
+(`NemotronSuperLocalBinding`). The ordinary admission path uses valid measured
 isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed

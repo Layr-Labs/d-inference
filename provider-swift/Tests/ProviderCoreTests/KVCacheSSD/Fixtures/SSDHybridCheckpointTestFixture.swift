@@ -126,6 +126,24 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         }
     }
 
+    /// Starts a donation without awaiting its settlement, so later donations
+    /// can queue behind a blocked writer. `onSettled` runs inside the store's
+    /// completion callback, which for an admitted job runs on the writer.
+    func startDonation(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,
+                       scope: String = "tenant-a",
+                       onSettled: @escaping @Sendable () -> Void = {}) throws -> Task<[Int], Never> {
+        let source = try source(position: position, scope: scope)
+        let tokens = self.tokens
+        return Task {
+            await withCheckedContinuation { continuation in
+                store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: scope) {
+                    onSettled()
+                    continuation.resume(returning: $0)
+                }
+            }
+        }
+    }
+
     func file(_ store: SSDHybridCheckpointStore, position: Int = 256) -> URL {
         let chain = store.hashes(tokens: tokens, scope: "tenant-a")
         let tag = store.lookupKeys.checkpointTag(chainHash: chain[position / 256 - 1], cacheSalt: "tenant-a")

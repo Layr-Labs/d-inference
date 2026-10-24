@@ -178,6 +178,8 @@ struct SSDCompleteDonationTelemetryTests {
         store.pipeline.shutdown()
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
         defer { release.signal(); store.close() }
+        // A one-job buffer, shallower than the store's writer gate: the third
+        // distinct checkpoint passes that gate and the pipeline refuses it.
         store.pipeline = BoundedSingleConsumerPipeline(capacity: 1,
             onDropped: { store.settle($0, positions: []) }, consume: { job in
                 entered.signal()

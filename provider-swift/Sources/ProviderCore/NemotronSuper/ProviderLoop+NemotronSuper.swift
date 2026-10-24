@@ -147,7 +147,15 @@ extension ProviderLoop {
         }
         // The bank advertises the aggregate published before the load; once
         // that is not the loaded artifact's, it serves local reuse only.
-        if artifactHash != before.hash { owner.bridge.residentPrefixCacheEvidence?.close() }
+        // Durable checkpoints bound to it would outlive this process, so an
+        // owner with an SSD store is refused instead.
+        if artifactHash != before.hash {
+            owner.bridge.residentPrefixCacheEvidence?.close()
+            if owner.bridge.ssdHybridCheckpointStore != nil {
+                throw InferenceError.modelLoadFailed(
+                    "Model '\(modelID)' changed on disk during its load; durable prefix checkpoints refused it")
+            }
+        }
         let status = nemotronSuperMTPStatus(speculates: owner.speculates)
         await owner.bridge.configureMTPStatus(status, metricsInterval: .seconds(60))
         await owner.bridge.recordModelLoadTime(ms: Self.milliseconds(started.duration(to: .now)))

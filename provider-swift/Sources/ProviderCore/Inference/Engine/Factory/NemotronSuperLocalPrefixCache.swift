@@ -16,6 +16,9 @@ import MLXLMCommon
 /// a restored request builds the same draft history as a cold one. An image
 /// request reuses only checkpoints of its own image identity
 /// (`NemotronSuperLocalImageBinding`); the bank holds no disk state.
+/// Without the bank, the same text checkpoints are complete encrypted SSD
+/// checkpoints (`durableIdentity`), which survive restarts; image checkpoints
+/// stay resident-only, so that owner serves images cold.
 enum NemotronSuperLocalPrefixCache {
     enum Failure: Error, Equatable {
         /// The bank was configured but the loaded engine did not construct it.
@@ -53,6 +56,22 @@ enum NemotronSuperLocalPrefixCache {
             ResidentPrefixCacheEvidence(modelId: modelID, modelAggregateHash: modelAggregateHash,
                                         promptContractID: promptContractID)
         }
+    }
+
+    /// The identity an owner without a bank binds complete SSD checkpoints
+    /// to: the shared policy enables them for `modelID` (on by default for the
+    /// managed Super slot) and the operator did not select the resident tier
+    /// (`DARKBLOOM_PREFIX_CACHE_MEMORY`). nil keeps the owner without durable
+    /// checkpoints. A durable checkpoint is reusable across restarts, so it
+    /// needs the artifact identity: the load staged every shard against its
+    /// pinned SHA-256, and the prompt contract hashes the prompt files read
+    /// at this load.
+    static func durableIdentity(environment: [String: String], modelID: String,
+                                routingIdentity: RoutingIdentity?) -> RoutingIdentity? {
+        guard let routingIdentity, !PrefixCachePolicy.isMemoryEnabled(environment: environment),
+            PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment)
+        else { return nil }
+        return routingIdentity
     }
 
     /// nil leaves the owner without a bank. The same bank serves both owners:

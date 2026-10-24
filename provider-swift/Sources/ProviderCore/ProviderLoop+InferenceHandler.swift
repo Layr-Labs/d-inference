@@ -876,12 +876,14 @@ extension ProviderLoop {
             if let superOwner {
                 // Text prefix reuse is partitioned by the authenticated scope
                 // and off without one. Its outcome reaches this request's
-                // signal, hence its receipts and cache usage, as on the
-                // generic engine. Schema metadata passed the protocol check
-                // above, so it is trusted as on the generic engine.
+                // signal, hence its receipts and cache usage, and the repeat
+                // hint gates a durable checkpoint write, as on the generic
+                // engine. Schema metadata passed the protocol check above, so
+                // it is trusted as on the generic engine.
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
-                    trustsSchemaMetadata: true, usageSignal: v2UsageSignal)
+                    trustsSchemaMetadata: true, usageSignal: v2UsageSignal,
+                    donationDemand: remoteCache.donationDemand)
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in

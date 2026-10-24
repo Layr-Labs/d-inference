@@ -121,14 +121,16 @@ actor NemotronSuperLocalLoad {
             physicalBytes: physicalBytes, routingIdentity: routingIdentity)
     }
 
-    /// `routingIdentity` is what a built bank advertises to the coordinator
+    /// `routingIdentity` is what the owner's prefix checkpoints are bound to
     /// (`NemotronSuperLocalBridgeBuilder.make`); nil keeps reuse local.
+    /// `completeCheckpointIdentity` is the builder's test seam.
     func load(staging makeStaging: () throws -> Staging,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
         modelID: String, environment: [String: String],
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
-        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
+        completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
     ) async throws -> EngineV2Bridge {
         guard phase == .idle else { throw Failure.invalidState }
         phase = .loading
@@ -213,7 +215,8 @@ actor NemotronSuperLocalLoad {
                         kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admitted.fit.kvFloorBytes,
                         kvBudget: budget, loadLease: admitted.lease, construction: construction, mtp: head,
                         modelID: modelID, environment: admitted.environment, physicalBytes: physicalBytes,
-                        leaseShares: admitted.fit.shares, routingIdentity: routingIdentity)
+                        leaseShares: admitted.fit.shares, routingIdentity: routingIdentity,
+                        completeCheckpointIdentity: completeCheckpointIdentity)
                     break
                 } catch let refusal where Self.isMemoryRefusal(refusal) {
                     // Any bridge the builder built has retired and its own

@@ -16,7 +16,7 @@ actor NemotronSuperLocalBinding {
     /// Internal fixture seam; production uses the bridge's real retirement barrier
     /// below. The `String?` is the request's prefix-cache scope (nil: no reuse).
     typealias Execute = @Sendable (EngineV2Bridge, [Int], ChatCompletionRequest, String, String?,
-        EngineV2RequestUsageSignal?,
+        EngineV2RequestUsageSignal?, SSDCheckpointDonationDemand?,
         @escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
 
     /// The id requests must name and the acquired bridge must serve.
@@ -32,10 +32,10 @@ actor NemotronSuperLocalBinding {
          reusesTextPrefixes: Bool = false) {
         self.modelID = modelID
         self.acquire = acquire
-        self.execute = { bridge, tokens, request, requestID, cacheScope, usageSignal, onEvent in
+        self.execute = { bridge, tokens, request, requestID, cacheScope, usageSignal, donationDemand, onEvent in
             try await Self.executeBridge(bridge: bridge, tokens: tokens, request: request,
                 requestID: requestID, cacheScope: reusesTextPrefixes ? cacheScope : nil,
-                usageSignal: usageSignal, onEvent: onEvent)
+                usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
         }
     }
 
@@ -54,10 +54,13 @@ actor NemotronSuperLocalBinding {
     /// reuse only as the owner configured it at construction, partitioned by
     /// `cacheScope` (an authenticated tenant scope, or the local application's;
     /// nil disables reuse for this request). `usageSignal`, one per request,
-    /// receives the engine's prefix-cache outcome and drives its receipts.
+    /// receives the engine's prefix-cache outcome and drives its receipts;
+    /// `donationDemand` is the coordinator's fleet repeat hint for a durable
+    /// checkpoint write (nil: write).
     func run(request: ChatCompletionRequest, promptTokens: [Int],
              hasMedia: Bool = false, cacheScope: String? = "",
              usageSignal: EngineV2RequestUsageSignal? = nil,
+             donationDemand: SSDCheckpointDonationDemand? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !draining else { throw Failure.drained }
         guard request.model == modelID else { throw Failure.wrongModel }
@@ -76,7 +79,7 @@ actor NemotronSuperLocalBinding {
             let acquired = try await acquire(modelID)
             try await Self.runAcquired(acquired, modelID: modelID, execute: execute, tokens: promptTokens,
                 request: request, requestID: id.uuidString, cacheScope: cacheScope,
-                usageSignal: usageSignal, onEvent: onEvent)
+                usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
         }
         active[id] = task
         defer { active.removeValue(forKey: id) }
@@ -100,12 +103,13 @@ actor NemotronSuperLocalBinding {
         _ acquired: consuming MultiModelBatchSchedulerEngine.AcquiredModel, modelID: String,
         execute: @escaping Execute, tokens: [Int], request: ChatCompletionRequest,
         requestID: String, cacheScope: String?, usageSignal: EngineV2RequestUsageSignal?,
+        donationDemand: SSDCheckpointDonationDemand?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         guard let lease = acquired.nativeConsumerLease else {
             return try await executeAcquired(acquired, modelID: modelID, execute: execute, tokens: tokens,
                 request: request, requestID: requestID, cacheScope: cacheScope,
-                usageSignal: usageSignal, onEvent: onEvent)
+                usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
         }
         let release = acquired.releaseToken
         guard release.nativeBindingAccepted else { throw NativeLocalConsumerOwnershipError.invalidBinding }
@@ -122,7 +126,7 @@ actor NemotronSuperLocalBinding {
                         }
                         try await executeAcquired(acquired, modelID: modelID, execute: execute, tokens: tokens,
                             request: request, requestID: requestID, cacheScope: cacheScope,
-                            usageSignal: usageSignal, onEvent: onEvent)
+                            usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
                     }
                 } catch {
                     payload.discard()
@@ -148,13 +152,14 @@ actor NemotronSuperLocalBinding {
         _ acquired: consuming MultiModelBatchSchedulerEngine.AcquiredModel, modelID: String,
         execute: Execute, tokens: [Int], request: ChatCompletionRequest,
         requestID: String, cacheScope: String?, usageSignal: EngineV2RequestUsageSignal?,
+        donationDemand: SSDCheckpointDonationDemand?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         do {
             try Task.checkCancellation()
             guard let bridge = acquired.engineV2Bridge else { throw Failure.missingBridge }
             guard bridge.modelId == modelID else { throw Failure.wrongModel }
-            try await execute(bridge, tokens, request, requestID, cacheScope, usageSignal, onEvent)
+            try await execute(bridge, tokens, request, requestID, cacheScope, usageSignal, donationDemand, onEvent)
             await acquired.releaseToken.fire()
         } catch {
             await acquired.releaseToken.fire()
@@ -165,13 +170,15 @@ actor NemotronSuperLocalBinding {
     private static func executeBridge(
         bridge: EngineV2Bridge, tokens: [Int], request: ChatCompletionRequest, requestID: String,
         cacheScope: String?, usageSignal: EngineV2RequestUsageSignal?,
+        donationDemand: SSDCheckpointDonationDemand?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = usageSignal ?? EngineV2RequestUsageSignal()
         await withTaskCancellationHandler {
             let stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
-                cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil, usageSignal: usage)
+                cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil, usageSignal: usage,
+                donationDemand: donationDemand)
             for await event in stream {
                 if Task.isCancelled { break }
                 await onEvent(event)

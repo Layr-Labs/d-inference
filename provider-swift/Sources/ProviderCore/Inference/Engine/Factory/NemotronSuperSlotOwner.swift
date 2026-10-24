@@ -55,12 +55,14 @@ final class NemotronSuperSlotOwner: Sendable {
     /// (target-only when the owner speculates). Only the coordinator path
     /// trusts schema metadata (see `NemotronSuperRequestPlan`). The
     /// coordinator's `usageSignal` carries a text request's cache outcome to
-    /// its receipts and usage.
+    /// its receipts and usage; its `donationDemand` gates a durable write.
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
                     trustsSchemaMetadata: Bool,
-                    usageSignal: EngineV2RequestUsageSignal? = nil) -> any MLXServerEngine {
+                    usageSignal: EngineV2RequestUsageSignal? = nil,
+                    donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
-                    trustsSchemaMetadata: trustsSchemaMetadata, usageSignal: usageSignal)
+                    trustsSchemaMetadata: trustsSchemaMetadata, usageSignal: usageSignal,
+                    donationDemand: donationDemand)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.

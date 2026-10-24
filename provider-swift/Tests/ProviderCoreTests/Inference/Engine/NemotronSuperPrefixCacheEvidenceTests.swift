@@ -53,7 +53,7 @@ struct NemotronSuperPrefixCacheEvidenceTests {
         var ready: [PrefixCacheReadyResult] { log.lock.withLock { log.ready } }
     }
 
-    private actor Events {
+    actor Events {
         var text = ""
         var errors: [String] = []
         func record(_ event: GenerationEvent) {
@@ -66,12 +66,12 @@ struct NemotronSuperPrefixCacheEvidenceTests {
         }
     }
 
-    private static func budget() -> GlobalKVCacheBudget {
+    static func budget() -> GlobalKVCacheBudget {
         GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: { .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: .max) })
     }
 
-    private static func lease(_ fixture: SuperMTPInstalledFixture.Installation, _ name: String,
+    static func lease(_ fixture: SuperMTPInstalledFixture.Installation, _ name: String,
                               budget: GlobalKVCacheBudget, speculates: Bool) async throws -> PendingModelLoadLease {
         let head = speculates ? try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote) : 0
         return try #require(await budget.claimPendingLoad(requestID: "super-evidence-\(name)",
@@ -79,10 +79,13 @@ struct NemotronSuperPrefixCacheEvidenceTests {
             minimumKVBytes: UInt64(grant)))
     }
 
-    private static func owner(_ fixture: SuperMTPInstalledFixture.Installation,
+    static func owner(_ fixture: SuperMTPInstalledFixture.Installation,
                               environment: [String: String], budget: GlobalKVCacheBudget,
                               lease: PendingModelLoadLease, speculates: Bool,
-                              routing: Prefix.RoutingIdentity?) async throws -> Builder.Owner {
+                              routing: Prefix.RoutingIdentity?,
+                              modelID: String = NemotronSuperLocalBinding.modelID,
+                              completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil)
+        async throws -> Builder.Owner {
         try await Builder.make(installed: fixture.installed,
             tokenizer: TokenizerHandle(SuperTokenTextTokenizer()), eosTokenIDs: [63],
             sizing: .init(weightsBytes: fixture.installed.receipt.payloadBytes,
@@ -90,13 +93,14 @@ struct NemotronSuperPrefixCacheEvidenceTests {
             kvBytesCapacity: grant, kvBudget: budget, loadLease: lease,
             construction: fixture.construction,
             mtp: speculates ? .init(module: fixture.head, setting: .init(depth: 3)) : nil,
-            environment: environment, routingIdentity: routing)
+            modelID: modelID, environment: environment, routingIdentity: routing,
+            completeCheckpointIdentity: completeCheckpointIdentity)
     }
 
-    private static func run(_ owner: Builder.Owner, prompt: [Int], scope: String,
+    static func run(_ owner: Builder.Owner, prompt: [Int], scope: String,
                             receipts: Receipts) async throws -> String {
         let events = Events()
-        try await owner.localTextBinding().run(request: .init(model: NemotronSuperLocalBinding.modelID,
+        try await owner.localTextBinding().run(request: .init(model: owner.modelID,
             messages: [], temperature: 0, max_tokens: 8), promptTokens: prompt, cacheScope: scope,
             usageSignal: receipts.signal) { await events.record($0) }
         #expect(await events.errors.isEmpty)
@@ -104,7 +108,7 @@ struct NemotronSuperPrefixCacheEvidenceTests {
     }
 
     /// Polls `condition` for up to five seconds.
-    private static func eventually(_ condition: () -> Bool) async -> Bool {
+    static func eventually(_ condition: () -> Bool) async -> Bool {
         for _ in 0 ..< 500 {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(10))

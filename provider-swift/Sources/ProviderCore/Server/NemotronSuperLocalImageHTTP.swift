@@ -66,11 +66,12 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// request's, which also carries its cache receipts), else to its own.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
-                usageSignal: EngineV2RequestUsageSignal? = nil) -> any MLXServerEngine {
+                usageSignal: EngineV2RequestUsageSignal? = nil,
+                donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
-                               usageSignal: usageSignal)
+                               usageSignal: usageSignal, donationDemand: donationDemand)
     }
 }
 
@@ -91,6 +92,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     /// The caller's signal for this request's prefix-cache outcome; a text
     /// request without one submits under its own.
     let usageSignal: EngineV2RequestUsageSignal?
+    /// The coordinator's repeat hint for a text request's durable checkpoint write.
+    let donationDemand: SSDCheckpointDonationDemand?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -138,10 +141,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let translated = MultiModelBatchSchedulerEngine.translate(
                     openAIRequest: plan.request, defaultMaxTokens: 1)
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
+                let donationDemand = self.donationDemand
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
-                                          cacheScope: cacheScope, usageSignal: usageSignal, onEvent: onEvent)
+                                          cacheScope: cacheScope, usageSignal: usageSignal,
+                                          donationDemand: donationDemand, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

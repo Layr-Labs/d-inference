@@ -102,12 +102,13 @@ enum NemotronSuperServingPolicy {
     /// Verification, prefill chunk, decode-step and KV storage keys keep the
     /// operator's value, else the default above or the builder's; the builder
     /// serves paged KV only and refuses other storage
-    /// (`NemotronSuperLocalKVBackend`). Either owner turns exact prefix reuse
-    /// on (`DARKBLOOM_PREFIX_CACHE_MEMORY`) when the grant has room for a
-    /// `defaultPrefixBankBytes` bank (or an operator-sized one) beside every
-    /// request's fixed bytes (`grantKVBytes`); an operator value, including
-    /// the global prefix-cache kill switch, wins. The builder sizes the same
-    /// bank from the same grant, requests and keys.
+    /// (`NemotronSuperLocalKVBackend`). Either owner's exact prefix reuse is
+    /// complete SSD checkpoints by default
+    /// (`NemotronSuperLocalPrefixCache.durableIdentity`), which take no grant.
+    /// The operator's resident-cache switch (`DARKBLOOM_PREFIX_CACHE_MEMORY`)
+    /// selects the resident bank instead, a `defaultPrefixBankBytes` bank (or
+    /// an operator-sized one) that the builder sizes from the same grant,
+    /// requests and keys. The global prefix-cache kill switch turns both off.
     static func loadPlan(base: [String: String], mode: MTPMode, configuredConcurrency: Int?,
                          kvBytesCapacity: Int, pinned: Bool = true,
                          physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> LoadPlan {
@@ -123,16 +124,6 @@ enum NemotronSuperServingPolicy {
             }
         } else {
             environment.removeValue(forKey: NemotronSuperLocalMTP.enabledKey)
-        }
-        let flag = PrefixCachePolicy.memoryEnvironmentFlag
-        var candidate = environment
-        candidate[flag] = "1"
-        if environment[flag] == nil,
-            let bank = NemotronSuperLocalPrefixCache.config(environment: candidate,
-                kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,
-                pinned: pinned, physicalBytes: physicalBytes, modelID: modelID)?.maximumBytes,
-            bank <= kvBytesCapacity - grantKVBytes(requests: requests, speculates: speculates) {
-            environment = candidate
         }
         let bank = NemotronSuperLocalPrefixCache.config(environment: environment,
             kvBytesCapacity: kvBytesCapacity, requests: requests, speculates: speculates,

@@ -103,13 +103,20 @@ struct NemotronSuperManagedSlotTests {
         let scripted = makeTokenizer?(script) ?? SuperScriptedTokenizer(script: script)
         let tokenizer: any MLXLMCommon.Tokenizer = decodeGate.map { GatedTokenizer(base: scripted, gate: $0) }
             ?? scripted
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        // Complete SSD checkpoints default on for Super: keep them in this
+        // fixture's own root under an in-memory key, never the user's cache.
+        var environment = environment
+        environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] = environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] ?? "1"
+        environment[SSDPrefixCacheFactory.testRootEnvironmentKey] =
+            environment[SSDPrefixCacheFactory.testRootEnvironmentKey]
+            ?? directory.appendingPathComponent("prefix-cache", isDirectory: true).path
         await loop.setNemotronSuperSlotLoaderForTesting(
             loader(tokenizer: TokenizerHandle(tokenizer), template: template,
                    physicalBytes: (physicalGiB ?? totalGiB) << 30, probe: probe),
             environment: environment)
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("super-managed-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         try Data(#"{"model_type":"nemotron_h_omni"}"#.utf8).write(to: directory.appendingPathComponent("config.json"))
         return Fixture(loop: loop, budget: budget, script: script, directory: directory)
     }
@@ -152,6 +159,10 @@ struct NemotronSuperManagedSlotTests {
             physicalBytes: request.physicalBytes,
             routingIdentity: request.modelAggregateHash.map {
                 .init(modelAggregateHash: $0, promptContractID: fixturePromptContractID)
+            },
+            completeCheckpointIdentity: request.modelAggregateHash.map {
+                CBv2CompleteCheckpointIdentity(modelAggregateHash: $0, promptContractID: fixturePromptContractID,
+                    buildID: "super-managed-fixture", numericsFingerprint: "super-managed-fixture")
             })
         return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
             tokenizer: tokenizer, sizing: sizing, templateBytes: template)
@@ -175,7 +186,8 @@ struct NemotronSuperManagedSlotTests {
     static func send(_ body: Data, to loop: ProviderLoop, recorder: Recorder,
         consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
         toolSchemaMetadataProtocol: Int? = nil, cacheReceiptNonce: String? = nil,
-        prefixCacheProtocol: Int? = nil,
+        prefixCacheProtocol: Int? = nil, cacheRepeatedPrefixTokens: Int? = nil,
+        cacheReceiptBoundaryMode: String? = nil,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
@@ -184,6 +196,8 @@ struct NemotronSuperManagedSlotTests {
         await loop.handleInferenceRequest(requestId: id, ciphertext: ciphertext,
             senderPublicKey: consumer.publicKeyBytes, cacheReceiptNonce: cacheReceiptNonce,
             authenticatedCacheScope: scope, prefixCacheProtocol: prefixCacheProtocol,
+            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
             toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
             send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
@@ -231,8 +245,8 @@ struct NemotronSuperManagedSlotTests {
         #expect(script.prompt.hasSuffix("<|im_start|>assistant\n<think></think>"))
         let usage = try #require(Self.usage(text.terminal))
         #expect(usage.promptTokens == 3 && usage.completionTokens == 3)
-        // Shorter than one prompt chunk: the bank has no checkpoint for it.
-        #expect(usage.cacheOutcome == .missAbsent && usage.cacheTier == .memory && usage.cachedTokens == 0)
+        // Shorter than one prompt chunk: the store has no checkpoint for it.
+        #expect(usage.cacheOutcome == .missAbsent && usage.cacheTier == .ssd && usage.cachedTokens == 0)
         // Tools are held until validated, then returned as tool calls.
         let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
             "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
@@ -354,10 +368,12 @@ struct NemotronSuperManagedSlotTests {
                                          revisionDirectory: fixture.directory)
         let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         #expect(!owner.speculates)
-        // The plain owner holds its lane and exact text prefix bank from load.
+        // The plain owner holds its lane from load; its exact text prefixes
+        // are complete SSD checkpoints, which hold no reservation.
         let held = await fixture.budget.reservationBytesSnapshot().keys
         #expect(held.contains(where: NemotronSuperLocalPrefill.isLaneReservationID))
-        #expect(held.contains(where: NemotronSuperLocalPrefixCache.isBankReservationID))
+        #expect(!held.contains(where: NemotronSuperLocalPrefixCache.isBankReservationID))
+        #expect(owner.bridge.ssdHybridCheckpointStore != nil)
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         let long = Array(repeating: "a", count: 900)
         let cancelled = try await Self.send(Self.body(long, script: fixture.script), to: loop,
@@ -448,12 +464,14 @@ struct NemotronSuperManagedSlotTests {
         #expect(await fixture.loop.nemotronSuperRetainedWeightBytesForTesting() == 0)
     }
 
-    /// The slot's planned bank is the bank its builder builds and holds,
-    /// whatever machine memory the loader sizes it for: the fixture owner's
-    /// generic 1 GiB bank on a 64 GiB and a 256 GiB machine.
+    /// The slot's planned bank, when the operator selects the resident tier,
+    /// is the bank its builder builds and holds, whatever machine memory the
+    /// loader sizes it for: the fixture owner's generic 1 GiB bank on a
+    /// 64 GiB and a 256 GiB machine.
     @Test(.timeLimit(.minutes(2)), arguments: [64, 256] as [UInt64])
     func plannedBankIsHeldWhateverTheMachine(physicalGiB: UInt64) async throws {
-        let fixture = try await Self.fixture(mode: .auto, physicalGiB: physicalGiB)
+        let fixture = try await Self.fixture(mode: .auto, physicalGiB: physicalGiB,
+            environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"])
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
                                                  revisionDirectory: fixture.directory)

@@ -114,7 +114,10 @@ production-key restart checks remain subject to the
 [acceptance criteria](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
-`gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b`, the exact MiMo identities below and the
+managed `nvidia-nemotron-3.5-super` slot, whose complete checkpoints replace
+its resident bank unless the operator selects the bank (see
+[`inference.md`](inference.md#managed-nemotron-super-slot)).
 GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
 eligible native contiguous fallback uses a distinct complete layout rather than
 reinterpreting the paged file. Gemma automatic MTP resolves its catalog
@@ -409,7 +412,8 @@ It requires verified weight and prompt-contract identities to advertise
 `prefix_cache_memory_models`; local reuse can operate without the attested
 weight hash because entries never cross loaded model instances. The managed
 Nemotron Super owner supplies them from its own load
-(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see [`inference.md`](inference.md)). Paged resident
+(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see [`inference.md`](inference.md)),
+and binds its default complete SSD checkpoints to the same identity. Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
 [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).

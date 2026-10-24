@@ -204,8 +204,10 @@ configured request (below). The builder refuses a KV grant that
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
-`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
+`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse. By
+default the managed slot keeps it as complete encrypted SSD checkpoints (see
+below); `DARKBLOOM_PREFIX_CACHE_MEMORY=1` selects the resident bank instead.
+For the pinned checkpoint
 `NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
 recurrent checkpoint bank from the KV grant and the machine:
 `serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
@@ -457,9 +459,10 @@ requests (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above
-keep an operator's value. The plain owner turns exact text prefix reuse on when
-the grant holds every request's fixed bytes beside the bank, unless the
-operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
+keep an operator's value. Either owner's exact text prefix reuse is complete SSD
+checkpoints, which take no grant; the resident bank is reserved only when the
+operator sets `DARKBLOOM_PREFIX_CACHE_MEMORY=1`, and a cache kill switch turns
+both off.
 
 On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 experts
 on dedicated NAX kernels behind one fused expert route
@@ -530,14 +533,27 @@ channel, tool and structured-output validation, cancellation and usage are the
 hook's. A JSON response format may come with tools: a turn that calls tools
 returns its calls, and only an answer without calls is validated as JSON.
 Coordinator text prefix reuse is partitioned by the authenticated cache
-scope and off without one. When the owner has a bank, the managed load binds it
-to the aggregate it published for the checkpoint and the checkpoint's
-`PromptContractIdentity` (`NemotronSuperLocalPrefixCache.RoutingIdentity`), so
-the slot advertises a resident capability (`prefix_cache_memory_models`) and
-the coordinator can send it a cache scope. A request then reports its lookup
-and ready receipts, `prompt_tokens_details.cached_tokens` and its cache usage
-through the request's own usage signal, as on the generic engine; a load whose
-post-load artifact hash differs from the published one advertises nothing. A
+scope and off without one. The managed load binds the owner's checkpoints to
+the aggregate it published for the checkpoint and the checkpoint's
+`PromptContractIdentity` (`NemotronSuperLocalPrefixCache.RoutingIdentity`).
+Without a bank (the default) the builder keeps them in an
+`SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
+the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
+the assistant's prompt history encrypted under the provider's cache root, at
+native KV precision whatever `engine_v2_kv_checkpoint_quantization` says. The
+slot then advertises a durable capability (`prefix_cache_v2_models`), its
+checkpoints survive restarts within the store's TTL, and the coordinator's
+repeat hint gates their writes as for every other model. A durable checkpoint
+outlives the process, so its identity rests on this load: every shard was
+staged against its pinned SHA-256, and the prompt contract hashes the prompt
+files the load read. A load whose post-load artifact hash differs from the
+published one is refused. With the bank the slot advertises a resident
+capability (`prefix_cache_memory_models`), and such a load advertises nothing.
+Either way the coordinator can send the slot a cache scope, and a request
+reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
+and its cache usage through the request's own usage signal, as on the generic
+engine. Image checkpoints have no durable layout, so only the bank reuses
+image turns. A
 cancelled stream bills delivered output and the reference prompt length, and
 reports cache usage only when the native terminal already recorded it. Inline JPEG and PNG images (`data:` URIs, within the
 [image format reference](../reference/nemotron-super-image-formats.md) limits)

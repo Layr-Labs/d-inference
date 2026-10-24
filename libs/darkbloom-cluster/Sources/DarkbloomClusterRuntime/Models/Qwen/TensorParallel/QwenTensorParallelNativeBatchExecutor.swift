@@ -10,6 +10,9 @@ final class QwenTensorParallelNativeBatchLane: QwenTensorParallelBatchLane {
     var selectedCount = 0
     var canSelectNext: Bool { !accepted.isEmpty || nextFrame?.phase == .decode }
     var prefixKey: String?
+    /// This request's scope on the SSD tier, kept for its persist after a
+    /// confirmed clean retirement.
+    var prefixDiskScope: String?
     var storedPrefixFrontiers: [Int] = []
     var reusedPrefixTokens: Int { session.request.reusedPrefixTokens }
     private let releaseResources: () throws -> Void
@@ -47,6 +50,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     private let prefix: QwenTensorParallelBatchPrefixCache?
     private let prefixBudget: QwenTensorParallelBatchPrefixBudget?
     private let prefixScope: ((Reservation) -> String)?
+    private let prefixDisk: QwenTensorParallelPrefixDisk?
+    private let prefixDiskScope: ((Reservation) -> String)?
     private let allocationBound: ((Int) throws -> Int)?
     private let prefixObserved: (String, Int, Int) -> Void
     private let assistant: QwenTensorParallelBatchAssistant?
@@ -62,6 +67,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
          prefix: QwenTensorParallelBatchPrefixCache? = nil,
          prefixBudget: QwenTensorParallelBatchPrefixBudget? = nil,
          prefixScope: ((Reservation) -> String)? = nil,
+         prefixDisk: QwenTensorParallelPrefixDisk? = nil,
+         prefixDiskScope: ((Reservation) -> String)? = nil,
          allocationBound: ((Int) throws -> Int)? = nil,
          prefixObserved: @escaping (String, Int, Int) -> Void = { _, _, _ in },
          assistant: QwenTensorParallelBatchAssistant? = nil,
@@ -70,7 +77,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         guard case .shard(let rank, let size) = model.role, size == 2, rank == group.rank, size == group.size,
               !model.plan.routedExperts, sha256(configuration) == model.configurationSHA256,
               model.plan.vocabularySize < (1 << 24),
-              prefix == nil || (prefixBudget != nil && prefixScope != nil && allocationBound != nil) else {
+              prefix == nil || (prefixBudget != nil && prefixScope != nil && allocationBound != nil),
+              prefixDisk == nil || (prefixDiskScope != nil && prefixScope != nil) else {
             throw ProbeError("Qwen TP native batch executor has a mismatched dense shard or group")
         }
         if let assistant {
@@ -93,6 +101,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         self.assistant = assistant; self.openedLane = openedLane; self.completedSpeculation = completedSpeculation
         self.rank = rank; self.model = model; self.configuration = configuration; self.host = host
         self.prefix = prefix; self.prefixBudget = prefixBudget; self.prefixScope = prefixScope
+        self.prefixDisk = prefixDisk; self.prefixDiskScope = prefixDiskScope
         self.allocationBound = allocationBound; self.prefixObserved = prefixObserved
         self.group = group; self.prepare = prepare; self.completedDecode = completedDecode; self.completedPrefill = completedPrefill; self.releaseResources = releaseResources
     }
@@ -123,35 +132,45 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
         let admittedAssistant = request.qwenMedia == nil && (request.sampler?.admitsSpeculativeVerification ?? true) ? assistant : nil
         var restored: QwenTensorParallelBatchPrefixState?
         var restoredAssistant: QwenTensorParallelMTPPrefixState?
-        var captureFrontier = 0, captureKey: String?
+        var captureFrontier = 0, captureKey: String?, diskScope: String?
         if let assistant = admittedAssistant, let prefix = assistant.prefix, prefix.enabled,
            let scope = prefixScope?(reservation) {
             let candidates = QwenTensorParallelMTPPrefixCache.candidates(promptCount: request.promptCount,
                 chunkSize: request.chunkSize, maximumTokens: assistant.prefixBudget.maximumTokens).filter { $0 > 1 }
             let keys = QwenTensorParallelMTPPrefixCache.keys(scope: scope + "|assistant-prefix", tokens: request.promptTokenIDs, frontiers: candidates)
+            diskScope = prefixDisk == nil ? nil : prefixDiskScope.map { $0(reservation) + "|assistant-prefix" }
             if !candidates.isEmpty {
-                let votes = try exchange(prefix.held(keys: keys, candidates: candidates), check: check)
-                let frontier = try QwenTensorParallelMTPPrefixCache.agreed(candidates: candidates, votes: votes)
-                if frontier > 0, let key = keys[frontier] {
-                    restoredAssistant = try prefix.restore(key: key, frontier: frontier)
-                    restored = restoredAssistant!.target
-                    request = try request.planned(reusedPrefix: frontier, splitFinalToken: false)
+                let prompt = request.promptTokenIDs
+                let agreed = try agreePrefix(cache: prefix, candidates: candidates, keys: keys, diskScope: diskScope,
+                    prompt: prompt, check: check, read: { [request] stage in
+                        let state = try QwenTensorParallelMTPPrefixState(stage: stage, assistant: assistant.head.assistant,
+                            prompt: prompt, allocationBound: assistant.allocationBound)
+                        return try self.adopts(state.target, request: request) ? state : nil
+                    })
+                if let state = agreed.state {
+                    restoredAssistant = state; restored = state.target
+                    request = try request.planned(reusedPrefix: agreed.frontier, splitFinalToken: false)
                 }
-                if let last = candidates.last, last > frontier { captureFrontier = last; captureKey = keys[last] }
+                if let last = candidates.last, last > agreed.frontier { captureFrontier = last; captureKey = keys[last] }
             }
-        } else if admittedAssistant == nil, let prefix, prefix.enabled, let budget = prefixBudget, let scope = prefixScope?(reservation) {
+        } else if admittedAssistant == nil, let prefix, prefix.enabled, let budget = prefixBudget, let scope = prefixScope?(reservation),
+                  let allocationBound {
             let candidates = QwenTensorParallelBatchPrefixCache.candidates(promptCount: request.promptCount,
                 chunkSize: request.chunkSize, maximumTokens: budget.maximumTokens)
             let keys = QwenTensorParallelBatchPrefixCache.keys(scope: scope,
                 tokens: request.promptTokenIDs, frontiers: candidates)
+            diskScope = prefixDisk == nil ? nil : prefixDiskScope?(reservation)
             if !candidates.isEmpty {
-                let votes = try exchange(prefix.held(keys: keys, candidates: candidates), check: check)
-                let frontier = try QwenTensorParallelBatchPrefixCache.agreed(candidates: candidates, votes: votes)
-                if frontier > 0, let key = keys[frontier] {
-                    restored = try prefix.restore(key: key, frontier: frontier)
-                    request = try request.planned(reusedPrefix: frontier, splitFinalToken: false)
+                let agreed = try agreePrefix(cache: prefix, candidates: candidates, keys: keys, diskScope: diskScope,
+                    prompt: request.promptTokenIDs, check: check, read: { [request] stage in
+                        let state = try QwenTensorParallelBatchPrefixState(stage: stage, allocationBound: allocationBound)
+                        return try self.adopts(state, request: request) ? state : nil
+                    })
+                if let state = agreed.state {
+                    restored = state
+                    request = try request.planned(reusedPrefix: agreed.frontier, splitFinalToken: false)
                 }
-                if let last = candidates.last, last > frontier {
+                if let last = candidates.last, last > agreed.frontier {
                     captureFrontier = last; captureKey = keys[last]
                 }
             }
@@ -169,7 +188,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
                 depth: assistant.depth, restored: restoredAssistant, captureFrontier: captureFrontier,
                 captureLimitBytes: assistant.prefixBudget.captureBytes, allocationBound: assistant.allocationBound)
         }
-        lane.prefixKey = captureKey
+        lane.prefixKey = captureKey; lane.prefixDiskScope = captureKey == nil ? nil : diskScope
         incompleteOpenings[request.requestID] = nil
         prefixObserved(admittedAssistant == nil ? "opened" : "opened-assistant", request.reusedPrefixTokens,
             admittedAssistant?.prefix?.bytesInUse ?? prefix?.bytesInUse ?? 0)
@@ -178,6 +197,71 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             openedLane(request.requestID, route)
         }
         return lane
+    }
+
+    /// One request's prefix plan on this rank. Each rank offers the candidate
+    /// frontiers it holds in its resident tier or as a complete record on its
+    /// SSD tier; both take the deepest frontier both offer and restore it from
+    /// their own tiers (resident first). A second exchange confirms that both
+    /// restored it; otherwise both prefill from zero. A state read from the
+    /// SSD is charged to the resident tier at once, as a stored capture is
+    /// (one that does not fit is not restored), and stays there even when its
+    /// peer could not restore, so the next offer finds it in memory.
+    private func agreePrefix<Snapshot: QwenTensorParallelPrefixSnapshot>(
+        cache: QwenTensorParallelSnapshotCache<Snapshot>, candidates: [Int], keys: [Int: String], diskScope: String?,
+        prompt: [Int], check: () throws -> Void, read: (QwenStagePrefixState) throws -> Snapshot?
+    ) throws -> (frontier: Int, state: Snapshot?) {
+        let disk = diskScope == nil ? nil : prefixDisk
+        let onDisk = diskScope.flatMap { scope in
+            disk?.frontiers(scope: scope, tokens: prompt, maximumFrontier: candidates.last ?? 0)
+        } ?? []
+        let offers = zip(candidates, cache.held(keys: keys, candidates: candidates)).map { frontier, held in
+            held == 1 || onDisk.contains(frontier) ? Float(1) : 0
+        }
+        let frontier = try QwenTensorParallelSnapshotCache<Snapshot>.agreed(candidates: candidates,
+            votes: try exchange(offers, check: check))
+        guard frontier > 0, let key = keys[frontier] else { return (0, nil) }
+        var state: Snapshot?, tier = "resident"
+        if cache.holds(key: key, frontier: frontier) {
+            state = try cache.restore(key: key, frontier: frontier)
+            if let disk, let diskScope { disk.tier.touch(scope: diskScope, tokens: prompt, frontier: frontier) }
+        } else if let disk, let diskScope {
+            tier = "ssd"
+            if let stage = try disk.tier.restore(scope: diskScope, tokens: prompt, frontier: frontier, check: check) {
+                var adopted: Snapshot?
+                do { adopted = try read(stage) } catch {
+                    log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-rejected frontier=\(frontier) error=\(qwenPrefixLogWord(error))")
+                }
+                if let adopted, cache.insert(key: key, state: adopted) { state = adopted } else {
+                    log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-rejected frontier=\(frontier)"
+                        + " reason=\(adopted == nil ? "not_adoptable" : "over_resident_budget")")
+                    disk.tier.forget(scope: diskScope, tokens: prompt, frontier: frontier)
+                }
+            }
+            try check()
+        }
+        let confirmed = try exchange([state == nil ? 0 : 1], check: check)
+        guard confirmed == [2] else {
+            if disk != nil {
+                log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-declined frontier=\(frontier) tier=\(tier)"
+                    + " local=\(state == nil ? 0 : 1) kept=\(state != nil && tier == "ssd" ? 1 : 0)")
+            }
+            return (0, nil)
+        }
+        if tier == "ssd" {
+            log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-confirmed frontier=\(frontier) prompt=\(prompt.count)")
+        }
+        return (frontier, state)
+    }
+
+    /// Whether a shard read from the SSD adopts into this request's state:
+    /// every layer present with this rank's shapes and dtypes (the checks of
+    /// the adoption itself, before any page is written), so a record that
+    /// cannot be adopted makes both ranks prefill from zero, never fail.
+    private func adopts(_ state: QwenTensorParallelBatchPrefixState, request: QwenLayerStageGenerationRequest) throws -> Bool {
+        let geometry = try QwenTensorParallelBatchSession.geometry(model: model, configuration: configuration,
+            host: host, maximumTokens: request.maximumTokens)
+        return state.adopts(into: geometry)
     }
 
     func prefill(_ lane: Lane, frame: QwenLayerStageFrame, check: () throws -> Void) throws -> Int? {
@@ -343,18 +427,32 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     func confirmedRetirement(_ lane: Lane, clean: Bool) throws {
         guard lane.isClosed else { throw ProbeError("Qwen TP prefix publication precedes resource retirement") }
         if let decoder = lane.assistant {
-            if clean, let prefix = assistant?.prefix, let key = lane.prefixKey,
+            if clean, let context = assistant, let prefix = context.prefix, let key = lane.prefixKey,
                let captured = try decoder.takeCapturedPrefix(), prefix.insert(key: key, state: captured) {
                 lane.storedPrefixFrontiers = [captured.committedTokens]
                 prefixObserved("stored-assistant", captured.committedTokens, prefix.bytesInUse)
+                persist(captured.stageState(assistant: context.head.assistant), lane: lane)
             } else { decoder.discardCapturedPrefix() }
         } else if clean, let prefix, let key = lane.prefixKey, let captured = try lane.session.takeCapturedPrefix() {
             if prefix.insert(key: key, state: captured) {
                 lane.storedPrefixFrontiers = [captured.committedTokens]
                 prefixObserved("stored", captured.committedTokens, prefix.bytesInUse)
+                persist(captured.stageState, lane: lane)
             }
         } else { lane.session.discardCapturedPrefix() }
-        lane.prefixKey = nil
+        lane.prefixKey = nil; lane.prefixDiskScope = nil
+    }
+
+    /// A stored capture is written behind serving to this rank's SSD tier
+    /// (only what the resident tier holds, so a restore fits it again).
+    private func persist(_ state: QwenStagePrefixState?, lane: Lane) {
+        guard let disk = prefixDisk, let scope = lane.prefixDiskScope else { return }
+        guard let state else {
+            log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=unencodable prompt=\(lane.session.request.promptCount)")
+            return
+        }
+        disk.tier.persist(scope: scope, tokens: lane.session.request.promptTokenIDs, states: [state],
+            blockTokens: lane.session.request.chunkSize)
     }
 
     func retire(_ lane: Lane, reason: QwenLayerStageGenerationFinishReason?, selected: Int, last: Int?) throws {
@@ -364,7 +462,9 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             try schedule.finish(reason, selectedTokenCount: selected, lastTokenID: last,
                 discardedDecodeForwards: lane.accepted.count)
         }
-        if reason == nil { lane.session.discardCapturedPrefix(); lane.prefixKey = nil; lane.storedPrefixFrontiers = [] }
+        if reason == nil {
+            lane.session.discardCapturedPrefix(); lane.prefixKey = nil; lane.prefixDiskScope = nil; lane.storedPrefixFrontiers = []
+        }
         if let decoder = lane.assistant { try decoder.retire() }
         else { try lane.session.retire() }
         try lane.releaseAfterNativeDrain()

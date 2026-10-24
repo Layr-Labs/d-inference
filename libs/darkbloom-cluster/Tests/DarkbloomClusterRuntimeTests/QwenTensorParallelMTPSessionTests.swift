@@ -1,3 +1,4 @@
+import Cmlx
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
@@ -568,6 +569,13 @@ struct QwenTensorParallelMTPSessionTests {
 
     private func verifyWarmPrefix(hybrid: Bool) throws {
         let device = hybrid ? Device.gpu : Device.cpu
+        // MLX keys compiled traces by its C++ default device, which the
+        // task-scoped `withDefaultDevice` does not set: a trace an earlier GPU
+        // test made would be replayed here with its operations on the GPU
+        // stream, and one made here on the CPU by a later GPU test. This CPU
+        // fixture starts and ends with an empty compile cache.
+        if device == .cpu { _ = mlx_detail_compile_clear_cache() }
+        defer { if device == .cpu { _ = mlx_detail_compile_clear_cache() } }
         try Device.withDefaultDevice(device) {
             let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)
@@ -608,7 +616,8 @@ struct QwenTensorParallelMTPSessionTests {
                         indexedWeights: weights, reduction: groups[rank])
                 }
                 let caches = (0..<2).map { _ in QwenTensorParallelMTPPrefixCache(enabled: true, budgetBytes: 128 << 20) }
-                func owners(_ snapshots: [QwenTensorParallelMTPPrefixState]?) throws -> [DecoderOwner] {
+                func owners(_ snapshots: [QwenTensorParallelMTPPrefixState]?,
+                            heads loaded: [QwenTensorParallelMTPHead]? = nil) throws -> [DecoderOwner] {
                     let id = UUID()
                     return try (0..<2).map { rank in
                         let original = try combinedRequest(item, id: id)
@@ -618,7 +627,7 @@ struct QwenTensorParallelMTPSessionTests {
                             maximumTokensPerRequest: 256, maximumChunkTokens: 64)
                         let target = try QwenTensorParallelMTPSession(model: models[rank], configuration: configuration,
                             host: host, request: request, restored: snapshots?[rank].target, permitContiguousDiagnostic: !hybrid)
-                        let decoder = try QwenTensorParallelMTPDecoder(target: target, head: heads[rank],
+                        let decoder = try QwenTensorParallelMTPDecoder(target: target, head: (loaded ?? heads)[rank],
                             group: groups[rank], depth: item.depth, restored: snapshots?[rank],
                             captureFrontier: snapshots == nil ? 62 : 0, captureLimitBytes: 64 << 20,
                             allocationBound: { (($0 + 16_383) / 16_384) * 16_384 })
@@ -728,6 +737,53 @@ struct QwenTensorParallelMTPSessionTests {
                     }
                     #expect(after == immutable[rank])
                 }
+                // The SSD tier: each rank's record (its target shard and the
+                // assistant's trusted history), read back by a reopened tier
+                // and rebound to a newly loaded head, as after a restart.
+                let ssdRoot = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("qwen-tp-mtp-ssd-\(UUID().uuidString)", isDirectory: true)
+                defer { try? FileManager.default.removeItem(at: ssdRoot) }
+                let ssdKey = Data((0..<32).map { UInt8(($0 * 29 + 5) % 256) })
+                var ssdSettings = QwenStagePrefixDiskConfiguration(mode: .on(root: ssdRoot, key: ssdKey))
+                ssdSettings.minimumTokens = 1; ssdSettings.minimumFreeBytes = 1 << 20
+                let ssdScope = "exact-plan-and-assistant|chunk31|assistant-prefix"
+                for rank in 0..<2 {
+                    let tier = try QwenStagePrefixDiskTier(configuration: ssdSettings, root: ssdRoot, key: ssdKey,
+                        planScope: ssdScope, rank: rank)
+                    let stage = try #require(snapshots[rank].stageState(assistant: heads[rank].assistant))
+                    tier.persist(scope: ssdScope, tokens: prefixTokens, states: [stage], blockTokens: 31)
+                    #expect(tier.drain(timeoutSeconds: 60) && tier.recordCount == 1)
+                    tier.close()
+                }
+                let fresh = try (0..<2).map { rank in
+                    try QwenTensorParallelMTPHead(model: models[rank], configuration: configuration,
+                        indexedWeights: weights, reduction: groups[rank])
+                }
+                let fromDisk = try (0..<2).map { rank -> QwenTensorParallelMTPPrefixState in
+                    let tier = try QwenStagePrefixDiskTier(configuration: ssdSettings, root: ssdRoot, key: ssdKey,
+                        planScope: ssdScope, rank: rank)
+                    defer { tier.close() }
+                    #expect(tier.frontiers(scope: ssdScope, tokens: prefixTokens, maximumFrontier: 66) == [62])
+                    let stage = try #require(try tier.restore(scope: ssdScope, tokens: prefixTokens, frontier: 62, check: {}))
+                    let state = try QwenTensorParallelMTPPrefixState(stage: stage, assistant: fresh[rank].assistant,
+                        prompt: prefixTokens, allocationBound: { (($0 + 16_383) / 16_384) * 16_384 })
+                    #expect(state.committedTokens == 62 && state.allocatedBytes == snapshots[rank].allocatedBytes)
+                    // Bound to the head that read it, never the one that wrote it.
+                    #expect(try heads[rank].assistant.restorePagedPrefixCheckpoint(state.assistant,
+                        maximumSequenceLength: 78) == nil)
+                    return state
+                }
+                let restarted = try owners(fromDisk, heads: fresh)
+                defer { for lane in restarted { try? lane.decoder.retire() } }
+                #expect(restarted.allSatisfy { $0.target.state.committedTokens == 62 })
+                #expect(try completePrompt(restarted) == coldLogits)
+                #expect(try restarted.map(stateBytes) == coldPrompt)
+                if hybrid {
+                    try generate(restarted)
+                    #expect(restarted.map(\.tokens) == cold.map(\.tokens))
+                    #expect(try restarted.map(stateBytes) == coldFinal)
+                }
+                for lane in restarted { try lane.decoder.retire(); #expect(lane.host.isDrained) }
                 // Opaque assistant state belongs to the exact loaded head,
                 // even when another head has byte-identical weights.
                 let foreign = try QwenTensorParallelMTPHead(model: models[0], configuration: configuration,

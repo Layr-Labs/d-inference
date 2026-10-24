@@ -497,27 +497,35 @@ struct QwenTensorParallelBatchSessionTests {
     func warmHybridPrefixesPreserveConvSSMAndMixedPositions() throws {
         try verifyWarmPrefixes(hybrid: true)
     }
+    /// The warm-prefix fixture: a tiny dense shard pair, attention-only
+    /// unless `hybrid` (then with its linear-attention layers).
+    private func warmFixture(hybrid: Bool) throws -> (configuration: Data, tensors: [(String, MLXArray)],
+                                                      profile: QwenLayerStageGenerationProfile) {
+        let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
+            heads: 4, kvHeads: 2, vocabulary: 256)
+        var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+        var text = root["text_config"] as! [String: Any]
+        text["max_position_embeddings"] = 4096
+        var tensors = fixture.tensors
+        if !hybrid {
+            text["full_attention_interval"] = 1
+            tensors.removeAll { $0.0.contains(".linear_attn.") }
+            let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+            for layer in 0..<3 {
+                tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
+            }
+        }
+        root["text_config"] = text
+        let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-warm-tiny", vocabularySize: 256,
+            hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+            maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+        return (configuration, tensors, profile)
+    }
+
     private func verifyWarmPrefixes(hybrid: Bool) throws {
         try Device.withDefaultDevice(device) {
-            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
-                heads: 4, kvHeads: 2, vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
-            var text = root["text_config"] as! [String: Any]
-            text["max_position_embeddings"] = 4096
-            var tensors = fixture.tensors
-            if !hybrid {
-                text["full_attention_interval"] = 1
-                tensors.removeAll { $0.0.contains(".linear_attn.") }
-                let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
-                for layer in 0..<3 {
-                    tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
-                }
-            }
-            root["text_config"] = text
-            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-warm-tiny", vocabularySize: 256,
-                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
-                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
+            let (configuration, tensors, profile) = try warmFixture(hybrid: hybrid)
             for width in [2, 4, 8] {
                 let coldWire = Rendezvous(), warmWire = Rendezvous()
                 let caches = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
@@ -624,4 +632,166 @@ struct QwenTensorParallelBatchSessionTests {
         }
     }
 
+    @Test func ssdAttentionPrefixesRestoreAfterTheTiersReopen() throws {
+        try verifySSDPrefixes(hybrid: false)
+    }
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func ssdHybridPrefixesRestoreConvSSMAfterTheTiersReopen() throws {
+        try verifySSDPrefixes(hybrid: true)
+    }
+    /// The SSD tier across a restart: records written behind a cleanly
+    /// retired pair are offered by reopened tiers to a new pair with empty
+    /// resident tiers, restored on both ranks bit-exactly against a cold
+    /// prefill, and promoted to the resident tier; a record one rank cannot
+    /// read after offering it makes both ranks prefill from zero.
+    private func verifySSDPrefixes(hybrid: Bool) throws {
+        try Device.withDefaultDevice(device) {
+            let (configuration, tensors, profile) = try warmFixture(hybrid: hybrid)
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwen-tp-ssd-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let key = Data((0..<32).map { UInt8(($0 * 37 + 11) % 256) })
+            var settings = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+            settings.minimumTokens = 1
+            settings.minimumFreeBytes = 1 << 20
+            let planScope = "qwen-tp-ssd-tiny|shares=1:1"
+            func tiers() throws -> [QwenTensorParallelPrefixDisk] {
+                try (0..<2).map { rank in
+                    .init(tier: try QwenStagePrefixDiskTier(configuration: settings, root: root, key: key,
+                        planScope: planScope, rank: rank), planScope: planScope)
+                }
+            }
+            let width = 3
+            func pair(_ wire: Rendezvous, caches: [QwenTensorParallelBatchPrefixCache]?,
+                      disks: [QwenTensorParallelPrefixDisk]?) throws -> [Owned] {
+                // Each load has its own resident scope (its load agreement);
+                // the SSD scope outlives it.
+                let load = UUID().uuidString
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owner = try Owned(model, lanes: width)
+                    let warm = caches != nil
+                    owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
+                        group: reduction, prepare: { reservation, _ in
+                            self.mediaInputs(model, row: reservation.request.promptTokenIDs[0] - 10)
+                        }, completedDecode: { _ in }, completedPrefill: {}, releaseResources: { _ in },
+                        prefix: caches?[rank],
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixScope: warm ? { _ in load } : nil,
+                        prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=5|text" },
+                        allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
+                    return owner
+                }
+            }
+            func request(_ row: Int) throws -> QwenLayerStageGenerationRequest {
+                try .init(profile: profile, requestID: UUID(),
+                    promptTokenIDs: [row + 10] + (1..<((row == 0 ? 72 : 11) + row * 2)).map { ($0 * 17 + row * 7) % 256 },
+                    chunkSize: 5, outputCount: 12, stopTokenIDs: [])
+            }
+            func prefill(_ owners: [Owned], row: Int) throws {
+                while owners[0].nativeLanes[row].nextFrame?.phase == .prefill {
+                    try parallel(owners) { owner in owner.output = try owner.nativeLanes[row].session.prefill(check: {}) }
+                }
+            }
+            // The first pair stores every prompt, resident and written behind.
+            let first = try tiers()
+            let stored = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            let writer = try pair(Rendezvous(), caches: stored, disks: first)
+            for row in 0..<width {
+                let r = try request(row)
+                try parallel(writer) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+                while writer[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                    try parallel(writer) { owner in
+                        let lane = owner.nativeLanes[0]
+                        if let token = try owner.executor!.prefill(lane, frame: lane.nextFrame!, check: {}) { owner.selected = [token] }
+                    }
+                }
+                for owner in writer {
+                    try owner.executor!.retire(owner.nativeLanes[0], reason: .clientStop, selected: 1, last: owner.selected[0])
+                }
+                for owner in writer { try owner.executor!.confirmedRetirement(owner.nativeLanes[0], clean: true) }
+                #expect(writer.allSatisfy { $0.nativeLanes[0].storedPrefixFrontiers == [(r.promptCount - 1) / 5 * 5] })
+            }
+            for disk in first {
+                #expect(disk.tier.drain(timeoutSeconds: 60))
+                #expect(disk.tier.recordCount == width && disk.tier.stats.persisted == width)
+                disk.tier.close()
+            }
+            // A restarted pair: empty resident tiers, reopened SSD tiers.
+            let second = try tiers()
+            #expect(second.allSatisfy { $0.tier.recordCount == width })
+            let resident = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            let cold = try pair(Rendezvous(), caches: nil, disks: nil)
+            let warm = try pair(Rendezvous(), caches: resident, disks: second)
+            for row in 0..<width {
+                let r = try request(row)
+                try parallel(cold) { $0.nativeLanes.append(try $0.executor!.open(.init(request: r), check: {})) }
+                try parallel(warm) { $0.nativeLanes.append(try $0.executor!.open(.init(request: r), check: {})) }
+                #expect(warm.allSatisfy { $0.nativeLanes[row].committedTokens == (r.promptCount - 1) / 5 * 5 })
+                #expect(cold.allSatisfy { $0.nativeLanes[row].committedTokens == 0 })
+                try prefill(cold, row: row); try prefill(warm, row: row)
+                for rank in 0..<2 { #expect(bytes(cold[rank].output!) == bytes(warm[rank].output!), "ssd row=\(row) rank=\(rank)") }
+            }
+            #expect(second.allSatisfy { $0.tier.stats.restores == width })
+            #expect(resident.allSatisfy { $0.bytesInUse > 0 })
+            for step in 0..<4 {
+                let order = (0..<width).map { (step + width - 1 - $0) % width }
+                let tokens = order.map { ($0 * 11 + step * 7 + 3) % 256 }
+                for pair in [cold, warm] {
+                    try parallel(pair) { owner in
+                        owner.output = try QwenTensorParallelBatchSession.decode(order.map { owner.nativeLanes[$0].session },
+                            tokens: tokens, check: {})
+                    }
+                }
+                for rank in 0..<2 {
+                    #expect(bytes(cold[rank].output!) == bytes(warm[rank].output!), "ssd step=\(step) rank=\(rank)")
+                    for row in 0..<width {
+                        let a = cold[rank].nativeLanes[row].session.state, b = warm[rank].nativeLanes[row].session.state
+                        #expect(a.committedTokens == b.committedTokens)
+                        for (x, y) in zip(a.rows, b.rows) {
+                            #expect(bytes(x!.snapshot().keys) == bytes(y!.snapshot().keys))
+                            #expect(bytes(x!.snapshot().values) == bytes(y!.snapshot().values))
+                        }
+                        let x = a.recurrent.confirmedStateSnapshot() ?? [:], y = b.recurrent.confirmedStateSnapshot() ?? [:]
+                        #expect(x.keys.sorted() == y.keys.sorted())
+                        for index in x.keys {
+                            #expect(bytes(x[index]!.conv!) == bytes(y[index]!.conv!))
+                            #expect(bytes(x[index]!.ssm!) == bytes(y[index]!.ssm!))
+                        }
+                    }
+                }
+            }
+            for owner in cold + warm {
+                for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 0, last: nil) }
+                owner.nativeLanes.removeAll(); #expect(owner.host.isDrained)
+            }
+            for disk in second { disk.tier.close() }
+            // Offered, then unreadable on rank 0 (its records' wrapped keys
+            // damaged after the index loaded): both ranks prefill from zero,
+            // and rank 1 keeps the state it read in its resident tier.
+            let third = try tiers()
+            let rankZero = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: planScope))
+                .appendingPathComponent("rank0")
+            for name in try FileManager.default.contentsOfDirectory(atPath: rankZero.path) where name.hasSuffix(".dbpx") {
+                let handle = try FileHandle(forUpdating: rankZero.appendingPathComponent(name))
+                try handle.seek(toOffset: 20)
+                let byte = try #require(try handle.read(upToCount: 1))
+                try handle.seek(toOffset: 20); try handle.write(contentsOf: Data([byte[0] ^ 0xFF])); try handle.close()
+            }
+            let declined = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            let lossy = try pair(Rendezvous(), caches: declined, disks: third)
+            let r = try request(0)
+            try parallel(lossy) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+            #expect(lossy.allSatisfy { $0.nativeLanes[0].committedTokens == 0 })
+            #expect(declined[0].bytesInUse == 0 && declined[1].bytesInUse > 0)
+            #expect(third[0].tier.stats.failedRestores == 1 && third[1].tier.stats.restores == 1)
+            #expect(third[0].tier.recordCount == width - 1)
+            for owner in lossy { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 0, last: nil) }
+            for disk in third { disk.tier.close() }
+        }
+    }
 }

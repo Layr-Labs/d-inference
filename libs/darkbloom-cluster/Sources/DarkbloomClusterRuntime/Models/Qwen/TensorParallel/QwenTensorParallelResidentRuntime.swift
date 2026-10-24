@@ -65,6 +65,8 @@ public final class QwenTensorParallelResidentRuntime {
     let batchBudget: QwenTensorParallelBatchBudget?
     let batchMTPBudget: QwenTensorParallelBatchMTPBudget?
     let batchPrefix: QwenTensorParallelBatchPrefixCache?
+    /// The batch prefix cache's SSD tier on this rank, when the owner configured one.
+    let prefixDisk: QwenTensorParallelPrefixDisk?
     let batchBook = ClusterBatchLaneBook<QwenTensorParallelOwnedBatchReservation>()
     var batchServing = false
     var batchOrdinal: UInt64 = 0
@@ -186,7 +188,7 @@ public final class QwenTensorParallelResidentRuntime {
                     ?? [])
                 + batch.agreementFields + mode.loadAgreementFields + loadAgreementFields(shares: shares)
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
-                + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
+                + ["qwen-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
                 + (mediaEnabled ? [ClusterQwenMedia.contract, Qwen3VLMediaProcessor.policyID] : [])
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint()] + fields))
@@ -345,6 +347,22 @@ public final class QwenTensorParallelResidentRuntime {
                     maximumSpeculativeWidth: batchMTPBudget?.maximumSpeculativeWidth ?? 1)
             }
             try control.loaded()
+            // The batch prefix cache's SSD tier, when the owner configured one:
+            // this rank's records of this plan and shares, the verified
+            // artifact and storage, both builds and the assistant, which a
+            // restarted pair finds again. Opening it sweeps the directories of
+            // other plans under the root that hold no live record.
+            let prefixDisk: QwenTensorParallelPrefixDisk? = prefixEnabled && (batch.requestOwned || batch.lanes > 1) ? {
+                let scope = QwenTensorParallelPrefixDisk.planScope(plan: loaded.plan, planFingerprint: admission.plan.fingerprint,
+                    artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
+                    storageCommitmentSHA256: receipt.storageCommitmentSHA256,
+                    rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
+                    assistantPolicy: speculativeTerms.map { "depth=\($0.depth)|inventory=\(mtpInventory?.fingerprint ?? "none")" })
+                return QwenStagePrefixDiskTier.open(configuration: .fromEnvironment(environment, key: prefixSSDKey),
+                    planScope: scope, rank: collective.rank,
+                    stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased())
+                    .map { QwenTensorParallelPrefixDisk(tier: $0, planScope: scope) }
+            }() : nil
             let budget = prefixEnabled ? max(1, QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)) : 0
             return QwenTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: loaded, vision: loadedVision, visionInventory: loadedVisionInventory,
@@ -352,6 +370,7 @@ public final class QwenTensorParallelResidentRuntime {
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
                 prefix: QwenTensorParallelPrefixCache(budgetBytes: batch.requestOwned || batch.lanes > 1 ? 0 : budget),
                 batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget, batchPrefixEnabled: prefixEnabled,
+                prefixDisk: prefixDisk,
                 mtpTerms: speculativeTerms, mtpHead: loadedMTPHead, mtpHost: mtpHost, mtpBudget: mtpQuote,
                 assistantReady: assistantReady)
         } catch {
@@ -387,7 +406,7 @@ public final class QwenTensorParallelResidentRuntime {
                  receipt: QwenTensorParallelShardReceipt, linkProbe: ClusterWorkerLinkProbe?,
                  prefix: QwenTensorParallelPrefixCache, batchLanes: Int, batchHost: CBv2StageKVHost?,
                  batchBudget: QwenTensorParallelBatchBudget?, batchMTPBudget: QwenTensorParallelBatchMTPBudget?,
-                 batchPrefixEnabled: Bool, mtpTerms: QwenMTPTerms?,
+                 batchPrefixEnabled: Bool, prefixDisk: QwenTensorParallelPrefixDisk?, mtpTerms: QwenMTPTerms?,
                  mtpHead: QwenTensorParallelMTPHead?, mtpHost: CBv2StageKVHost?, mtpBudget: QwenTensorParallelMTPBudget?,
                  assistantReady: ClusterQwenTensorAssistantReady?) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
@@ -404,6 +423,7 @@ public final class QwenTensorParallelResidentRuntime {
         self.batchPrefix = batchBudget.map {
             .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
         }
+        self.prefixDisk = prefixDisk
         self.receipt = receipt.storageCommitmentSHA256
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
@@ -645,6 +665,9 @@ public final class QwenTensorParallelResidentRuntime {
                     for reserved in batchBook.reservations() { try reserved.media?.releaseAfterCheckedDrain() }
                     batchBook.clear(); failedBatchDriver = nil; batchHost = nil
                     try reservation?.media?.releaseAfterCheckedDrain()
+                    // Records already queued for the SSD are finished first
+                    // (bounded): they are what a restarted pair restores.
+                    prefixDisk?.tier.close()
                     prefix.sweep(); batchPrefix?.sweep(); mtpPrefix?.sweep()
                     weak var releasedVision = vision
                     vision = nil

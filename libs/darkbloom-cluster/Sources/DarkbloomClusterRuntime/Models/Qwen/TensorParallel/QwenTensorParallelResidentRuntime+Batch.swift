@@ -192,10 +192,12 @@ extension QwenTensorParallelResidentRuntime {
                     try reserved.media?.releaseAfterCheckedDrain()
                 }
             }, prefix: batchPrefix, prefixBudget: batchBudget?.prefix,
-            prefixScope: { [self] reserved in
-                loadAgreement + "|chunk=\(reserved.request.chunkSize)|kv=\(batchHost.kind.rawValue)"
-                    + (reserved.media.map { "|media=" + $0.state.prefixIdentity } ?? "|text")
-            }, allocationBound: QwenResidentResourceEnvironment.allocationBound,
+            prefixScope: { [self] reserved in loadAgreement + "|" + batchPrefixScope(reserved, kind: batchHost.kind) },
+            prefixDisk: prefixDisk,
+            prefixDiskScope: prefixDisk.map { disk -> (QwenTensorParallelOwnedBatchReservation) -> String in
+                { [self] reserved in disk.scope(batchPrefixScope(reserved, kind: batchHost.kind)) }
+            },
+            allocationBound: QwenResidentResourceEnvironment.allocationBound,
             prefixObserved: { [self] event, tokens, bytes in
                 log("darkbloom-tp-batch-prefix-v1 rank=\(collective.rank) scope=\(records.requestID) event=\(event) tokens=\(tokens) resident_bytes=\(bytes)")
             }, assistant: assistant,
@@ -237,6 +239,14 @@ extension QwenTensorParallelResidentRuntime {
             allocator("failed")
             throw error
         }
+    }
+
+    /// A request's prefix scope after its load (the resident tier's load
+    /// agreement, the SSD tier's persistent plan scope): its prompt grid, KV
+    /// backend and authenticated media identity.
+    private func batchPrefixScope(_ reserved: QwenTensorParallelOwnedBatchReservation, kind: ClusterStageKVBackendKind) -> String {
+        "chunk=\(reserved.request.chunkSize)|kv=\(kind.rawValue)"
+            + (reserved.media.map { "|media=" + $0.state.prefixIdentity } ?? "|text")
     }
 
     private func prepareBatch(_ reserved: QwenTensorParallelOwnedBatchReservation, model: QwenTensorParallelModel,

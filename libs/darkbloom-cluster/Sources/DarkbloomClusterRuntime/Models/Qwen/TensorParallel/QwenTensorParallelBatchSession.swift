@@ -46,10 +46,8 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
               captureLimitBytes >= 0, captureFrontier == 0 || allocationBound != nil else {
             throw ProbeError("Qwen TP batch session requires a matching dense shard and original-grid state")
         }
-        let geometry = try CBv2RequestGeometry(model: model.model, family: .qwen35,
-            feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(model.model),
-            layerCount: model.plan.layerCount, vocabularySize: model.plan.vocabularySize,
-            configurationData: configuration, maximumTokens: request.maximumTokens, host: host)
+        let geometry = try Self.geometry(model: model, configuration: configuration, host: host,
+            maximumTokens: request.maximumTokens)
         self.model = model; self.request = request; self.inputs = inputs
         self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
         self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP prefix capture") }
@@ -62,6 +60,15 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 promptCount: request.promptCount, outputCount: request.outputCount)
         }
         schedule = QwenLayerStageGenerationSchedule(request: request)
+    }
+
+    /// This rank's request-state geometry for a request of `maximumTokens`.
+    static func geometry(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
+                         maximumTokens: Int) throws -> CBv2RequestGeometry {
+        try CBv2RequestGeometry(model: model.model, family: .qwen35,
+            feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(model.model),
+            layerCount: model.plan.layerCount, vocabularySize: model.plan.vocabularySize,
+            configurationData: configuration, maximumTokens: maximumTokens, host: host)
     }
 
     func prefill(check: () throws -> Void) throws -> MLXArray? {

@@ -44,6 +44,10 @@ final class QwenTensorParallelSnapshotCache<Snapshot: QwenTensorParallelPrefixSn
     func held(keys: [Int: String], candidates: [Int]) -> [Float] {
         candidates.map { enabled && keys[$0].flatMap({ entries[$0] }) != nil ? 1 : 0 }
     }
+    /// Whether this rank's resident tier holds `key` at `frontier`.
+    func holds(key: String, frontier: Int) -> Bool {
+        enabled && entries[key].map { $0.state.committedTokens == frontier } == true
+    }
     static func agreed(candidates: [Int], votes: [Float]) throws -> Int {
         guard candidates.count == votes.count, votes.allSatisfy({ $0 == 0 || $0 == 1 || $0 == 2 }) else {
             throw ProbeError("Qwen TP prefix vote differs from the bounded candidate grid")

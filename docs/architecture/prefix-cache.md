@@ -988,8 +988,9 @@ must prove native and media retirement before a clean capture enters the cache;
 cancelled or failed requests donate nothing. Reused/stored counts are published
 through the existing prompt-cache report. Cache entries are separate from live
 paged rows, swept on failure and shutdown, and explicitly charged beside them.
-The existing prefix disable switch offers and captures nothing. Singleton TP,
-other models and SSD persistence retain their existing behavior.
+The existing prefix disable switch offers and captures nothing. Singleton TP
+and other models retain their existing behavior; the SSD tier is described
+below.
 
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
 (`QwenTensorParallelBatchPrefixCache`) and
@@ -1002,3 +1003,39 @@ warm-prefix correctness, media parity, RDMA or useful speed.
 The TP assistant prefix donor binds a compact target attention/recurrent snapshot and the same assistant's trusted prompt history at one confirmed original prompt frontier. Restore creates request-owned mutable state and both ranks negotiate the common usable frontier. The bounded cache publishes donors only after checked retirement and a final cancellation/deadline vote; a failed decoder cannot donate. Captured speculative target windows, pending assistant drafts and queued accepted tokens are not prefix donors. Both resident donor banks and the temporary capture bank remain in the complete quote.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefix.swift` (`QwenTensorParallelMTPPrefixState`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMTPPrefixBudget.swift`, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift` (`Qwen35InlineMTPAssistant`). Full-artifact warm-prefix numerical and cancellation checks remain separate from tiny ownership fixtures.
+
+### Qwen27 TP prefix SSD tier
+
+Both ranks of the Qwen27 TP batch owner also keep their prefix snapshots in the
+pipeline's encrypted SSD tier (`QwenStagePrefixDiskTier`), so a repeated long
+prompt restores its prefix after both Macs restart. Each rank writes only its
+own shard: its heads' attention rows and its recurrent state at the captured
+boundary, and for a speculating owner the assistant's trusted history at that
+boundary as the record's speculative history. Records are written behind
+serving after bilateral clean retirement, and only for a capture the resident
+tier accepted, so a restore fits that tier again. The record directory is
+named by the plan and shares, the verified artifact, this rank's storage
+commitment, both builds and the assistant policy, never by the membership
+epoch. A restarted pair finds what the last one kept; a re-split, a reinstall
+or another assistant starts a new directory.
+
+The sealed vote counts a boundary held in memory or as a complete SSD record.
+Each rank restores the agreed boundary from its own tiers, memory first. It
+checks that an SSD shard adopts into its request geometry before any page is
+written, and charges the shard to the resident tier at once. A second sealed
+exchange confirms that both ranks restored. Otherwise both prefill from zero,
+and a rank that did read its record keeps it resident, so the next offer finds
+it in memory. An unreadable or unadoptable record is deleted. The load
+agreement carries `qwen-tensor-parallel-prefix-v2`.
+
+The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
+`restore-confirmed`, `restore-declined`, `close`); the
+`darkbloom-tp-batch-prefix-v1` events are unchanged. Shutdown closes the tier
+(queued writes finish, bounded) before the model is released. Singleton TP
+keeps the resident tier only.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixDisk.swift`,
+`QwenTensorParallelNativeBatchExecutor.swift` (`agreePrefix`, `confirmedRetirement`) and
+`QwenTensorParallelResidentRuntime.swift` (load and shutdown) in the same directory.
+Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`) and
+`QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head).

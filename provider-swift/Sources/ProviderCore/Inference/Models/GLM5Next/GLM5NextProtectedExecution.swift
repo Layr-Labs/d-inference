@@ -141,9 +141,11 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
         super.init()
     }
 
-    func prepare(_ input: LMInput, cache: [any KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(
+        _ input: LMInput, cache: [any KVCache], state: LMOutput.State?, prefill: PrefillParameters
+    ) throws -> PrepareResult {
         try requireInput(input.text.tokens, cache: cache)
-        return try root.prepare(input, cache: cache, windowSize: windowSize)
+        return try root.prepare(input, cache: cache, state: state, prefill: prefill)
     }
     func newCache(parameters: GenerateParameters?) -> [any KVCache] {
         root.newCache(parameters: parameters)

@@ -660,7 +660,7 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
 // MARK: - v0.7.5 one-engine: v2 slot construction + KV re-slice
 
 private final class StandaloneStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

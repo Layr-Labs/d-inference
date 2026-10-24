@@ -18,7 +18,7 @@ struct EngineV2ContiguousAdmissionTests {
     }
 
     private func model(layerCount: Int = 2) throws -> Gemma4TextModel {
-        let configuration = try JSONDecoder().decode(Gemma4TextConfiguration.self, from: Data("""
+        let configuration = try JSONDecoder().decode(MLXLLM.Gemma4TextConfiguration.self, from: Data("""
             {"model_type":"gemma4_text","hidden_size":64,"num_hidden_layers":\(layerCount),
              "intermediate_size":128,"num_attention_heads":4,"num_key_value_heads":2,
              "head_dim":64,"global_head_dim":64,"num_kv_shared_layers":0,

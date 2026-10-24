@@ -45,12 +45,12 @@ struct EngineV2BenchmarkMTPVerificationTests {
             """
         MLXRandom.seed(0x6144)
         return Gemma4TextModel(try JSONDecoder().decode(
-            Gemma4TextConfiguration.self, from: Data(json.utf8)))
+            MLXLLM.Gemma4TextConfiguration.self, from: Data(json.utf8)))
     }
 
     private final class Prepared: CBv2MTPPreparedCapture {}
     private final class OtherTarget: Module, LanguageModel {
-        func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
             .tokens(input.text)
         }
         func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -699,7 +699,7 @@ and recurrent checkpoints keep the stock kernel's bits. No chip list decides
 this: in each process, the first eligible window of each kernel instantiation
 runs the candidates and the stock kernel on a fixed 32-position window on that
 GPU and keeps the first exact candidate, or else the stock kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`,
 `GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
 kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
 ([configuration](../reference/configuration.md#engine-and-scheduler)) restores

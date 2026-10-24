@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -888,9 +888,11 @@ The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-na
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
 (`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
-(`GLM5NextPromptPolicy.RawControls.returnedReasoning`), and serves `strict`
-tools by validating each `auto` call against its schema before exposure
-(`ToolConstraintValidation.validate`), not by constraining decoding.
+(`GLM5NextPromptPolicy.RawControls.returnedReasoning`); OpenRouter's
+`reasoning.context` chooses which of it renders, `current_turn` meaning the
+template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
+`strict` tools by validating each `auto` call against its schema before
+exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
 GLM's native engine refuses sampler token constraints, so a JSON
 `response_format` is likewise prompt-steered and validated, not constrained:
 the service's instruction message renders through the template, reasoning

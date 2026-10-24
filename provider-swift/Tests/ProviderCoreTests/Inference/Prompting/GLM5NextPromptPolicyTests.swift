@@ -144,6 +144,8 @@ struct GLM5NextPromptPolicyTests {
         ["thinking": true],
         ["include_reasoning": NSNull(), "thinking": NSNull()],
         ["reasoning": ["enabled": true, "max_tokens": NSNull(), "exclude": NSNull(), "summary": "auto"]],
+        ["reasoning": ["context": "auto", "mode": "standard"]],
+        ["reasoning": ["enabled": true, "context": NSNull(), "mode": NSNull()]],
         ["reasoning": ["enabled": true, "exclude": false], "include_reasoning": true,
          "enable_thinking": true, "chat_template_kwargs": ["thinking": true, "enable_thinking": true]],
     ] }
@@ -178,6 +180,73 @@ struct GLM5NextPromptPolicyTests {
                     #expect(context == fixture.expectedContext, "\(fixture.id) \(controls)")
                     #expect(try render(input, with: template) == fixture.rendered, "\(fixture.id) \(controls)")
                 }
+            }
+        }
+    }
+
+    /// OpenRouter's `reasoning.context` spells the template's `clear_thinking`:
+    /// `current_turn` keeps only the reasoning returned after the last user
+    /// turn, `all_turns` every turn's. With each golden's `clear_thinking`
+    /// spellings replaced by the equivalent context, every golden, the
+    /// cleared and current-turn ones included, renders byte for byte.
+    @Test func reasoningContextRendersEveryGoldenLikeItsClearThinkingSpelling() throws {
+        let template = try shippedTemplate()
+        for fixture in try goldens().cases {
+            guard case .object(let expected) = fixture.expectedContext else {
+                Issue.record("\(fixture.id) has no expected context object")
+                continue
+            }
+            var body = try #require(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture.request)) as? [String: Any])
+            body.removeValue(forKey: "clear_thinking")
+            if var kwargs = body["chat_template_kwargs"] as? [String: Any] {
+                kwargs.removeValue(forKey: "clear_thinking")
+                body["chat_template_kwargs"] = kwargs
+            }
+            var reasoning = body["reasoning"] as? [String: Any] ?? [:]
+            reasoning["context"] = expected["clear_thinking"] == .bool(true) ? "current_turn" : "all_turns"
+            body["reasoning"] = reasoning
+            for input in try remoteAndLocalInputs(JSONSerialization.data(withJSONObject: body)) {
+                let context = MLXLMCommon.JSONValue.object(
+                    (input.additionalContext ?? [:]).mapValues { .from($0) })
+                #expect(context == fixture.expectedContext, "\(fixture.id)")
+                #expect(try render(input, with: template) == fixture.rendered, "\(fixture.id)")
+            }
+        }
+    }
+
+    /// A `reasoning.context` that disagrees with the effective `clear_thinking`
+    /// is refused on both paths, never reconciled; one that agrees, or `auto`,
+    /// leaves the explicit value in place.
+    @Test func reasoningContextContradictingClearThinkingIsRefused() throws {
+        let contradictions: [[String: Any]] = [
+            ["reasoning": ["context": "current_turn"], "clear_thinking": false],
+            ["reasoning": ["context": "all_turns"], "chat_template_kwargs": ["clear_thinking": true]],
+            ["reasoning": ["context": "all_turns"], "thinking": ["type": "enabled", "clear_thinking": true]],
+        ]
+        for controls in contradictions {
+            let body = try body(controls)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(!evidence.invalid, "\(controls)")
+            #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(throws: (any Error).self) { try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next") }
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.normalizedInput(
+                    prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
+                    request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
+            }
+        }
+        let consistent: [([String: Any], Bool)] = [
+            (["reasoning": ["context": "current_turn"]], true),
+            (["reasoning": ["context": "current_turn"], "clear_thinking": true], true),
+            (["reasoning": ["context": "all_turns"], "chat_template_kwargs": ["clear_thinking": false]], false),
+            (["reasoning": ["context": "auto"], "clear_thinking": true], true),
+            (["reasoning": ["context": "current_turn", "enabled": false]], true),
+        ]
+        for (controls, clears) in consistent {
+            for input in try remoteAndLocalInputs(body(controls)) {
+                #expect(input.additionalContext?["clear_thinking"] as? Bool == clears, "\(controls)")
             }
         }
     }
@@ -494,7 +563,9 @@ struct GLM5NextPromptPolicyTests {
             ["reasoning": ["max_tokens": 0]], ["reasoning": ["max_tokens": -1]],
             ["reasoning": ["max_tokens": 1.5]], ["reasoning": ["max_tokens": "1024"]],
             ["reasoning": ["summary": "verbose"]], ["reasoning": ["summary": true]],
-            ["reasoning": ["generate_summary": "Auto"]], ["reasoning": ["context": "all_turns"]],
+            ["reasoning": ["generate_summary": "Auto"]], ["reasoning": ["context": "every_turn"]],
+            ["reasoning": ["context": "All_Turns"]], ["reasoning": ["context": true]],
+            ["reasoning": ["mode": "pro"]], ["reasoning": ["mode": true]],
             ["reasoning": ["effort": "high"], "reasoning_effort": "low "],
             ["reasoning": ["enabled": false, "unrecognized": true]],
             ["clear_thinking": false, "chat_template_kwargs": ["clear_thinking": "true"]],
@@ -759,7 +830,8 @@ struct GLM5NextPromptPolicyTests {
     /// tool turn with OpenRouter's reasoning fields, GLM's own API spelling of
     /// the thinking switch, or OpenRouter's `strict` weather tool. MiMo and
     /// Nemotron Super serve each. GLM served only the first and refused the
-    /// others with `invalid_request` before rendering.
+    /// others with `invalid_request` before rendering, and refused OpenRouter's
+    /// `reasoning.context` and `reasoning.mode` until they were recognized.
     @Test(arguments: [
         ("{}", false),
         (#"{"reasoning":null}"#, false),
@@ -772,8 +844,10 @@ struct GLM5NextPromptPolicyTests {
         (#"{"thinking":{"type":"enabled"}}"#, false),
         (#"{"thinking":true}"#, false),
         (#"{"thinking":null}"#, false),
+        (#"{"reasoning":{"effort":"high","context":"auto","mode":"standard"}}"#, false),
         ("{}", true),
         (#"{"reasoning":{"enabled":true}}"#, true),
+        (#"{"reasoning":{"enabled":true,"context":"all_turns"}}"#, true),
     ])
     func openRouterReasoningContentReturnRequestIsServed(controls: String, strict: Bool) throws {
         let template = try shippedTemplate()
@@ -787,6 +861,31 @@ struct GLM5NextPromptPolicyTests {
             let rendered = try render(input, with: template)
             #expect(rendered.contains("<|assistant|><think>\(Self.returnedThought)</think><tool_call>"))
             #expect(rendered.hasSuffix(#"<tool_response>{"temperature":72}</tool_response><|assistant|><think>"#))
+        }
+    }
+
+    /// `reasoning.context: current_turn` keeps the reasoning returned on the
+    /// current turn's call and drops it once a later user turn follows,
+    /// exactly as `clear_thinking: true` does; `all_turns` keeps it.
+    @Test func currentTurnReasoningContextRendersLikeClearThinking() throws {
+        let template = try shippedTemplate()
+        let thought = Self.returnedThought
+        func rendered(_ controls: String, laterUserTurn: Bool) throws -> [String] {
+            var body = try #require(JSONSerialization.jsonObject(with: returnedReasoningConversation(
+                assistant: ["reasoning": thought], controls: controls)) as? [String: Any])
+            if laterUserTurn {
+                body["messages"] = (body["messages"] as? [Any] ?? []) + [["role": "user", "content": "Thanks"]]
+            }
+            return try remoteAndLocalInputs(JSONSerialization.data(withJSONObject: body)).map {
+                try render($0, with: template)
+            }
+        }
+        for laterUserTurn in [false, true] {
+            let current = try rendered(#"{"reasoning":{"context":"current_turn"}}"#, laterUserTurn: laterUserTurn)
+            #expect(try current == rendered(#"{"clear_thinking":true}"#, laterUserTurn: laterUserTurn))
+            #expect(current[0].contains("<think>\(thought)</think>") == !laterUserTurn)
+            let all = try rendered(#"{"reasoning":{"context":"all_turns"}}"#, laterUserTurn: laterUserTurn)
+            #expect(all[0].contains("<think>\(thought)</think>"))
         }
     }
 

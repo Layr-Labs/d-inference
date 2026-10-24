@@ -40,9 +40,6 @@ enum GLM5NextPromptPolicy {
     private static let contradictoryThinking =
         "thinking-off cannot be combined with a thinking-on switch, effort level or reasoning budget"
 
-    private static let contradictoryReasoningContext =
-        "reasoning.context cannot contradict clear_thinking"
-
     /// The template renders low, high or max. The other OpenAI effort names map
     /// to the nearest of those, matching the platform prompt sidecar. `none`
     /// and `off` turn thinking off; other unknown values are refused.
@@ -274,9 +271,17 @@ enum GLM5NextPromptPolicy {
             guard !(disablesThinking && requestsThinking) else {
                 throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
             }
-            if let contextClearThinking, let clearThinking, contextClearThinking != clearThinking {
-                throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryReasoningContext)
+            _ = try resolvedClearThinking(explicit: clearThinking)
+        }
+
+        /// The template's `clear_thinking`: the explicit Boolean, else the one
+        /// `reasoning.context` spells, else `false`. A context that contradicts
+        /// the explicit Boolean is refused.
+        func resolvedClearThinking(explicit: Bool?) throws -> Bool {
+            if let explicit, let contextClearThinking, explicit != contextClearThinking {
+                throw GLM5NextPromptPolicy.invalid("reasoning.context cannot contradict clear_thinking")
             }
+            return explicit ?? contextClearThinking ?? false
         }
 
         /// The returned text of one message: its `reasoning` string, else its
@@ -336,13 +341,10 @@ enum GLM5NextPromptPolicy {
         guard !(thinkingOff && thinkingOn) else {
             throw invalid(contradictoryThinking)
         }
-        let clearThinking = controls.clearThinking ?? raw.clearThinking
-        if let clearThinking, let contextClear = raw.contextClearThinking, clearThinking != contextClear {
-            throw invalid(contradictoryReasoningContext)
-        }
+        let clearThinking = try raw.resolvedClearThinking(explicit: controls.clearThinking ?? raw.clearThinking)
         var context: [String: any Sendable] = [
             "reasoning_effort": (nested ?? top ?? raw.effort ?? .max).rawValue,
-            "clear_thinking": clearThinking ?? raw.contextClearThinking ?? false,
+            "clear_thinking": clearThinking,
         ]
         if thinkingOff { context[thinkingOffContextKey] = false }
         return context

@@ -84,6 +84,14 @@
   box-sizing: border-box;
 }
 
+/* Scroll-scrubbed by HomeExperience on the map shell. Not inherited, so a
+   new value restyles the shell's transform without touching its 375 tiles. */
+@property --grid-intro {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
 html {
   background: var(--black);
   scroll-behavior: smooth;
@@ -835,11 +843,11 @@ button {
 }
 
 .network-sticky[data-exiting="true"] .grid-map i:not(.is-story-target) {
-  opacity: clamp(0, calc((.72 - var(--grid-exit, 0)) * 2.2), 1);
+  opacity: clamp(0, calc((.72 - var(--tile-exit, 0)) * 2.2), 1);
 }
 
 .network-sticky[data-exiting="true"] .grid-map i.is-story-target {
-  opacity: clamp(0, calc((.88 - var(--grid-exit, 0)) * 3.6), 1);
+  opacity: clamp(0, calc((.88 - var(--tile-exit, 0)) * 3.6), 1);
 }
 
 /* A single flat rectangle takes over from the selected grid cell during the

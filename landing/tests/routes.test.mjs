@@ -41,11 +41,12 @@ test("docs link keeps its external destination", async () => {
 });
 
 test("fonts, videos and the social image are served locally", async () => {
-  for (const path of ["/fonts/PPTelegraf-Regular.woff2", "/media/hero-film-r7.mp4", "/og.png"]) {
+  for (const path of ["/fonts/PPTelegraf-Regular.woff2", "/media/hero-film-r7-mobile.mp4", "/media/hero-film-r7-1080.mp4", "/og.png"]) {
     const response = await fetch(`${origin}${path}`, { method: "HEAD" });
     assert.equal(response.status, 200, path);
     assert.ok(Number(response.headers.get("content-length")) > 0, path);
     if (path === "/og.png") assert.equal(response.headers.get("cross-origin-resource-policy"), "cross-origin");
+    if (path.startsWith("/media/")) assert.match(response.headers.get("cache-control") ?? "", /max-age=86400/, path);
   }
 });
 

@@ -667,7 +667,9 @@ ordinary geometry. The same cut lowers GLM's reuse granularity from 2,048 to
 256 tokens (a 32,682-token prompt publishes 32,512 instead of 30,720). GLM
 adopters resume under ordinary chunking: a forced donor-sized chunk waited
 whenever decode rows shortened the budget and cold-restarted the hit after
-three waits (`EngineV2+CompleteCheckpoint.swift`). GLM's cold prefill depends
+three waits
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
+`completeCheckpointLookup`). GLM's cold prefill depends
 on its partition (the KDA four-token groups, the attention history/current
 split and MoE routing), so as for the MoE Qwen a checkpoint is exactly the
 state its own donor computed. On an M5 Ultra, solo donors of one prompt wrote
@@ -675,8 +677,8 @@ bit-identical checkpoints; a donor beside decoding requests differed from its
 first partial KDA group on (relative L2 about 0.1 in the deepest layers), and
 first-token logprobs of three partitions spread over 0.1 nat while each
 partition repeated exactly. The partition is `demandedCaptureBoundaryRange` in
-`DemandedShortCheckpointRange.swift`; it shares `demandedCheckpointRange` with
-the first-token projection.
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+it shares `demandedCheckpointRange` with the first-token projection.
 
 The benchmark SPI can explicitly select
 `EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure

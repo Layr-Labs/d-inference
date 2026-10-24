@@ -320,14 +320,25 @@ on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
 (`NemotronSuperLocalImageHTTP.engine`, `NemotronSuperSlotOwner.chatEngine`);
 both bindings refuse a logprobs request without one. The coordinator relay
 passes the channel its frames loop splices. For a local `logprobs` body,
-`LocalChatUploadResponder` creates one, splices entries into content and
-reasoning frames with `ProviderLoop.injectLogprobs`, and attaches them to a
-complete response's message, if it has content or reasoning, without the token
-a `stop` finish ends on. As on the relay
-(`ProviderLoop.logprobsCoverReasoning`), reasoning tokens' entries ride the
-reasoning frames that carry them, as vLLM-style servers return them, so
-`logprobs.content` covers reasoning and content tokens and a response that ends
-while reasoning still carries its entries.
+`LocalChatUploadResponder` creates one, splices entries into reasoning and
+content frames with `ProviderLoop.injectLogprobs`, and attaches them to a
+complete response's message when it has reasoning or content.
+
+The contract matches vLLM and SGLang: `logprobs.content` has one entry per
+generated token, in generation order, reasoning tokens included. Joined, the
+entry tokens spell the reasoning text and then the answer text, not the answer
+alone; they also include the `</think>` marker that ends the reasoning, which
+neither `reasoning_content` nor `content` shows. A stream's reasoning chunks
+carry their tokens' entries and its content chunks theirs. An entry rides the
+chunk that carries its token or a neighbouring one: a token that renders
+nothing, such as the marker, rides the next chunk, and the frames loop drains
+whatever the bridge has appended. Order and exactly-once are exact, so clients
+accumulate entries across chunks. A complete response carries the same entries
+as one list. A response that ends while reasoning (its `max_tokens` spent)
+carries an entry for every token; the stop token that ends a `stop` finish
+carries none. On the coordinator relay `ProviderLoop.logprobsCoverReasoning`
+selects this contract for the Super owner and GLM5-Next; other models attach
+entries to content chunks only.
 
 A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
 target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`
@@ -1789,10 +1800,12 @@ logprob row on any CBv2 engine: it never drafts or verifies
 native work. GLM has no request-scoped target-only fallback, so while such a
 row decodes beside other rows the whole step decodes target-only, as it does
 beside a GLM media row; output stays exact and the other rows speculate again
-once it finishes. Its entries reach the client as Super's do: the relay splices
-them into the reasoning and content frames that carry their tokens
-(`ProviderLoop.logprobsCoverReasoning`), so a response that ends while
-reasoning still carries them.
+once it finishes. Its entries follow
+[Super's contract](#nemotron-super-logprobs) on the relay
+(`ProviderLoop.logprobsCoverReasoning`): one per generated token in generation
+order, reasoning tokens included, so a response that ends while reasoning still
+carries them. GLM returns logprobs only through the relay; the standalone
+`--local` server emits none.
 
 ### Collected and streaming reasoning state
 

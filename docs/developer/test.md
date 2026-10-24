@@ -120,7 +120,13 @@ from the same fixture: the relay channel must receive one entry per generated
 token with the requested alternatives, the row must not draft, and a later
 plain request must still speculate. Beside a concurrent plain row, a ten-step
 logprob row must carry the entries it carries alone and leave the plain row's
-text unchanged. In the SDK,
+text unchanged. Without a flag, `GLM5NextRelayLogprobsTests` replays scripted
+GLM tokens through the production coordinator handler and frames loop
+(`ScriptedCoordinatorRelay`): a mixed reply and a reply that ends while
+reasoning, requested streamed and not, must carry one entry per generated token
+in generation order, reasoning tokens on the reasoning chunks and the marker and
+answer tokens on the content chunks; a request without logprobs carries none, and
+another model type keeps content-chunk attachment. In the SDK,
 `GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
 `protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
 values with the target's own log-softmax for serial and rectangular
@@ -233,8 +239,9 @@ checkpoint through the production bundle and the `EngineV2Bridge` relay channel
 `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
 `DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
 `DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
-32-token `top_logprobs: 5` request must return one entry per token, never
-draft, equal the same row submitted to the raw engine, and match a
+32-token `top_logprobs: 5` request must return one entry per token, starting
+with reasoning tokens because the prompt opens a thought (`reasoningPositions`),
+never draft, equal the same row submitted to the raw engine, and match a
 teacher-forced dense-cache log-softmax along its own tokens within the larger
 of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
 bf16 spacings of the step's largest logit. A logprob row decodes one-token
@@ -1220,12 +1227,14 @@ The managed slot is covered by `NemotronSuperServingPolicyTests` and
 plan, footprint, media charge and capacity quotes; CPU only) and
 `NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
 coordinator and local-endpoint text and image requests on the speculating
-owner, logprobs on both paths without a draft and on a relayed response that
-ends while reasoning, an image beside speculating text, media refusal before
-allocation, cancellation, admission refusal and retirement). The local hook's
-`liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and complete
-logprobs on the tiny installed fixture, including a response that ends while
-reasoning, and the
+owner, logprobs on both paths without a draft, and relayed thinking-on replies,
+mixed and ending while reasoning, with one entry per generated token on
+reasoning or content chunks; an image beside speculating text, media refusal
+before allocation, cancellation, admission refusal and retirement). The local
+hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
+complete logprobs on the tiny installed fixture for a mixed reply and one that
+ends while reasoning, with entries on the stream's reasoning chunks, and none
+without `logprobs`, and the
 SDK's `NemotronSuperMTPMediaFallbackTests` checks a logprob row's tokens and
 logprobs against the plain owner's while a text row beside it speculates
 ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)). Three gated cases need the
@@ -1236,8 +1245,10 @@ shard (hashes about 75 GB, loads no weights); adding
 the production loader, once to serve an encrypted text request and once for PNG
 and JPEG questions and an image beside a text request.
 `pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
-against the engine's and, at every step the relay served up to its end of
-turn, against a cold prefill of the prompt and the tokens before it.
+against the engine's and, at every step the relay served, against a cold
+prefill of the prompt and the tokens before it, twice: with thinking off up to
+the end of turn, and with thinking on for a 48-token reply that ends inside
+reasoning, whose 48 entries must all ride reasoning chunks.
 `DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
 makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.

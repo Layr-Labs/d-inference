@@ -188,8 +188,13 @@ with 429.
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
 calibrated prefill limit), at most one prompt chunk per step beside every decode
 or verify row, a step budget that holds a whole chunk plus those rows, and
-optional decode-only steps between chunks
-(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+four decode-only steps after each chunk while requests decode
+(`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`;
+`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 and is
+forwarded to the launchd provider job). On an M5 Ultra four held steps raised a
+decoder's rate during an 8K prefill from 5.8 to 16.3 tok/s and delayed the
+prefilling request's first token by 15 to 26%; eight gave 24.7 tok/s for 33 to
+52%. A step without decode rows is never held. A request's chunks are
 therefore the same whether or not it is served alone. Because one chunk runs per
 step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:

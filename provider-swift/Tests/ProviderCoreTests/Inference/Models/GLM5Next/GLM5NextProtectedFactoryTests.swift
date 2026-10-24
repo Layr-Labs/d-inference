@@ -345,15 +345,14 @@ struct GLM5NextProtectedFactoryTests {
                     == "glm5_next_native_paged_full_state_rectangular_mtp_v1")
             #expect(native.resources.contract.supportsNativeCompletePrefix)
             #expect(await bridge.canSubmitWithNativeOwner())
-            let foreignStore = try #require(
-                await SSDHybridCheckpointStoreFactory.make(
-                    modelId: fixture.plan.weights.catalog.id, identity: cache.identity,
-                    backendLayout: cache.config.backendLayout, kvBudget: fixture.budget,
-                    environment: fixture.environment.merging([
-                        "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": fixture.root.appendingPathComponent(
-                            "foreign-cache"
-                        ).path
-                    ]) { _, value in value }))
+            let foreignStore = try await SSDHybridCheckpointStoreFactory.build(
+                modelId: fixture.plan.weights.catalog.id, identity: cache.identity,
+                backendLayout: cache.config.backendLayout, kvBudget: fixture.budget,
+                environment: fixture.environment.merging([
+                    "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": fixture.root.appendingPathComponent(
+                        "foreign-cache"
+                    ).path
+                ]) { _, value in value }).get()
             fixture.stores.append(foreignStore)
             #expect(foreignStore !== cache && foreignStore.identity == cache.identity)
             try fixture.expectFactoryRefusal {

@@ -1005,15 +1005,19 @@ Output includes:
   Model names and exact load figures remain private there and appear in the owner's
   live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to
-  (`paged` / `contiguous`), the selection the config asked for, and whether
-  MTP is enabled, active, or enabled-but-inert.
+  (`paged` / `contiguous`), the selection the config asked for, whether
+  MTP is enabled, active, or enabled-but-inert, and the SSD prefix cache's
+  status (`prefix_cache=`).
 
 ### Slot posture
 
 ```
 Slot posture: state written 2s ago
-  google/gemma-4-26b: kv=paged (requested paged) | mtp=enabled, active
+  google/gemma-4-26b: kv=paged (requested paged) | mtp=enabled, active | … | prefix_cache=ready
   openai/gpt-oss-20b: kv=contiguous (requested auto) | mtp=enabled but INERT (inert_kv_unsupported)
+  qwen3.5-35b-a3b: kv=paged (requested auto) | mtp=enabled, active | … | prefix_cache=FAILED (cache_init_failed: key_unavailable)
+    → prefix cache: its encryption key could not be loaded from the Secure Enclave and Keychain
+    → fix: run the signed release (`darkbloom update`); …
   big/model-70b: kv=NOT SERVING (requested paged) — load failed: …
 ```
 
@@ -1027,6 +1031,17 @@ shows `kv=NOT SERVING`.
 `mtp=enabled but INERT` means a drafter is resident and charging memory
 while producing no drafts. It is not the same state as `mtp=enabled,
 active`, and the reason is always named.
+
+`prefix_cache=` is the slot's SSD prefix-cache status as the heartbeat reports
+it: `ready`, `starting`, `off (<reason>)` for a model or slot that does not
+cache by design, `closed (unloading)`, or `FAILED (<reason>: <cause>)` with the
+cause and fix on the next lines. A failed cache serves the model uncached and is
+built again when the model next loads. `doctor` reports the same failure as a
+`prefix cache` check; the desktop app's diagnostics run `doctor`
+(`PrefixCacheDiagnosis`,
+`provider-swift/Sources/ProviderCore/Diagnostics/PrefixCacheDiagnosis.swift`).
+Causes are listed in the
+[SSD KV cache reference](../reference/ssd-kv-cache.md#status-and-outcome-vocabularies).
 
 These values come from the daemon's state file
 (`~/.darkbloom/daemon-state.json`, override with `DARKBLOOM_STATE_FILE`),

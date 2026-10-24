@@ -90,7 +90,40 @@ import Testing
     ])
 }
 
+@Test func prefixCacheStatusCarriesTheTypedCauseOnlyBehindAnError() throws {
+    let failed = PrefixCacheModelStatus(
+        modelId: "failed", backend: .paged, replayStrategy: .unknown,
+        state: .error, reason: .cacheInitFailed, detail: .keyUnavailable)
+    // A detail never rides on a non-error status.
+    let ready = PrefixCacheModelStatus(
+        modelId: "ready", backend: .paged, replayStrategy: .direct,
+        state: .ready, reason: .ready, detail: .keyUnavailable)
+    #expect(ready.detail == nil)
+    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(
+            memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        prefixCacheProtocol: 1,
+        prefixCacheV2Models: [],
+        prefixCacheStatuses: [failed, ready]))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(heartbeat)
+    let statuses = try #require(try jsonObject(data)["prefix_cache_statuses"] as? [[String: Any]])
+    #expect(statuses.first?["reason"] as? String == "cache_init_failed")
+    #expect(statuses.first?["detail"] as? String == "key_unavailable")
+    #expect(statuses.last?.keys.contains("detail") == false, "omitted, not null")
+    guard case .heartbeat(let decoded) = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(decoded.prefixCacheStatuses == [failed, ready])
+}
+
 @Test func prefixCacheTelemetryEnumCasingIsPinned() {
+    #expect(Set(SSDPrefixCacheConstructionFailure.allCases.map(\.rawValue)) == [
+        "missing_weight_hash", "unsupported_plan", "unsafe_path", "key_unavailable",
+        "ephemeral_key_unavailable", "block_contract_mismatch", "epoch_unavailable",
+        "prompt_contract_unavailable", "identity_unavailable", "layout_unavailable",
+        "write_budget_unavailable", "cache_closed",
+    ])
     #expect(Set(PrefixCacheStatusState.allCases.map(\.rawValue)) == [
         "ready", "pending", "disabled", "error",
     ])

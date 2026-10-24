@@ -396,24 +396,25 @@ public final class SSDPrefixCache:
     private func prefixCacheModelStatusLocked(
         base: PrefixCacheModelStatus
     ) -> PrefixCacheModelStatus {
-        let status: (PrefixCacheStatusState, PrefixCacheStatusReason)
+        let status: (PrefixCacheStatusState, PrefixCacheStatusReason, SSDPrefixCacheConstructionFailure?)
         if closed {
-            status = (.error, .cacheInitFailed)
+            status = (.error, .cacheInitFailed, .cacheClosed)
         } else if scanFailed {
-            status = (.error, .scanFailed)
+            status = (.error, .scanFailed, nil)
         } else if !scanReady {
-            status = (.pending, .scanPending)
+            status = (.pending, .scanPending, nil)
         } else if config.epochStore != nil && config.epochStore?.current == nil {
-            status = (.error, .cacheInitFailed)
+            status = (.error, .cacheInitFailed, .epochUnavailable)
         } else {
-            status = (.ready, .ready)
+            status = (.ready, .ready, nil)
         }
         return PrefixCacheModelStatus(
             modelId: base.modelId,
             backend: base.backend,
             replayStrategy: base.replayStrategy,
             state: status.0,
-            reason: status.1)
+            reason: status.1,
+            detail: status.2)
     }
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {

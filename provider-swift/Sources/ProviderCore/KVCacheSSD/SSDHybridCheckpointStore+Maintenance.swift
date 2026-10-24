@@ -178,7 +178,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return (capabilityLocked(), PrefixCacheModelStatus(
                 modelId: base.modelId, backend: base.backend, replayStrategy: base.replayStrategy,
                 state: closed ? .error : (ready ? .ready : .pending),
-                reason: closed ? .cacheInitFailed : (ready ? .ready : .scanPending)))
+                reason: closed ? .cacheInitFailed : (ready ? .ready : .scanPending),
+                detail: closed ? .cacheClosed : nil))
         }
     }
 

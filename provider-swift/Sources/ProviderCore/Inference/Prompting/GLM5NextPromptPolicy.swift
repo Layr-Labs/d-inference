@@ -326,16 +326,6 @@ enum GLM5NextPromptPolicy {
             return declared?.contains { $0.type != "function" } ?? false
         }
 
-        /// Why `validate()` refuses these controls, or nil when it accepts them.
-        var refusalReason: InferenceRefusalReason? {
-            if let invalidReason { return invalidReason }
-            if disablesThinking && requestsThinking { return .contradictoryReasoningControls }
-            if let clearThinking, let contextClearThinking, clearThinking != contextClearThinking {
-                return .contradictoryReasoningControls
-            }
-            return nil
-        }
-
         func validate() throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
@@ -346,6 +336,17 @@ enum GLM5NextPromptPolicy {
                 throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
             }
             _ = try resolvedClearThinking(explicit: clearThinking)
+        }
+
+        /// Why `validate()` refuses these controls, or nil when it accepts
+        /// them: the first refused member, else a contradiction.
+        var refusalReason: InferenceRefusalReason? {
+            do {
+                try validate()
+                return nil
+            } catch {
+                return invalidReason ?? .contradictoryReasoningControls
+            }
         }
 
         /// The template's `clear_thinking`: the explicit Boolean, else the one

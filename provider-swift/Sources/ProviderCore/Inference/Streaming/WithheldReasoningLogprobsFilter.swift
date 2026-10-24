@@ -16,14 +16,14 @@ struct WithheldReasoningLogprobsFilter: Sendable {
 
     private enum Phase: Sendable { case undecided, thought, visible }
     private var phase: Phase
-
-    init(startsInThought: Bool = false) {
-        phase = startsInThought ? .thought : .undecided
-    }
     /// Entries that may still spell the opening marker.
     private var held: [SSETokenLogprob] = []
     /// Undecided prefix, or the bounded thought tail searched for the close.
     private var tail: [UInt8] = []
+
+    init(startsInThought: Bool = false) {
+        phase = startsInThought ? .thought : .undecided
+    }
 
     /// The entries the client may receive. Entries still undecided at the end
     /// of a stream are never released.

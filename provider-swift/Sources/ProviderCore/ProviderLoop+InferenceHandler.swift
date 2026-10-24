@@ -680,12 +680,14 @@ extension ProviderLoop {
         // pass through untouched.
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
-        // Withheld reasoning must not return as logprob entry tokens.
-        let filtersReasoningLogprobs = logprobsSpec != nil && ProviderPromptContractPipeline.withholdsReasoning(
-            chatRequest, controls: templateControls, modelType: modelType)
-        let reasoningLogprobsStartInThought = filtersReasoningLogprobs
-            && GLM5NextPromptPolicy.applies(modelType: modelType)
-            && GLM5NextPromptPolicy.thinkingEnabled(request: chatRequest, controls: templateControls)
+        // Withheld reasoning must not return as logprob entry tokens. GLM's
+        // prompt opens the thought when thinking is on.
+        let reasoningLogprobsFilter: WithheldReasoningLogprobsFilter? =
+            logprobsSpec != nil && ProviderPromptContractPipeline.withholdsReasoning(
+                chatRequest, controls: templateControls, modelType: modelType)
+            ? WithheldReasoningLogprobsFilter(startsInThought: GLM5NextPromptPolicy.applies(modelType: modelType)
+                && GLM5NextPromptPolicy.thinkingEnabled(request: chatRequest, controls: templateControls))
+            : nil
         let logprobsCoverReasoning = Self.logprobsCoverReasoning(
             modelType: modelType, nemotronSuper: superOwner != nil)
 
@@ -1135,8 +1137,7 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
-            var reasoningLogprobs = filtersReasoningLogprobs
-                ? WithheldReasoningLogprobsFilter(startsInThought: reasoningLogprobsStartInThought) : nil
+            var reasoningLogprobs = reasoningLogprobsFilter
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.

@@ -444,7 +444,9 @@ struct GLM5NextPromptPolicyTests {
 
     /// The coordinator's Anthropic Messages lowering forwards Anthropic's
     /// `thinking` object unchanged, and OpenAI documents `reasoning_effort` as
-    /// nullable. Both select the same render as their unified spellings.
+    /// nullable. Both select the same render as their unified spellings;
+    /// `thinking.budget_tokens` yields to `reasoning.max_tokens` and to any
+    /// effort alias.
     @Test func anthropicThinkingAndNullReasoningEffortRenderLikeTheirUnifiedSpellings() throws {
         let template = try shippedTemplate()
         let pairs: [(sent: [String: Any], unified: [String: Any])] = [
@@ -455,6 +457,10 @@ struct GLM5NextPromptPolicyTests {
              ["reasoning": ["max_tokens": 4096]]),
             (["reasoning_effort": NSNull()], [:]),
             (["reasoning_effort": NSNull(), "reasoning": ["effort": "low"]], ["reasoning": ["effort": "low"]]),
+            (["thinking": ["budget_tokens": 1024], "reasoning": ["max_tokens": 100_000]],
+             ["reasoning": ["max_tokens": 100_000]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 100_000], "reasoning_effort": "minimal"],
+             ["reasoning_effort": "minimal"]),
         ]
         for (sent, unified) in pairs {
             let body = try body(sent)

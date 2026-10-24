@@ -355,7 +355,15 @@ removes it from the draft cohort as it removes an image request, so the other
 rows keep speculating while it decodes one ordinary target token per step; the
 row-exact decode keeps every output exact. Synthetic fixtures check its tokens
 and logprobs against the plain owner's and that a text row beside it still
-speculates (`NemotronSuperMTPMediaFallbackTests`). Sources:
+speculates (`NemotronSuperMTPMediaFallbackTests`). On Super's row-exact
+recurrent target every other row the engine cannot draft for (a `stop` string,
+a repetition, frequency or presence penalty, `logit_bias`) leaves the draft
+cohort the same way, so one such request no longer turns speculation off for
+the whole step (`NemotronSuperMTPRequestControlsTests`). Sampled Super rows
+speculate: the assistant's greedy proposals are accepted only where they equal
+the token pre-sampled with the request's own sampler and seed (exact
+target-prefix acceptance), so sampled output equals target-only sampling.
+Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.

@@ -78,6 +78,11 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
     /// / `no` / `off` selects the serial single-proposal profile instead.
     static let rectangularVerifyEnvironmentKey = "DARKBLOOM_GLM_RECTANGULAR_VERIFY"
     static let rectangularDepth = 3
+    /// Decode rows one rectangular window verifies together. Two speculating
+    /// rows decode about 20% faster than two target-only rows on an M5 Ultra;
+    /// at three or more rows the wider verify costs about as much as the
+    /// accepted drafts save, so wider steps decode target-only.
+    static let rectangularSpeculativeBatch = 2
 
     static func verification(
         configuration: GLM5NextTextConfiguration, environment: [String: String]
@@ -102,7 +107,7 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
             throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
         }
         var config = config
-        config.maxSpeculativeBatch = 1
+        config.maxSpeculativeBatch = execution.maximumSpeculativeBatch
         config.verificationMode = execution.verification.engineMode
         switch execution.verification {
         case .serialTarget:
@@ -131,11 +136,12 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
             modelMaximum: root.configuration.textConfig.maxPositionEmbeddings)
         self.root = root
         self.maximumContextLength = bound
+        let verification = Self.verification(
+            configuration: root.configuration.textConfig, environment: environment)
         execution = try GLM5NextMTPExecution(
             target: root.textTower, predictor: predictor,
-            maximumInputs: bound, storage: .contiguous,
-            verification: Self.verification(
-                configuration: root.configuration.textConfig, environment: environment))
+            maximumInputs: bound, storage: .contiguous, verification: verification,
+            maximumSpeculativeBatch: verification == .serialTarget ? 1 : Self.rectangularSpeculativeBatch)
         assistant = try GLM5NextMTPAdapter(
             target: root.textTower, predictor: predictor, factory: execution)
         super.init()

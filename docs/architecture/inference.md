@@ -889,7 +889,13 @@ repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
 acceptance. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
-batch is 1, and the profile composes with the complete-prefix store
+batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
+two requests decode, every decoding row drafts and one captured forward verifies
+all windows; with three or more decoding rows the step decodes target-only. On
+an M5 Ultra two concurrent requests decode at about 47 tok/s each instead of 38
+target-only, while at three or four rows the wider verify cost about as much as
+the accepted drafts saved. The paged backend's gathered-attention batch holds at
+least the speculative batch. The profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile

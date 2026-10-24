@@ -1231,7 +1231,13 @@ coordinator and local-endpoint text and image requests on the speculating
 owner, logprobs on both paths without a draft, and relayed thinking-on replies,
 mixed and ending while reasoning, with one entry per generated token on
 reasoning or content chunks; an image beside speculating text, media refusal
-before allocation, cancellation, admission refusal and retirement). The local
+before allocation, cancellation, admission refusal and retirement).
+`toolCallReplyCarriesTheSameLogprobsOnEveryPath` checks that the relay, the
+local stream and the local complete response carry identical entries for
+thinking-on replies that call a tool: only the reasoning and answer tokens'
+when the call ends the reply, and every entry before a newline that follows
+the call. `NemotronSuperLocalOutputTests` checks the same selection for a
+complete response without a model (`NemotronSuperCompleteLogprobs`). The local
 hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
 complete logprobs on the tiny installed fixture for a mixed reply and one that
 ends while reasoning, with entries on the stream's reasoning chunks, and none

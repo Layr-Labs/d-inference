@@ -176,6 +176,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
     }
 
+    /// A complete response carries its stream's logprob entries: each token's
+    /// entry waits for a chunk that shows reasoning or content. A reply that
+    /// ends with its call carries none for the call, `</think>` before it or the
+    /// stop token; text after the call carries them, as in the stream.
+    func testCompleteLogprobsCarryTheStreamsEntries() throws {
+        let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",
+                    "\n</parameter>", "\n</function>", "\n</tool_call>"]
+        // Each chunk's entry is produced before the chunk, as the bridge does;
+        // the stop token produces an entry and no chunk.
+        func carried(_ extra: String, _ chunks: [String], stop: Bool = true) throws -> [String] {
+            let channel = EngineV2LogprobsChannel()
+            var logprobs = try NemotronSuperCompleteLogprobs(plan: plan(extra), carried: channel)
+            for chunk in chunks {
+                logprobs.produced.append([.init(token: chunk, logprob: -1, bytes: nil, topLogprobs: [])])
+                logprobs.accept(chunk)
+            }
+            if stop { logprobs.produced.append([.init(token: "<|im_end|>", logprob: -1, bytes: nil, topLogprobs: [])]) }
+            logprobs.finish()
+            return channel.drain().map(\.token)
+        }
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>"] + call), ["Use tool."])
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>", "Checking."] + call),
+                       ["Use tool.", "</think>", "Checking."])
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>"] + call + ["\n"]),
+                       ["Use tool.", "</think>"] + call + ["\n"])
+        XCTAssertEqual(try carried("", ["Plan", "</think>", "Hi"]), ["Plan", "</think>", "Hi"])
+        XCTAssertEqual(try carried("", ["Plan", " it."], stop: false), ["Plan", " it."])
+        // A held JSON answer shows at the end, with every entry before it.
+        XCTAssertEqual(try carried(#""response_format":{"type":"json_object"}"#, ["</think>", "{\"a\"", ": 1}"]),
+                       ["</think>", "{\"a\"", ": 1}", "<|im_end|>"])
+        // Once the split refuses the output (the complete response fails the
+        // same check), nothing more is carried.
+        XCTAssertEqual(try carried(Self.weather + #","tool_choice":"required""#, ["Plan", "</think>", "Sure."]),
+                       ["Plan"])
+    }
+
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
         var schema = try output(Self.weather)

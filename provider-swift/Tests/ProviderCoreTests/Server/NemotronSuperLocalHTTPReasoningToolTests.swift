@@ -211,7 +211,7 @@ struct SuperScriptedTokenizer: MLXLMCommon.Tokenizer {
 }
 
 /// One `logprobs.content` entry: its logprob and its alternatives' logprobs.
-struct SuperLogprob: Sendable {
+struct SuperLogprob: Sendable, Equatable {
     let logprob: Double
     let top: [Double]
 

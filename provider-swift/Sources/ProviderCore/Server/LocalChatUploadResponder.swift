@@ -226,23 +226,18 @@ where Inner.Context == BasicRequestContext {
         }
     }
 
-    /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`,
-    /// attached as the stream attaches them: only to a message with content or
-    /// reasoning, so reasoning tokens' entries are included, and without the
-    /// token a `stop` finish ends on (a stop token or sequence, never content).
-    /// The upstream response has no logprobs field, so the encoded JSON is
-    /// edited.
+    /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`.
+    /// The owner leaves on the channel exactly the entries its stream would
+    /// carry (`NemotronSuperCompleteLogprobs`). The upstream response has no
+    /// logprobs field, so the encoded JSON is edited.
     static func jsonResponse(_ response: OpenAIChatCompletionResponse,
                              logprobs entries: [SSETokenLogprob]) throws -> Response {
+        guard !entries.isEmpty else { return try jsonResponse(response) }
         let data = try JSONEncoder.openAIServer.encode(response)
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            var choices = object["choices"] as? [[String: Any]], var choice = choices.first,
-            let message = choice["message"] as? [String: Any],
-            ["content", "reasoning_content"].contains(where: { (message[$0] as? String)?.isEmpty == false })
+            var choices = object["choices"] as? [[String: Any]], var choice = choices.first
         else { return try jsonResponse(response) }
-        let attached = choice["finish_reason"] as? String == "stop" ? entries.dropLast() : entries[...]
-        guard !attached.isEmpty else { return try jsonResponse(response) }
-        choice["logprobs"] = ["content": attached.map(\.jsonObject)]
+        choice["logprobs"] = ["content": entries.map(\.jsonObject)]
         choices[0] = choice
         object["choices"] = choices
         let spliced = try JSONSerialization.data(withJSONObject: object,

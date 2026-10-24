@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -320,9 +320,11 @@ on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
 (`NemotronSuperLocalImageHTTP.engine`, `NemotronSuperSlotOwner.chatEngine`);
 both bindings refuse a logprobs request without one. The coordinator relay
 passes the channel its frames loop splices. For a local `logprobs` body,
-`LocalChatUploadResponder` creates one, splices entries into reasoning and
-content frames with `ProviderLoop.injectLogprobs`, and attaches them to a
-complete response's message when it has reasoning or content.
+`LocalChatUploadResponder` creates one and splices entries into reasoning and
+content frames with `ProviderLoop.injectLogprobs`. A complete response attaches
+the entries its stream would carry: the owner also passes each chunk through a
+streaming split of the request and keeps the entries gathered so far only when
+that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
 
 The contract matches vLLM and SGLang: `logprobs.content` has one entry per
 generated token, in generation order, reasoning tokens included. Joined, the
@@ -331,14 +333,19 @@ alone; they also include the `</think>` marker that ends the reasoning, which
 neither `reasoning_content` nor `content` shows. A stream's reasoning chunks
 carry their tokens' entries and its content chunks theirs. An entry rides the
 chunk that carries its token or a neighbouring one: a token that renders
-nothing, such as the marker, rides the next chunk, and the frames loop drains
-whatever the bridge has appended. Order and exactly-once are exact, so clients
-accumulate entries across chunks. A complete response carries the same entries
-as one list. A response that ends while reasoning (its `max_tokens` spent)
-carries an entry for every token; the stop token that ends a `stop` finish
-carries none. On the coordinator relay `ProviderLoop.logprobsCoverReasoning`
-selects this contract for the Super owner and GLM5-Next; other models attach
-entries to content chunks only.
+nothing, such as the marker, rides the next chunk that shows text, and the
+frames loop drains whatever the bridge has appended. Order and exactly-once are
+exact, so clients accumulate entries across chunks. A complete response carries
+the same entries as one list. A response that ends while reasoning (its
+`max_tokens` spent) carries an entry for every token. Tokens that no shown text
+follows carry none, such as the stop token that ends a `stop` finish and a tool
+call that ends the reply. Text after them carries their entries on every path:
+Super's own call turns end with a newline after `</tool_call>`, whose chunk
+carries the call's entries, and a held JSON answer, which shows only at the
+end, carries every entry before it, the stop token's included. On the
+coordinator relay `ProviderLoop.logprobsCoverReasoning` selects this contract
+for the Super owner and GLM5-Next; other models attach entries to content
+chunks only.
 
 A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
 target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`
@@ -348,6 +355,7 @@ row-exact decode keeps every output exact. Synthetic fixtures check its tokens
 and logprobs against the plain owner's and that a text row beside it still
 speculates (`NemotronSuperMTPMediaFallbackTests`). Sources:
 `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Managed Nemotron Super slot

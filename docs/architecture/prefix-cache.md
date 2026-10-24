@@ -140,10 +140,14 @@ proof of paged execution
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
 
-The prototype full-state codec adds the distinct
-`native-paged-glm5next-full-state-v1` layout, preserving the asymmetric payload
+The full-state codec adds the distinct
+`native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
 and exact convolution/recurrence state
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+Roles that only widen an activation dtype are stored at that dtype and widened
+back exactly on restore; the
+[SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
+the roles, their wire dtypes and the retired v1 layout.
 Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,

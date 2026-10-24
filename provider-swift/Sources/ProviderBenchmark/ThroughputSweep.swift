@@ -124,7 +124,7 @@ public enum ThroughputSweep {
             from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
         let prefill: [ThroughputSweepReport.PrefillSample]
         if measuresScalarPrefill(modelType: modelType) {
-            prefill = await measurePrefill(
+            prefill = try await measurePrefill(
                 container: container, baseTokens: baseTokens, lengths: promptLengths)
         } else {
             log("prefill sweep skipped: \(modelType ?? "model") is paged-only; use --scheduler-prefill")
@@ -216,12 +216,12 @@ public enum ThroughputSweep {
         container: ModelContainer,
         baseTokens: [Int],
         lengths: [Int]
-    ) async -> [ThroughputSweepReport.PrefillSample] {
+    ) async throws -> [ThroughputSweepReport.PrefillSample] {
         let cleaned = lengths.filter { $0 > 0 }.sorted()
         guard !cleaned.isEmpty else { return [] }
         log("prefill sweep: lengths \(cleaned)")
 
-        return await container.perform { ctx -> [ThroughputSweepReport.PrefillSample] in
+        return try await container.perform { ctx -> [ThroughputSweepReport.PrefillSample] in
             // Warm-up (compile kernels) — not timed.
             let warm = Self.tile(baseTokens, to: 8)
             // Default caches (no parameters) cannot fail validation.

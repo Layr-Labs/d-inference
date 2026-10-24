@@ -45,7 +45,7 @@ struct EngineV2BenchmarkMTPVerificationTests {
             """
         MLXRandom.seed(0x6144)
         return Gemma4TextModel(try JSONDecoder().decode(
-            Gemma4TextConfiguration.self, from: Data(json.utf8)))
+            MLXLLM.Gemma4TextConfiguration.self, from: Data(json.utf8)))
     }
 
     private final class Prepared: CBv2MTPPreparedCapture {}

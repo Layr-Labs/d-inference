@@ -71,7 +71,7 @@ private func tinyGPTOSS(headDim: Int = 64, kvHeads: Int = 2) throws -> GPTOSSMod
 
 /// 2-layer Gemma-4 text: [sliding(16), full], no KV sharing, headDim 64.
 private func tinyGemma4Text() throws -> Gemma4TextModel {
-    let config: Gemma4TextConfiguration = try decodeConfig([
+    let config: MLXLLM.Gemma4TextConfiguration = try decodeConfig([
         "model_type": "gemma4_text",
         "hidden_size": 64,
         "num_hidden_layers": 2,

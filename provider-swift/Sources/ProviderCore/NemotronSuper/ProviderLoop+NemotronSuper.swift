@@ -179,10 +179,10 @@ extension ProviderLoop {
     }
 
     /// Provider policy under this grant: `mtp_mode` and the kill switch pick
-    /// speculation; the slot policy's explicit `engine_v2_max_concurrent` bounds
-    /// concurrency, else the measured default applies. The slot loader's
-    /// pinned-ness and machine memory size the prefix bank exactly as its
-    /// builder will.
+    /// speculation, and the Mac's chip family its measured depth table; the
+    /// slot policy's explicit `engine_v2_max_concurrent` bounds concurrency,
+    /// else the measured default applies. The slot loader's pinned-ness and
+    /// machine memory size the prefix bank exactly as its builder will.
     func nemotronSuperLoadPlan(modelID: String, kvBytesCapacity: Int) -> NemotronSuperServingPolicy.LoadPlan {
         let backend = loopConfig.config.backend
         let explicit = backend.engineV2MaxConcurrentIsExplicit

@@ -167,6 +167,7 @@ extension ProviderLoop {
             throw CancellationError()
         }
         try throwIfRetiring(modelID)
+        reportPrefixCacheFailure(owner.bridge.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: owner.bridge)
         modelSlots[modelID] = ModelSlot(
             engineBundle: ProviderEngineBundle(bridge: owner.bridge, assistant: nil, assistantBytes: 0,

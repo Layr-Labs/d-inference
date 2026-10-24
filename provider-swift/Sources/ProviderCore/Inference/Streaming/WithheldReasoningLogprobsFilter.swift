@@ -1,23 +1,29 @@
 // Copyright © 2026 Eigen Labs.
 
-/// Relay logprobs for an exact-Flint request whose reasoning is withheld.
-/// Logprobs cover every sampled token and the relay attaches pending entries
-/// to the next content frame, so without this filter the hidden thought would
-/// reach the client as entry tokens. Flint reasons only in an optional initial
-/// `<think>…</think>` span, and the first close ends it
-/// (``FlintNativeProtocolBoundary``). Entries are matched on their bytes, so a
-/// marker assembled from ordinary tokens is recognized too. Every entry of the
-/// span is dropped, including the ones that open or complete a marker.
-struct FlintReasoningLogprobsFilter: Sendable {
+/// Relay logprobs for a request whose reasoning is withheld (exact Flint, or
+/// GLM-5.3-Flash with `reasoning.exclude`). Logprobs cover every sampled token
+/// and the relay attaches pending entries to the next content frame, so without
+/// this filter the hidden thought would reach the client as entry tokens. Both
+/// reason only in one initial `<think>…</think>` span, and the first close ends
+/// it (``FlintNativeProtocolBoundary``). Flint opens the span itself; GLM's
+/// prompt opens it when thinking is on, so its first entry is already
+/// reasoning. Entries are matched on their bytes, so a marker assembled from
+/// ordinary tokens is recognized too. Every entry of the span is dropped,
+/// including the ones that open or complete a marker.
+struct WithheldReasoningLogprobsFilter: Sendable {
     private static let open = Array("<think>".utf8)
     private static let close = Array("</think>".utf8)
 
     private enum Phase: Sendable { case undecided, thought, visible }
-    private var phase = Phase.undecided
+    private var phase: Phase
     /// Entries that may still spell the opening marker.
     private var held: [SSETokenLogprob] = []
     /// Undecided prefix, or the bounded thought tail searched for the close.
     private var tail: [UInt8] = []
+
+    init(startsInThought: Bool = false) {
+        phase = startsInThought ? .thought : .undecided
+    }
 
     /// The entries the client may receive. Entries still undecided at the end
     /// of a stream are never released.

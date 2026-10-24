@@ -680,7 +680,7 @@ activate a catalog entry.
 Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
 `prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
 a four-row recurrence kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`, `GatedDeltaPrefill`).
 In each process, the first such window of each kernel instantiation (input
 dtype and head geometry) tries the `packed` and then the `rows` kernel on a
 fixed probe window and keeps the first that reproduces `gated_delta_step` bit
@@ -706,7 +706,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (resident tiers only for engines that host them, so GLM keeps its SSD store under the memory opt-in; a refused SSD store's typed reason rides on the heartbeat status as `detail`); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -892,7 +892,13 @@ repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
 acceptance. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
-batch is 1, and the profile composes with the complete-prefix store
+batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
+two requests decode, every decoding row drafts and one captured forward verifies
+all windows; with three or more decoding rows the step decodes target-only. On
+an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
+target-only, while speculating three or four rows cost about 5% of aggregate
+throughput. The paged backend's gathered-attention batch holds at least the
+speculative batch. The profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
@@ -995,6 +1001,13 @@ The provider advertises it for the managed GLM identities. Neither mode
 installs a token constraint or requests logprobs, so these rows stay
 MTP-eligible and pass the native engine's output-control refusal
 (`EngineV2Bridge.nativeOutputControlRefusal`).
+OpenRouter's hidden reasoning (`reasoning.exclude`, `include_reasoning` false,
+or Anthropic's `thinking.display` `omitted`) leaves the prompt unchanged: on
+text and media, GLM's reasoning then also takes the native typed channel, where
+`NativeToolStreamRouter` withholds it as it does for Flint. It still counts as
+reasoning tokens, and `WithheldReasoningLogprobsFilter` starts inside the
+prompt's open `<think>` (`GLM5NextPromptPolicy.withholdsReasoning`,
+`thinkingEnabled`).
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
@@ -2446,6 +2459,15 @@ or change consumer/OpenRouter routing.
    `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
    `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
    `prefillGeometry`).
+10. A coordinator request refused before its inference task writes exactly one
+   fixed public log line naming a closed `InferenceRefusalReason` and a private
+   line pairing it with the request ID, never request text; the refusal's
+   `inference_error` frame is unchanged —
+   `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+   (`handleInferenceRequest`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`
+   (`InferenceFailureLogger`). The lines are listed in the
+   [CLI reference](../provider/cli-reference.md#refusal-lines).
 
 ## Failure modes
 
@@ -2461,6 +2483,7 @@ or change consumer/OpenRouter routing.
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
+| `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift` |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
@@ -2561,9 +2584,10 @@ still count in `completion_tokens` and `completion_tokens_details.reasoning_toke
 the response hash covers only emitted output, and withheld reasoning counts as
 first output for the first-content deadline. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
-`FlintReasoningLogprobsFilter` drops the entries of the initial
+`WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden
-reasoning never returns as entry tokens. Output limits remain ordinary
+reasoning never returns as entry tokens. GLM-5.3-Flash withholds hidden
+reasoning through the same router and filter. Output limits remain ordinary
 completion-token limits.
 
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
@@ -2694,7 +2718,7 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Streaming/FlintReasoningLogprobsFilter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,

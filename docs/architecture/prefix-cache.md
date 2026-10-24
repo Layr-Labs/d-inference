@@ -323,7 +323,10 @@ replay error cannot persist into full-attention state
 
 Both tiers require `DARKBLOOM_PREFIX_CACHE_MEMORY=1` and the global cache
 switch to remain enabled (`PrefixCachePolicy.isMemoryEnabled`). They retain
-no reusable payloads by default. The measurements in this section describe the
+no reusable payloads by default. GLM-5.3-Flash's protected engine hosts
+neither tier: with the opt-in set, its slot logs that it ignores it and keeps
+its complete SSD checkpoints instead of refusing the load
+(`EngineV2SlotFactory.makeProductionBundle`). The measurements in this section describe the
 previous resident implementation, not SSD performance.
 
 | Tier | Lookup and ownership | Gate |

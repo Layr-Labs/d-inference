@@ -126,7 +126,8 @@ private struct VisionStubTokenizer: MLXLMCommon.Tokenizer {
 
 /// Never forward-passed; exists so a real `ModelContainer` can be built.
 private final class VisionStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

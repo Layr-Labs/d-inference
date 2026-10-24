@@ -135,13 +135,11 @@ enum InferenceFailurePhase: Sendable, Equatable {
 /// There is deliberately no overload accepting `Error` or a free-form detail.
 struct InferenceFailureLogger: Sendable {
     private let privateSink: @Sendable (String) -> Void
-    private let publicSink: @Sendable (InferenceFailureCode) -> Void
+    private let publicSink: @Sendable (ProviderOperationalMessage) -> Void
 
     init(logger: ProviderLogger) {
         self.privateSink = { logger.error($0) }
-        self.publicSink = { code in
-            logger.error(ProviderOperationalMessage(failureCode: code))
-        }
+        self.publicSink = { logger.error($0) }
     }
 
     init(sink: @escaping @Sendable (String) -> Void) {
@@ -150,8 +148,18 @@ struct InferenceFailureLogger: Sendable {
     }
 
     func record(requestId: String, failure: InferenceFailure) {
-        publicSink(failure.code)
+        publicSink(ProviderOperationalMessage(failureCode: failure.code))
+        privateSink(Self.privateLine(requestId: requestId, failure: failure))
+    }
 
+    /// A refusal before the request's inference task. Its public line names
+    /// the fixed reason in place of the bare failure category.
+    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason) {
+        publicSink(ProviderOperationalMessage(refusal: refusal))
+        privateSink(Self.privateLine(requestId: requestId, failure: failure) + " refusal=\(refusal.rawValue)")
+    }
+
+    private static func privateLine(requestId: String, failure: InferenceFailure) -> String {
         var line = "[\(requestId)] inference failure code=\(failure.code.rawValue)"
             + " status=\(failure.statusCode)"
         if let reason = failure.errorReason {
@@ -160,7 +168,7 @@ struct InferenceFailureLogger: Sendable {
         if let cause = failure.terminalCause {
             line += " terminal_cause=\(cause.rawValue)"
         }
-        privateSink(line)
+        return line
     }
 }
 
@@ -178,6 +186,28 @@ private extension ProviderOperationalMessage {
         case .encryptionFailure: .inferenceFailureEncryption
         case .generationFailure: .inferenceFailureGeneration
         case .internalFailure: .inferenceFailureInternal
+        }
+    }
+
+    init(refusal: InferenceRefusalReason) {
+        self = switch refusal {
+        case .missingSenderKey: .refusalMissingSenderKey
+        case .undecryptableRequest: .refusalUndecryptableRequest
+        case .reservedToolSchemaMetadata: .refusalReservedToolSchemaMetadata
+        case .malformedBody: .refusalMalformedBody
+        case .invalidMessages: .refusalInvalidMessages
+        case .unsupportedMessageRole: .refusalUnsupportedMessageRole
+        case .invalidToolHistory: .refusalInvalidToolHistory
+        case .invalidToolArguments: .refusalInvalidToolArguments
+        case .invalidToolDeclaration: .refusalInvalidToolDeclaration
+        case .invalidToolChoice: .refusalInvalidToolChoice
+        case .unsupportedResponseFormat: .refusalUnsupportedResponseFormat
+        case .invalidRequestField: .refusalInvalidRequestField
+        case .unsupportedReasoningControl: .refusalUnsupportedReasoningControl
+        case .contradictoryReasoningControls: .refusalContradictoryReasoningControls
+        case .unsupportedToolType: .refusalUnsupportedToolType
+        case .invalidToolSchema: .refusalInvalidToolSchema
+        case .unsupportedAudio: .refusalUnsupportedAudio
         }
     }
 }

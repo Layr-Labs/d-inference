@@ -58,7 +58,7 @@ header comment and `enum SSDBlockStore`).
 | Cryptographic detail | Value | Code |
 |---|---|---|
 | Per-chunk nonce | HKDF-Expand(DEK, info = `"dbkv-chunk-v3"` ‖ `file_IV` ‖ uint32 BE chunk index, L = 12) | `SSDBlockStore.swift` (`chunkInfoPrefix`) |
-| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`); `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit. A DEBUG build with `DARKBLOOM_DEBUG_CACHE_KEY_FILE` derives a persistent KEK from that operator-created file instead; release builds do not contain this path | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` |
+| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`). An entry that fails authentication under the current Secure Enclave identity, or holds no 32-byte key, is replaced by a fresh KEK; a backend failure such as a locked keychain is reported and leaves it. `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit. A DEBUG build with `DARKBLOOM_DEBUG_CACHE_KEY_FILE` derives a persistent KEK from that operator-created file instead; release builds do not contain this path | `SSDCacheKeyMaterial.swift` (`load`), `provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift` (`replaceUnusable`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` |
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
@@ -455,17 +455,33 @@ the coordinator's consumption is in
 | `PrefixCacheStatusReason` | `ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed` |
 | `PrefixCacheDonationOutcome` | `donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel` |
 
-Store construction refusals use the provider-local closed enum
+Store construction refusals use the closed enum
 `SSDPrefixCacheConstructionFailure` (`SSDPrefixCacheFactory.swift`): `missing_weight_hash`,
 `unsupported_plan`, `unsafe_path`, `key_unavailable`, `ephemeral_key_unavailable`,
 `block_contract_mismatch`, `epoch_unavailable`, `prompt_contract_unavailable`,
-`identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`. Both
-factories log them, and local `/metrics` shows the one behind an `error` status;
+`identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`, plus
+`cache_closed` for a built store closed with its slot. Both factories log them;
 the attention-block factory also sends them as `prefix_construction_failure`
-engine-health telemetry. The
-heartbeat keeps the `PrefixCacheStatusReason` above: a refused complete store
-reports `cache_init_failed`, and a refused attention-block store reports
-`disk_unavailable` for `unsafe_path` (`PrefixCacheConstructionStatusBox`).
+engine-health telemetry. Every store maps a refusal to the heartbeat status the
+same way (`PrefixCacheConstructionStatus(refusal:)`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEligibilityStatus.swift`):
+
+| Refusal | `state` / `reason` |
+|---|---|
+| `unsafe_path` | `error` / `disk_unavailable` |
+| `layout_unavailable`, `unsupported_plan` | `disabled` / `unsupported_layout` (or `paged_hybrid_unsupported`) |
+| `missing_weight_hash` | `disabled` / `weight_hash_unavailable` |
+| Every other refusal, and `cache_closed` | `error` / `cache_init_failed` |
+
+An `error` status carries its cause as the optional heartbeat `detail`, which
+local `/metrics`, `darkbloom status` and `darkbloom doctor` show too. An
+attention-block store whose epoch was disowned at runtime reports
+`epoch_unavailable`.
+
+A refusal is never cached: each model load builds its store again, so a cause
+that clears (a remounted volume, freed disk space, an unlocked keychain) heals
+at the next load. Nothing retries during a load, and a built engine never
+attaches a store later.
 
 `PrefixCacheDonationOutcome` has 23 known buckets.
 Outcomes are cumulative process-local counters carrying no identifiers; each
@@ -491,9 +507,10 @@ observations remain available through these surfaces.
 |---|---|---|
 | Unified log subsystem `com.darkbloom.provider` (dev: `com.darkbloom.provider.dev`), category `prefix_cache` | Info-level `prefix cache stats (engine=v2, tier=ssd, model=…)` line every `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` with cache kind, index/disk/staging counts and cumulative writes/drops; complete stores add I/O totals. `darkbloom logs` reads only the service subsystem `dev.darkbloom.provider` and does not show it; use `log show --info --last 1h --predicate 'subsystem == "com.darkbloom.provider" AND category == "prefix_cache"'` | `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift` (`startSSDPrefixCacheStatsLogger`), `provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (`logSubsystem`, `serviceLogSubsystem`) |
 | Same subsystem, category `ssd_prefix_cache` | One public warning per refused complete store: `complete prefix cache disabled for <model>: <failure> (<cause>)`, for example `key_unavailable` with the Secure Enclave/Keychain `OSStatus`. The cause is an error description, never key bytes or file contents. Attention-block stores log `ssd prefix cache disabled for <model>: …` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift` (`build`), `SSDPrefixCacheFactory.swift` (`make`) |
+| `darkbloom status`, `darkbloom doctor` | `prefix_cache=ready`, `starting`, `off (<reason>)` or `FAILED (<reason>: <detail>)` on each slot line, with the cause and `→ fix:` under a failed one; `doctor` (and the desktop app's diagnostics) adds a `prefix cache` check. A load whose store failed also logs a fixed line for `darkbloom logs` and the model, cause and fix to `provider.log` | `provider-swift/Sources/ProviderCore/Diagnostics/PrefixCacheDiagnosis.swift`, `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift` (`reportPrefixCacheFailure`) |
 | Local `/metrics` | `prefix_cache_status{model,state,reason}` mirrors the heartbeat status; an `error` status adds `detail="<construction failure>"`. `complete_prefix_key_persistent` is `1` only when the complete store's key is persistent | `provider-swift/Sources/ProviderCore/Server/LocalServingPosture.swift` (`LocalServingPostureRenderer`) |
 | Typed heartbeat | Optional `slots[].prefix_cache` observation with advancing age; cumulative units, freshness and bounded metrics are in [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheTelemetry.swift` (`SSDPrefixCacheTelemetryBox`) |
-| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
+| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`, and `detail` behind an error) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |
 
 ## Related

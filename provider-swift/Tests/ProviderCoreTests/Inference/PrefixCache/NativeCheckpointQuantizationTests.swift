@@ -235,10 +235,10 @@ struct NativeCheckpointQuantizationTests {
                        CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout,
                        CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout,
                        CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout] {
-            let store = try #require(await SSDHybridCheckpointStoreFactory.make(
+            let store = try await SSDHybridCheckpointStoreFactory.build(
                 modelId: "native-target", identity: binding, backendLayout: layout, kvBudget: nil,
                 environment: [SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
-                              "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1"]))
+                              "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1"]).get()
             #expect(store.config.backendLayout == layout)
             #expect(store.identity == binding)
             await store.closeAndWait()

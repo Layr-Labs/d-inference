@@ -813,7 +813,6 @@ extension ProviderLoop {
                 logWarning: { slotLogger.warning($0) })
         }
         let bridge = bundle.bridge
-        reportPrefixCacheFailure(bridge.prefixCacheModelStatus())
 
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
@@ -821,6 +820,7 @@ extension ProviderLoop {
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
         if registerInRuntime {
+            reportPrefixCacheFailure(bridge.prefixCacheModelStatus())
             await engineV2Runtime.register(modelId: modelId, bridge: bridge)
         }
         if isVLM {
@@ -840,6 +840,7 @@ extension ProviderLoop {
     /// A slot whose SSD store did not start serves uncached until it next
     /// loads. Say so where operators look: a fixed public line for
     /// `darkbloom logs`, and the model, cause and fix in `provider.log`.
+    /// Called once per published slot, just before its bridge is registered.
     func reportPrefixCacheFailure(_ status: PrefixCacheModelStatus) {
         guard let notice = PrefixCacheDiagnosis.loadNotice(status) else { return }
         logger.warning(.prefixCacheUnavailable)

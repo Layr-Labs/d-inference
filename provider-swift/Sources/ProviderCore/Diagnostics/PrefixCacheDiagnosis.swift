@@ -7,20 +7,14 @@ import Foundation
 public enum PrefixCacheDiagnosis {
     /// `prefix_cache=…` for one slot; nil for a state file that predates it.
     public static func statusPhrase(_ slot: DaemonState.SlotPosture) -> String? {
-        guard let state = slot.prefixCacheState, let reason = slot.prefixCacheReason else { return nil }
-        switch state {
-        case "ready": return "prefix_cache=ready"
-        case "pending": return "prefix_cache=starting"
-        case "error" where isClosing(slot): return "prefix_cache=closed (unloading)"
-        case "error":
-            return "prefix_cache=FAILED (\(reason)" + (slot.prefixCacheDetail.map { ": \($0)" } ?? "") + ")"
-        default: return "prefix_cache=off (\(reason))"
+        guard slot.prefixCacheState != nil, let reason = slot.prefixCacheReason else { return nil }
+        switch state(of: slot) {
+        case .ready: return "prefix_cache=ready"
+        case .pending: return "prefix_cache=starting"
+        case .error where isClosing(slot): return "prefix_cache=closed (unloading)"
+        case .error: return "prefix_cache=FAILED (\(cause(reason: reason, detail: slot.prefixCacheDetail)))"
+        case .disabled, nil: return "prefix_cache=off (\(reason))"
         }
-    }
-
-    /// A store closed with its unloading slot; not a failure to report.
-    private static func isClosing(_ slot: DaemonState.SlotPosture) -> Bool {
-        slot.prefixCacheDetail == SSDPrefixCacheConstructionFailure.cacheClosed.rawValue
     }
 
     /// The cause and fix behind an `error` status; nil for any other state or
@@ -29,7 +23,7 @@ public enum PrefixCacheDiagnosis {
         state: String?, reason: String?, detail: String?,
         cliName: String = BuildEnvironment.current.cliName
     ) -> DiagnosticAdvice? {
-        guard state == "error" else { return nil }
+        guard state == PrefixCacheStatusState.error.rawValue else { return nil }
         let restart = "then `\(cliName) restart`"
         switch detail.flatMap(SSDPrefixCacheConstructionFailure.init(rawValue:)) {
         case .keyUnavailable:
@@ -75,24 +69,51 @@ public enum PrefixCacheDiagnosis {
     /// One runtime check per slot whose cache failed, else one passing check.
     public static func diagnostics(slots: [DaemonState.SlotPosture]?) -> [Diagnostic] {
         guard let slots, slots.contains(where: { $0.prefixCacheState != nil }) else { return [] }
-        let failed = slots.filter { $0.prefixCacheState == "error" && !isClosing($0) }
+        let failed = slots.filter { state(of: $0) == .error && !isClosing($0) }
         guard !failed.isEmpty else {
-            let ready = slots.filter { $0.prefixCacheState == "ready" || $0.prefixCacheState == "pending" }
+            let caching = slots.filter { state(of: $0) == .ready || state(of: $0) == .pending }
             return [Diagnostic(
                 section: .runtime, name: "prefix cache", level: .pass,
-                message: "\(ready.count) of \(slots.count) loaded model(s) cache prompts on SSD; "
+                message: "\(caching.count) of \(slots.count) loaded model(s) cache prompts on SSD; "
                     + "no cache failed to start.")]
         }
         return failed.map { slot in
-            let help = Self.advice(
+            let help = advice(
                 state: slot.prefixCacheState, reason: slot.prefixCacheReason, detail: slot.prefixCacheDetail)
-            let cause = [slot.prefixCacheReason, slot.prefixCacheDetail].compactMap { $0 }.joined(separator: ": ")
             return Diagnostic(
                 section: .runtime, name: "prefix cache", level: .warn,
-                message: "\(slot.model) serves uncached (\(cause))"
+                message: "\(slot.model) serves uncached "
+                    + "(\(cause(reason: slot.prefixCacheReason, detail: slot.prefixCacheDetail)))"
                     + (help.map { ": \($0.message)" } ?? "")
                     + "; it retries when the model next loads.",
                 fix: help?.fix)
         }
+    }
+
+    /// The daemon's `provider.log` line for a slot published with a failed
+    /// cache; nil for any other status.
+    static func loadNotice(
+        _ status: PrefixCacheModelStatus, cliName: String = BuildEnvironment.current.cliName
+    ) -> String? {
+        guard status.state == .error else { return nil }
+        let reason = status.reason.rawValue
+        let detail = status.detail?.rawValue
+        let fix = advice(state: status.state.rawValue, reason: reason, detail: detail, cliName: cliName)?.fix
+        return "SSD prefix cache unavailable for \(status.modelId) (\(cause(reason: reason, detail: detail))); "
+            + "serving uncached until the model reloads." + (fix.map { " Fix: \($0)" } ?? "")
+    }
+
+    /// `<reason>: <detail>`, or the reason alone when no cause was reported.
+    private static func cause(reason: String?, detail: String?) -> String {
+        [reason, detail].compactMap { $0 }.joined(separator: ": ")
+    }
+
+    private static func state(of slot: DaemonState.SlotPosture) -> PrefixCacheStatusState? {
+        slot.prefixCacheState.flatMap(PrefixCacheStatusState.init(rawValue:))
+    }
+
+    /// A store closed with its unloading slot; not a failure to report.
+    private static func isClosing(_ slot: DaemonState.SlotPosture) -> Bool {
+        slot.prefixCacheDetail == SSDPrefixCacheConstructionFailure.cacheClosed.rawValue
     }
 }

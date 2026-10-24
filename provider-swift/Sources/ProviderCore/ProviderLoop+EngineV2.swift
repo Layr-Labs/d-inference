@@ -841,13 +841,8 @@ extension ProviderLoop {
     /// loads. Say so where operators look: a fixed public line for
     /// `darkbloom logs`, and the model, cause and fix in `provider.log`.
     func reportPrefixCacheFailure(_ status: PrefixCacheModelStatus) {
-        guard status.state == .error else { return }
+        guard let notice = PrefixCacheDiagnosis.loadNotice(status) else { return }
         logger.warning(.prefixCacheUnavailable)
-        let cause = status.reason.rawValue + (status.detail.map { ": \($0.rawValue)" } ?? "")
-        let fix = PrefixCacheDiagnosis.advice(
-            state: status.state.rawValue, reason: status.reason.rawValue, detail: status.detail?.rawValue
-        )?.fix.map { " Fix: \($0)" } ?? ""
-        FileHandle.standardError.write(Data(
-            "WARN: SSD prefix cache unavailable for \(status.modelId) (\(cause)); serving uncached until the model reloads.\(fix)\n".utf8))
+        FileHandle.standardError.write(Data("WARN: \(notice)\n".utf8))
     }
 }

@@ -27,8 +27,8 @@ extension EngineV2SlotFactory {
         }
         let resident = try PrefixCachePolicy.diffusionResidentConfig(modelDirectory: modelDirectory,
             weightHash: weightHash, kvBytesCapacity: kvBytesCapacity, environment: environment)
-        func fallback(_ reason: PrefixCacheStatusReason, state: PrefixCacheStatusState = .disabled) -> DiffusionPrefixPreparation {
-            .init(snapshots: resident, store: nil, retainMemory: resident != nil, status: .init(state: state, reason: reason))
+        func fallback(_ reason: PrefixCacheStatusReason) -> DiffusionPrefixPreparation {
+            .init(snapshots: resident, store: nil, retainMemory: resident != nil, status: .init(state: .disabled, reason: reason))
         }
         guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else { return fallback(.configDisabled) }
         guard kvBudget != nil else { return fallback(.runtimeIdentityUnavailable) }

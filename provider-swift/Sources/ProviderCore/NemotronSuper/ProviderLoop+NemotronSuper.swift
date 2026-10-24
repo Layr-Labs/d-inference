@@ -86,7 +86,7 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity, admissionKVBytes: plan.admissionKVBytes,
                 defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
                 environment: plan.environment, budget: kvBudget,
-                physicalBytes: nemotronSuperSlotLoader.physicalBytes))
+                physicalBytes: nemotronSuperSlotLoader.physicalBytes, modelAggregateHash: before.hash))
         } catch {
             // Retained weights stay resident, with the lane, round and bank
             // the plan reserves beside them: survivors keep their shrunk
@@ -145,6 +145,9 @@ extension ProviderLoop {
             await publishWeightHash(modelId: modelID, snapshot: after)
             artifactHash = after.hash
         }
+        // The bank advertises the aggregate published before the load; once
+        // that is not the loaded artifact's, it serves local reuse only.
+        if artifactHash != before.hash { owner.bridge.residentPrefixCacheEvidence?.close() }
         let status = nemotronSuperMTPStatus(speculates: owner.speculates)
         await owner.bridge.configureMTPStatus(status, metricsInterval: .seconds(60))
         await owner.bridge.recordModelLoadTime(ms: Self.milliseconds(started.duration(to: .now)))

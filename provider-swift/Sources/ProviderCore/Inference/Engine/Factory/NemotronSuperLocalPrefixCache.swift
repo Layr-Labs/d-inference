@@ -28,6 +28,33 @@ enum NemotronSuperLocalPrefixCache {
     /// HTTP hook verifies. A bank belongs to one loaded owner and tokenizer.
     static let promptContractID = "nemotron-super-template-" + NemotronSuperPromptContract.templateSHA256
 
+    /// The artifact identity a managed slot's bank advertises to the
+    /// coordinator (`prefix_cache_memory_models`), and binds its lookup and
+    /// ready receipts to: the aggregate the provider published for the
+    /// loaded checkpoint and the `PromptContractIdentity` of its prompt files,
+    /// the identity the coordinator's prompt sidecar plans with. Without one
+    /// the bank still serves local reuse but advertises nothing.
+    struct RoutingIdentity: Equatable, Sendable {
+        let modelAggregateHash: String
+        let promptContractID: String
+
+        /// The prompt contract of the checkpoint `directory` beside its
+        /// published aggregate; nil when either is unavailable.
+        static func resolve(modelAggregateHash: String?, directory: URL) -> RoutingIdentity? {
+            guard let modelAggregateHash,
+                let contract = try? PromptContractIdentity.compute(modelDirectory: directory)
+            else { return nil }
+            return RoutingIdentity(modelAggregateHash: modelAggregateHash, promptContractID: contract)
+        }
+
+        /// A fresh evidence source for one bridge: it is closed with that
+        /// bridge, so a rebuilt owner needs its own (and its own epoch).
+        func evidence(modelID: String) -> ResidentPrefixCacheEvidence? {
+            ResidentPrefixCacheEvidence(modelId: modelID, modelAggregateHash: modelAggregateHash,
+                                        promptContractID: promptContractID)
+        }
+    }
+
     /// nil leaves the owner without a bank. The same bank serves both owners:
     /// the speculating owner's `NemotronSuperMTPAssistant` checkpoints its
     /// prompt history, so `hybridConfig`'s drafter gate stays off

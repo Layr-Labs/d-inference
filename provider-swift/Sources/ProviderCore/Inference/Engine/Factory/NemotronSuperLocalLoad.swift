@@ -111,20 +111,24 @@ actor NemotronSuperLocalLoad {
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
         modelID: String = NemotronSuperLocalBinding.modelID,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil
     ) async throws -> EngineV2Bridge {
         try await load(staging: { try .pinned(configData: configData, source: source) },
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
             kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admissionKVBytes,
             backendAllowanceBytes: backendAllowanceBytes, modelID: modelID, environment: environment,
-            physicalBytes: physicalBytes)
+            physicalBytes: physicalBytes, routingIdentity: routingIdentity)
     }
 
+    /// `routingIdentity` is what a built bank advertises to the coordinator
+    /// (`NemotronSuperLocalBridgeBuilder.make`); nil keeps reuse local.
     func load(staging makeStaging: () throws -> Staging,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>, sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int, admissionKVBytes: Int? = nil, backendAllowanceBytes: Int,
         modelID: String, environment: [String: String],
-        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil
     ) async throws -> EngineV2Bridge {
         guard phase == .idle else { throw Failure.invalidState }
         phase = .loading
@@ -209,7 +213,7 @@ actor NemotronSuperLocalLoad {
                         kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admitted.fit.kvFloorBytes,
                         kvBudget: budget, loadLease: admitted.lease, construction: construction, mtp: head,
                         modelID: modelID, environment: admitted.environment, physicalBytes: physicalBytes,
-                        leaseShares: admitted.fit.shares)
+                        leaseShares: admitted.fit.shares, routingIdentity: routingIdentity)
                     break
                 } catch let refusal where Self.isMemoryRefusal(refusal) {
                     // Any bridge the builder built has retired and its own

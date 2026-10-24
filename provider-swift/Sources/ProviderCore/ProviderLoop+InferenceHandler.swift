@@ -877,13 +877,14 @@ extension ProviderLoop {
             let providerEngine: any MLXServerEngine
             if let superOwner {
                 // Text prefix reuse is partitioned by the authenticated scope
-                // and off without one; it emits no cache receipts or usage.
-                // Schema metadata passed the protocol check above, so it is
-                // trusted as on the generic engine. Logprobs leave on the
-                // same channel the frames loop splices.
+                // and off without one. Its outcome reaches this request's
+                // signal, hence its receipts and cache usage, as on the
+                // generic engine. Schema metadata passed the protocol check
+                // above, so it is trusted as on the generic engine. Logprobs
+                // leave on the same channel the frames loop splices.
                 providerEngine = superOwner.chatEngine(body: decryptedData,
                     hasMedia: MediaIngest.hasMedia(chatRequest), cacheScope: remoteCache.scope,
-                    trustsSchemaMetadata: true, logprobs: logprobsChannel)
+                    trustsSchemaMetadata: true, logprobs: logprobsChannel, usageSignal: v2UsageSignal)
             } else {
                 providerEngine = MultiModelBatchSchedulerEngine(
                 registryProvider: { @Sendable in
@@ -1434,9 +1435,9 @@ extension ProviderLoop {
 
                 // Partial billing stays tied to delivered output. Cache usage
                 // needs the native terminal that proves adoption; cancellation
-                // can end this frame loop before the bridge records it. Super
-                // submits under its owner's own signal and reports no cache use;
-                // its stream termination cancels and joins the native request.
+                // can end this frame loop before the bridge records it. Super's
+                // stream termination cancels and joins its native request; its
+                // cache usage counts only if that terminal was already recorded.
                 if superOwner == nil {
                     await slotEngineV2.settleCancelledStream(
                         profile: profile, usageSignal: v2UsageSignal)

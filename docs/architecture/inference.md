@@ -578,9 +578,16 @@ channel, tool and structured-output validation, cancellation and usage are the
 hook's. A JSON response format may come with tools: a turn that calls tools
 returns its calls, and only an answer without calls is validated as JSON.
 Coordinator text prefix reuse is partitioned by the authenticated cache
-scope and off without one; the slot emits no cache receipts, cached-token usage
-or prefix-cache capability. A cancelled stream bills delivered output and the
-reference prompt length. Inline JPEG and PNG images (`data:` URIs, within the
+scope and off without one. When the owner has a bank, the managed load binds it
+to the aggregate it published for the checkpoint and the checkpoint's
+`PromptContractIdentity` (`NemotronSuperLocalPrefixCache.RoutingIdentity`), so
+the slot advertises a resident capability (`prefix_cache_memory_models`) and
+the coordinator can send it a cache scope. A request then reports its lookup
+and ready receipts, `prompt_tokens_details.cached_tokens` and its cache usage
+through the request's own usage signal, as on the generic engine; a load whose
+post-load artifact hash differs from the published one advertises nothing. A
+cancelled stream bills delivered output and the reference prompt length, and
+reports cache usage only when the native terminal already recorded it. Inline JPEG and PNG images (`data:` URIs, within the
 [image format reference](../reference/nemotron-super-image-formats.md) limits)
 run on the owner's image binding. On the default speculating owner every image
 request is target-only for its whole lifetime: the engine prefills and decodes

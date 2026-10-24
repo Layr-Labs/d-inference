@@ -128,8 +128,30 @@ struct GLM5NextProtectedFactoryTests {
                 == min(context, EngineV2Factory.glm5NextMaximumStepTokens))
             #expect(engine.schedulerConfig.prefillChunkSize
                 == min(context, EngineV2Factory.glm5NextMaximumPrefillChunkTokens))
+            #expect(engine.schedulerConfig.decodeStepsBetweenPrefillChunks
+                == EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks)
             #expect(await bundle.bridge.canSubmitWithNativeOwner())
             try await fixture.run(bundle.bridge, tokens: [3, 3], id: "default-serving")
+        }
+    }
+
+    /// A malformed decode-step override refuses the GLM backend before the
+    /// paged backend is built, instead of serving another interleave.
+    @Test func malformedDecodeStepsRefuseTheBackend() async throws {
+        try await withFixture { fixture in
+            let container = try await fixture.load()
+            let prepared = try await EngineV2SlotFactory.prepareProductionModel(
+                modelId: fixture.plan.weights.catalog.id, isVLM: false, container: container,
+                specDecPreparation: fixture.mtpPreparation,
+                maximumContextLength: fixture.sizing.maxContextLength)
+            var environment = fixture.environment
+            environment[EngineV2Factory.glm5NextDecodeStepsKey] = "65"
+            #expect(throws: EngineV2ProductionError.self) {
+                try EngineV2Factory.prepareProductionBackend(
+                    model: prepared.servingModel, kvBudget: fixture.budget,
+                    kvBytesCapacity: fixture.kvBytesCapacity, maxConcurrentRequests: 1,
+                    kvBackend: .paged, environment: environment)
+            }
         }
     }
 

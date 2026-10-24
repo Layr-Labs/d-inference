@@ -188,8 +188,13 @@ with 429.
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
 calibrated prefill limit), at most one prompt chunk per step beside every decode
 or verify row, a step budget that holds a whole chunk plus those rows, and
-optional decode-only steps between chunks
-(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+four decode-only steps after each chunk while requests decode
+(`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`;
+`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 and is
+forwarded to the launchd provider job). On an M5 Ultra four held steps raised a
+decoder's rate during an 8K prefill from 5.8 to 16.3 tok/s and delayed the
+prefilling request's first token by 15 to 26%; eight gave 24.7 tok/s for 33 to
+52%. A step without decode rows is never held. A request's chunks are
 therefore the same whether or not it is served alone. Because one chunk runs per
 step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:
@@ -733,7 +738,19 @@ the page table and runs the contiguous arithmetic over it
 so its retained reads are bounded by the history, not the chunk. The GLM
 scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
 and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
-`glm5NextServingScheduler`). The price splits into setup bytes for the step
+`glm5NextServingScheduler`). While other requests decode, each prompt chunk is
+followed by eight decode-only steps
+(`EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks`,
+`CBv2SchedulerConfig.decodeStepsBetweenPrefillChunks`;
+`DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64, and any other value
+refuses the load). A chunk step takes about a second on an M5 Ultra, so without
+them a decoding request got about one token per chunk while another request
+prefilled: 2.8 tok/s beside an 8K prefill and 1.2 to 1.5 with two decoders.
+Eight steps measured 19.5 and 7.1 to 7.2 tok/s, and the prefilling request's
+first token 6 to 20% later (5.3 to 5.6 s at 8K beside one decoder, 18.6 to
+21.2 s at 32K beside two). A step without decode rows is never held, so a
+request served alone prefills as before, and the
+[deadline projection](#deadlines) charges every held step. The price splits into setup bytes for the step
 geometry and a rate per context token of each request, which covers the
 request's index metadata reads, pooled index planes, latent reads and page
 tables in both its step and the chained decode successor
@@ -1332,7 +1349,15 @@ exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
-prefill estimate is available. The ordinary admission path uses valid measured
+prefill estimate is available. The engine's projection replays decode-only
+steps between prompt chunks (`decodeStepsBetweenPrefillChunks`, GLM's
+default) from the scheduler's live owed count and charges each held step as a
+decode step of the rows decoding then
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`SchedulerV2.firstTokenWorkProjection`). A prompt-row ceiling
+(`maxPrefillRowsPerStep`) is not projected (`unsupported_scheduler`); the
+Nemotron Super owner, which sets it, submits without a first-content deadline
+(`NemotronSuperLocalBinding`). The ordinary admission path uses valid measured
 isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed

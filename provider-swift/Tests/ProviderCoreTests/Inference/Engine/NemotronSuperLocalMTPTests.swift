@@ -263,22 +263,8 @@ struct NemotronSuperLocalMTPTests {
     func speculativeOwnerServesExactTextAndTargetOnlyImagesThenRetires(
         depth: Int, verification: NemotronSuperLocalMTP.Setting.Verification
     ) async throws {
-        let plainFixture = try SuperMTPInstalledFixture().make()
-        let speculativeFixture = try SuperMTPInstalledFixture().make()
-        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
-            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
-        var leases: [PendingModelLoadLease] = []
-        for (name, fixture) in [("plain", plainFixture), ("speculative", speculativeFixture)] {
-            let bytes = fixture.installed.receipt.payloadBytes
-                + (try NemotronSuperLocalMTP.loadSupplementBytes(fixture.headQuote))
-            leases.append(try #require(await budget.claimPendingLoad(
-                requestID: "super-mtp-\(name)", weightBytes: UInt64(bytes), minimumKVBytes: 2 << 30)))
-        }
-        let plain = try await owner(plainFixture, setting: nil, budget: budget, lease: leases[0])
-        let speculative = try await owner(speculativeFixture,
-            setting: .init(depth: depth, verification: verification), budget: budget,
-            lease: leases[1])
-        #expect(!plain.speculates && speculative.speculates)
+        let pair = try await ownerPair(.init(depth: depth, verification: verification))
+        let (plain, speculative) = (pair.plain, pair.speculative)
         for (prompt, maxTokens) in [([1, 2, 3], 9), ([5, 9, 1, 4, 22, 7, 3, 8, 30], 14), ([40], 1)] {
             let expected = try await run(plain, prompt: prompt, maxTokens: maxTokens)
             let actual = try await run(speculative, prompt: prompt, maxTokens: maxTokens)
@@ -287,8 +273,7 @@ struct NemotronSuperLocalMTPTests {
                 "prompt \(prompt) depth \(depth) \(verification)")
             #expect(actual.completions == expected.completions)
         }
-        let ownedEngine = await speculative.bridge.ownedEngine
-        let engine = try #require(ownedEngine as? EngineV2)
+        let engine = try await pair.speculativeEngine()
         let metrics = try #require(engine.mtpMetricsSnapshot())
         let rectangular = verification == .rectangularExact
         #expect(metrics.rounds > 0)
@@ -312,12 +297,7 @@ struct NemotronSuperLocalMTPTests {
         let afterImage = try #require(engine.mtpMetricsSnapshot())
         #expect(afterImage.rounds == metrics.rounds && afterImage.draftedTokens == metrics.draftedTokens)
         #expect(afterImage.acceptedTokens == metrics.acceptedTokens)
-        try await plain.closeAfterDrain()
-        try await speculative.closeAfterDrain()
-        #expect(plainFixture.residency.snapshot.usedBytes == 0)
-        #expect(speculativeFixture.residency.snapshot.usedBytes == 0)
-        for lease in leases { #expect(await budget.finishPendingLoad(lease)) }
-        #expect(await budget.outstandingReservedBytes() == 0)
+        try await pair.close()
     }
 
     /// A plain and a speculating owner on one budget, each with its own

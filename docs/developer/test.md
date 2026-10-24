@@ -686,6 +686,39 @@ env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
   --filter ModelCheckpointConversationLiveTests
 ```
 
+GLM-5.3-Flash and Nemotron 3.5 Super always serve with MTP and load through
+their own managed paths, so `ModelCheckpointStorageLiveTests` cannot select
+them. Their checkpoint profiles have dedicated opt-in qualifications:
+`GLM5NextRealCheckpointProfileTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextRealCheckpointProfileTests.swift`)
+and `NemotronSuperManagedSlotTests/pinnedCheckpointCheckpointProfileQualification`
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/NemotronSuperManagedSlotLiveTests+CheckpointProfile.swift`).
+Each process runs one storage arm. Run `native`, then `balanced`, from the same
+optimized test build (`swift build -c release --build-tests -Xswiftc
+-enable-testing -Xswiftc -DDEBUG`, then the staged metallib) with exclusive GPU
+use and a fresh isolated store per arm:
+
+| Model | Selection | Prompt lengths | Report |
+|---|---|---|---|
+| GLM | the `GLM5NextRealModelHarness` variables plus `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_PROFILE=native` or `balanced` | `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_LENGTHS`, default `2048,8192,32768`; the dense reference runs up to `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_REFERENCE_MAX` tokens (default 40,000) | `checkpoint-profile-<arm>.json` in the harness results directory |
+| Super | `DARKBLOOM_SUPER_MANAGED_LIVE=1`, `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_LIVE=1`, `NEMOTRON_SUPER_CHECKPOINT_DIR`, `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, a fresh `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` and `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native` or `balanced` | `DARKBLOOM_SUPER_CHECKPOINT_LENGTHS`, default `2400,8400,32000` (checkpoints sit at whole 2,048-token chunks) | `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_OUT` |
+
+Each prompt asks for a fact placed a fifth of the way into a generated fact
+document, inside the profile's coded rows. Per length the report records cold,
+donor, restored, repeated, another tenant's, cancelled-after-first-output and
+after-cancel runs (answer, finish, TTFT, restored tokens, stage), the donor's
+bytes and file sizes, the restore's stage time, and restored and cold logprob
+rows against teacher forcing along their own tokens: GLM against the dense
+reference under `GLM5NextRealLogprobsQualificationTests`'s bounds, Super against
+`EngineV2.teacherForcedScores` under its 0.35-nat bound. GLM also records the
+profile's reconstruction error on the reference prefill's latent rows. A run
+fails when a restore reads nothing, a repeat or after-cancel restore covers a
+different depth, another tenant hits, or a cold, donor, restored, repeated or
+after-cancel answer is wrong or truncated. Super's speculation is deterministic,
+so it also fails when the donating export changes the donor's output or a restore
+of the same file differs. Compare the two arms' reports for equal restored
+coverage, bytes, TTFT and logprob deltas; one process cannot.
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:

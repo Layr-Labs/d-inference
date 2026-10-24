@@ -112,16 +112,21 @@ actor NemotronSuperLocalLoad {
         modelID: String = NemotronSuperLocalBinding.modelID,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
-        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil
+        routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:]
     ) async throws -> EngineV2Bridge {
         try await load(staging: { try .pinned(configData: configData, source: source) },
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs, sizing: sizing,
             kvBytesCapacity: kvBytesCapacity, admissionKVBytes: admissionKVBytes,
             backendAllowanceBytes: backendAllowanceBytes, modelID: modelID, environment: environment,
-            physicalBytes: physicalBytes, routingIdentity: routingIdentity)
+            physicalBytes: physicalBytes, routingIdentity: routingIdentity,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel)
     }
 
     /// `routingIdentity` is what the owner's prefix checkpoints are bound to
+    /// and the checkpoint quantization settings choose their profile
     /// (`NemotronSuperLocalBridgeBuilder.make`); nil keeps reuse local.
     /// `completeCheckpointIdentity` is the builder's test seam.
     func load(staging makeStaging: () throws -> Staging,
@@ -130,6 +135,8 @@ actor NemotronSuperLocalLoad {
         modelID: String, environment: [String: String],
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
         completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
     ) async throws -> EngineV2Bridge {
         guard phase == .idle else { throw Failure.invalidState }
@@ -216,6 +223,8 @@ actor NemotronSuperLocalLoad {
                         kvBudget: budget, loadLease: admitted.lease, construction: construction, mtp: head,
                         modelID: modelID, environment: admitted.environment, physicalBytes: physicalBytes,
                         leaseShares: admitted.fit.shares, routingIdentity: routingIdentity,
+                        checkpointQuantizationConfig: checkpointQuantizationConfig,
+                        checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
                         completeCheckpointIdentity: completeCheckpointIdentity)
                     break
                 } catch let refusal where Self.isMemoryRefusal(refusal) {

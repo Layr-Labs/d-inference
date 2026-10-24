@@ -588,7 +588,10 @@ Without a bank (the default) the builder keeps them in an
 `SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
 the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
 the assistant's prompt history encrypted under the provider's cache root, at
-native KV precision whatever `engine_v2_kv_checkpoint_quantization` says. The
+the slot's effective checkpoint precision (`engine_v2_kv_checkpoint_quantization`,
+`balanced` by default): older attention rows are coded, while the conv/SSM
+state and the assistant's history stay exact
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
 slot then advertises a durable capability (`prefix_cache_v2_models`), its
 checkpoints survive restarts within the store's TTL, and the coordinator's
 repeat hint gates their writes as for every other model. A durable checkpoint

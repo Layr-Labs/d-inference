@@ -99,6 +99,9 @@ struct NemotronSuperSlotLoader: Sendable {
         /// checkpoint's prompt contract it is the identity the owner's prefix
         /// bank advertises to the coordinator. nil keeps reuse local.
         var modelAggregateHash: String? = nil
+        /// The provider's `[backend]` checkpoint precision settings.
+        var checkpointQuantizationConfig = "balanced"
+        var checkpointQuantizationConfigByModel: [String: String] = [:]
     }
 
     /// Whether this loader stages the pinned checkpoint, and the machine
@@ -147,7 +150,9 @@ struct NemotronSuperSlotLoader: Sendable {
                 modelID: request.modelID, environment: request.environment,
                 physicalBytes: request.physicalBytes,
                 routingIdentity: .resolve(modelAggregateHash: request.modelAggregateHash,
-                                          directory: request.directory))
+                                          directory: request.directory),
+                checkpointQuantizationConfig: request.checkpointQuantizationConfig,
+                checkpointQuantizationConfigByModel: request.checkpointQuantizationConfigByModel)
             return try await NemotronSuperSlotOwner(transaction: transaction, bridge: bridge,
                 tokenizer: tokenizer, sizing: sizing, templateBytes: templateBytes)
         } catch {

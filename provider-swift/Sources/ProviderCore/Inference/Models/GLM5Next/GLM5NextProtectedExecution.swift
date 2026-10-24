@@ -242,7 +242,7 @@ final class GLM5NextProtectedResources {
                 store.identity.modelAggregateHash, store.identity.promptContractID,
                 store.identity.buildID, store.identity.numericsFingerprint,
             ].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
-            store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+            CBv2CompleteCheckpointManifest.isGLM5NextLayout(store.config.backendLayout)
         else {
             throw EngineV2ProductionError.pagedUnavailable(
                 "GLM requires its budget-bound encrypted full-state store")

@@ -362,9 +362,13 @@ enum NemotronSuperLocalBridgeBuilder {
     /// owner. Either owner may have `NemotronSuperLocalPrefixCache`'s exact
     /// prefix reuse; with a `routingIdentity` its bank also advertises and
     /// proves its checkpoints to the coordinator, and without a bank its
-    /// checkpoints are complete SSD checkpoints bound to it. Test seam:
-    /// `completeCheckpointIdentity` replaces the store's runtime disk identity
-    /// (binary, metallib and numerics), which a test process cannot compute.
+    /// checkpoints are complete SSD checkpoints bound to it, encoded at the
+    /// effective profile of the operator's checkpoint precision
+    /// (`checkpointQuantizationConfig`, its per-model table and
+    /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, as for every other model).
+    /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
+    /// disk identity (binary, metallib and numerics), which a test process
+    /// cannot compute.
     static func make(
         installed: NemotronSuperInstallation.Installed,
         tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
@@ -376,6 +380,8 @@ enum NemotronSuperLocalBridgeBuilder {
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         leaseShares: OwnerShares? = nil,
         routingIdentity: NemotronSuperLocalPrefixCache.RoutingIdentity? = nil,
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
         completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Owner {
@@ -404,6 +410,10 @@ enum NemotronSuperLocalBridgeBuilder {
                 routingIdentity: routingIdentity)
             : nil
         let exactPrefixCheckpoints = prefixCache != nil || durable != nil
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "nemotron_h_omni", global: checkpointQuantizationConfig,
+            byModel: checkpointQuantizationConfigByModel, modelID: modelID,
+            environment: environment, purpose: .checkpoint)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         try Task.checkCancellation()
         let assembly = try installed.withNativeSetup(construction: construction) { model in
@@ -440,14 +450,15 @@ enum NemotronSuperLocalBridgeBuilder {
             return Assembly(target: target, speculation: speculation, backend: backend,
                             prefill: prefill, laneBytes: laneBytes, workspace: workspace)
         }
-        // Its checkpoints keep the KV at its native types whatever the
-        // operator's checkpoint precision: quantized KV would not restore exactly.
+        // The effective profile codes only older attention rows; the Mamba
+        // convolution and SSM state and the assistant's history stay exact.
         var complete: EngineV2SlotFactory.CompletePrefixCachePreparation?
         if let durable {
             complete = await prepareDurableStore(assembly, identity: durable, modelID: modelID,
+                checkpointQuantization: checkpointPrecision.configuration,
                 kvBudget: kvBudget, environment: environment, identityOverride: completeCheckpointIdentity)
         }
-        let store = complete?.cache
+        let store = complete?.cache, storeQuantization = complete?.checkpointQuantization
         let bridge = try installed.withNativeSetup(construction: construction) { _ in
             try EngineV2Factory.makeBridge(
                 modelId: modelID, tokenizer: tokenizer,
@@ -471,7 +482,8 @@ enum NemotronSuperLocalBridgeBuilder {
                 makeEngine: {
                     try EngineV2Factory.assembleProductionBuild(
                         model: assembly.target, tokenizer: tokenizer.inner, prefixCache: nil,
-                        completePrefixCache: store, maxConcurrentRequests: requests,
+                        completePrefixCache: store, checkpointQuantization: storeQuantization,
+                        maxConcurrentRequests: requests,
                         mtpDrafter: assembly.speculation?.assistant,
                         mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),
                         preparedBackend: assembly.backend, kvBudget: kvBudget
@@ -600,15 +612,17 @@ enum NemotronSuperLocalBridgeBuilder {
 
     /// The complete-checkpoint store for the prepared backend, built as for
     /// every other model (`EngineV2SlotFactory.prepareCompletePrefixCache`),
-    /// with native KV precision. Off the load transaction: the store scans and
-    /// keys its directory.
+    /// including its effective checkpoint profile. Off the load transaction:
+    /// the store scans and keys its directory.
     private static func prepareDurableStore(
         _ assembly: Assembly, identity: NemotronSuperLocalPrefixCache.RoutingIdentity, modelID: String,
+        checkpointQuantization: PagedKVQuantizationConfig?,
         kvBudget: GlobalKVCacheBudget, environment: [String: String],
         identityOverride: CBv2CompleteCheckpointIdentity?
     ) async -> EngineV2SlotFactory.CompletePrefixCachePreparation? {
         await EngineV2SlotFactory.prepareCompletePrefixCache(
             modelId: modelID, model: assembly.target, preparedBackend: assembly.backend,
+            checkpointQuantization: checkpointQuantization,
             weightHash: identity.modelAggregateHash, promptContractID: identity.promptContractID,
             mtpDrafter: assembly.speculation?.assistant,
             mtpConfig: assembly.speculation?.config ?? CBv2MTPConfig(),

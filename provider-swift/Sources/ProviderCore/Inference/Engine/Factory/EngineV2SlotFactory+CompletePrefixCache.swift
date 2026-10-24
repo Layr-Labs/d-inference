@@ -39,11 +39,15 @@ extension EngineV2SlotFactory {
             }
             effectiveMTPConfig = resolved
             // A GLM checkpoint includes KDA state and raw latent/index payloads,
-            // not generic full-attention K/V. Its current codec is lossless FP32.
+            // not generic full-attention K/V. A profile codes only its older
+            // latent rows; everything else stays exact.
             storage = CompleteCheckpointStorageIdentity(kind: preparedBackend.kind,
                 layerDTypes: preparedBackend.nativeLayerDTypes,
                 pagedConfig: preparedBackend.pagedPoolConfig,
-                target: .glm5Next(preparedBackend.layerKinds))
+                target: .glm5Next(preparedBackend.layerKinds),
+                checkpointQuantization: CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+                    checkpointQuantization, layerKinds: preparedBackend.layerKinds,
+                    pagedConfig: preparedBackend.pagedPoolConfig, assistant: mtpDrafter))
         } else {
             effectiveMTPConfig = mtpConfig
             storage = completeCheckpointStorage(
@@ -90,13 +94,30 @@ extension EngineV2SlotFactory {
     }
 
     enum CompleteCheckpointAssistant: Equatable {
-        case none, stateless, persistentCodec, unsupportedPersistent
+        /// `persistentExactHistory`: a persistent codec whose history stays
+        /// exact beside lossy older target rows
+        /// (`CBv2MTPExactHistoryPrefixCheckpointCoding`).
+        case none, stateless, persistentCodec, persistentExactHistory, unsupportedPersistent
 
         init(drafter: (any CBv2MTPDrafter)?) {
             if drafter == nil { self = .none }
-            else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
+            else if drafter is any CBv2MTPExactHistoryPrefixCheckpointCoding {
+                self = .persistentExactHistory
+            } else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
             else if drafter is any CBv2MTPRequestStatefulDrafter { self = .unsupportedPersistent }
             else { self = .stateless }
+        }
+
+        /// Whether its state keeps the target's checkpoint rows native. An
+        /// exact-history codec permits lossy rows only beside a paged
+        /// recurrent target, the SDK's rule
+        /// (`CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget`).
+        func keepsNativeStorage(pagedRecurrent: Bool) -> Bool {
+            switch self {
+            case .none, .stateless: false
+            case .persistentExactHistory: !pagedRecurrent
+            case .persistentCodec, .unsupportedPersistent: true
+            }
         }
     }
 
@@ -118,7 +139,7 @@ extension EngineV2SlotFactory {
                 return false
             }), let modelDTypes, modelDTypes.count == layerKinds.count,
                 nativeDTypes == nil || nativeDTypes == modelDTypes,
-                assistant == .none || assistant == .persistentCodec
+                [.none, .persistentCodec, .persistentExactHistory].contains(assistant)
             else { return nil }
             layerDTypes = nativeDTypes ?? modelDTypes
             target = .recurrentFull
@@ -134,11 +155,14 @@ extension EngineV2SlotFactory {
             layerDTypes = nativeDTypes
             target = .historicalAttention(layerKinds)
         }
+        let pagedRecurrent = supportsRecurrent && kind == .paged
         let effectiveQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
             checkpointQuantization, layerKinds: layerKinds, layerDTypes: layerDTypes,
-            pagedConfig: pagedConfig, hasAssistantState: assistant == .persistentCodec)
+            pagedConfig: pagedConfig,
+            hasAssistantState: assistant.keepsNativeStorage(pagedRecurrent: pagedRecurrent))
         return .init(kind: kind, layerDTypes: layerDTypes, pagedConfig: pagedConfig,
-                     target: target, checkpointQuantization: effectiveQuantization)
+                     target: target, checkpointQuantization: effectiveQuantization,
+                     assistantHistory: pagedRecurrent && assistant == .persistentExactHistory)
     }
 
 }

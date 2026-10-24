@@ -147,7 +147,12 @@ and exact convolution/recurrence state
 Roles that only widen an activation dtype are stored at that dtype and widened
 back exactly on restore; the
 [SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
-the roles, their wire dtypes and the retired v1 layout.
+the roles, their wire dtypes and the retired v1 layout. Under the default
+`balanced` checkpoint precision the protected tuple binds the distinct
+`native-paged-glm5next-affine-checkpoint-full-state-v1` store instead: older
+latent rows are coded and restore approximately, while the index/gate/validity
+rows, KDA state and MTP history restore exactly
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)).
 Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,

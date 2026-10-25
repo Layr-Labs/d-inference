@@ -27,19 +27,13 @@ struct GLM5NextResponseFormat: Sendable {
         self.rawSchema = rawSchema
     }
 
-    /// `nil` for other families and non-JSON formats. A format combined with
-    /// tools is an invalid request.
+    /// `nil` for other families and non-JSON formats.
     static func resolve(
         _ request: OpenAIChatCompletionRequest, modelType: String?
     ) throws -> GLM5NextResponseFormat? {
         guard GLM5NextPromptPolicy.applies(modelType: modelType),
             let format = request.responseFormat, format.requiresJSONOutput
         else { return nil }
-        // A withheld answer is one JSON value, never calls; Nemotron Super
-        // refuses the same combination.
-        guard request.tools?.isEmpty != false else {
-            throw invalid("JSON response_format cannot be combined with tools")
-        }
         guard format.type == .jsonSchema else { return GLM5NextResponseFormat(format: format, schema: nil) }
         guard let payload = format.jsonSchema else {
             throw invalid("json_schema requires a json_schema payload")
@@ -109,9 +103,15 @@ struct GLM5NextResponseFormatOutput {
         }
     }
 
-    /// The validated answer as one content event, or a typed 422.
-    func validatedAnswer(finishReason: String) throws -> MLXServerGenerationEvent {
-        .parsed(.init(content: try format.validatedContent(content, finishReason: finishReason),
+    /// The answer as one content event at the end of generation. The format
+    /// governs an answer, not calls: beside tool calls the retained text
+    /// leaves as generated, as the service exposes the other families'
+    /// content beside calls; otherwise the validated answer, or a typed 422.
+    func finalAnswer(finishReason: String, hasToolCalls: Bool) throws -> MLXServerGenerationEvent? {
+        guard !hasToolCalls else {
+            return content.isEmpty ? nil : .parsed(.init(content: content, reasoningContent: nil))
+        }
+        return .parsed(.init(content: try format.validatedContent(content, finishReason: finishReason),
             reasoningContent: nil))
     }
 }

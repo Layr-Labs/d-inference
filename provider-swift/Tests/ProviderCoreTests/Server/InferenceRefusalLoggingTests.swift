@@ -84,7 +84,6 @@ struct InferenceRefusalLoggingTests {
         ([history(call() + "," + call())], .invalidToolHistory),
         ([history(call(arguments: #""{\"zq-private-7f3a\":1,\"zq-private-7f3a\":2}""#))], .invalidToolArguments),
         ([history(call(arguments: #""{\"a\":\"zq-private-7f3a</arg_value>\"}""#))], .nativeDelimiterInHistory),
-        ([user, declared, #""response_format":{"type":"json_object"}"#], .unsupportedResponseFormat),
         ([user, #""tools":[{"type":"function","function":{"name":"zq-private-7f3a.f","parameters":{"type":"object"}}}]"#],
          .invalidToolDeclaration),
         ([user, declared, #""tool_choice":{"type":"function","function":{"name":"zq-private-7f3a"}}"#],

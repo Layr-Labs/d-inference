@@ -1111,7 +1111,7 @@ struct GLM5NextPromptPolicyTests {
             ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
             ([#"{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}"#],
              "", .nonTextContent),
-            ([user], declared + #","response_format":{"type":"json_object"}"#, .unsupportedResponseFormat),
+            ([user], #""response_format":{"type":"json_schema"}"#, .unsupportedResponseFormat),
             ([user], #""tools":[{"type":"function","function":{"name":"a.b","parameters":{"type":"object"}}}]"#,
              .invalidToolDeclaration),
             ([user], #""tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]"#,

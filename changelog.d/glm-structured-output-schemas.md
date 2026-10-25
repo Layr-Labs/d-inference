@@ -6,5 +6,4 @@ nullable fields, `format`, `pattern`, numeric bounds, `maxItems` or an untyped
 property, was refused with HTTP 400 before generation. GLM compiles no grammar,
 so these requests are now served as on the other families: the schema steers
 the answer, which is withheld until it satisfies the caller's schema and is a
-422 with no content otherwise. A JSON format combined with tools is still
-refused.
+422 with no content otherwise.

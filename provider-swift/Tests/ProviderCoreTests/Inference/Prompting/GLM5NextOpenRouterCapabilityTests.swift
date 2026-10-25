@@ -538,16 +538,34 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(update.toolConstraintModels == [GLM5NextLocalQualification.modelID, Self.model].sorted())
     }
 
-    /// A JSON format with tools stays an explicit client error before any
-    /// generation.
-    @Test func jsonFormatWithToolsIsRefusedBeforeGeneration() async throws {
-        var withTools = Self.jsonObjectBody()
-        withTools["tools"] = [["type": "function", "function": ["name": "ping",
-            "parameters": ["type": "object", "properties": [String: Any]()]] as [String: Any]]]
-        let served = try await serve(withTools, output: [Self.austin])
-        let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
-        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
-        #expect(served.content.isEmpty)
+    /// A JSON format beside tools governs the answer, not the calls, as the
+    /// service treats the other families: a JSON answer is withheld and
+    /// validated, and a call is exposed with any text generated beside it.
+    /// The request was refused with 400 before generation.
+    @Test(arguments: ["auto", "required"])
+    func jsonFormatWithToolsServesAValidatedAnswerOrACall(choice: String) async throws {
+        let body = try Self.forcedToolBody(choice == "auto" ? "auto" : Self.requiredChoice,
+            replacing: ["response_format": ["type": "json_object"]])
+        let prompts = PromptCapture()
+        let preamble = choice == "auto" ? "Checking Boston.\n" : "\n"
+        let called = try await serve(body, output: [preamble, Self.weatherCall], prompts: prompts)
+        #expect(called.error == nil && called.content == (choice == "auto" ? preamble : ""))
+        #expect(called.toolCalls.map(\.name) == ["get_current_weather"] && called.finishReason == "tool_calls")
+        let arguments = try #require(try JSONSerialization.jsonObject(
+            with: Data((called.toolCalls.first?.arguments ?? "").utf8)) as? [String: String])
+        #expect(arguments == ["location": "Boston, MA", "unit": "fahrenheit"])
+        #expect(called.nativeRefusals == [nil])
+        let prompt = try #require(prompts.prompts.first)
+        #expect(prompt.contains("<|system|>You must respond with a single valid JSON object."))
+        #expect(prompt.contains("\"name\": \"get_current_weather\""))
+        guard choice == "auto" else { return }
+        let answered = try await serve(body, output: ["\n", "```json\n" + Self.austin + "\n```"])
+        #expect(answered.error == nil && answered.toolCalls.isEmpty)
+        #expect(answered.content == Self.austin && answered.order == ["content"] && answered.finishReason == "stop")
+        let prose = try await serve(body, output: ["PRIVATE: it is sunny in Austin."])
+        #expect(prose.content.isEmpty && prose.finishReason == nil)
+        let error = try #require(prose.error as? MLXOpenAIServiceError)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
     // Structured-output schemas as pydantic, zod and OpenAI strict mode emit

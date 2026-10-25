@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,65 +23,83 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.1`, a patch release over `v0.10.0`
-for OpenRouter readiness on GLM-5.3-Flash and Nemotron 3.5 Super.
-GLM-5.3-Flash serves `strict` tools, returned reasoning, JSON modes, forced tool
-choice and variable-frame-rate video, skips its second weight-hash pass at
-startup and explains its GPU wired-memory limit. Nemotron 3.5 Super accepts
-media bodies up to 40 MiB and JSON formats with tools. Every model counts page
-cache as available memory. Unsupported logprob requests on native engines get a
-typed 400 instead of a 500 that cooled every provider of the model; logprobs
-themselves are deferred to a later release. The provider CLI also gains the
-desktop control API from #1518; the provider release does not build, sign or
-publish the Electron desktop app. On Macs with saved Autopilot consent, Autopilot
-reports every verified cached build and can download on the operator's behalf
-(#1565); holds, adopted-model routing and downloads need darkbloom-platform#439.
-See the
-[`v0.10.1` changelog entry](../../CHANGELOG.md) for the full scope.
+`ProviderCore.version` is prepared as `0.10.2`, a patch release over `v0.10.1`.
+Nemotron 3.5 Super gains prefix caching through the coordinator: it advertises
+its prefix cache, sends cache receipts and reports cached prompt tokens, and it
+keeps its prefix reuse as encrypted SSD checkpoints by default. GLM-5.3-Flash
+captures checkpoints beside decoding requests on a 256-token grid and prices
+its measured restore time in ready receipts. Both models' SSD checkpoints are
+4-bit `balanced` snapshots by default; `native` keeps exact checkpoints, which
+for GLM-5.3-Flash use a half-size BF16 layout. Both SSD prefix-cache writers
+queue up to six writes on every model, and a replaced Secure Enclave key no
+longer disables the SSD cache. Nemotron 3.5 Super and GLM-5.3-Flash serve
+logprobs under one contract once each model's catalog row lists them.
+GLM-5.3-Flash accepts OpenRouter's `reasoning.context`, `reasoning.mode` and
+hidden reasoning and Anthropic's `thinking` object. It also serves
+structured-output schemas outside its grammar subset, a JSON `response_format`
+beside tools, tool results whose `name` differs from the call and legacy
+`function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
+differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
+each refusal before inference and for client errors found while a
+GLM-5.3-Flash prompt is prepared, and load refusals and `darkbloom status`
+explain the memory a load cannot reclaim: Autopilot placement holds, work in
+flight and models served outside the enabled model filter. Decoding is
+faster: Super's first token no longer stalls near the FP8 eager bound, Super
+speculates for sampled requests and tapers its draft depth on an M5, both
+models keep decoding while another request prefills, and GLM-5.3-Flash decodes
+faster at long context and speculates for two concurrent requests. The MLX
+stack moves to the 2026-10-22 upstream sync, so the release metallib changes.
+See the [`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.1`:
+Before tagging `v0.10.2`:
 
-- Deploy a `darkbloom-platform` coordinator that includes
-  [darkbloom-platform#411](https://github.com/Layr-Labs/darkbloom-platform/pull/411)
-  to production. It refuses `logprobs` on GLM-5.3-Flash, MiMo V2.6 and Nemotron
-  3.5 Super with 400 before reservation unless the model's catalog row lists
-  `logprobs`. Without that refusal, a logprob request can reach a `0.10.0` GLM
-  provider, whose native engine fails it with a 500 `generation_failure` that
-  cools every provider of the model. It also plans the GLM request shapes that
-  this release serves.
-- Do not add the `logprobs` catalog capability to any of those models for
-  `0.10.1`. GLM-5.3-Flash's logprob code ships as groundwork and stays disabled
-  while the capability is absent.
 - Confirm that the tagged commit pins `libs/mlx-swift-lm` to a commit on SDK
-  `main`. Before #1561 merged, its pin moved from `baca4acf`, the head of
-  [mlx-swift-lm#340](https://github.com/Layr-Labs/mlx-swift-lm/pull/340), to
-  #340's squash commit. That is a pin-only change.
+  `main`. d-inference#1592 pins `aee6ebb6`, the head of the SDK set
+  `release/sdk-0.10.2-final`: SDK `main` with
+  [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
+  plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
+  head, and #1592 and then #1603 were squash-merged with no re-pin.
+- Confirm that the changelog's SDK note matches that pin, including every change
+  that SDK `main` gained after `6148b6da`.
 
-The Nemotron 3.5 Super provider-version floor can stay at `0.10.0`. Until they
-update, `0.10.0` providers refuse the newly served shapes with 400, and
-coordinators send forced tool choice only to providers that advertise it. After
-the preparation merges, the platform refreshes its provider-contract snapshot
-from that commit and sets `LatestProviderVersion` to `0.10.1` in the same change;
-that fallback constant does not gate publication. Catalog changes and model
-registration are separate approvals. This preparation does not tag, register,
-upload or deploy anything.
+Enable the new behaviour in this order; each step is a separate approval, and
+only the last waits for the tag:
 
-Platform evidence, inspected on 2026-10-23 (recheck before tagging):
+1. Deploy a `darkbloom-platform` coordinator that includes
+   [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464)
+   before any catalog row lists `logprobs` for GLM-5.3-Flash or Nemotron 3.5
+   Super. Its floors send a logprob request on either model only to providers
+   on `0.10.2` or later.
+2. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. This
+   step does not depend on this release: GLM's SSD reuse was qualified on a
+   signed `0.10.1` provider, and the coordinator must include request
+   normalization v9.
+3. After the fleet converges on `0.10.2`, list `logprobs` in GLM-5.3-Flash's
+   catalog row. Once a signed `0.10.2` build also restores Nemotron 3.5 Super's
+   SSD checkpoints after a restart, add Super's tuple to the allowlist and list
+   `logprobs` in Super's catalog row.
+
+After the tag, the platform refreshes its provider-contract snapshot from the
+tagged commit and sets `LatestProviderVersion` to `0.10.2` in the same change;
+that fallback constant does not gate publication. Catalog changes, allowlist
+changes and model registration are separate approvals. This preparation does
+not tag, register, upload, deploy or enable anything.
+
+Platform evidence, inspected on 2026-10-25 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `f512258a`, which has no logprobs guard | `/health` `build_commit`; no `logprobs` source in the [`modelarch` package at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/tree/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/internal/modelarch) |
-| #411 refuses native-engine logprobs unless the catalog row lists them | [`logprobs_input.go` at `1692564a`](https://github.com/Layr-Labs/darkbloom-platform/blob/1692564aa5f632ec99f4043af5c2e9d0b92e5d3c/coordinator/api/inference/logprobs_input.go) (`logprobsFailFast`) and [`request/logprobs_input.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/1692564aa5f632ec99f4043af5c2e9d0b92e5d3c/coordinator/api/inference/request/logprobs_input.go) (`LogprobsAdvertised`) |
-| The Super floor is `0.10.0` | [`registry/catalog_version_floor.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/registry/catalog_version_floor.go) (`nemotronSuperRegistryMinimumProviderVersion`) |
-| Forced tool choice goes only to advertising providers | [`registry/request_traits.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/registry/request_traits.go) (`RequiresToolConstraint`, `providerSupportsToolConstraintLocked`) |
-| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `f512258a`](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
+| Production runs platform `master` `7bf80fdd`, which has darkbloom-platform#411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
+| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
+| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.10.0` was [published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
-from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, `v0.9.22` was
+`v0.10.1` was [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`, `v0.10.0` was
+[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
+from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, and `v0.9.22` was
 [published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
-from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`, and `v0.9.21` was
-[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21)
-from `9951a7db72d3db9a9cb0ec5e777969afe968c9b6`. Publication does not establish
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites

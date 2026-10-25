@@ -222,7 +222,9 @@ the busy model immediately. An ordinary start with saved consent then fails befo
 changing enrollment or draining the running provider; retry after the update finishes.
 `status` and `autopilot status` read the same daemon snapshot, including nested
 Autopilot residents and load history. Enrollment does not make a live daemon disappear
-from status.
+from status. `autopilot status` prints `Adopted (serving outside the selection)` for
+models an operation adopted and `Held: <model> until <UTC> (<time> left)` for each
+placement hold (`provider-swift/Sources/darkbloom/Autopilot/AutopilotStatusCommand.swift`).
 
 A replacement start, with or without Autopilot, completes the picker/preflight and saves the selected IDs
 under `backend.enabled_models` while holding the lifecycle lease, before it
@@ -977,10 +979,22 @@ Output includes:
 - Detected hardware (chip, RAM, GPU cores).
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
-- Live daemon PID, uptime, trust verdict, and last model-load error. A
+- Live daemon PID, uptime, trust verdict, and last model-load error with how
+  long ago it was recorded (`Recorded … ago`); the readiness lines above it are
+  live. A refusal that could not evict a resident model ends with
+  `Not evictable: …`, naming each such model with its resident GB and every
+  reason ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Enabled model filter` is the saved config; a running daemon applies a
+  changed `enabled_models` only at its next start. `Serving outside the enabled
+  model filter` names each warm or advertised model the filter omits and why it
+  serves: an Autopilot operation's adoption, the running daemon's selection, or
+  the live Autopilot lease. `Autopilot placements` lists adoptions and placement
+  holds with each hold's UTC expiry and time left. `Not evictable for a load
+  now` lists the resident models no load can evict at the snapshot, with the
+  same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it

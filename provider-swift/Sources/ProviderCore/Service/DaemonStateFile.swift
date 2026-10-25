@@ -45,6 +45,15 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// The ordinary serving selection: what the daemon started with, live
+    /// switches and declared successor builds. Autopilot adoptions and
+    /// lease-published inventory are not in it. The config's
+    /// `enabled_models` applies to it only at a (re)start. Nil for older
+    /// daemons.
+    public var servingSelection: [String]?
+    /// Resident models no load can evict now, each with every reason
+    /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
+    public var evictionExclusions: [EvictionExclusion]?
     /// Remaining startup preload plan, including the candidate currently
     /// loading. nil means an older daemon did not report this field.
     public var startupPreloadPendingModels: [String]?
@@ -186,6 +195,29 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
 
+    /// A resident model the load gates cannot evict, and why.
+    public struct EvictionExclusion: Codable, Sendable, Equatable {
+        public var model: String
+        public var residentGb: Double
+        /// `autopilot_pin`, `autopilot_hold`, `requests_in_flight`,
+        /// `local_request`, `unloading` or `assistant_upgrade`.
+        public var reasons: [String]
+        /// Unix milliseconds at which an Autopilot placement hold ends.
+        public var holdExpiresAtMs: Int64?
+        public var requestsInFlight: Int?
+        /// Served through an Autopilot adoption, outside the serving selection.
+        public var adoptedByAutopilot: Bool?
+        public init(model: String, residentGb: Double, reasons: [String], holdExpiresAtMs: Int64? = nil,
+                    requestsInFlight: Int? = nil, adoptedByAutopilot: Bool? = nil) {
+            self.model = model
+            self.residentGb = residentGb
+            self.reasons = reasons
+            self.holdExpiresAtMs = holdExpiresAtMs
+            self.requestsInFlight = requestsInFlight
+            self.adoptedByAutopilot = adoptedByAutopilot
+        }
+    }
+
     /// One loaded (or refused) slot's serving posture, as the daemon
     /// observed it at `writtenAt`. Everything here is a RESOLVED fact plus
     /// the request it was resolved from, because during a staged paged
@@ -296,6 +328,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        servingSelection: [String]? = nil,
+        evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
         requestWorkPending: Bool? = nil,
@@ -327,6 +361,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.servingSelection = servingSelection
+        self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch

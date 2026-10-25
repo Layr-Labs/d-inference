@@ -57,7 +57,7 @@ struct DiffusionGemmaMediaNormalizationTests {
         do {
             _ = try await EngineV2VisionPrefill.prepareDiffusionUserInput(request: request, templateControls: .init())
             Issue.record("Orphan media result was accepted")
-        } catch MultiModelBatchSchedulerEngineError.invalidToolPayload(let message) {
+        } catch MultiModelBatchSchedulerEngineError.invalidToolPayload(let message, _) {
             #expect(message == "tool message has no preceding assistant tool_calls")
         }
     }

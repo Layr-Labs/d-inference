@@ -105,7 +105,7 @@ extension NemotronSuperManagedSlotTests {
             physicalBytes: 128 << 30, kvBytesPerToken: { _ in 64 }) { request in
             requested.set(request)
             throw NemotronSuperSlotError.retainedFault
-        }, environment: [:])
+        }, environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"])
         var refusal: Error?
         do {
             try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,

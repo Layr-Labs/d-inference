@@ -92,7 +92,10 @@ struct EngineV2ContiguousAdmissionTests {
         let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
         #expect(await bundle.bridge.kvBackendKind == .contiguous)
         #expect(bundle.bridge.ssdHybridCheckpointStore == nil)
-        #expect(bundle.bridge.prefixCacheModelStatus().reason == (failStore ? .cacheInitFailed : .configDisabled))
+        // A refused store's heartbeat status names the disk problem and carries its cause.
+        let prefixStatus = bundle.bridge.prefixCacheModelStatus()
+        #expect(prefixStatus.reason == (failStore ? .diskUnavailable : .configDisabled))
+        #expect(prefixStatus.detail == (failStore ? .unsafePath : nil))
         #expect(engine.admissionForTesting.fullKVBytesPerToken == 1_024)
         #expect(!engine.admissionForTesting.canEverFit(promptTokens: 6_000, maxTokens: 1))
         #expect(await bundle.bridge.kvBytesPerToken == 1_024)

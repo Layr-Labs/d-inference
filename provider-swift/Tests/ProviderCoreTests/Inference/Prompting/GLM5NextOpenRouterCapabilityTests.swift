@@ -126,6 +126,8 @@ private struct ServedResponse {
     var nativeRefusals: [String?] = []
     /// The same decision by a native engine that does not capture logprobs (MiMo).
     var nonCapturingNativeRefusals: [String?] = []
+    /// Every SSE frame as sent.
+    var frames: [String] = []
 }
 
 @Suite("GLM-5.3-Flash OpenRouter capability requests")
@@ -194,6 +196,7 @@ struct GLM5NextOpenRouterCapabilityTests {
             for try await frame in try await MLXOpenAIService(engine: scheduler)
                 .streamChatCompletionFrames(request: request)
             {
+                served.frames.append(frame)
                 guard frame.hasPrefix("data: {"),
                     let chunk = try JSONSerialization.jsonObject(
                         with: Data(frame.dropFirst(6).utf8)) as? [String: Any],
@@ -338,6 +341,78 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
+    // MARK: - reasoning-content-return
+
+    /// OpenRouter's current `reasoning-content-return` prompt. Its earlier
+    /// `get_time` call returns reasoning that holds the secret word, so the
+    /// answer can repeat it only when the returned reasoning renders.
+    static let secretWordPrompt = "Call the get_time tool. While thinking, choose a secret word. After the tool returns, reply with exactly \"SECRET: <word>\" using the secret word from your thinking. If you cannot see your earlier thinking, reply \"SECRET: unknown\"."
+    static let secretWordThought = "I must call get_time first. My secret word is zephyr."
+
+    /// The secret-word turn with the reasoning returned in `carrier`
+    /// (`reasoning`, Darkbloom's streamed `reasoning_details` entry, or both).
+    /// `strict` declares `get_time` in OpenAI's strict form and returns the
+    /// call's arguments as `""`; otherwise as `{}`.
+    static func secretWordBody(carrier: String, strict: Bool, controls: String) throws -> [String: Any] {
+        let detail: [String: Any] = [
+            "type": "reasoning.text", "text": secretWordThought, "id": "reasoning-text-0", "format": "unknown",
+            "index": 0, "signature": NSNull(),
+        ]
+        var assistant: [String: Any] = [
+            "role": "assistant", "content": NSNull(),
+            "tool_calls": [["id": "call_get_time", "type": "function", "index": 0,
+                            "function": ["name": "get_time", "arguments": strict ? "" : "{}"]]],
+        ]
+        if carrier != "reasoning_details" { assistant["reasoning"] = secretWordThought }
+        if carrier != "reasoning" { assistant["reasoning_details"] = [detail] }
+        var function: [String: Any] = ["name": "get_time", "description": "Get the current time",
+            "parameters": ["type": "object", "properties": [String: Any]()]]
+        if strict {
+            function["parameters"] = ["type": "object", "properties": [String: Any](), "required": [String](),
+                                      "additionalProperties": false]
+            function["strict"] = true
+        }
+        var body: [String: Any] = [
+            "model": model, "stream": true, "stream_options": ["include_usage": true],
+            "messages": [
+                ["role": "user", "content": secretWordPrompt], assistant,
+                ["role": "tool", "tool_call_id": "call_get_time", "content": "2026-10-24T05:12:00Z"],
+            ],
+            "tools": [["type": "function", "function": function]],
+        ]
+        let merged = try #require(JSONSerialization.jsonObject(with: Data(controls.utf8)) as? [String: Any])
+        body.merge(merged) { _, added in added }
+        return body
+    }
+
+    /// The secret-word form of `reasoning-content-return` with each reasoning
+    /// carrier, the OpenAI strict declaration and empty-string arguments, and
+    /// OpenRouter's reasoning controls, `reasoning.context` and
+    /// `reasoning.mode` included (both refused with 400 before). The returned
+    /// reasoning renders in the call's thinking block and the answer is served.
+    @Test(arguments: [
+        ("reasoning", false, "{}"),
+        ("reasoning_details", true, #"{"reasoning":{"enabled":true}}"#),
+        ("both", true, #"{"reasoning":{"effort":"high"},"tool_choice":"auto","parallel_tool_calls":true}"#),
+        ("reasoning_details", false, #"{"reasoning":{"max_tokens":2048,"exclude":false},"include_reasoning":true}"#),
+        ("both", true, #"{"reasoning":{"enabled":true,"context":"all_turns"}}"#),
+        ("reasoning", true, #"{"reasoning":{"effort":"medium","context":"current_turn","mode":"standard"}}"#),
+    ])
+    func openRouterSecretWordReasoningReturnIsServed(carrier: String, strict: Bool, controls: String) async throws {
+        let prompts = PromptCapture()
+        let served = try await serve(
+            Self.secretWordBody(carrier: carrier, strict: strict, controls: controls),
+            output: ["The tool returned the time; my word was zephyr.", "</think>", "SECRET: zephyr"],
+            prompts: prompts)
+        #expect(served.error == nil)
+        #expect(served.reasoning == "The tool returned the time; my word was zephyr.")
+        #expect(served.content == "SECRET: zephyr" && served.finishReason == "stop")
+        let prompt = try #require(prompts.prompts.first)
+        #expect(prompt.contains(
+            "<|assistant|><think>\(Self.secretWordThought)</think><tool_call>get_time</tool_call><|observation|>"))
+        #expect(prompt.hasSuffix("<tool_response>2026-10-24T05:12:00Z</tool_response><|assistant|><think>"))
+    }
+
     // MARK: - Forced tool_choice
 
     /// OpenRouter's captured `orIncidentAuto` request, byte for byte as the
@@ -466,22 +541,118 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(update.toolConstraintModels == [GLM5NextLocalQualification.modelID, Self.model].sorted())
     }
 
-    /// Unsupported shapes stay explicit client errors before any generation.
-    @Test func unsupportedJSONShapesAreRefusedBeforeGeneration() async throws {
-        var withTools = Self.jsonObjectBody()
-        withTools["tools"] = [["type": "function", "function": ["name": "ping",
-            "parameters": ["type": "object", "properties": [String: Any]()]] as [String: Any]]]
-        var untyped = Self.jsonSchemaBody()
-        untyped["response_format"] = ["type": "json_schema", "json_schema": [
-            "name": "loose", "schema": ["type": "object", "properties": ["value": [String: Any]()]]]]
-        var pattern = Self.jsonSchemaBody()
-        pattern["response_format"] = ["type": "json_schema", "json_schema": [
-            "name": "pattern", "schema": ["type": "string", "pattern": "^a"]]]
-        for body in [withTools, untyped, pattern] {
-            let served = try await serve(body, output: [Self.austin])
-            let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
-            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
-            #expect(served.content.isEmpty)
+    /// A JSON format beside tools governs the answer, not the calls, as the
+    /// service treats the other families: a JSON answer is withheld and
+    /// validated, and a call is exposed with any text generated beside it.
+    /// The request was refused with 400 before generation.
+    @Test(arguments: ["auto", "required"])
+    func jsonFormatWithToolsServesAValidatedAnswerOrACall(choice: String) async throws {
+        let body = try Self.forcedToolBody(choice == "auto" ? "auto" : Self.requiredChoice,
+            replacing: ["response_format": ["type": "json_object"]])
+        let prompts = PromptCapture()
+        let preamble = choice == "auto" ? "Checking Boston.\n" : "\n"
+        let called = try await serve(body, output: [preamble, Self.weatherCall], prompts: prompts)
+        #expect(called.error == nil && called.content == (choice == "auto" ? preamble : ""))
+        #expect(called.toolCalls.map(\.name) == ["get_current_weather"] && called.finishReason == "tool_calls")
+        let arguments = try #require(try JSONSerialization.jsonObject(
+            with: Data((called.toolCalls.first?.arguments ?? "").utf8)) as? [String: String])
+        #expect(arguments == ["location": "Boston, MA", "unit": "fahrenheit"])
+        #expect(called.nativeRefusals == [nil])
+        let prompt = try #require(prompts.prompts.first)
+        #expect(prompt.contains("<|system|>You must respond with a single valid JSON object."))
+        #expect(prompt.contains("\"name\": \"get_current_weather\""))
+        guard choice == "auto" else { return }
+        let answered = try await serve(body, output: ["\n", "```json\n" + Self.austin + "\n```"])
+        #expect(answered.error == nil && answered.toolCalls.isEmpty)
+        #expect(answered.content == Self.austin && answered.order == ["content"] && answered.finishReason == "stop")
+        let prose = try await serve(body, output: ["PRIVATE: it is sunny in Austin."])
+        #expect(prose.content.isEmpty && prose.finishReason == nil)
+        let error = try #require(prose.error as? MLXOpenAIServiceError)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+    }
+
+    /// SSE frames with the per-response `id` and `created` fixed.
+    static func stableFrames(_ frames: [String]) -> [String] {
+        frames.map {
+            $0.replacingOccurrences(of: #""id":"[^"]*""#, with: #""id":"ID""#, options: .regularExpression)
+                .replacingOccurrences(of: #""created":[0-9]+"#, with: #""created":0"#, options: .regularExpression)
         }
+    }
+
+    /// Without a JSON format, GLM tool requests send the frames they sent
+    /// before a JSON format could sit beside tools, byte for byte and in
+    /// order; the format's answer terminal adds nothing to them.
+    @Test func toolRequestsWithoutAJSONFormatKeepTheirFrames() async throws {
+        let chunk = #""created":0,"id":"ID","model":"glm-5.3-flash","object":"chat.completion.chunk""#
+        let role = #"data: {"choices":[{"delta":{"role":"assistant"},"index":0}],"# + chunk + "}"
+        let preamble = #"data: {"choices":[{"delta":{"content":"Checking Boston.\n"},"index":0}],"# + chunk + "}"
+        let call = #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\"location\":\"Boston, MA\",\"unit\":\"fahrenheit\"}","name":"get_current_weather"},"id":"ID","index":0,"type":"function"}]},"index":0}],"#
+            + chunk + "}"
+        let finish = #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"# + chunk + "}"
+        for (choice, output, frames) in [
+            ("auto" as Any, ["Checking Boston.\n", Self.weatherCall], [role, preamble, call, finish, "data: [DONE]"]),
+            (Self.requiredChoice, ["\n", Self.weatherCall], [role, call, finish, "data: [DONE]"]),
+        ] {
+            let served = try await serve(try Self.forcedToolBody(choice), output: output)
+            #expect(served.error == nil)
+            #expect(Self.stableFrames(served.frames) == frames.map { $0 + "\n\n" })
+        }
+    }
+
+    // Structured-output schemas as pydantic, zod and OpenAI strict mode emit
+    // them, with keywords outside the subset Flint compiles into a grammar.
+    static let pydanticReport = ##"{"$defs":{"Day":{"properties":{"day":{"title":"Day","type":"string"},"high_f":{"title":"High F","type":"integer"}},"required":["day","high_f"],"title":"Day","type":"object"}},"properties":{"city":{"title":"City","type":"string"},"note":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Note"},"days":{"items":{"$ref":"#/$defs/Day"},"title":"Days","type":"array"}},"required":["city","days"],"title":"Report","type":"object"}"##
+    static let zodPage = #"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","additionalProperties":false,"properties":{"url":{"type":"string","format":"uri"},"count":{"type":"integer","minimum":0},"tags":{"type":"array","items":{"type":"string"},"maxItems":50}},"required":["url","count","tags"]}"#
+    static let strictNullable = #"{"type":"object","additionalProperties":false,"required":["answer","note"],"properties":{"answer":{"type":"string"},"note":{"type":["string","null"]}}}"#
+    static let prefixedID = #"{"type":"object","properties":{"id":{"type":"string","pattern":"^ord_"}},"required":["id"]}"#
+    static let untypedLeaf = #"{"type":"object","properties":{"value":{"description":"any JSON value"}},"required":["value"]}"#
+
+    static func structuredOutputBody(_ schema: String) throws -> [String: Any] {
+        var body = jsonSchemaBody()
+        body["reasoning"] = ["enabled": false]
+        body["response_format"] = ["type": "json_schema", "json_schema": [
+            "name": "report", "strict": true, "schema": try JSONSerialization.jsonObject(with: Data(schema.utf8)),
+        ] as [String: Any]]
+        return body
+    }
+
+    /// GLM compiles no grammar, so these schemas are served as on the other
+    /// families, steered by the caller's schema, and a conforming answer is
+    /// exposed. They were refused with 400 before generation.
+    @Test(arguments: [
+        (pydanticReport, #"{"city":"Austin","note":null,"days":[{"day":"Mon","high_f":75}]}"#),
+        (zodPage, #"{"url":"https://a.example","count":3,"tags":["x"]}"#),
+        (strictNullable, #"{"answer":"ok","note":null}"#),
+        (prefixedID, #"{"id":"ord_42"}"#),
+        (untypedLeaf, #"{"value":[1,{"a":true}]}"#),
+    ])
+    func structuredOutputSchemaIsServed(schema: String, answer: String) async throws {
+        let prompts = PromptCapture()
+        let served = try await serve(try Self.structuredOutputBody(schema), output: ["\n", answer], prompts: prompts)
+        #expect(served.error == nil)
+        #expect(served.content == answer && served.finishReason == "stop")
+        #expect(served.nativeRefusals == [nil])
+        #expect(try #require(prompts.prompts.first).contains("JSON Schema:"))
+    }
+
+    /// The answer is validated against the caller's schema, including
+    /// keywords the subset lacks: a violation is the typed 422 with no content.
+    @Test(arguments: [
+        (pydanticReport, #"{"city":"PRIVATE","note":3,"days":[]}"#),
+        (zodPage, #"{"url":"https://a.example","count":-1,"tags":[]}"#),
+        (zodPage, #"{"url":"https://a.example","count":1,"tags":[],"PRIVATE":true}"#),
+        (zodPage, #"{"url":"https://a.example","tags":["PRIVATE"]}"#),
+        (strictNullable, #"{"answer":"PRIVATE","note":false}"#),
+        (prefixedID, #"{"id":"PRIVATE"}"#),
+    ])
+    func structuredOutputSchemaViolationIsATyped422(schema: String, answer: String) async throws {
+        let served = try await serve(try Self.structuredOutputBody(schema), output: [answer])
+        #expect(served.content.isEmpty && served.finishReason == nil)
+        let error = try #require(served.error as? MLXOpenAIServiceError)
+        guard case .invalidResponseFormatOutput(let message) = error else {
+            Issue.record("unexpected \(error)"); return
+        }
+        #expect(!message.contains("PRIVATE"))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 }

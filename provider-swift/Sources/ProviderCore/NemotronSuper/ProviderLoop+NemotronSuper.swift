@@ -82,11 +82,14 @@ extension ProviderLoop {
         let plan = nemotronSuperLoadPlan(modelID: modelID, kvBytesCapacity: kvBytesCapacity)
         let owner: NemotronSuperSlotOwner
         do {
+            let backend = loopConfig.config.backend
             owner = try await nemotronSuperSlotLoader.load(.init(modelID: modelID, directory: directory,
                 kvBytesCapacity: kvBytesCapacity, admissionKVBytes: plan.admissionKVBytes,
                 defaultMaxTokens: min(Self.schedulerDefaultMaxTokens, NemotronSuperServingPolicy.contextTokens),
                 environment: plan.environment, budget: kvBudget,
-                physicalBytes: nemotronSuperSlotLoader.physicalBytes))
+                physicalBytes: nemotronSuperSlotLoader.physicalBytes, modelAggregateHash: before.hash,
+                checkpointQuantizationConfig: backend.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: backend.engineV2KVCheckpointQuantizationByModel))
         } catch {
             // Retained weights stay resident, with the lane, round and bank
             // the plan reserves beside them: survivors keep their shrunk
@@ -145,6 +148,17 @@ extension ProviderLoop {
             await publishWeightHash(modelId: modelID, snapshot: after)
             artifactHash = after.hash
         }
+        // The bank advertises the aggregate published before the load; once
+        // that is not the loaded artifact's, it serves local reuse only.
+        // Durable checkpoints bound to it would outlive this process, so an
+        // owner with an SSD store is refused instead.
+        if artifactHash != before.hash {
+            owner.bridge.residentPrefixCacheEvidence?.close()
+            if owner.bridge.ssdHybridCheckpointStore != nil {
+                throw InferenceError.modelLoadFailed(
+                    "Model '\(modelID)' changed on disk during its load; durable prefix checkpoints refused it")
+            }
+        }
         let status = nemotronSuperMTPStatus(speculates: owner.speculates)
         await owner.bridge.configureMTPStatus(status, metricsInterval: .seconds(60))
         await owner.bridge.recordModelLoadTime(ms: Self.milliseconds(started.duration(to: .now)))
@@ -153,6 +167,7 @@ extension ProviderLoop {
             throw CancellationError()
         }
         try throwIfRetiring(modelID)
+        reportPrefixCacheFailure(owner.bridge.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: owner.bridge)
         modelSlots[modelID] = ModelSlot(
             engineBundle: ProviderEngineBundle(bridge: owner.bridge, assistant: nil, assistantBytes: 0,
@@ -179,10 +194,10 @@ extension ProviderLoop {
     }
 
     /// Provider policy under this grant: `mtp_mode` and the kill switch pick
-    /// speculation; the slot policy's explicit `engine_v2_max_concurrent` bounds
-    /// concurrency, else the measured default applies. The slot loader's
-    /// pinned-ness and machine memory size the prefix bank exactly as its
-    /// builder will.
+    /// speculation, and the Mac's chip family its measured depth table; the
+    /// slot policy's explicit `engine_v2_max_concurrent` bounds concurrency,
+    /// else the measured default applies. The slot loader's pinned-ness and
+    /// machine memory size the prefix bank exactly as its builder will.
     func nemotronSuperLoadPlan(modelID: String, kvBytesCapacity: Int) -> NemotronSuperServingPolicy.LoadPlan {
         let backend = loopConfig.config.backend
         let explicit = backend.engineV2MaxConcurrentIsExplicit
@@ -192,7 +207,9 @@ extension ProviderLoop {
             mode: backend.mtpMode,
             configuredConcurrency: explicit ? engineV2MaxConcurrent(forModel: modelID) : nil,
             kvBytesCapacity: kvBytesCapacity, pinned: nemotronSuperSlotLoader.pinned,
-            physicalBytes: nemotronSuperSlotLoader.physicalBytes)
+            physicalBytes: nemotronSuperSlotLoader.physicalBytes,
+            depthByRequests: NemotronSuperServingPolicy.defaultDepthByRequests(
+                chipFamily: loopConfig.hardware.chipFamily))
     }
 
     private func nemotronSuperMTPStatus(speculates: Bool) -> MTPActivationStatus {

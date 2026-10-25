@@ -4,7 +4,6 @@ import HummingbirdTesting
 import MLX
 import MLXLMCommon
 import MLXLMServer
-import MLXNN
 import NIOCore
 import Testing
 
@@ -31,20 +30,20 @@ struct FlintReasoningVisibilityTests {
             tokens.map { SSETokenLogprob(token: $0, logprob: -1, bytes: Array($0.utf8).map(Int.init), topLogprobs: []) }
         }
         // Markers assembled from ordinary tokens, split across drains.
-        var split = FlintReasoningLogprobsFilter()
+        var split = WithheldReasoningLogprobsFilter()
         #expect(split.visible(entries(["<th", "ink>", "plan"])).isEmpty)
         #expect(split.visible(entries([" </thi", "nk>"])).isEmpty)
         #expect(split.visible(entries(["Answer", "."])).map(\.token) == ["Answer", "."])
         // Dedicated marker tokens.
-        var dedicated = FlintReasoningLogprobsFilter()
+        var dedicated = WithheldReasoningLogprobsFilter()
         #expect(dedicated.visible(entries(["<think>", "a", "</think>", "B"])).map(\.token) == ["B"])
         // A direct answer keeps every entry, including a held "<" prefix.
-        var direct = FlintReasoningLogprobsFilter()
+        var direct = WithheldReasoningLogprobsFilter()
         #expect(direct.visible(entries(["<", "Hi"])).map(\.token) == ["<", "Hi"])
         // An undecided prefix is never released early, and an unclosed thought never.
-        var pending = FlintReasoningLogprobsFilter()
+        var pending = WithheldReasoningLogprobsFilter()
         #expect(pending.visible(entries(["<thi"])).isEmpty)
-        var unclosed = FlintReasoningLogprobsFilter()
+        var unclosed = WithheldReasoningLogprobsFilter()
         #expect(unclosed.visible(entries(["<think>", "</thin", "k"])).isEmpty)
     }
 
@@ -217,74 +216,35 @@ extension FlintReasoningVisibilityTests {
         _ control: String?, deadline: FirstContentDeadline? = nil,
         script: (AsyncStream<CBv2Event>.Continuation) async -> Void
     ) async throws -> RelayRun {
-        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
-            .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-        }
-        let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max",
-            chipFamily: .m4, chipTier: .max, memoryGb: 64, memoryAvailableGb: 64,
-            cpuCores: .init(total: 16, performance: 12, efficiency: 4),
-            gpuCores: 40, memoryBandwidthGbs: 546)
-        let loop = try ProviderLoop(config: .init(coordinatorURL: "ws://127.0.0.1:0/unused",
-            hardware: hardware, models: [], config: .init(provider: .init(name: "flint-visibility"),
-                backend: .init(), coordinator: .init(heartbeatIntervalSecs: 60))),
-            attestationSigner: nil, kvBudgetForTesting: budget)
-        let engine = PrefillScriptEngine()
-        let bridge = EngineV2Bridge(engine: engine, modelId: Self.modelID, tokenizer: Self.tokenizer,
-            eosTokenIds: Self.stops, kvBytesPerToken: 4_000, kvBudget: budget)
-        let runtime = EngineV2Runtime()
-        await runtime.register(modelId: Self.modelID, bridge: bridge)
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.installModelSlotForTesting(modelId: Self.modelID,
-            container: ModelContainer(context: .init(configuration: .init(id: Self.modelID),
-                model: VisibilityContainerModel(), processor: VisibilityProcessor(),
-                tokenizer: FlintVisibilityTokenizer())),
-            tokenizer: Self.tokenizer, engineV2: bridge,
-            sizing: .init(weightsBytes: 0, fp16KVBytesPerToken: 4_000,
-                maxContextLength: 8192, defaultMaxTokens: 4096),
-            modelType: "flint")
-        let sender = NodeKeyPair.generate()
         var fields = [#""model":"\#(Self.modelID)""#, #""messages":[{"role":"user","content":"hi"}]"#,
             #""max_tokens":64"#, #""stream":true"#]
         if let control { fields.append(control) }
-        let encrypted = try sender.encrypt(recipientPublicKey: await loop.keyPair.publicKeyBytes,
-            plaintext: Data(("{" + fields.joined(separator: ",") + "}").utf8))
-        let recorder = RelayRecorder()
-        await loop.handleInferenceRequest(requestId: Self.requestID, ciphertext: encrypted,
-            senderPublicKey: sender.publicKeyBytes, cacheReceiptNonce: nil,
-            authenticatedCacheScope: "test-tenant", firstContentDeadline: deadline,
-            send: SendHandle(recorder.record))
-        let admittedUntil = ContinuousClock.now + .seconds(5)
-        while engine.continuations.isEmpty, recorder.terminals == 0, ContinuousClock.now < admittedUntil {
-            try await Task.sleep(for: .milliseconds(1))
+        let output = try await ScriptedCoordinatorRelay.run(modelID: Self.modelID, modelType: "flint",
+            tokenizer: Self.tokenizer, containerTokenizer: FlintVisibilityTokenizer(), eosTokenIds: Self.stops,
+            requestID: Self.requestID, fields: fields, deadline: deadline) { continuation, _ in
+            await script(continuation)
         }
-        if let continuation = engine.continuations.first { await script(continuation) }
-        let settledUntil = ContinuousClock.now + .seconds(10)
-        while recorder.terminals == 0, ContinuousClock.now < settledUntil {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        await bridge.shutdown()
-        _ = await runtime.unregister(modelId: Self.modelID)
 
         var run = RelayRun()
-        for message in recorder.snapshot {
-            switch message {
-            case .inferenceChunk(_, _, let encrypted?):
-                let frame = String(decoding: try sender.decryptPayload(encrypted), as: UTF8.self)
-                for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {
-                    guard let object = try JSONSerialization.jsonObject(
-                        with: Data(line.dropFirst(6).utf8)) as? [String: Any] else { continue }
-                    let entries = ((object["choices"] as? [[String: Any]])?.first?["logprobs"] as? [String: Any])?["content"]
-                    run.logprobTokens += (entries as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
-                    if let delta = (object["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any] {
-                        run.deltaKeys.formUnion(delta.keys)
-                        run.content += delta["content"] as? String ?? ""
-                        run.reasoning += delta["reasoning_content"] as? String ?? ""
-                    }
-                    if let usage = object["usage"] as? [String: Any] {
-                        let details = usage["completion_tokens_details"] as? [String: Any]
-                        run.usageFrame = (usage["completion_tokens"] as? Int, details?["reasoning_tokens"] as? Int)
-                    }
+        for frame in output.frames {
+            for line in frame.split(separator: "\n") where line.hasPrefix("data: ") && line != "data: [DONE]" {
+                guard let object = try JSONSerialization.jsonObject(
+                    with: Data(line.dropFirst(6).utf8)) as? [String: Any] else { continue }
+                let entries = ((object["choices"] as? [[String: Any]])?.first?["logprobs"] as? [String: Any])?["content"]
+                run.logprobTokens += (entries as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
+                if let delta = (object["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any] {
+                    run.deltaKeys.formUnion(delta.keys)
+                    run.content += delta["content"] as? String ?? ""
+                    run.reasoning += delta["reasoning_content"] as? String ?? ""
                 }
+                if let usage = object["usage"] as? [String: Any] {
+                    let details = usage["completion_tokens_details"] as? [String: Any]
+                    run.usageFrame = (usage["completion_tokens"] as? Int, details?["reasoning_tokens"] as? Int)
+                }
+            }
+        }
+        for message in output.terminals {
+            switch message {
             case .inferenceComplete(_, let usage, _, _, let hash, _):
                 run.complete = (usage, hash)
             case .inferenceError(_, let failure, _):
@@ -295,33 +255,6 @@ extension FlintReasoningVisibilityTests {
         }
         return run
     }
-}
-
-private final class RelayRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var messages: [OutboundMessage] = []
-    func record(_ message: OutboundMessage) { lock.withLock { messages.append(message) } }
-    var snapshot: [OutboundMessage] { lock.withLock { messages } }
-    var terminals: Int {
-        snapshot.filter {
-            switch $0 {
-            case .inferenceComplete, .inferenceError: true
-            default: false
-            }
-        }.count
-    }
-}
-
-private final class VisibilityContainerModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
-        .tokens(input.text)
-    }
-    func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
-}
-
-private struct VisibilityProcessor: UserInputProcessor {
-    private struct Unused: Error {}
-    func prepare(input: UserInput) async throws -> LMInput { throw Unused() }
 }
 #endif
 

@@ -38,7 +38,8 @@ private struct NativeLoopTestFailure: Error {}
 // Admission-only peer: never generates or stands in for a real-model smoke pass.
 // The MiMo failure below still uses the actual native fixture/owner/retirement.
 private final class NativeFaultPeerModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

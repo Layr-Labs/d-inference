@@ -155,7 +155,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
 /// Never forward-passed: the slot-build tests run with hooks installed
 /// (container snapshot skipped) and the routing tests never touch it.
 private final class WiringStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

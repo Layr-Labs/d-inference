@@ -171,6 +171,7 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
 | Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
 | GLM-5.3-Flash requests or loads fail and the log mentions Metal `Insufficient Memory` | The macOS GPU wired-memory limit is below what GLM plans at full KV | [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
+| Failed jobs on the console's Jobs card; `darkbloom logs` shows `Inference failure: invalid request (…)` lines | Each line is one request the provider refused before running it; the reason names the request shape ([refusal lines](./cli-reference.md#refusal-lines)). Request text is never logged | Nothing to change on the Mac. The client must change the request; a model that refuses the shape refuses it on every provider |
 
 ## GLM-5.3-Flash GPU wired-memory limit
 

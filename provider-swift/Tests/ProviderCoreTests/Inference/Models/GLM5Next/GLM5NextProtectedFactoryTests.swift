@@ -22,7 +22,13 @@ struct GLM5NextProtectedFactoryTests {
         try await GLM5NextProtectedFactoryFixture.with(body)
     }
 
-    @Test func managedSlotBindsExactEncryptedStoreAndRestoresPrefix() async throws {
+    /// The protected tuple binds the encrypted full-state store of the slot's
+    /// checkpoint precision: the exact layout for `native`, the layout whose
+    /// older latent rows are coded for `balanced` (the default).
+    @Test(arguments: ["native", "balanced"])
+    func managedSlotBindsEncryptedStoreAndRestoresPrefix(precision: String) async throws {
+        let layout = precision == "native" ? CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+            : CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout
         try await withFixture { fixture in
             let container = try await fixture.load()
             let tokenizer = await container.tokenizer
@@ -35,6 +41,7 @@ struct GLM5NextProtectedFactoryTests {
                     tokenizer: TokenizerHandle(tokenizer),
                     sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity,
                     maxConcurrentRequests: 1, kvBudget: fixture.budget, kvBackendConfig: "paged",
+                    checkpointQuantizationConfig: precision,
                     weightHash: fixture.plan.weights.manifest.aggregateSHA256,
                     specDecPreparation: fixture.mtpPreparation,
                     assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
@@ -46,8 +53,8 @@ struct GLM5NextProtectedFactoryTests {
             #expect(engine.schedulerConfig.prefillChunkSize == 512)
             #expect(bundle.mtpStatus.active)
             #expect(store.identity == fixture.identity && store.kvBudget === fixture.budget)
-            #expect(
-                store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout)
+            #expect(store.config.backendLayout == layout)
+            #expect(bundle.bridge.kvCheckpointQuantization.rawValue == precision)
             #expect(store.usesEphemeralKey)
             #expect(store.config.dedicatedRoot == fixture.cacheRoot)
             #expect(
@@ -55,8 +62,7 @@ struct GLM5NextProtectedFactoryTests {
                     == fixture.cacheRoot.appendingPathComponent(
                         SSDHybridCheckpointStoreFactory.namespace(
                             modelId: fixture.plan.weights.catalog.id,
-                            identity: fixture.identity,
-                            backendLayout: CBv2CompleteCheckpointManifest.glm5NextPagedLayout),
+                            identity: fixture.identity, backendLayout: layout),
                         isDirectory: true))
             #expect(engine.completePrefixCache === store)
             #expect(engine.completeCheckpointCodec?.isNativePagedGLM5Next == true)
@@ -94,7 +100,8 @@ struct GLM5NextProtectedFactoryTests {
     /// Default configuration for the pinned identity: automatic KV backend, no
     /// cache flag and more than one request. Serving resolves the native paged
     /// backend and the provider-resolved MTP configuration reaches the GLM
-    /// complete-prefix branch, so the encrypted full-state store is bound.
+    /// complete-prefix branch, so the encrypted full-state store is bound at
+    /// the default `balanced` checkpoint precision.
     @Test func defaultServingSelectsPagedKVAndCompletePrefix() async throws {
         try await withFixture { fixture in
             let container = try await fixture.load()
@@ -118,18 +125,77 @@ struct GLM5NextProtectedFactoryTests {
             let store = try #require(bundle.bridge.ssdHybridCheckpointStore)
             let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
             #expect(store.identity == fixture.identity)
-            #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout)
+            #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout)
+            #expect(bundle.bridge.kvCheckpointQuantization == .balanced)
             #expect(engine.completePrefixCache === store)
             #expect(engine.completeCheckpointCodec?.isNativePagedGLM5Next == true)
             #expect(engine.schedulerConfig.enablePrefixCache)
+            #expect(
+                engine.schedulerConfig.demandedCaptureBoundaryMinimumTokens
+                    == store.config.minEffectiveTokens)
+            #expect(store.pipeline.capacity == SSDPrefixCachePolicy.writeQueueMaxJobs)
             #expect(engine.schedulerConfig.maxConcurrentRequests == 2)
             let context = fixture.sizing.maxContextLength
             #expect(engine.schedulerConfig.maxBatchedTokensPerStep
                 == min(context, EngineV2Factory.glm5NextMaximumStepTokens))
             #expect(engine.schedulerConfig.prefillChunkSize
                 == min(context, EngineV2Factory.glm5NextMaximumPrefillChunkTokens))
+            #expect(engine.schedulerConfig.decodeStepsBetweenPrefillChunks
+                == EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks)
             #expect(await bundle.bridge.canSubmitWithNativeOwner())
             try await fixture.run(bundle.bridge, tokens: [3, 3], id: "default-serving")
+        }
+    }
+
+    /// A fleet-wide resident opt-in (`DARKBLOOM_PREFIX_CACHE_MEMORY=1`) never
+    /// refuses a GLM load: its protected engine hosts no resident tier, so the
+    /// slot keeps its encrypted complete-checkpoint store and serves.
+    @Test func residentOptInKeepsCompletePrefixInsteadOfRefusing() async throws {
+        try await withFixture { fixture in
+            let container = try await fixture.load()
+            let tokenizer = await container.tokenizer
+            var environment = fixture.environment
+            environment[PrefixCachePolicy.memoryEnvironmentFlag] = "1"
+            #expect(PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+                modelId: fixture.plan.weights.catalog.id, modelType: "glm5_next", isVLM: false,
+                modelDirectory: fixture.directory, container: container,
+                tokenizer: TokenizerHandle(tokenizer),
+                sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity,
+                maxConcurrentRequests: 1, kvBudget: fixture.budget,
+                weightHash: fixture.plan.weights.manifest.aggregateSHA256,
+                specDecPreparation: fixture.mtpPreparation,
+                assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
+                environment: environment, startServingTelemetry: false)
+            fixture.bridges.append(bundle.bridge)
+            let store = try #require(bundle.bridge.ssdHybridCheckpointStore)
+            let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
+            #expect(engine.completePrefixCache === store)
+            #expect(engine.hybridPrefixCache == nil)
+            #expect(bundle.bridge.residentPrefixCacheEvidence == nil)
+            #expect(bundle.bridge.prefixCacheModelStatus().state != .error)
+            #expect(await bundle.bridge.canSubmitWithNativeOwner())
+            try await fixture.run(bundle.bridge, tokens: [3, 3], id: "resident-opt-in")
+        }
+    }
+
+    /// A malformed decode-step override refuses the GLM backend before the
+    /// paged backend is built, instead of serving another interleave.
+    @Test func malformedDecodeStepsRefuseTheBackend() async throws {
+        try await withFixture { fixture in
+            let container = try await fixture.load()
+            let prepared = try await EngineV2SlotFactory.prepareProductionModel(
+                modelId: fixture.plan.weights.catalog.id, isVLM: false, container: container,
+                specDecPreparation: fixture.mtpPreparation,
+                maximumContextLength: fixture.sizing.maxContextLength)
+            var environment = fixture.environment
+            environment[EngineV2Factory.glm5NextDecodeStepsKey] = "65"
+            #expect(throws: EngineV2ProductionError.self) {
+                try EngineV2Factory.prepareProductionBackend(
+                    model: prepared.servingModel, kvBudget: fixture.budget,
+                    kvBytesCapacity: fixture.kvBytesCapacity, maxConcurrentRequests: 1,
+                    kvBackend: .paged, environment: environment)
+            }
         }
     }
 
@@ -238,9 +304,12 @@ struct GLM5NextProtectedFactoryTests {
                     enabled: true,
                     maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,
                     verificationMode: .rectangular), drafter: model.assistant)
+            // Two decode rows speculate together; wider steps decode target-only.
+            #expect(model.execution.maximumSpeculativeBatch == 2)
+            #expect(model.assistant.maximumSpeculativeBatch == 2)
             #expect(
                 resolved.maxDraftTokens == 3 && resolved.fixedDraftTokens == 2
-                    && resolved.maxSpeculativeBatch == 1 && resolved.verificationMode == .rectangular)
+                    && resolved.maxSpeculativeBatch == 2 && resolved.verificationMode == .rectangular)
             let baseline = try model.resolvedMTPConfiguration(
                 .init(enabled: true, verificationMode: .serialTarget), drafter: model.assistant)
             #expect(
@@ -251,6 +320,7 @@ struct GLM5NextProtectedFactoryTests {
                 root: model.root, maximumContextLength: model.maximumContextLength,
                 environment: [GLM5NextProtectedModel.rectangularVerifyEnvironmentKey: " Off "])
             #expect(serial.execution.verification == .serialTarget)
+            #expect(serial.execution.maximumSpeculativeBatch == 1)
             let serialResolved = try serial.resolvedMTPConfiguration(
                 .init(
                     enabled: true, maxDraftTokens: 3, maxSpeculativeBatch: 4, fixedDraftTokens: 2,
@@ -309,15 +379,14 @@ struct GLM5NextProtectedFactoryTests {
                     == "glm5_next_native_paged_full_state_rectangular_mtp_v1")
             #expect(native.resources.contract.supportsNativeCompletePrefix)
             #expect(await bridge.canSubmitWithNativeOwner())
-            let foreignStore = try #require(
-                await SSDHybridCheckpointStoreFactory.make(
-                    modelId: fixture.plan.weights.catalog.id, identity: cache.identity,
-                    backendLayout: cache.config.backendLayout, kvBudget: fixture.budget,
-                    environment: fixture.environment.merging([
-                        "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": fixture.root.appendingPathComponent(
-                            "foreign-cache"
-                        ).path
-                    ]) { _, value in value }))
+            let foreignStore = try await SSDHybridCheckpointStoreFactory.build(
+                modelId: fixture.plan.weights.catalog.id, identity: cache.identity,
+                backendLayout: cache.config.backendLayout, kvBudget: fixture.budget,
+                environment: fixture.environment.merging([
+                    "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": fixture.root.appendingPathComponent(
+                        "foreign-cache"
+                    ).path
+                ]) { _, value in value }).get()
             fixture.stores.append(foreignStore)
             #expect(foreignStore !== cache && foreignStore.identity == cache.identity)
             try fixture.expectFactoryRefusal {

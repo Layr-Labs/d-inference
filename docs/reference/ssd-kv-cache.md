@@ -58,7 +58,7 @@ header comment and `enum SSDBlockStore`).
 | Cryptographic detail | Value | Code |
 |---|---|---|
 | Per-chunk nonce | HKDF-Expand(DEK, info = `"dbkv-chunk-v3"` ‖ `file_IV` ‖ uint32 BE chunk index, L = 12) | `SSDBlockStore.swift` (`chunkInfoPrefix`) |
-| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`); `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit. A DEBUG build with `DARKBLOOM_DEBUG_CACHE_KEY_FILE` derives a persistent KEK from that operator-created file instead; release builds do not contain this path | `SSDCacheKeyMaterial.swift` (`load`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` |
+| KEK | Secure-Enclave-rooted and Keychain-persisted (service `io.darkbloom.kv.kek.v1`; a dev build uses `io.darkbloom.dev.kv.kek.v1`). An entry that fails authentication under the current Secure Enclave identity, or holds no 32-byte key, is replaced by a fresh KEK; a backend failure such as a locked keychain is reported and leaves it. `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` permits fallback to an in-memory KEK whose ciphertext cannot be reused after process exit. A DEBUG build with `DARKBLOOM_DEBUG_CACHE_KEY_FILE` derives a persistent KEK from that operator-created file instead; release builds do not contain this path | `SSDCacheKeyMaterial.swift` (`load`), `provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift` (`replaceUnusable`), `SSDPrefixCacheFactory.swift` (`ephemeralAllowed`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDDebugCacheKeyFile.swift` |
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
@@ -122,6 +122,7 @@ and MTP codec. No public header field exposes those token boundaries
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
 | Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
 | Durable ready | Only supplied actual input checkpoint after committed write and engine donor/export retirement; requires request mode echo | `SSDHybridCheckpointStore+Write.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
+| Ready stage estimate | `stage_ms` is the largest ready file's bytes at `conservativeStageBytesPerSecond` plus an exponentially weighted average (newest weight 0.25) of how much longer this store's first-attempt restores took than their byte price. The first restore replaces the layout's prior: `glm5NextPriorOverheadMilliseconds = 935` for both GLM5-Next layouts (median of nine M5 Ultra restores of the exact layout), 0 otherwise. The coordinator scores a holder with it until a hit's measured lookup `stage_ms` replaces it ([`Holder.StageCostAt`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7be846198448baded8c933cacce63f20541f7ed/coordinator/internal/registry/cachetracker/holder.go)) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointStageCost.swift`, `SSDHybridCheckpointStore+Maintenance.swift` (`publishReady`), `SSDHybridCheckpointStore+Read.swift` (`stage`) |
 | Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype, effective checkpoint profile and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
 
@@ -134,6 +135,8 @@ and MTP codec. No public header field exposes those token boundaries
 | `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
 | `native-contiguous-historical-attention-v1` | Exact native owning full/window rows, imported into contiguous native capacity | Loaded historical capability and explicitly observed native types; assistant absent or stateless |
 | `native-paged-affine-checkpoint-full-recurrent-v1` | Older attention rows encoded, exact native recent rows and recurrent state; native paged restore | Eligible native segmented pool and recurrent complete codec; no persistent assistant |
+| `native-paged-affine-checkpoint-full-recurrent-mtp-v1` | Same payload plus the assistant's exact typed MTP history and its codec ID | Same, beside an assistant declaring `CBv2MTPExactHistoryPrefixCheckpointCoding` (the Nemotron Super assistant) |
+| `native-paged-glm5next-affine-checkpoint-full-state-v1` | GLM5-Next full state with only the older latent rows encoded; see below | Eligible GLM latent geometry, unquantized segmented pool, assistant absent or exact-history (`resolveGLM5Next`) |
 | `native-paged-affine-checkpoint-historical-attention-v1` | Encoded older owning full/window rows and native recent rows; native paged restore | Eligible loaded historical capability and native segmented pool |
 | `native-contiguous-affine-checkpoint-full-recurrent-v1` | Same lossy/native recurrent payload; native contiguous restore | Eligible native contiguous recurrent complete codec; no persistent assistant |
 | `native-contiguous-affine-checkpoint-historical-attention-v1` | Same lossy/native historical payload; native contiguous restore | Eligible loaded historical capability and observed native types |
@@ -141,26 +144,91 @@ and MTP codec. No public header field exposes those token boundaries
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
 `EngineV2SlotFactory+CompletePrefixCache.swift` (`completeCheckpointStorage`).
-The unregistered GLM prototype defines
-`native-paged-glm5next-full-state-v1`: asymmetric latent/index/gate/validity rows
-plus exact FP32 convolution and recurrent state. The provider store recognizes
-that format, but the protected native binding, MTP serialization and encrypted
-restore qualification remain separate gates. It is not permission to emit
-durable-ready routing evidence
+Without an effective checkpoint profile, GLM5-Next uses
+`native-paged-glm5next-full-state-v2`: asymmetric
+latent/index/gate/validity rows, the KDA convolution history and the exact FP32
+KDA recurrent state, plus the MTP prefix tensors at their own native dtypes. The
+live pool and state keep these rows in FP32, but the latent keys, the `[index
+keys, pool gates, 0/1 validity]` values row and the convolution history only
+widen the model's activation dtype. The encrypted manifest's
+`glm5NextState.storage` records each of those three roles' wire dtype, and the
+export writes them at that dtype: BF16 for `glm-5.3-flash`, whose producing
+weights, norms and pool gates are all BF16. Narrowing refuses (the donation
+fails, no file is written) if any element is not exactly representable, and
+import widens back to the original FP32 bits, so restore stays lossless. The
+recurrent state is accumulated in FP32 and is always written in FP32. The
+loaded target declares the role dtypes by the same promotion its forward pass
+applies (`GLM5NextTextModel.glm5NextPagedPayloadStorage`); a target with FP32
+activations keeps every role FP32. The retired all-FP32
+`native-paged-glm5next-full-state-v1` spelling is refused, and its different
+layout epoch keeps v1 files outside a v2 store's namespace until the TTL sweep
+removes them. The shared narrowing/widening helper is
+`CBv2CheckpointHalfPrecision`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/GLM5NextCompleteCheckpointLayout.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointHalfPrecision.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift`).
+
+With an effective checkpoint profile GLM5-Next writes
+`native-paged-glm5next-affine-checkpoint-full-state-v1` instead. Only the latent
+keys role changes: a `uint8` stream per layer of the older coded rows followed
+by the last `min(recentTokenCount, retainedTokens)` rows at the latent wire dtype
+(BF16 for `glm-5.3-flash`). Import decodes the coded rows and widens the band
+into the FP32 pages. The odd-width values row, the convolution history, the FP32
+recurrent state and the MTP prefix tensors keep the v2 payload and restore bit
+for bit; older latent rows are approximate
+(`CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next`,
+`CBv2GLM5NextCompleteCheckpointLayout.latentQuantization`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CheckpointStorageQuantization.swift`).
+
+| `glm-5.3-flash` checkpoint (DBK3 file, M5 Ultra, 2026-10-24) | `native` | `balanced` |
+|---|---:|---:|
+| 1,024 tokens (the donation anchor) | 168.2 MB | 161.3 MB |
+| 1,792 tokens | 182.4 MB | 169.5 MB |
+| 8,192 tokens | 300.5 MB | 238.1 MB |
+| 32,768 tokens | 754.2 MB | 501.5 MB |
+
+| `glm-5.3-flash` checkpoint (DBK3 file, measured on an M5 Ultra) | Size |
+|---|---:|
+| 2,048 tokens | 187.1 MB |
+| 8,192 tokens | 300.5 MB |
+| 30,720 tokens | 716.4 MB |
+| Per token | 18.5 KB |
+| Fixed part (mostly the FP32 KDA recurrent state) | 149.3 MB |
+
+A donation also writes the 2,048-token anchor, so a 30,720-token donation
+writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
+the 7 GiB large-memory staging cap.
 See the [GLM integration gates](../design/glm53-flash-native.md).
+
+The managed `nvidia-nemotron-3.5-super` slot writes
+`native-paged-affine-checkpoint-full-recurrent-mtp-v1` while it speculates and
+`native-paged-affine-checkpoint-full-recurrent-v1` target-only at the default
+`balanced` precision. Its 8 attention layers (2 KV heads × 128) shrink from
+8 KiB to 2.5 KiB per token past the exact 128-token band; the MTP history
+(1 KiB per token) and the fixed part (the FP32 SSM state, convolution state and
+MTP frontier, 173.9 MB) stay exact.
+
+| `nvidia-nemotron-3.5-super` checkpoint (DBK3 file, measured on an M3 Ultra) | `native` | `balanced` |
+|---|---:|---:|
+| 2,048 tokens | 192.8 MB | 182.0 MB |
+| 8,192 tokens | 249.5 MB | 204.0 MB |
+| 30,720 tokens | 457.2 MB | 284.9 MB |
+| Per token | 9.2 KB | 3.6 KB |
+
 Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
 
-The four `native-*-affine-checkpoint-*` layouts set `checkpointQuantization`
-and `checkpointNativeDTypes` in the encrypted manifest.
+The six lossy layouts (the four `native-*-affine-checkpoint-*` layouts, the
+`-mtp-v1` recurrent variant and the GLM5-Next variant) set
+`checkpointQuantization` and `checkpointNativeDTypes` in the encrypted manifest.
 `CBv2CompleteCheckpointManifest.usesLossyNativeCheckpoint` identifies those
 layouts; it is a derived property, not another serialized field. Other layouts
-reject the new fields rather than reinterpret their payloads. The codec checks
-exact profile, native types, layout, identity, tenant salt, prefix and tensor
-descriptors before creating an import stage.
+reject the new fields rather than reinterpret their payloads. The `-mtp-v1`
+variant requires an assistant codec ID and the GLM5-Next variant may carry one;
+the other four refuse it.
+The codec checks exact profile, native types, layout, identity, tenant salt,
+prefix and tensor descriptors before creating an import stage.
 
 For these lossy layouts, an encoded K/V head is a `uint8` stream of older coded
 rows followed by the exact last `min(recentTokenCount, retainedTokens)` native
@@ -396,17 +464,33 @@ the coordinator's consumption is in
 | `PrefixCacheStatusReason` | `ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed` |
 | `PrefixCacheDonationOutcome` | `donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel` |
 
-Store construction refusals use the provider-local closed enum
+Store construction refusals use the closed enum
 `SSDPrefixCacheConstructionFailure` (`SSDPrefixCacheFactory.swift`): `missing_weight_hash`,
 `unsupported_plan`, `unsafe_path`, `key_unavailable`, `ephemeral_key_unavailable`,
 `block_contract_mismatch`, `epoch_unavailable`, `prompt_contract_unavailable`,
-`identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`. Both
-factories log them, and local `/metrics` shows the one behind an `error` status;
+`identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`, plus
+`cache_closed` for a built store closed with its slot. Both factories log them;
 the attention-block factory also sends them as `prefix_construction_failure`
-engine-health telemetry. The
-heartbeat keeps the `PrefixCacheStatusReason` above: a refused complete store
-reports `cache_init_failed`, and a refused attention-block store reports
-`disk_unavailable` for `unsafe_path` (`PrefixCacheConstructionStatusBox`).
+engine-health telemetry. Every store maps a refusal to the heartbeat status the
+same way (`PrefixCacheConstructionStatus(refusal:)`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEligibilityStatus.swift`):
+
+| Refusal | `state` / `reason` |
+|---|---|
+| `unsafe_path` | `error` / `disk_unavailable` |
+| `layout_unavailable`, `unsupported_plan` | `disabled` / `unsupported_layout` (or `paged_hybrid_unsupported`) |
+| `missing_weight_hash` | `disabled` / `weight_hash_unavailable` |
+| Every other refusal, and `cache_closed` | `error` / `cache_init_failed` |
+
+An `error` status carries its cause as the optional heartbeat `detail`, which
+local `/metrics`, `darkbloom status` and `darkbloom doctor` show too. An
+attention-block store whose epoch was disowned at runtime reports
+`epoch_unavailable`.
+
+A refusal is never cached: each model load builds its store again, so a cause
+that clears (a remounted volume, freed disk space, an unlocked keychain) heals
+at the next load. Nothing retries during a load, and a built engine never
+attaches a store later.
 
 `PrefixCacheDonationOutcome` has 23 known buckets.
 Outcomes are cumulative process-local counters carrying no identifiers; each
@@ -432,9 +516,10 @@ observations remain available through these surfaces.
 |---|---|---|
 | Unified log subsystem `com.darkbloom.provider` (dev: `com.darkbloom.provider.dev`), category `prefix_cache` | Info-level `prefix cache stats (engine=v2, tier=ssd, model=…)` line every `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` with cache kind, index/disk/staging counts and cumulative writes/drops; complete stores add I/O totals. `darkbloom logs` reads only the service subsystem `dev.darkbloom.provider` and does not show it; use `log show --info --last 1h --predicate 'subsystem == "com.darkbloom.provider" AND category == "prefix_cache"'` | `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift` (`startSSDPrefixCacheStatsLogger`), `provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (`logSubsystem`, `serviceLogSubsystem`) |
 | Same subsystem, category `ssd_prefix_cache` | One public warning per refused complete store: `complete prefix cache disabled for <model>: <failure> (<cause>)`, for example `key_unavailable` with the Secure Enclave/Keychain `OSStatus`. The cause is an error description, never key bytes or file contents. Attention-block stores log `ssd prefix cache disabled for <model>: …` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift` (`build`), `SSDPrefixCacheFactory.swift` (`make`) |
+| `darkbloom status`, `darkbloom doctor` | `prefix_cache=ready`, `starting`, `off (<reason>)` or `FAILED (<reason>: <detail>)` on each slot line, with the cause and `→ fix:` under a failed one; `doctor` (and the desktop app's diagnostics) adds a `prefix cache` check. A load whose store failed also logs a fixed line for `darkbloom logs` and the model, cause and fix to `provider.log` | `provider-swift/Sources/ProviderCore/Diagnostics/PrefixCacheDiagnosis.swift`, `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift` (`reportPrefixCacheFailure`) |
 | Local `/metrics` | `prefix_cache_status{model,state,reason}` mirrors the heartbeat status; an `error` status adds `detail="<construction failure>"`. `complete_prefix_key_persistent` is `1` only when the complete store's key is persistent | `provider-swift/Sources/ProviderCore/Server/LocalServingPosture.swift` (`LocalServingPostureRenderer`) |
 | Typed heartbeat | Optional `slots[].prefix_cache` observation with advancing age; cumulative units, freshness and bounded metrics are in [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheTelemetry.swift` (`SSDPrefixCacheTelemetryBox`) |
-| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
+| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`, and `detail` behind an error) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |
 
 ## Related

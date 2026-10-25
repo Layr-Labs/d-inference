@@ -34,6 +34,10 @@ public protocol KeyWrappingService: Sendable {
 
 // MARK: - Errors
 
+/// `invalidCiphertext` and `authenticationFailed` mean the input can never
+/// open under this service's key, and `KVCacheKEK` replaces a persisted entry
+/// that fails that way. A key that is locked, refused or unreachable must be
+/// a backend error.
 public enum KeyWrappingError: Error, CustomStringConvertible, Sendable {
     case invalidCiphertext(String)
     case authenticationFailed(String)

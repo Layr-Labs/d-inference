@@ -469,7 +469,8 @@ public actor EngineV2Bridge {
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil
-        self.prefixCacheBaseStatus = cacheRejected ? PrefixCacheModelStatus(
+        let constructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        let baseStatus = cacheRejected ? PrefixCacheModelStatus(
             modelId: modelId, backend: PrefixCacheStatusBackend(kvBackendKind),
             replayStrategy: .unknown, state: .disabled, reason: .unsupportedLayout
         ) : prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -478,7 +479,12 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
-        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        // A refused store reports its typed cause beside the closed reason.
+        self.prefixCacheBaseStatus = PrefixCacheModelStatus(
+            modelId: baseStatus.modelId, backend: baseStatus.backend,
+            replayStrategy: baseStatus.replayStrategy, state: baseStatus.state,
+            reason: baseStatus.reason, detail: baseStatus.detail ?? constructionFailure)
+        self.prefixCacheConstructionFailure = constructionFailure
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }

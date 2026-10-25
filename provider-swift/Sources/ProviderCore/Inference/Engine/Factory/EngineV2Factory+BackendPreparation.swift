@@ -266,9 +266,15 @@ extension EngineV2Factory {
             let maximumBuffer = MLX.GPU.deviceInfo().maxBufferSize
             guard maximumBuffer > 0 else { throw EngineV2ProductionError.noKVHeadroom }
             var scheduler = glm5NextServingScheduler(policy.scheduler, context: context)
+            scheduler.decodeStepsBetweenPrefillChunks = try glm5NextDecodeStepsBetweenChunks(
+                environment: environment)
+            // The native MTP profile verifies up to its speculative batch of rows in
+            // one window, so the gathered-attention batch must hold it even when an
+            // operator narrows the serving width below it.
+            let speculativeBatch = (model as? GLM5NextProtectedModel)?.execution.maximumSpeculativeBatch ?? 1
             let paged = try glm.makeCBv2PagedBackend(
                 kvBytesCapacity: cappedCapacity,
-                maximumBatchSize: scheduler.maxConcurrentRequests,
+                maximumBatchSize: max(scheduler.maxConcurrentRequests, speculativeBatch),
                 maximumQueryTokens: max(scheduler.maxBatchedTokensPerStep, scheduler.prefillChunkSize,
                     scheduler.soloPrefillStripeTokens ?? 0),
                 maximumContextTokens: context,

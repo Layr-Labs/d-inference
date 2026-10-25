@@ -228,6 +228,9 @@ enum DoctorRunner {
                                       message: "FAILED for \(err.model): \(err.message)",
                                       fix: "see the model-fit check above; serve a model that fits this box's RAM."))
             }
+            if !state.isStale(now: now) {
+                out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
+            }
             // ---- Billing ----
             if state.stats.usageGaps > 0 {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .warn,

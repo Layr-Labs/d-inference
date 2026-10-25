@@ -514,9 +514,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // forced call.
         if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
             await releaseBox.fire()
-            let mode = prepared.requiresToolCall ? "required/named tool_choice" : "JSON response_format"
+            let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
+                ? ("required/named tool_choice", .unsupportedForcedToolChoice)
+                : ("JSON response_format", .unsupportedResponseFormat)
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "GLM5: \(mode) is not supported with image or video input")
+                "GLM5: \(mode) is not supported with image or video input", refusal: refusal)
         }
         // Declined reasoning is classified on the native channel and dropped
         // there, so GLM routes reasoning to that channel whenever it is withheld.

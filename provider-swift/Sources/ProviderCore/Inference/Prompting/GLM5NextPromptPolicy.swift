@@ -176,7 +176,7 @@ enum GLM5NextPromptPolicy {
                         return nil
                     }
                     guard let effort = Effort(requested: requested) else {
-                        throw GLM5NextPromptPolicy.invalid("unsupported reasoning effort")
+                        throw GLM5NextPromptPolicy.invalid("unsupported reasoning effort", .unsupportedReasoningControl)
                     }
                     result.requestsThinking = true
                     return effort
@@ -188,7 +188,7 @@ enum GLM5NextPromptPolicy {
                 func budget(_ values: KeyedDecodingContainer<Key>, _ key: String) throws -> Effort {
                     let tokens = try values.decode(Int.self, forKey: Key(key))
                     guard tokens > 0 else {
-                        throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive")
+                        throw GLM5NextPromptPolicy.invalid("reasoning budget must be positive", .unsupportedReasoningControl)
                     }
                     result.requestsThinking = true
                     return Effort(reasoningBudget: tokens)
@@ -241,7 +241,7 @@ enum GLM5NextPromptPolicy {
                             switch try thinking.decode(String.self, forKey: Key("type")) {
                             case "enabled", "adaptive": result.requestsThinking = true
                             case "disabled": result.disablesThinking = true
-                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking type")
+                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking type", .unsupportedReasoningControl)
                             }
                         }
                         if try present(thinking, "budget_tokens") {
@@ -251,7 +251,7 @@ enum GLM5NextPromptPolicy {
                             switch try thinking.decode(String.self, forKey: Key("display")) {
                             case "summarized": break
                             case "omitted": result.excludesReasoning = true
-                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking display")
+                            default: throw GLM5NextPromptPolicy.invalid("unsupported thinking display", .unsupportedReasoningControl)
                             }
                         }
                         thinkingClear = try clear(thinking)
@@ -279,7 +279,7 @@ enum GLM5NextPromptPolicy {
                         case "auto": break
                         case "all_turns": result.contextClearThinking = false
                         case "current_turn": result.contextClearThinking = true
-                        default: throw GLM5NextPromptPolicy.invalid("unsupported reasoning context")
+                        default: throw GLM5NextPromptPolicy.invalid("unsupported reasoning context", .unsupportedReasoningControl)
                         }
                     }
                     if try present(reasoning, "max_tokens", nullable: true) {
@@ -327,13 +327,14 @@ enum GLM5NextPromptPolicy {
         }
 
         func validate() throws {
-            guard !invalid else {
+            if let invalidReason {
                 throw GLM5NextPromptPolicy.invalid(
-                    "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, reasoning.context auto/all_turns/current_turn, reasoning.mode standard, and Boolean clear_thinking and reasoning switches")
+                    "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, reasoning.context auto/all_turns/current_turn, reasoning.mode standard, and Boolean clear_thinking and reasoning switches",
+                    invalidReason)
             }
             // Contradictory spellings are refused, never reconciled.
             guard !(disablesThinking && requestsThinking) else {
-                throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
+                throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking, .contradictoryReasoningControls)
             }
             _ = try resolvedClearThinking(explicit: clearThinking)
         }
@@ -354,7 +355,7 @@ enum GLM5NextPromptPolicy {
         /// the explicit Boolean is refused.
         func resolvedClearThinking(explicit: Bool?) throws -> Bool {
             if let explicit, let contextClearThinking, explicit != contextClearThinking {
-                throw GLM5NextPromptPolicy.invalid("reasoning.context cannot contradict clear_thinking")
+                throw GLM5NextPromptPolicy.invalid("reasoning.context cannot contradict clear_thinking", .contradictoryReasoningControls)
             }
             return explicit ?? contextClearThinking ?? false
         }
@@ -393,7 +394,7 @@ enum GLM5NextPromptPolicy {
     ) throws -> [String: any Sendable] {
         let raw = controls.rawGLM5Controls
         try raw.validate()
-        guard controls.preserveThinking == nil else { throw invalid("preserve_thinking is unsupported") }
+        guard controls.preserveThinking == nil else { throw invalid("preserve_thinking is unsupported", .unsupportedReasoningControl) }
         var thinkingOff = raw.disablesThinking
         var thinkingOn = raw.requestsThinking
         func checked(_ value: String?) throws -> Effort? {
@@ -403,7 +404,7 @@ enum GLM5NextPromptPolicy {
                 return nil
             }
             guard let effort = Effort(requested: value) else {
-                throw invalid("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
+                throw invalid("reasoning_effort must be none, minimal, low, medium, high, xhigh or max", .unsupportedReasoningControl)
             }
             thinkingOn = true
             return effort
@@ -414,7 +415,7 @@ enum GLM5NextPromptPolicy {
             if enabled { thinkingOn = true } else { thinkingOff = true }
         }
         guard !(thinkingOff && thinkingOn) else {
-            throw invalid(contradictoryThinking)
+            throw invalid(contradictoryThinking, .contradictoryReasoningControls)
         }
         let clearThinking = try raw.resolvedClearThinking(explicit: controls.clearThinking ?? raw.clearThinking)
         var context: [String: any Sendable] = [
@@ -441,13 +442,13 @@ enum GLM5NextPromptPolicy {
         // answer is withheld and validated after generation
         // (`ToolConstraintValidation`, `GLM5NextResponseFormat`).
         guard request.responseFormat?.requiresJSONOutput != true || prepared.glmResponseFormat != nil else {
-            throw invalid("JSON response_format requires its output validator")
+            throw invalid("JSON response_format requires its output validator", .unsupportedResponseFormat)
         }
-        guard !MediaIngest.hasMedia(request) else { throw invalid("native media is not qualified") }
+        guard !MediaIngest.hasMedia(request) else { throw invalid("native media is not qualified", .nonTextContent) }
         for message in request.messages {
             if case .parts(let parts) = message.content {
                 for part in parts {
-                    guard case .text = part else { throw invalid("non-text content requires a verified native media owner") }
+                    guard case .text = part else { throw invalid("non-text content requires a verified native media owner", .nonTextContent) }
                 }
             }
         }
@@ -456,7 +457,7 @@ enum GLM5NextPromptPolicy {
         try ToolConstraintValidation.rejectReservedSchemaMetadata(
             originalTools, allowInternalSchemaMetadata: false)
         guard (originalTools ?? []).allSatisfy({ $0.type == "function" }) else {
-            throw invalid("only function tool declarations are supported")
+            throw invalid("only function tool declarations are supported", .unsupportedToolType)
         }
         // `strict` is not constrained decoding here: the template omits it and
         // every `auto` call is checked against its declared schema before it
@@ -479,12 +480,12 @@ enum GLM5NextPromptPolicy {
                     let arguments = try decodeHistoryArguments(call.function.arguments)
                     for (key, value) in arguments {
                         guard !key.isEmpty, !key.contains("<"), !key.contains(">") else {
-                            throw invalid("history argument names must not contain native delimiters")
+                            throw invalid("history argument names must not contain native delimiters", .nativeDelimiterInHistory)
                         }
                         if case .string(let raw) = value,
                             ["<tool_call>", "</tool_call>", "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>"]
                                 .contains(where: raw.contains) {
-                            throw invalid("history string contains an ambiguous native delimiter")
+                            throw invalid("history string contains an ambiguous native delimiter", .nativeDelimiterInHistory)
                         }
                     }
                     return [
@@ -543,26 +544,26 @@ enum GLM5NextPromptPolicy {
                 guard message.toolCalls?.isEmpty != false,
                     let id = message.toolCallID, let name = pending[Data(id.utf8)],
                     completed.insert(Data(id.utf8)).inserted
-                else { throw invalid("tool results must match a preceding call ID exactly once") }
+                else { throw invalid("tool results must match a preceding call ID exactly once", .unmatchedToolResult) }
                 if let suppliedName = message.name, !suppliedName.utf8.elementsEqual(name.utf8) {
-                    throw invalid("tool result name does not match its call")
+                    throw invalid("tool result name does not match its call", .toolResultNameMismatch)
                 }
                 continue
             }
-            guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result") }
+            guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
             pending = [:]
             completed = []
             if let calls = message.toolCalls, !calls.isEmpty {
-                guard message.role == .assistant else { throw invalid("only assistant messages may carry tool_calls") }
+                guard message.role == .assistant else { throw invalid("only assistant messages may carry tool_calls", .invalidToolHistory) }
                 for call in calls {
                     guard !call.id.isEmpty, pending[Data(call.id.utf8)] == nil,
                         call.type == "function", ToolChoicePromptPolicy.isValidFunctionName(call.function.name)
-                    else { throw invalid("history calls require unique IDs and named function payloads") }
+                    else { throw invalid("history calls require unique IDs and named function payloads", .invalidToolHistory) }
                     pending[Data(call.id.utf8)] = call.function.name
                 }
             }
         }
-        guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result") }
+        guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
     }
 
     /// Reuse the native codec's strict JSON value parser rather than introduce
@@ -580,7 +581,7 @@ enum GLM5NextPromptPolicy {
         let tools: [[String: any Sendable]] = [["function": function]]
         guard let call = GLM5ToolCallParser().parse(content: frame, tools: tools),
             case .object(let arguments)? = call.function.arguments["arguments"]
-        else { throw invalid("history arguments require a complete, exactly representable JSON object") }
+        else { throw invalid("history arguments require a complete, exactly representable JSON object", .invalidToolArguments) }
         return arguments
     }
 
@@ -588,7 +589,7 @@ enum GLM5NextPromptPolicy {
     /// schema can erase precision. No schema values are retained by this probe.
     private struct ExactSchemaValues: Decodable {
         init(from decoder: any Decoder) throws {
-            guard decoder.codingPath.count <= 128 else { throw invalid("tool schema exceeds nesting bound") }
+            guard decoder.codingPath.count <= 128 else { throw invalid("tool schema exceeds nesting bound", .invalidToolSchema) }
             let value = try decoder.singleValueContainer()
             if value.decodeNil() || (try? value.decode(Bool.self)) != nil
                 || (try? value.decode(String.self)) != nil { return }
@@ -598,7 +599,7 @@ enum GLM5NextPromptPolicy {
             let typed = try value.decode(MLXLMCommon.JSONValue.self)
             let encoded = try JSONEncoder().encode(typed)
             guard try JSONDecoder().decode(Decimal.self, from: encoded) == original else {
-                throw invalid("tool schema contains an inexact number")
+                throw invalid("tool schema contains an inexact number", .invalidToolSchema)
             }
         }
     }
@@ -629,15 +630,17 @@ enum GLM5NextPromptPolicy {
         if let value = value as? NSNumber {
             if CFGetTypeID(value) == CFBooleanGetTypeID() { return .boolean(value.boolValue) }
             if let integer = value as? Int { return .int(integer) }
-            guard value.doubleValue.isFinite else { throw invalid("nonfinite template number") }
+            guard value.doubleValue.isFinite else { throw invalid("nonfinite template number", .invalidRequestField) }
             return .double(value.doubleValue)
         }
         if let values = value as? [String: any Sendable] { return jinjaObject(try values.mapValues(templateValue)) }
         if let values = value as? [any Sendable] { return .array(try values.map(templateValue)) }
-        throw invalid("unsupported native template value")
+        throw invalid("unsupported native template value", .invalidRequestField)
     }
 
-    private static func invalid(_ detail: String) -> MultiModelBatchSchedulerEngineError {
-        .invalidToolPayload("GLM5: " + detail)
+    private static func invalid(
+        _ detail: String, _ refusal: InferenceRefusalReason
+    ) -> MultiModelBatchSchedulerEngineError {
+        .invalidToolPayload("GLM5: " + detail, refusal: refusal)
     }
 }

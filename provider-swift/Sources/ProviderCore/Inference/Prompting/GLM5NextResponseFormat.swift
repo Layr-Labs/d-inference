@@ -69,7 +69,7 @@ struct GLM5NextResponseFormat: Sendable {
     }
 
     private static func invalid(_ detail: String) -> MultiModelBatchSchedulerEngineError {
-        .invalidToolPayload("GLM5: " + detail)
+        .invalidToolPayload("GLM5: " + detail, refusal: .unsupportedResponseFormat)
     }
 
     private static func failure(_ message: String) -> MLXOpenAIServiceError {

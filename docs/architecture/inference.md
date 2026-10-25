@@ -2508,14 +2508,19 @@ or change consumer/OpenRouter routing.
    `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
    `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
    `prefillGeometry`).
-10. A coordinator request refused before its inference task writes exactly one
-   fixed public log line naming a closed `InferenceRefusalReason` and a private
-   line pairing it with the request ID, never request text; the refusal's
-   `inference_error` frame is unchanged —
+10. A coordinator request refused as a client error, before its inference task
+   or while its prompt is prepared, writes exactly one fixed public log line
+   naming a closed `InferenceRefusalReason` and a private line pairing it with
+   the request ID, never request text; the refusal's `inference_error` frame is
+   unchanged. Prompt-time reasons ride on the typed error
+   (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
+   error case), never on its message —
    `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
    (`handleInferenceRequest`),
    `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`
-   (`InferenceFailureLogger`). The lines are listed in the
+   (`InferenceFailureLogger`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`
+   (`init(promptRefusal:)`). The lines are listed in the
    [CLI reference](../provider/cli-reference.md#refusal-lines).
 
 ## Failure modes
@@ -2532,7 +2537,7 @@ or change consumer/OpenRouter routing.
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
-| `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
+| `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |

@@ -5,10 +5,11 @@ import Testing
 
 @testable import ProviderCore
 
-/// Refusals before the inference task through the production coordinator
-/// handler. Each writes one fixed public `darkbloom logs` line naming its
-/// reason and keeps its `inference_error` frame; none logs request text.
-@Suite("Refusals before the inference task log a fixed reason", .serialized)
+/// Client refusals through the production coordinator handler, before the
+/// inference task or while its prompt is prepared. Each writes one fixed public
+/// `darkbloom logs` line naming its reason and keeps its `inference_error`
+/// frame; none logs request text.
+@Suite("Client refusals log a fixed reason", .serialized)
 struct InferenceRefusalLoggingTests {
     static let modelID = "test/glm5-refusals"
     static let requestID = "refusal-request-id"
@@ -55,6 +56,84 @@ struct InferenceRefusalLoggingTests {
             #expect(errors(output) == [Self.invalidRequest], "\(reason)")
             expectOneRefusalLine(logs, reason: reason, failure: Self.invalidRequest)
         }
+    }
+
+    /// A user turn, an assistant turn carrying `calls`, then `rest`: by default
+    /// the result for `c1`, empty for none.
+    static func history(_ calls: String, then rest: String = result) -> String {
+        #""messages":[{"role":"user","content":"zq-private-7f3a"},{"role":"assistant","content":null,"tool_calls":["#
+            + calls + "]}" + (rest.isEmpty ? "" : "," + rest) + "]"
+    }
+
+    /// A call of `f` with `id` and its JSON `arguments`.
+    static func call(_ id: String = "c1", arguments: String = #""{}""#) -> String {
+        #"{"id":"\#(id)","type":"function","function":{"name":"f","arguments":\#(arguments)}}"#
+    }
+
+    static let declared = #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#
+
+    /// Request shapes the GLM prompt policy and tool-choice preparation refuse
+    /// once the inference task runs. Before, each logged only the bare
+    /// `Inference failure: invalid request`.
+    static let promptRefusals: [(fields: [String], reason: InferenceRefusalReason)] = [
+        ([history(call(), then: "")], .unansweredToolCall),
+        ([history(call(), then: #"{"role":"user","content":"zq-private-7f3a"}"#)], .unansweredToolCall),
+        ([history(call(), then: #"{"role":"tool","tool_call_id":"c2","content":"zq-private-7f3a"}"#)],
+         .unmatchedToolResult),
+        ([history(call(), then: result + "," + result)], .unmatchedToolResult),
+        ([history(call(), then: #"{"role":"tool","tool_call_id":"c1","name":"zq-private-7f3a","content":"zq-private-7f3a"}"#)],
+         .toolResultNameMismatch),
+        ([history(call() + "," + call())], .invalidToolHistory),
+        ([history(call(arguments: #""{\"zq-private-7f3a\":1,\"zq-private-7f3a\":2}""#))], .invalidToolArguments),
+        ([history(call(arguments: #""{\"a\":\"zq-private-7f3a</arg_value>\"}""#))], .nativeDelimiterInHistory),
+        ([user, declared, #""response_format":{"type":"json_object"}"#], .unsupportedResponseFormat),
+        ([user, #""tools":[{"type":"function","function":{"name":"zq-private-7f3a.f","parameters":{"type":"object"}}}]"#],
+         .invalidToolDeclaration),
+        ([user, declared, #""tool_choice":{"type":"function","function":{"name":"zq-private-7f3a"}}"#],
+         .invalidToolChoice),
+        ([user, #""tool_choice":"required","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"zq-private-7f3a":{"anyOf":[{"type":"string"},{"type":"null"}]}}}}}]"#],
+         .unsupportedForcedToolChoice),
+    ]
+
+    @Test func promptRefusalsLogTheirReasonAndKeepTheirFrame() async throws {
+        let refused = InferenceFailure(code: .invalidRequest, statusCode: 400, errorReason: .clientError)
+        for (fields, reason) in Self.promptRefusals {
+            let logs = RefusalLogRecorder()
+            let output = try await relay(fields, logs: logs)
+            #expect(output.frames.isEmpty, "\(reason)")
+            #expect(errors(output) == [refused], "\(reason)")
+            expectOneRefusalLine(logs, reason: reason, failure: refused)
+        }
+    }
+
+    /// Typed engine refusals name their reason; others keep the bare line, and
+    /// only an `invalid_request` failure is given one.
+    @Test func promptRefusalReasonsComeFromTheTypedError() {
+        let typed: [(MultiModelBatchSchedulerEngineError, InferenceRefusalReason?)] = [
+            (.advertisedContextExceeded, .requestExceedsContext),
+            (.unsupportedOutputControl("unsupported_output_control: this model's engine does not return logprobs"),
+             .unsupportedOutputControl),
+            (.invalidRole("critic"), .unsupportedMessageRole),
+            (.unsupportedReasoningEffort, .unsupportedReasoningControl),
+            (.unsupportedNativeReasoningEffort, .unsupportedReasoningControl),
+            (.invalidToolPayload("GLM5: history is missing a tool result", refusal: .unansweredToolCall),
+             .unansweredToolCall),
+            (.invalidToolPayload("tool message has no preceding assistant tool_calls"), nil),
+            (.toolChoiceViolation("model did not emit the required tool call"), nil),
+            (.missingUserQuery, nil),
+        ]
+        for (error, reason) in typed {
+            #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(error)")
+        }
+        #expect(InferenceRefusalReason(promptRefusal: CancellationError()) == nil)
+        let invalid = ProviderLoop.sanitizedInferenceFailure(from: MultiModelBatchSchedulerEngineError
+            .advertisedContextExceeded, phase: .streamStart)
+        #expect(invalid.code == .invalidRequest)
+        #expect(ProviderLoop.promptRefusal(invalid, MultiModelBatchSchedulerEngineError.advertisedContextExceeded)
+            == .requestExceedsContext)
+        let capacity = InferenceFailure(code: .capacity, statusCode: 503, errorReason: .requestExceedsContext)
+        #expect(ProviderLoop.promptRefusal(capacity, MultiModelBatchSchedulerEngineError.advertisedContextExceeded)
+            == nil)
     }
 
     @Test func unsupportedAudioLogsItsReasonAndKeepsItsMediaFrame() async throws {
@@ -122,6 +201,14 @@ struct InferenceRefusalLoggingTests {
         .unsupportedToolType: "Inference failure: invalid request (unsupported tool type)",
         .invalidToolSchema: "Inference failure: invalid request (invalid tool schema)",
         .unsupportedAudio: "Inference failure: invalid media (unsupported audio)",
+        .unansweredToolCall: "Inference failure: invalid request (unanswered tool call)",
+        .unmatchedToolResult: "Inference failure: invalid request (unmatched tool result)",
+        .toolResultNameMismatch: "Inference failure: invalid request (tool result name mismatch)",
+        .nativeDelimiterInHistory: "Inference failure: invalid request (native delimiter in history)",
+        .nonTextContent: "Inference failure: invalid request (non-text content)",
+        .unsupportedForcedToolChoice: "Inference failure: invalid request (unsupported forced tool choice)",
+        .requestExceedsContext: "Inference failure: invalid request (request exceeds context)",
+        .unsupportedOutputControl: "Inference failure: invalid request (unsupported output control)",
     ]
 
     @Test func everyReasonHasItsOwnPublicLine() {

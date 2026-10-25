@@ -37,8 +37,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// Tool-bearing chat payload violates the chat-template invariants
     /// before generation begins. Surfaced as 400 so malformed OpenAI
     /// histories do not trip model-specific Jinja assertions as provider
-    /// 500s.
-    case invalidToolPayload(String)
+    /// 500s. `refusal` names the closed reason `darkbloom logs` shows; the
+    /// message never reaches a log or the wire.
+    case invalidToolPayload(String, refusal: InferenceRefusalReason? = nil)
     /// The owned native Flash-Next or Qwen3.8-27B template does not support
     /// the resolved thinking effort. Deterministic request error, before
     /// template rendering.
@@ -113,7 +114,7 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "No model is loaded; cannot tokenize or apply template"
         case .invalidRole(let role):
             return "Unsupported chat message role: '\(role)'"
-        case .invalidToolPayload(let message):
+        case .invalidToolPayload(let message, _):
             return message
         case .unsupportedReasoningEffort:
             return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"

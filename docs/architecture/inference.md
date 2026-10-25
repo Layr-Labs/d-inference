@@ -2341,6 +2341,17 @@ checked, including shadowed aliases. `MiMoV26TemplateFix` and the coordinator's
 reasoning history remains intact; this alias adds no granular effort or
 reasoning-budget support.
 
+MiMo tool results pair with their calls by `tool_call_id` only. The pinned
+template renders a result's content but never its `name` or ID, so
+`MiMoV26TemplateFix.normalizeHistory` keeps a result's `name` unchanged and does
+not compare it with the call's function. It reorders a complete parallel result
+batch into call order. A result without a pending call, a repeated result, and a
+call left unanswered before the next non-tool message or the end of history are
+refused with 400 `invalid_request`. The coordinator's
+[`mimo_v26::normalize_history`](https://github.com/Layr-Labs/darkbloom-platform/blob/4b048a0edb1596df055aa27db494fc4df0474a1e/coordinator/promptsidecar/src/mimo_v26.rs)
+still compares the name. For such a request it returns no exact prompt plan,
+and the coordinator dispatches the request without one.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract

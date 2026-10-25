@@ -44,8 +44,6 @@ export function Footer({ disclaimer }: { disclaimer?: string }) {
         <div className="footer-legal-links">
           <Link href="/terms">Terms of service</Link>
           <Link href="/privacy">Privacy policy</Link>
-          <Link href="/developers">Developers</Link>
-          <Link href="/contact">Contact</Link>
         </div>
       </div>
       <div className="footer-column footer-column--connect">

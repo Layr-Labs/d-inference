@@ -109,10 +109,10 @@ enum ToolConstraintValidation {
                 continue
             case .marker:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool schema contains reserved internal metadata")
+                    "tool schema contains reserved internal metadata", refusal: .reservedToolSchemaMetadata)
             case .beyondWalkBound:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool schema exceeds the reserved-metadata scan depth")
+                    "tool schema exceeds the reserved-metadata scan depth", refusal: .reservedToolSchemaMetadata)
             }
         }
     }

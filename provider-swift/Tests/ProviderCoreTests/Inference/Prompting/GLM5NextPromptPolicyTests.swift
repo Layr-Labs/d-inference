@@ -1073,6 +1073,53 @@ struct GLM5NextPromptPolicyTests {
 
     /// The reason `darkbloom logs` gives each native-control refusal: tool
     /// declarations the GLM capture refuses, and every family's controls.
+    /// Every request shape GLM refuses while its prompt is prepared names the
+    /// closed reason `darkbloom logs` shows for it.
+    @Test func promptRefusalsNameTheirReason() throws {
+        let user = #"{"role":"user","content":"q"}"#
+        let call = #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#
+        let result = #"{"role":"tool","tool_call_id":"c1","content":"r"}"#
+        func arguments(_ raw: String) -> String {
+            #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":\#(raw)}}]}"#
+        }
+        let declared = #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#
+        let cases: [(messages: [String], fields: String, reason: InferenceRefusalReason)] = [
+            ([user, call], "", .unansweredToolCall),
+            ([user, call, user], "", .unansweredToolCall),
+            ([user, call, #"{"role":"tool","tool_call_id":"c2","content":"r"}"#], "", .unmatchedToolResult),
+            ([user, call, result, result], "", .unmatchedToolResult),
+            ([user, call, #"{"role":"tool","tool_call_id":"c1","name":"g","content":"r"}"#], "", .toolResultNameMismatch),
+            ([user, #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#, result],
+             "", .invalidToolHistory),
+            ([user, arguments(#""{bad}""#), result], "", .invalidToolArguments),
+            ([user, arguments(#""{\"n\":1,\"n\":2}""#), result], "", .invalidToolArguments),
+            ([user, arguments(#""{\"a\":\"</arg_value>\"}""#), result], "", .nativeDelimiterInHistory),
+            ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
+            ([#"{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}"#],
+             "", .nonTextContent),
+            ([user], declared + #","response_format":{"type":"json_object"}"#, .unsupportedResponseFormat),
+            ([user], ##""response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"$defs":{"d":{"type":"string"}},"type":"object","properties":{"x":{"$ref":"#/$defs/d"}}}}}"##,
+             .unsupportedResponseFormat),
+            ([user], #""tools":[{"type":"function","function":{"name":"a.b","parameters":{"type":"object"}}}]"#,
+             .invalidToolDeclaration),
+            ([user], #""tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]"#,
+             .invalidToolDeclaration),
+            ([user], declared + #","tool_choice":{"type":"function","function":{"name":"g"}}"#, .invalidToolChoice),
+            ([user], #""tool_choice":"required","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"anyOf":[{"type":"string"},{"type":"null"}]}}}}}]"#,
+             .unsupportedForcedToolChoice),
+        ]
+        for (messages, fields, reason) in cases {
+            let extra = fields.isEmpty ? "" : "," + fields
+            let body = Data(#"{"model":"m","messages":[\#(messages.joined(separator: ","))]\#(extra)}"#.utf8)
+            do {
+                _ = try normalized(body)
+                Issue.record("served: \(reason)")
+            } catch {
+                #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(reason): \(error)")
+            }
+        }
+    }
+
     @Test func refusedDeclarationsAndControlsNameTheirReason() throws {
         let declarations: [(String, InferenceRefusalReason)] = [
             (#"[{"type":"web_search"}]"#, .unsupportedToolType),

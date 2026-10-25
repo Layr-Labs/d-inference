@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2508,14 +2508,19 @@ or change consumer/OpenRouter routing.
    `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
    `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
    `prefillGeometry`).
-10. A coordinator request refused before its inference task writes exactly one
-   fixed public log line naming a closed `InferenceRefusalReason` and a private
-   line pairing it with the request ID, never request text; the refusal's
-   `inference_error` frame is unchanged —
+10. A coordinator request refused as a client error, before its inference task
+   or while its prompt is prepared, writes exactly one fixed public log line
+   naming a closed `InferenceRefusalReason` and a private line pairing it with
+   the request ID, never request text; the refusal's `inference_error` frame is
+   unchanged. Prompt-time reasons ride on the typed error
+   (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
+   error case), never on its message —
    `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
    (`handleInferenceRequest`),
    `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`
-   (`InferenceFailureLogger`). The lines are listed in the
+   (`InferenceFailureLogger`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`
+   (`init(promptRefusal:)`). The lines are listed in the
    [CLI reference](../provider/cli-reference.md#refusal-lines).
 
 ## Failure modes

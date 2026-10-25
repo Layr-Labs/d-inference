@@ -536,34 +536,32 @@ enum GLM5NextPromptPolicy {
         return Array(repeating: nil, count: offset) + captured
     }
 
+    /// Results pair with calls by ID only: the template never renders a
+    /// result's `name`, so it is not compared with the call's function.
     private static func validateHistory(_ messages: [OpenAIChatMessage]) throws {
-        var pending: [Data: String] = [:]
+        var pending = Set<Data>()
         var completed = Set<Data>()
         for message in messages {
             if message.role == .tool {
                 guard message.toolCalls?.isEmpty != false,
-                    let id = message.toolCallID, let name = pending[Data(id.utf8)],
+                    let id = message.toolCallID, pending.contains(Data(id.utf8)),
                     completed.insert(Data(id.utf8)).inserted
                 else { throw invalid("tool results must match a preceding call ID exactly once", .unmatchedToolResult) }
-                if let suppliedName = message.name, !suppliedName.utf8.elementsEqual(name.utf8) {
-                    throw invalid("tool result name does not match its call", .toolResultNameMismatch)
-                }
                 continue
             }
-            guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
-            pending = [:]
+            guard pending == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
+            pending = []
             completed = []
             if let calls = message.toolCalls, !calls.isEmpty {
                 guard message.role == .assistant else { throw invalid("only assistant messages may carry tool_calls", .invalidToolHistory) }
                 for call in calls {
-                    guard !call.id.isEmpty, pending[Data(call.id.utf8)] == nil,
+                    guard !call.id.isEmpty, pending.insert(Data(call.id.utf8)).inserted,
                         call.type == "function", ToolChoicePromptPolicy.isValidFunctionName(call.function.name)
                     else { throw invalid("history calls require unique IDs and named function payloads", .invalidToolHistory) }
-                    pending[Data(call.id.utf8)] = call.function.name
                 }
             }
         }
-        guard Set(pending.keys) == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
+        guard pending == completed else { throw invalid("history is missing a tool result", .unansweredToolCall) }
     }
 
     /// Reuse the native codec's strict JSON value parser rather than introduce

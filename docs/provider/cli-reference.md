@@ -1617,7 +1617,6 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
 | `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory` |
 | `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, or carries `tool_calls` | same |
-| `Inference failure: invalid request (tool result name mismatch)` | A tool result's `name` differs from its call's function | same |
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |

@@ -212,7 +212,6 @@ private extension ProviderOperationalMessage {
         case .unsupportedAudio: .refusalUnsupportedAudio
         case .unansweredToolCall: .refusalUnansweredToolCall
         case .unmatchedToolResult: .refusalUnmatchedToolResult
-        case .toolResultNameMismatch: .refusalToolResultNameMismatch
         case .nativeDelimiterInHistory: .refusalNativeDelimiterInHistory
         case .nonTextContent: .refusalNonTextContent
         case .unsupportedForcedToolChoice: .refusalUnsupportedForcedToolChoice

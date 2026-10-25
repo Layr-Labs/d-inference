@@ -952,6 +952,20 @@ struct GLM5NextPromptPolicyTests {
         #expect(empty[0].contains("</think><tool_call>get_current_weather</tool_call><|observation|>"))
     }
 
+    /// A legacy `function_call` and its `role: function` result, which OpenAI
+    /// still accepts, render like the `tool_calls` spelling they decode to;
+    /// the result was refused as unmatched because it carried no call ID.
+    @Test func legacyFunctionCallHistoryRendersLikeItsToolCallSpelling() throws {
+        let template = try shippedTemplate()
+        func rendered(_ turns: String) throws -> String {
+            let body = Data(#"{"model":"m","messages":[{"role":"user","content":"weather?"},\#(turns)],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}"#.utf8)
+            return try render(try normalized(body), with: template)
+        }
+        let expected = try rendered(#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_legacy_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},{"role":"tool","tool_call_id":"call_legacy_1","content":"sunny"}"#)
+        #expect(expected.hasSuffix("<|observation|><tool_response>sunny</tool_response><|assistant|><think>"))
+        #expect(try rendered(#"{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},{"role":"function","name":"get_weather","content":"sunny"}"#) == expected)
+    }
+
     /// A tool result pairs with its call by ID and the template never renders
     /// its `name`, so a name that differs from the call (empty, or the
     /// unprefixed name an MCP client reports) renders like no name.

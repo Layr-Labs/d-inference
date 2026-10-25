@@ -165,8 +165,8 @@ operator's ordinary selection and idle policy.
 Neither form is machine-level control. The idle timer keeps running, other
 models keep their ordinary idle and eviction policy, and cold loads into free
 memory proceed. A load that would have to evict a held slot fails with the
-existing transient slot or insufficient-memory refusal. Like every load
-refusal, it names each resident model the load could not evict and why
+existing transient slot or insufficient-memory refusal, which names each
+resident model the load could not evict and why
 (`Not evictable: <model> (<GB>: Autopilot hold until <UTC>; adopted by Autopilot
 outside the selected models)`, `ProviderLoop.evictionExclusions`).
 `darkbloom status` prints the placements with each hold's expiry and the models

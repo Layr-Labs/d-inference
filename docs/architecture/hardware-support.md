@@ -356,14 +356,17 @@ insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#place
 `ProviderLoop.evictionExclusions` is the one definition of what an eviction
 snapshot skips: an Autopilot pin while Autopilot protects pins, an unexpired
 hold, requests in flight, a local request or self-test, an unloading slot and a
-retained MTP upgrade target. Every slot and memory refusal that left a resident
-model in place ends with `Not evictable:` and, for each such model, its resident
-GB and every reason (with the hold's UTC expiry, and whether Autopilot adopted
-it outside the selected models). A refusal that found no candidate says
-`all loaded models are actively serving` only when each of them is serving work,
-and `no loaded model can be evicted` otherwise. The daemon state publishes the
-same exclusions (`eviction_exclusions`) and the ordinary serving selection
-(`serving_selection`) for `darkbloom status`.
+retained MTP upgrade target. When a load that may evict (not startup preload, an
+Autopilot operation's target or a revision update, which pass
+`allowEviction: false`) is refused at the slot cap or by the eviction gate
+(`ProviderLoop.evictUntilAvailable`, `evictUntilNemotronSuperFits`) while any
+resident model is excluded, the refusal ends with `Not evictable:` and, for each
+excluded model, its resident GB and every reason (with the hold's UTC expiry,
+and whether Autopilot adopted it outside the selected models). A refusal that
+found no candidate says `all loaded models are actively serving` only when each
+of them is serving work, and `no loaded model can be evicted` otherwise. The
+daemon state publishes the same exclusions (`eviction_exclusions`) and the
+ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
@@ -774,7 +777,7 @@ grant or reported capacity field changes, so
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`; eviction exclusions and `Not evictable:` reasons: `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` (`evictionExclusions`) |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |

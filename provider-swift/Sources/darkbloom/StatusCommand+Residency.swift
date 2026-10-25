@@ -8,7 +8,7 @@ import ProviderCore
 extension Status {
     /// One line naming each served model outside a non-empty saved filter,
     /// with the reason it serves. Older daemons that report no serving
-    /// selection explain only adoptions.
+    /// selection explain only adoptions and the live lease.
     static func selectionLines(state: DaemonState, enabledModels: [String]) -> [String] {
         guard !enabledModels.isEmpty else { return [] }
         let adopted = Set(state.autopilot?.adoptedModels ?? [])
@@ -57,9 +57,6 @@ extension Status {
 
     /// "45s", "12m", "3h7m".
     static func compactDuration(_ seconds: Double) -> String {
-        let s = Int(max(0, seconds))
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m" }
-        return "\(s / 3600)h\((s % 3600) / 60)m"
+        DurationFormatting.compact(seconds, spaced: false, elideZeroMinutesInHourRange: false)
     }
 }

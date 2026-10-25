@@ -978,8 +978,9 @@ Output includes:
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error with how
   long ago it was recorded (`Recorded … ago`); the readiness lines above it are
-  live. A refusal that left resident models in place lists each with its
-  resident GB and every reason (`Not evictable: …`). A
+  live. A refusal that could not evict a resident model ends with
+  `Not evictable: …`, naming each such model with its resident GB and every
+  reason ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).

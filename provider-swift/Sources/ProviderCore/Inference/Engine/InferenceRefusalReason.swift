@@ -3,7 +3,8 @@ import Foundation
 /// Why the coordinator handler refused a request as a client error, before its
 /// inference task started or while its prompt was prepared. A closed, log-only
 /// vocabulary: the `inference_error` frame does not carry it, and no value
-/// holds request text.
+/// holds request text. Public only because the public
+/// `MultiModelBatchSchedulerEngineError.invalidToolPayload` carries it.
 public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     // The sealed request.
     case missingSenderKey = "missing_sender_key"
@@ -30,8 +31,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     // Media admission (`MediaIngest.rejectUnsupportedAudio`).
     case unsupportedAudio = "unsupported_audio"
 
-    // Prompt preparation and engine admission
-    // (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`).
+    // Prompt preparation and engine admission (`init(promptRefusal:)`).
     case unansweredToolCall = "unanswered_tool_call"
     case unmatchedToolResult = "unmatched_tool_result"
     case toolResultNameMismatch = "tool_result_name_mismatch"

@@ -1071,8 +1071,6 @@ struct GLM5NextPromptPolicyTests {
         #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)
     }
 
-    /// The reason `darkbloom logs` gives each native-control refusal: tool
-    /// declarations the GLM capture refuses, and every family's controls.
     /// Every request shape GLM refuses while its prompt is prepared names the
     /// closed reason `darkbloom logs` shows for it.
     @Test func promptRefusalsNameTheirReason() throws {
@@ -1120,6 +1118,8 @@ struct GLM5NextPromptPolicyTests {
         }
     }
 
+    /// The reason `darkbloom logs` gives each native-control refusal: tool
+    /// declarations the GLM capture refuses, and every family's controls.
     @Test func refusedDeclarationsAndControlsNameTheirReason() throws {
         let declarations: [(String, InferenceRefusalReason)] = [
             (#"[{"type":"web_search"}]"#, .unsupportedToolType),

@@ -58,12 +58,14 @@ struct InferenceRefusalLoggingTests {
         }
     }
 
-    /// A history call `f` with `id`, its arguments and an optional result.
+    /// A user turn, an assistant turn carrying `calls`, then `rest`: by default
+    /// the result for `c1`, empty for none.
     static func history(_ calls: String, then rest: String = result) -> String {
         #""messages":[{"role":"user","content":"zq-private-7f3a"},{"role":"assistant","content":null,"tool_calls":["#
             + calls + "]}" + (rest.isEmpty ? "" : "," + rest) + "]"
     }
 
+    /// A call of `f` with `id` and its JSON `arguments`.
     static func call(_ id: String = "c1", arguments: String = #""{}""#) -> String {
         #"{"id":"\#(id)","type":"function","function":{"name":"f","arguments":\#(arguments)}}"#
     }
@@ -79,15 +81,16 @@ struct InferenceRefusalLoggingTests {
         ([history(call(), then: #"{"role":"tool","tool_call_id":"c2","content":"zq-private-7f3a"}"#)],
          .unmatchedToolResult),
         ([history(call(), then: result + "," + result)], .unmatchedToolResult),
-        ([history(call(), then: #"{"role":"tool","tool_call_id":"c1","name":"g","content":"zq-private-7f3a"}"#)],
+        ([history(call(), then: #"{"role":"tool","tool_call_id":"c1","name":"zq-private-7f3a","content":"zq-private-7f3a"}"#)],
          .toolResultNameMismatch),
         ([history(call() + "," + call())], .invalidToolHistory),
         ([history(call(arguments: #""{\"zq-private-7f3a\":1,\"zq-private-7f3a\":2}""#))], .invalidToolArguments),
         ([history(call(arguments: #""{\"a\":\"zq-private-7f3a</arg_value>\"}""#))], .nativeDelimiterInHistory),
         ([user, declared, #""response_format":{"type":"json_object"}"#], .unsupportedResponseFormat),
-        ([user, #""tools":[{"type":"function","function":{"name":"zq.private","parameters":{"type":"object"}}}]"#],
+        ([user, #""tools":[{"type":"function","function":{"name":"zq-private-7f3a.f","parameters":{"type":"object"}}}]"#],
          .invalidToolDeclaration),
-        ([user, declared, #""tool_choice":{"type":"function","function":{"name":"g"}}"#], .invalidToolChoice),
+        ([user, declared, #""tool_choice":{"type":"function","function":{"name":"zq-private-7f3a"}}"#],
+         .invalidToolChoice),
         ([user, #""tool_choice":"required","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"zq-private-7f3a":{"anyOf":[{"type":"string"},{"type":"null"}]}}}}}]"#],
          .unsupportedForcedToolChoice),
     ]

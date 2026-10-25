@@ -1631,8 +1631,8 @@ representable JSON object (malformed, duplicate keys, a number that does not
 survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
 named choice of an undeclared function is `invalid tool choice`; a JSON
-`response_format` GLM cannot validate, or one with tools, is
-`unsupported response format`; and render-time control rechecks keep
+`response_format` GLM cannot validate, or one with tools or with image or video
+input, is `unsupported response format`; and render-time control rechecks keep
 `unsupported reasoning control` and `contradictory reasoning controls`.
 
 Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.

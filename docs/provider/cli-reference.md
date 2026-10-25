@@ -1631,7 +1631,6 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
 | `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory` |
 | `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, or carries `tool_calls` | same |
-| `Inference failure: invalid request (tool result name mismatch)` | A tool result's `name` differs from its call's function | same |
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
@@ -1645,8 +1644,8 @@ representable JSON object (malformed, duplicate keys, a number that does not
 survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
 named choice of an undeclared function is `invalid tool choice`; a JSON
-`response_format` GLM cannot validate, or one with tools or with image or video
-input, is `unsupported response format`; and render-time control rechecks keep
+`response_format` with image or video input is `unsupported response format`;
+and render-time control rechecks keep
 `unsupported reasoning control` and `contradictory reasoning controls`.
 
 Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.

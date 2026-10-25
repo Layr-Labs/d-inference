@@ -1437,12 +1437,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // match the complete-call path below.
                     do {
                         for routed in try router.finishToolCalls(truncated: stopReason == "length") {
-                            formatOutput?.observe(routed)
-                            continuation.yield(routed)
+                            emit(routed)
                         }
                         try router.checkNativeToolFailure()
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
                         try formatOutput?.validate(finishReason: stopReason)
+                        if let answer = try glmAnswer?.finalAnswer(
+                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
+                        {
+                            continuation.yield(answer)
+                        }
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
@@ -1496,8 +1500,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // a truncated or schema-invalid prefix, reaches success.
                     try formatOutput?.validate(finishReason: stopReason)
                     // GLM's withheld JSON answer leaves only once it validates.
-                    if let glmAnswer {
-                        continuation.yield(try glmAnswer.validatedAnswer(finishReason: stopReason))
+                    if let answer = try glmAnswer?.finalAnswer(
+                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
+                    {
+                        continuation.yield(answer)
                     }
                 } catch {
                     await releaseBox.fire()

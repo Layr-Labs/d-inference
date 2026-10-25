@@ -190,7 +190,6 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalUnsupportedAudio = "Inference failure: invalid media (unsupported audio)"
     case refusalUnansweredToolCall = "Inference failure: invalid request (unanswered tool call)"
     case refusalUnmatchedToolResult = "Inference failure: invalid request (unmatched tool result)"
-    case refusalToolResultNameMismatch = "Inference failure: invalid request (tool result name mismatch)"
     case refusalNativeDelimiterInHistory = "Inference failure: invalid request (native delimiter in history)"
     case refusalNonTextContent = "Inference failure: invalid request (non-text content)"
     case refusalUnsupportedForcedToolChoice = "Inference failure: invalid request (unsupported forced tool choice)"

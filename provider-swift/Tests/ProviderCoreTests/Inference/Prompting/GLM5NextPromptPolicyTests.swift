@@ -952,6 +952,37 @@ struct GLM5NextPromptPolicyTests {
         #expect(empty[0].contains("</think><tool_call>get_current_weather</tool_call><|observation|>"))
     }
 
+    /// A legacy `function_call` and its `role: function` result, which OpenAI
+    /// still accepts, render like the `tool_calls` spelling they decode to;
+    /// the result was refused as unmatched because it carried no call ID.
+    @Test func legacyFunctionCallHistoryRendersLikeItsToolCallSpelling() throws {
+        let template = try shippedTemplate()
+        func rendered(_ turns: String) throws -> String {
+            let body = Data(#"{"model":"m","messages":[{"role":"user","content":"weather?"},\#(turns)],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}"#.utf8)
+            return try render(try normalized(body), with: template)
+        }
+        let expected = try rendered(#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_legacy_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},{"role":"tool","tool_call_id":"call_legacy_1","content":"sunny"}"#)
+        #expect(expected.hasSuffix("<|observation|><tool_response>sunny</tool_response><|assistant|><think>"))
+        #expect(try rendered(#"{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},{"role":"function","name":"get_weather","content":"sunny"}"#) == expected)
+    }
+
+    /// A tool result pairs with its call by ID and the template never renders
+    /// its `name`, so a name that differs from the call (empty, or the
+    /// unprefixed name an MCP client reports) renders like no name.
+    @Test func toolResultNameIsNotComparedWithItsCall() throws {
+        let template = try shippedTemplate()
+        func rendered(_ name: String?) throws -> [String] {
+            let field = name.map { #","name":"\#($0)""# } ?? ""
+            let body = Data(#"{"model":"m","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"mcp__fs__read","arguments":"{\"path\":\"a\"}"}}]},{"role":"tool","tool_call_id":"c1"\#(field),"content":"R"}],"tools":[{"type":"function","function":{"name":"mcp__fs__read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}"#.utf8)
+            return try remoteAndLocalInputs(body).map { try render($0, with: template) }
+        }
+        let unnamed = try rendered(nil)
+        #expect(unnamed[0].hasSuffix("<|observation|><tool_response>R</tool_response><|assistant|><think>"))
+        for name in ["mcp__fs__read", "read", ""] {
+            #expect(try rendered(name) == unnamed, "\(name)")
+        }
+    }
+
     /// GLM's API spells history clearing inside `thinking`; the top-level and
     /// template-kwargs spellings keep precedence.
     @Test func thinkingObjectClearThinkingYieldsToTheOtherSpellings() throws {
@@ -1086,7 +1117,6 @@ struct GLM5NextPromptPolicyTests {
             ([user, call, user], "", .unansweredToolCall),
             ([user, call, #"{"role":"tool","tool_call_id":"c2","content":"r"}"#], "", .unmatchedToolResult),
             ([user, call, result, result], "", .unmatchedToolResult),
-            ([user, call, #"{"role":"tool","tool_call_id":"c1","name":"g","content":"r"}"#], "", .toolResultNameMismatch),
             ([user, #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#, result],
              "", .invalidToolHistory),
             ([user, arguments(#""{bad}""#), result], "", .invalidToolArguments),
@@ -1095,9 +1125,7 @@ struct GLM5NextPromptPolicyTests {
             ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
             ([#"{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}"#],
              "", .nonTextContent),
-            ([user], declared + #","response_format":{"type":"json_object"}"#, .unsupportedResponseFormat),
-            ([user], ##""response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"$defs":{"d":{"type":"string"}},"type":"object","properties":{"x":{"$ref":"#/$defs/d"}}}}}"##,
-             .unsupportedResponseFormat),
+            ([user], #""response_format":{"type":"json_schema"}"#, .unsupportedResponseFormat),
             ([user], #""tools":[{"type":"function","function":{"name":"a.b","parameters":{"type":"object"}}}]"#,
              .invalidToolDeclaration),
             ([user], #""tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]"#,

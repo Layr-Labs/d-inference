@@ -34,7 +34,6 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     // Prompt preparation and engine admission (`init(promptRefusal:)`).
     case unansweredToolCall = "unanswered_tool_call"
     case unmatchedToolResult = "unmatched_tool_result"
-    case toolResultNameMismatch = "tool_result_name_mismatch"
     case nativeDelimiterInHistory = "native_delimiter_in_history"
     case nonTextContent = "non_text_content"
     case unsupportedForcedToolChoice = "unsupported_forced_tool_choice"

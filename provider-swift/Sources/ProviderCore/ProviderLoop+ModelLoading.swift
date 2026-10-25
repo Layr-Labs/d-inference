@@ -415,6 +415,7 @@ extension ProviderLoop {
                 throw InferenceError.invalidModelDirectory(
                     allowEviction
                         ? "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                            + unevictableResidentsSentence()
                         : "All \(maxModelSlots) model slot(s) are occupied and eviction is disabled for this load; cannot load '\(modelId)'"
                 )
             }
@@ -1312,21 +1313,14 @@ extension ProviderLoop {
     }
 
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
-    /// pre-accept admission decisions. Callers still recheck after suspension;
+    /// pre-accept admission decisions: every resident model without an
+    /// `evictionExclusions` entry. Callers still recheck after suspension;
     /// unloadModel(forEviction:) is the authoritative final gate. An Autopilot
     /// placement hold is created only by a settled operation, which excludes
     /// concurrent loads, so a slot cannot become held after this snapshot.
     internal func evictableModelSlots() -> [String: ModelSlot] {
-        let modelsWithInflight = Set(requestToModel.values)
-        let now = ContinuousClock.now
-        return modelSlots.filter {
-            !(autopilotProtectsPins && autopilotPinnedModels.contains($0.key))
-                && !autopilotHoldsModel($0.key, now: now)
-                && !modelsWithInflight.contains($0.key)
-                && !hasLocalReservation($0.key)
-                && !modelsUnloading.contains($0.key)
-                && !isMTPUpgradeTargetRetained($0.key)
-        }
+        let excluded = evictionExclusions()
+        return modelSlots.filter { excluded[$0.key] == nil }
     }
 
     private func reclaimableMemoryGb(
@@ -1435,7 +1429,8 @@ extension ProviderLoop {
                     let reclaimableText = String(format: "%.1f", reclaimableGb)
                     throw InferenceError.modelLoadFailed(
                         "Insufficient memory (\(availableText) GB free, need \(requiredText) GB) even after "
-                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting")
+                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting"
+                            + unevictableResidentsSentence())
                 }
             }
             let candidate = allowEviction
@@ -1455,7 +1450,7 @@ extension ProviderLoop {
                 let required = String(format: "%.1f", retriedRequiredGb)
                 throw InferenceError.modelLoadFailed(
                     allowEviction
-                        ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
+                        ? "Insufficient memory (\(available) GB free, need \(required) GB) " + noEvictionCandidateClause()
                         : "Insufficient memory (\(available) GB free, need \(required) GB) to load without evicting resident models"
                 )
             }

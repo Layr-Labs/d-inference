@@ -1018,7 +1018,8 @@ extension ProviderLoop {
                     errorReason: reason)
                 InferenceFailureLogger(logger: log).record(
                     requestId: requestId,
-                    failure: failure)
+                    failure: failure,
+                    refusal: Self.promptRefusal(failure, error))
                 GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
@@ -1323,7 +1324,8 @@ extension ProviderLoop {
                         phase: .generation)
                     InferenceFailureLogger(logger: log).record(
                         requestId: requestId,
-                        failure: failure)
+                        failure: failure,
+                        refusal: Self.promptRefusal(failure, error))
                     GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,

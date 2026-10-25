@@ -306,7 +306,7 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
         let marked = body(#"{"type":"string","x-darkbloom-original-boolean-schema":true}"#)
         let forged = MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "tool schema contains reserved internal metadata")
+            "tool schema contains reserved internal metadata", refusal: .reservedToolSchemaMetadata)
         XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked)) {
             XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
         }

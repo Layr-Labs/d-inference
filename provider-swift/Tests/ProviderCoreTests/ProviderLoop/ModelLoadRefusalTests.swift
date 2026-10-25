@@ -358,7 +358,8 @@ struct ModelLoadRefusalTests {
             try await loop.ensureModelLoaded(modelId: id, revisionDirectory: directory)
             Issue.record("expected the load to be refused at the slot cap")
         } catch let InferenceError.invalidModelDirectory(message) {
-            #expect(message == "All 2 model slot(s) are active; cannot load '\(id)'")
+            #expect(message == "All 2 model slot(s) are active; cannot load '\(id)'. Not evictable: "
+                + "test/slot-busy-a (0.0 GB: 1 request in flight), test/slot-busy-b (0.0 GB: 1 request in flight)")
             #expect(ProviderLoop.loadErrorStatusCode(
                 for: InferenceError.invalidModelDirectory(message)) == 503)
         }

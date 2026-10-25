@@ -33,6 +33,14 @@ extension ProviderLoop {
             attemptUsage: terminal.usage)
     }
 
+    /// The closed reason a client refusal inside the inference task logs: an
+    /// `invalid_request` failure whose error names one
+    /// (`InferenceRefusalReason(promptRefusal:)`). Every other failure keeps its
+    /// bare category line.
+    static func promptRefusal(_ failure: InferenceFailure, _ error: any Error) -> InferenceRefusalReason? {
+        failure.code == .invalidRequest ? InferenceRefusalReason(promptRefusal: error) : nil
+    }
+
     /// Map rich in-process errors onto the bounded diagnostic vocabulary. The
     /// associated strings are inspected only to recognize engine-authored
     /// markers; no source string is returned, logged, or serialized.

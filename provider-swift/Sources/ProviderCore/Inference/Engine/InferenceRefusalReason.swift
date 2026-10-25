@@ -1,9 +1,11 @@
 import Foundation
 
-/// Why the coordinator handler refused a request before its inference task
-/// started. A closed, log-only vocabulary: the `inference_error` frame does
-/// not carry it, and no value holds request text.
-enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
+/// Why the coordinator handler refused a request as a client error, before its
+/// inference task started or while its prompt was prepared. A closed, log-only
+/// vocabulary: the `inference_error` frame does not carry it, and no value
+/// holds request text. Public only because the public
+/// `MultiModelBatchSchedulerEngineError.invalidToolPayload` carries it.
+public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     // The sealed request.
     case missingSenderKey = "missing_sender_key"
     case undecryptableRequest = "undecryptable_request"
@@ -28,6 +30,30 @@ enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
 
     // Media admission (`MediaIngest.rejectUnsupportedAudio`).
     case unsupportedAudio = "unsupported_audio"
+
+    // Prompt preparation and engine admission (`init(promptRefusal:)`).
+    case unansweredToolCall = "unanswered_tool_call"
+    case unmatchedToolResult = "unmatched_tool_result"
+    case nativeDelimiterInHistory = "native_delimiter_in_history"
+    case nonTextContent = "non_text_content"
+    case unsupportedForcedToolChoice = "unsupported_forced_tool_choice"
+    case requestExceedsContext = "request_exceeds_context"
+    case unsupportedOutputControl = "unsupported_output_control"
+
+    /// The reason a request was refused as a client error while its prompt was
+    /// prepared or admitted to the engine, or nil when the refusal names none
+    /// and keeps the bare category line.
+    init?(promptRefusal error: any Error) {
+        guard let engineError = error as? MultiModelBatchSchedulerEngineError else { return nil }
+        switch engineError {
+        case .invalidToolPayload(_, let refusal?): self = refusal
+        case .invalidRole: self = .unsupportedMessageRole
+        case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort: self = .unsupportedReasoningControl
+        case .advertisedContextExceeded: self = .requestExceedsContext
+        case .unsupportedOutputControl: self = .unsupportedOutputControl
+        default: return nil
+        }
+    }
 
     /// The reason a chat body failed `ProviderLoop.decodeInboundChatRequest`:
     /// its typed error, else the request field the decoding error's path

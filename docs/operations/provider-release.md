@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -35,8 +35,15 @@ queue up to six writes on every model, and a replaced Secure Enclave key no
 longer disables the SSD cache. Nemotron 3.5 Super and GLM-5.3-Flash serve
 logprobs under one contract once each model's catalog row lists them.
 GLM-5.3-Flash accepts OpenRouter's `reasoning.context`, `reasoning.mode` and
-hidden reasoning and Anthropic's `thinking` object, and `darkbloom logs` names
-the reason for each refusal. Decoding is faster: Super's first token no longer
+hidden reasoning and Anthropic's `thinking` object. It also serves
+structured-output schemas outside its grammar subset, a JSON `response_format`
+beside tools, tool results whose `name` differs from the call and legacy
+`function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
+differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
+each refusal, including client errors found while the prompt is prepared, and
+load refusals and `darkbloom status` explain the memory a load cannot reclaim:
+Autopilot placement holds, work in flight and models served outside the
+enabled model filter. Decoding is faster: Super's first token no longer
 stalls near the FP8 eager bound, Super speculates for sampled requests and
 tapers its draft depth on an M5, both models keep decoding while another
 request prefills, and GLM-5.3-Flash decodes faster at long context and
@@ -51,7 +58,7 @@ Before tagging `v0.10.2`:
   `release/sdk-0.10.2-final`: SDK `main` with
   [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
   plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
-  head, and #1592 was squash-merged with no re-pin.
+  head, and #1592 and then #1603 were squash-merged with no re-pin.
 - Confirm that the changelog's SDK note matches that pin, including every change
   that SDK `main` gained after `6148b6da`.
 
@@ -78,11 +85,11 @@ that fallback constant does not gate publication. Catalog changes, allowlist
 changes and model registration are separate approvals. This preparation does
 not tag, register, upload, deploy or enable anything.
 
-Platform evidence, inspected on 2026-10-24 (recheck before tagging):
+Platform evidence, inspected on 2026-10-25 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `0ee2ad18`, which has #411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `0ee2ad18`](https://github.com/Layr-Labs/darkbloom-platform/blob/0ee2ad185b7d0fefe67a75e1a7d573014762c589/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
+| Production runs platform `master` `7bf80fdd`, which has #411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
 | #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
 | A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |

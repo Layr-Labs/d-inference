@@ -152,9 +152,11 @@ struct InferenceFailureLogger: Sendable {
         privateSink(Self.privateLine(requestId: requestId, failure: failure))
     }
 
-    /// A refusal before the request's inference task. Its public line names
-    /// the fixed reason in place of the bare failure category.
-    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason) {
+    /// A client refusal, before the request's inference task or while its
+    /// prompt was prepared. Its public line names the fixed reason in place of
+    /// the bare failure category; without a reason it is `record(requestId:failure:)`.
+    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason?) {
+        guard let refusal else { return record(requestId: requestId, failure: failure) }
         publicSink(ProviderOperationalMessage(refusal: refusal))
         privateSink(Self.privateLine(requestId: requestId, failure: failure) + " refusal=\(refusal.rawValue)")
     }
@@ -208,6 +210,13 @@ private extension ProviderOperationalMessage {
         case .unsupportedToolType: .refusalUnsupportedToolType
         case .invalidToolSchema: .refusalInvalidToolSchema
         case .unsupportedAudio: .refusalUnsupportedAudio
+        case .unansweredToolCall: .refusalUnansweredToolCall
+        case .unmatchedToolResult: .refusalUnmatchedToolResult
+        case .nativeDelimiterInHistory: .refusalNativeDelimiterInHistory
+        case .nonTextContent: .refusalNonTextContent
+        case .unsupportedForcedToolChoice: .refusalUnsupportedForcedToolChoice
+        case .requestExceedsContext: .refusalRequestExceedsContext
+        case .unsupportedOutputControl: .refusalUnsupportedOutputControl
         }
     }
 }

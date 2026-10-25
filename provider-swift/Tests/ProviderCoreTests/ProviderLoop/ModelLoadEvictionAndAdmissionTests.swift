@@ -156,7 +156,9 @@ struct ModelLoadEvictionAndAdmissionTests {
             try await loop.evictUntilAvailable(weightsGb: 10)
             Issue.record("expected the load to be refused")
         } catch let InferenceError.modelLoadFailed(message) {
-            #expect(message.hasSuffix("and all loaded models are actively serving"))
+            #expect(message.hasSuffix(
+                "and all loaded models are actively serving. Not evictable: \(id) (100.0 GB: 1 request in flight)"),
+                "\(message)")
         }
 
         #expect(await loop.modelLoadingResidentIDs() == [id])

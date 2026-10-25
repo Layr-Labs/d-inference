@@ -10,14 +10,15 @@ qualification, opt-in and deployment limits rather than claiming activation.
 
 ## v0.10.2 — candidate (unpublished)
 
-Prepared on 2026-10-24; tagging and publication are separate steps.
+Prepared on 2026-10-25; tagging and publication are separate steps.
 
 ### Upgrade and rollout notes
 
 - Logprobs on Nemotron 3.5 Super and GLM-5.3-Flash reach coordinator requests only once the model's catalog row lists `logprobs`. List them only behind a coordinator that includes [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464), which sends a logprob request on either model only to providers on 0.10.2 or later, and only after the fleet has converged on this release.
 - Prefix caching through the coordinator applies to a model only once its `(model_id, model_aggregate_sha256, prompt_contract_id)` tuple is on the coordinator's cache-routing allowlist (`EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS`); until then the coordinator sends the model no cache scope and its requests run cold. Add Nemotron 3.5 Super's tuple, and then list `logprobs` on its catalog row, only after the fleet has converged on this release and a signed 0.10.2 build has restored Super's SSD checkpoints after a restart. GLM-5.3-Flash's tuple does not depend on this release, and the 4-bit checkpoints change neither tuple.
 - Nemotron 3.5 Super and GLM-5.3-Flash now write 4-bit `balanced` SSD checkpoints by default, under new cache namespaces: each provider's existing exact SSD files for these models miss once after updating, then age out through the normal TTL sweep. A request served from a 4-bit checkpoint is not bit-identical to the same request served without the cache: chosen-token logprobs differed by at most 0.005 nats on Nemotron 3.5 Super and 0.4 nats on GLM-5.3-Flash in qualification, `top_logprobs` alternatives can differ more, and in rare cases the generated text diverges slightly. `native` restores the exact state. To keep exact checkpoints without a code change, set `engine_v2_kv_checkpoint_quantization_by_model = { "<model id>" = "native" }` in the provider configuration, or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native` for every model; GLM-5.3-Flash's exact checkpoints use #1587's BF16 layout, which also starts cold once. Nemotron 3.5 Super no longer reserves its 16 GiB resident prefix bank by default.
-- A provider keeps its 0.10.1 behaviour until it updates: Nemotron 3.5 Super advertises no prefix cache and refuses logprobs with 400, and GLM-5.3-Flash refuses `reasoning.context`, `reasoning.mode`, hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`), Anthropic's `thinking` object and a null `reasoning_effort` with 400. The coordinator forwards these controls unchanged, so until the fleet converges such a GLM request fails on a 0.10.1 provider; it is planned for cache routing only behind a coordinator that includes #464. A 0.10.1 GLM provider puts the reasoning tokens' entries on its first answer chunk, keeping at most 4,096, and returns none for a reply that ends while the model is still reasoning, so #464's `0.10.2` floor keeps GLM logprob requests away from it.
+- A provider keeps its 0.10.1 behaviour until it updates: Nemotron 3.5 Super advertises no prefix cache and refuses logprobs with 400, and GLM-5.3-Flash refuses `reasoning.context`, `reasoning.mode`, hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`), Anthropic's `thinking` object and a null `reasoning_effort` with 400. The coordinator forwards these controls unchanged, so until the fleet converges such a GLM request fails on a 0.10.1 provider; it is planned for cache routing only behind a coordinator that includes darkbloom-platform#464. A 0.10.1 GLM-5.3-Flash provider also still refuses with 400 a `json_schema` with keywords outside its grammar subset, a JSON `response_format` beside tools, a tool result whose `name` differs from its call and a legacy `function_call` history, and a 0.10.1 MiMo-V2.6-Flash provider a tool result whose `name` differs from its call. A 0.10.1 GLM provider puts the reasoning tokens' entries on its first answer chunk, keeping at most 4,096, and returns none for a reply that ends while the model is still reasoning, so darkbloom-platform#464's `0.10.2` floor keeps GLM logprob requests away from it.
+- Operators can see why an updated provider refused a request: `darkbloom logs` names a fixed reason for each refusal before inference and for each client error found while the prompt is prepared, for example `Inference failure: invalid request (unanswered tool call)`. A load refused for memory names each resident model it could not evict and why, and `darkbloom status` shows models served outside the enabled model filter, Autopilot placement holds with their expiry and what a load cannot evict now.
 - The MLX stack moves to the 2026-10-22 upstream sync, so the release metallib changes and each provider compiles its kernels again on the first start after updating.
 - `libs/mlx-swift-lm` moves from `6148b6da` to `aee6ebb6` for these changes: Nemotron 3.5 Super logprobs and complete checkpoints, GLM-5.3-Flash checkpoint layout v2 and capture under load, standard 4-bit `balanced` checkpoints for both models (mlx-swift-lm#363), Super speculation for sampled requests (mlx-swift-lm#357), the decode-step-aware first-token projection (mlx-swift-lm#359), the Super FP8 first-token stall fix (mlx-swift-lm#360), and faster GLM long-context decode (mlx-swift-lm#362). With them come SDK `main`'s merge of upstream ml-explore/mlx-swift-lm `d02948b9` (2026-10-22; mlx-swift-lm#339 with mlx-swift-lm#348 and mlx-swift-lm#349) and mlx-swift-lm#358's mlx-swift pin. `libs/mlx-swift` moves from `67dc7528` to `eedca444`, which keys compiled traces by the task's default stream. With it, `libs/mlx` and the nested `mlx` move from `ad4745a2` to `ff4bb35b`: the fork's merge of upstream ml-explore/mlx `afc03c51` (2026-10-23), plus two fork fixes. One computes float16 and bfloat16 floor division in float32; the other erases a freed compiled closure from every thread's compile cache. These changes touch 56 Metal kernel source files, and the release metallib is rebuilt from them. The SDK's inline Metal kernels for Nemotron 3.5 Super, GLM-5.3-Flash and MiMo V2.6 now compute their sigmoid's exponential with `metal::precise::exp`, as MLX's own sigmoid does. The SDK's only other native change is a vendored xgrammar C++ library, which is not linked into the provider. The provider builds the SDK without its `FoundationModelsIntegration` trait, so the binary links neither xgrammar nor Apple's FoundationModels framework, and its libraries and static initializers are the same as 0.10.1's. The provider's adaptation to the merged SDK API leaves request behaviour unchanged. The SDK and provider test suites pass on the new pins, as do checks of Nemotron 3.5 Super and GLM-5.3-Flash on real checkpoints: correct answers from a cache hit, logprobs, and decode speed.
 
@@ -102,6 +103,49 @@ for the provider that received it. It now serves them:
 
 The prompt is unchanged in every case.
 
+### GLM-5.3-Flash serves structured-output schemas from pydantic, zod and OpenAI strict mode
+
+A GLM-5.3-Flash `response_format` `json_schema` that used keywords outside the
+subset Flint compiles into a grammar, such as `$defs` and `$ref`, `anyOf`
+nullable fields, `format`, `pattern`, numeric bounds, `maxItems` or an untyped
+property, was refused with HTTP 400 before generation. GLM compiles no grammar,
+so these requests are now served as on the other families: the schema steers
+the answer, which is withheld until generation ends and then checked against
+the caller's schema, and a violation is a 422 with no content. The check does
+not follow `$ref` references or enforce `format`, and it enforces a `pattern`
+only when the pattern is literal text, optionally anchored with `^` or `$`.
+
+### GLM-5.3-Flash serves a JSON `response_format` beside tools
+
+A GLM-5.3-Flash request with a JSON `response_format` (`json_object` or
+`json_schema`) and declared tools was refused with HTTP 400 before generation.
+It is now served as on the other families: the format governs the answer, which
+is withheld until it validates, while a tool call is exposed and validated as
+in any tool request. Text the model writes beside a call is not checked against
+the format; it is sent unchanged once generation ends.
+
+### GLM-5.3-Flash serves tool results whose `name` differs from the call
+
+A tool result whose optional `name` was empty or differed from its call's
+function, such as the unprefixed tool name some MCP clients send, was refused
+with HTTP 400. Results pair with calls by `tool_call_id`, and GLM's chat
+template never renders a result's `name`, so these histories are now served.
+
+### MiMo-V2.6-Flash serves tool results whose `name` differs from the call
+
+A tool result whose optional `name` was empty or differed from its call's
+function, such as the unprefixed tool name some MCP clients send, was refused
+with HTTP 400. Results pair with calls by `tool_call_id`, and MiMo's chat
+template never renders a result's `name`, so these histories are now served.
+
+### Legacy `function_call` histories keep their result paired with the call
+
+A conversation in OpenAI's legacy function-calling format, an assistant
+`function_call` followed by a `role: function` result, was converted to
+`tool_calls` but left the result without a call ID, so GLM-5.3-Flash refused it
+with HTTP 400 as an unmatched tool result. The result now takes the converted
+call's ID, and GLM-5.3-Flash serves the history like its `tool_calls` spelling.
+
 ### Nemotron Super first token no longer stalls on prompts of about 80 to 92 tokens
 
 Nemotron 3.5 Super prefill chunks near the FP8 eager reference's 64 MiB bound (most visibly prompts of about 80 to
@@ -168,6 +212,25 @@ line, for example
 `Inference failure: invalid request (unsupported reasoning control)`, so the
 failed jobs on the console's Jobs card can be matched in `darkbloom logs`. The
 line never contains request text, and the refusal itself is unchanged.
+
+### `darkbloom logs` names why a request was refused while its prompt was prepared
+
+Requests refused as client errors while the provider prepared the prompt, such
+as GLM-5.3-Flash tool histories with an unanswered call or an unmatched result,
+history arguments it cannot represent, tool names it refuses, or a prompt plus
+`max_tokens` beyond the context window, logged only the bare
+`Inference failure: invalid request`. They are most of the HTTP 400s a GLM
+provider returns. Each now names a fixed reason, for example
+`Inference failure: invalid request (unanswered tool call)`, so the 400s can be
+attributed from `darkbloom logs`. The line never contains request text, and the
+refusal itself is unchanged.
+
+### Load refusals and status explain memory a load cannot reclaim
+
+- A refusal that eviction could not resolve (`All N model slot(s) are active`, `… even after evicting every idle model …` or `… and all loaded models are actively serving`, Nemotron Super's `LOAD room` refusals included) now ends with `Not evictable:` when the load could not evict a resident model, naming each such model with its resident GB and each reason: an Autopilot placement hold with its UTC expiry, requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress, and whether Autopilot adopted the model outside the selected models. Loads that never evict, such as startup preload, are unchanged. The last form says `all loaded models are actively serving` only when every model it could not evict is serving work, and otherwise `no loaded model can be evicted`, for example when only a hold blocks the load.
+- `darkbloom status` now shows `Serving outside the enabled model filter` (and why: an Autopilot operation's adoption, the running daemon's selection, which applies a changed `enabled_models` only at its next start, or the live Autopilot lease), `Autopilot placements` with each hold's expiry, `Not evictable for a load now`, and how long ago the last model-load error was recorded.
+- `darkbloom autopilot status` now prints adopted models and placement holds with their expiry.
+- The daemon state file carries the same eviction exclusions (`eviction_exclusions`) and the ordinary serving selection (`serving_selection`). Loading and eviction decisions are unchanged.
 
 ### MLX stack moves to the 2026-10-22 upstream sync
 

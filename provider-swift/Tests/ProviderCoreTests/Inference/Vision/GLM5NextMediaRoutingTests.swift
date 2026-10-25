@@ -297,9 +297,11 @@ struct GLM5NextMediaRoutingTests {
             ])))]
             request.toolChoice = mode == "required" ? .mode(.required) : .function(name: "ping")
         }
-        let refused = mode == "json" ? "JSON response_format" : "required/named tool_choice"
+        let (refused, refusal): (String, InferenceRefusalReason) = mode == "json"
+            ? ("JSON response_format", .unsupportedResponseFormat)
+            : ("required/named tool_choice", .unsupportedForcedToolChoice)
         await #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "GLM5: \(refused) is not supported with image or video input")) {
+            "GLM5: \(refused) is not supported with image or video input", refusal: refusal)) {
             _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
         }
         #expect(capture.requests.isEmpty && engine.submitted.isEmpty)

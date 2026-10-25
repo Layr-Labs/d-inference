@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -222,7 +222,9 @@ the busy model immediately. An ordinary start with saved consent then fails befo
 changing enrollment or draining the running provider; retry after the update finishes.
 `status` and `autopilot status` read the same daemon snapshot, including nested
 Autopilot residents and load history. Enrollment does not make a live daemon disappear
-from status.
+from status. `autopilot status` prints `Adopted (serving outside the selection)` for
+models an operation adopted and `Held: <model> until <UTC> (<time> left)` for each
+placement hold (`provider-swift/Sources/darkbloom/Autopilot/AutopilotStatusCommand.swift`).
 
 A replacement start, with or without Autopilot, completes the picker/preflight and saves the selected IDs
 under `backend.enabled_models` while holding the lifecycle lease, before it
@@ -977,10 +979,22 @@ Output includes:
 - Detected hardware (chip, RAM, GPU cores).
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
-- Live daemon PID, uptime, trust verdict, and last model-load error. A
+- Live daemon PID, uptime, trust verdict, and last model-load error with how
+  long ago it was recorded (`Recorded … ago`); the readiness lines above it are
+  live. A refusal that could not evict a resident model ends with
+  `Not evictable: …`, naming each such model with its resident GB and every
+  reason ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Enabled model filter` is the saved config; a running daemon applies a
+  changed `enabled_models` only at its next start. `Serving outside the enabled
+  model filter` names each warm or advertised model the filter omits and why it
+  serves: an Autopilot operation's adoption, the running daemon's selection, or
+  the live Autopilot lease. `Autopilot placements` lists adoptions and placement
+  holds with each hold's UTC expiry and time left. `Not evictable for a load
+  now` lists the resident models no load can evict at the snapshot, with the
+  same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it
@@ -1582,13 +1596,17 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 
 ### Refusal lines
 
-A request refused before its inference task writes one fixed public line: the
-failure category, then a reason from the closed `InferenceRefusalReason` set
+A request refused as a client error, before its inference task or while its
+prompt is prepared, writes one fixed public line: the failure category, then a
+reason from the closed `InferenceRefusalReason` set
 (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`).
 A private line pairs the request ID with the same reason; neither contains
 request text. The `inference_error` frame sent to the coordinator is the same
-as without the line. Failures during generation keep the bare category, such
-as `Inference failure: invalid request`
+as without the line. A prompt-time refusal takes its reason from the typed
+error (`InferenceRefusalReason.init(promptRefusal:)`): the `refusal` a prompt
+policy attaches to `MultiModelBatchSchedulerEngineError.invalidToolPayload`, or
+the error case itself. Other failures, and a client refusal that names no
+reason, keep the bare category, such as `Inference failure: invalid request`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`,
 `InferenceFailureLogger`).
 
@@ -1611,6 +1629,24 @@ as `Inference failure: invalid request`
 | `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
 | `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
+| `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory` |
+| `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, or carries `tool_calls` | same |
+| `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
+| `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
+| `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
+| `Inference failure: invalid request (request exceeds context)` | The prompt plus `max_tokens` exceeds the model's context window | `EngineV2Bridge` (`advertisedContextExceeded`) |
+| `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
+
+Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
+with an empty or repeated ID, a bad function name or a non-assistant role is
+`invalid tool history`; history `arguments` that are not one exactly
+representable JSON object (malformed, duplicate keys, a number that does not
+survive the round trip) are `invalid tool arguments`; an invalid or repeated
+tool name is `invalid tool declaration`; a required choice without tools or a
+named choice of an undeclared function is `invalid tool choice`; a JSON
+`response_format` with image or video input is `unsupported response format`;
+and render-time control rechecks keep
+`unsupported reasoning control` and `contradictory reasoning controls`.
 
 Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
 

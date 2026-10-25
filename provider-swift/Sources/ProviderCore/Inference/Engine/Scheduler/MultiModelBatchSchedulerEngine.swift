@@ -514,9 +514,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // forced call.
         if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
             await releaseBox.fire()
-            let mode = prepared.requiresToolCall ? "required/named tool_choice" : "JSON response_format"
+            let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
+                ? ("required/named tool_choice", .unsupportedForcedToolChoice)
+                : ("JSON response_format", .unsupportedResponseFormat)
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "GLM5: \(mode) is not supported with image or video input")
+                "GLM5: \(mode) is not supported with image or video input", refusal: refusal)
         }
         // Declined reasoning is classified on the native channel and dropped
         // there, so GLM routes reasoning to that channel whenever it is withheld.
@@ -1435,12 +1437,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // match the complete-call path below.
                     do {
                         for routed in try router.finishToolCalls(truncated: stopReason == "length") {
-                            formatOutput?.observe(routed)
-                            continuation.yield(routed)
+                            emit(routed)
                         }
                         try router.checkNativeToolFailure()
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
                         try formatOutput?.validate(finishReason: stopReason)
+                        if let answer = try glmAnswer?.finalAnswer(
+                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
+                        {
+                            continuation.yield(answer)
+                        }
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
@@ -1494,8 +1500,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // a truncated or schema-invalid prefix, reaches success.
                     try formatOutput?.validate(finishReason: stopReason)
                     // GLM's withheld JSON answer leaves only once it validates.
-                    if let glmAnswer {
-                        continuation.yield(try glmAnswer.validatedAnswer(finishReason: stopReason))
+                    if let answer = try glmAnswer?.finalAnswer(
+                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
+                    {
+                        continuation.yield(answer)
                     }
                 } catch {
                     await releaseBox.fire()

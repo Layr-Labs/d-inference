@@ -8,9 +8,242 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.1 — candidate (unpublished)
+## v0.10.2 — candidate (unpublished)
 
-Prepared on 2026-10-23; tagging and publication are separate steps.
+Prepared on 2026-10-25; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Logprobs on Nemotron 3.5 Super and GLM-5.3-Flash reach coordinator requests only once the model's catalog row lists `logprobs`. List them only behind a coordinator that includes [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464), which sends a logprob request on either model only to providers on 0.10.2 or later, and only after the fleet has converged on this release.
+- Prefix caching through the coordinator applies to a model only once its `(model_id, model_aggregate_sha256, prompt_contract_id)` tuple is on the coordinator's cache-routing allowlist (`EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS`); until then the coordinator sends the model no cache scope and its requests run cold. Add Nemotron 3.5 Super's tuple, and then list `logprobs` on its catalog row, only after the fleet has converged on this release and a signed 0.10.2 build has restored Super's SSD checkpoints after a restart. GLM-5.3-Flash's tuple does not depend on this release, and the 4-bit checkpoints change neither tuple.
+- Nemotron 3.5 Super and GLM-5.3-Flash now write 4-bit `balanced` SSD checkpoints by default, under new cache namespaces: each provider's existing exact SSD files for these models miss once after updating, then age out through the normal TTL sweep. A request served from a 4-bit checkpoint is not bit-identical to the same request served without the cache: chosen-token logprobs differed by at most 0.005 nats on Nemotron 3.5 Super and 0.4 nats on GLM-5.3-Flash in qualification, `top_logprobs` alternatives can differ more, and in rare cases the generated text diverges slightly. `native` restores the exact state. To keep exact checkpoints without a code change, set `engine_v2_kv_checkpoint_quantization_by_model = { "<model id>" = "native" }` in the provider configuration, or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native` for every model; GLM-5.3-Flash's exact checkpoints use #1587's BF16 layout, which also starts cold once. Nemotron 3.5 Super no longer reserves its 16 GiB resident prefix bank by default.
+- A provider keeps its 0.10.1 behaviour until it updates: Nemotron 3.5 Super advertises no prefix cache and refuses logprobs with 400, and GLM-5.3-Flash refuses `reasoning.context`, `reasoning.mode`, hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`), Anthropic's `thinking` object and a null `reasoning_effort` with 400. The coordinator forwards these controls unchanged, so until the fleet converges such a GLM request fails on a 0.10.1 provider; it is planned for cache routing only behind a coordinator that includes darkbloom-platform#464. A 0.10.1 GLM-5.3-Flash provider also still refuses with 400 a `json_schema` with keywords outside its grammar subset, a JSON `response_format` beside tools, a tool result whose `name` differs from its call and a legacy `function_call` history, and a 0.10.1 MiMo-V2.6-Flash provider a tool result whose `name` differs from its call. A 0.10.1 GLM provider puts the reasoning tokens' entries on its first answer chunk, keeping at most 4,096, and returns none for a reply that ends while the model is still reasoning, so darkbloom-platform#464's `0.10.2` floor keeps GLM logprob requests away from it.
+- Operators can see why an updated provider refused a request: `darkbloom logs` names a fixed reason for each refusal before inference and for client errors found while a GLM-5.3-Flash prompt is prepared, for example `Inference failure: invalid request (unanswered tool call)`. A load refused for memory names each resident model it could not evict and why, and `darkbloom status` shows models served outside the enabled model filter, Autopilot placement holds with their expiry and what a load cannot evict now.
+- The MLX stack moves to the 2026-10-22 upstream sync, so the release metallib changes and each provider compiles its kernels again on the first start after updating.
+- `libs/mlx-swift-lm` moves from `6148b6da` to `aee6ebb6` for these changes: Nemotron 3.5 Super logprobs and complete checkpoints, GLM-5.3-Flash checkpoint layout v2 and capture under load, standard 4-bit `balanced` checkpoints for both models (mlx-swift-lm#363), Super speculation for sampled requests (mlx-swift-lm#357), the decode-step-aware first-token projection (mlx-swift-lm#359), the Super FP8 first-token stall fix (mlx-swift-lm#360), and faster GLM long-context decode (mlx-swift-lm#362). With them come SDK `main`'s merge of upstream ml-explore/mlx-swift-lm `d02948b9` (2026-10-22; mlx-swift-lm#339 with mlx-swift-lm#348 and mlx-swift-lm#349) and mlx-swift-lm#358's mlx-swift pin. `libs/mlx-swift` moves from `67dc7528` to `eedca444`, which keys compiled traces by the task's default stream. With it, `libs/mlx` and the nested `mlx` move from `ad4745a2` to `ff4bb35b`: the fork's merge of upstream ml-explore/mlx `afc03c51` (2026-10-23), plus two fork fixes. One computes float16 and bfloat16 floor division in float32; the other erases a freed compiled closure from every thread's compile cache. These changes touch 56 Metal kernel source files, and the release metallib is rebuilt from them. The SDK's inline Metal kernels for Nemotron 3.5 Super, GLM-5.3-Flash and MiMo V2.6 now compute their sigmoid's exponential with `metal::precise::exp`, as MLX's own sigmoid does. The SDK's only other native change is a vendored xgrammar C++ library, which is not linked into the provider. The provider builds the SDK without its `FoundationModelsIntegration` trait, so the binary links neither xgrammar nor Apple's FoundationModels framework, and its libraries and static initializers are the same as 0.10.1's. The provider's adaptation to the merged SDK API leaves request behaviour unchanged. The SDK and provider test suites pass on the new pins, as do checks of Nemotron 3.5 Super and GLM-5.3-Flash on real checkpoints: correct answers from a cache hit, logprobs, and decode speed.
+
+### Nemotron Super prefix-cache routing
+
+- The managed Nemotron 3.5 Super slot advertises its prefix cache to the coordinator (`prefix_cache_v2_models` for its default SSD checkpoints, `prefix_cache_memory_models` for the opt-in resident bank), bound to the aggregate the provider published for the loaded checkpoint and the checkpoint's prompt-contract identity. Coordinator requests on Super now send lookup and ready receipts and report reused prompt tokens (`prompt_tokens_details.cached_tokens` and `inference_complete` cache usage), so cache-aware routing and cache-read pricing apply to Super once the coordinator's cache-routing allowlist lists its tuple. Previously the coordinator never sent Super a cache scope, so its reserved bank served no coordinator request.
+- The local endpoint reports Super's reused prompt tokens instead of always `0`.
+
+### Nemotron Super durable prefix checkpoints
+
+- The managed Nemotron 3.5 Super slot keeps its exact text prefix reuse as complete encrypted SSD checkpoints by default, like the other cache-enabled models: KV, Mamba conv/SSM state and the MTP assistant's prompt history, with older attention rows 4-bit coded under the default `balanced` checkpoint profile and all of it at native precision under `native` (see "Balanced SSD checkpoints for Nemotron Super and GLM-5.3-Flash"), bound to the published artifact and prompt-contract identity. Checkpoints survive provider restarts within the store's TTL, the slot advertises a durable capability (`prefix_cache_v2_models`) so the coordinator can keep durable holders, and the coordinator's repeat hint gates writes against the daily SSD write budget. The 16 GiB resident bank is no longer reserved by default; `DARKBLOOM_PREFIX_CACHE_MEMORY=1` selects it instead (it remains the only tier that reuses image turns), and `DARKBLOOM_PREFIX_CACHE=0` turns both off.
+
+### Half-size exact GLM SSD checkpoints (the `native` fallback)
+
+- GLM-5.3-Flash SSD checkpoints are 4-bit `balanced` by default (see "Balanced SSD checkpoints for Nemotron Super and GLM-5.3-Flash"). Exact complete checkpoints, which `native` selects, now write the latent keys, the index/gate/validity rows and the KDA convolution history at their BF16 activation dtype instead of the FP32 copies the live pool keeps, and widen them back to the same FP32 bits on restore. The accumulated KDA recurrent state stays FP32. A 30,720-token checkpoint drops from 1.24 GB to 0.72 GB (per token 35.4 KB → 18.5 KB), so each donation queues, writes and charges the daily SSD write budget for 18-48 % fewer bytes, a restore stages about 25 % faster on an M5 Ultra, and prompts up to the full 262K context fit the large-memory staging cap.
+- Restores also validate the GLM validity flags by visiting only that column (one element in 257) instead of every element, about 50 ms less per 30,720-token restore.
+- The export refuses any value BF16 cannot represent exactly, so a restore is never lossy. The exact layout is now `native-paged-glm5next-full-state-v2` and the default 4-bit one `native-paged-glm5next-affine-checkpoint-full-state-v1`; existing v1 files sit in a different namespace from both and expire through the normal TTL sweep. Providers lose their warm GLM checkpoints once on upgrade.
+
+### GLM prefix checkpoints under load
+
+- GLM-5.3-Flash now captures a repeated prompt's checkpoints while other requests are decoding. Their decode tokens shortened every prefill chunk below 2,048, so no chunk ended on the 256-token checkpoint grid and the donor was silently not cached (one of six donors in a concurrent burst on an M5 Ultra). A donor the cache will write now ends a prefill range at its demanded boundaries whatever its company; in the same burst six of six were captured and written.
+- GLM checkpoints now land on any 256-token boundary instead of every 2,048: a 32,682-token prompt restores 32,512 tokens instead of 30,720 (hit time to first token 3.1–3.7 s, was about 4.0 s).
+- A GLM cache hit served beside decoding requests no longer waits for a full 2,048-token chunk and cold-restarts after three waits; it resumes under ordinary chunking.
+
+### Realistic GLM restore estimates in cache receipts
+
+- A complete-checkpoint ready receipt now advertises what a restore of the file actually costs on this provider, not only its read time at the 1.5 GB/s planning rate. GLM-5.3-Flash restores take about 0.9 s beyond their bytes on an M5 Ultra, so the old estimate was 11–43% of the measured stage (478 ms for a 716 MB checkpoint that restores in 1.1–1.4 s; 125 ms for a 187 MB one that takes 1.0–1.1 s). The estimate now adds a running average of the store's own measured restores beyond their byte price, starting from the measured GLM value (zero for other models' checkpoints), so the coordinator no longer overstates the saving of short cached GLM prompts.
+
+### Balanced SSD checkpoints for Nemotron Super and GLM-5.3-Flash
+
+- Nemotron 3.5 Super and GLM-5.3-Flash now follow the provider's checkpoint precision setting (`engine_v2_kv_checkpoint_quantization`, default `balanced`, its per-model table and `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`) like the other cache-enabled models, instead of always writing exact checkpoints. Their MTP assistants' prompt history now stays exact beside the coded rows, as recurrent state already did, so the MTP head no longer forces native storage for these two models.
+- Super codes only older attention rows; the Mamba conv/SSM state, the MTP history and the newest 128 rows stay exact. On an M3 Ultra its 30,720-token checkpoint drops from 457 MB to 285 MB (8,192 tokens: 250 → 204 MB). Restored answers matched the cold answers token for token in qualification, at 0.03–0.46 s more restore time than exact checkpoints and still 5–20× faster than recomputing.
+- GLM codes only older latent rows; the index/gate/validity rows, KDA state, MTP history and the newest 128 rows stay exact. On an M5 Ultra its 32,768-token checkpoint drops from 754 MB to 502 MB (8,192 tokens: 301 → 238 MB). Restores answered as correctly as exact checkpoints in qualification but take longer to stage (CPU decode; 2.2 s instead of 0.5 s at 32,768 tokens, against 15.9 s to recompute), and each donation spends more CPU encoding in the background write.
+- New layouts (`native-paged-affine-checkpoint-full-recurrent-mtp-v1`, `native-paged-glm5next-affine-checkpoint-full-state-v1`) use their own cache namespace, so existing exact checkpoints for these two models miss once and expire through the normal TTL sweep. Set the per-model table entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` to `native` to keep exact checkpoints.
+
+### Deeper SSD prefix-cache write queue
+
+- Both SSD prefix-cache writers now hold up to six donations (`writeQueueMaxJobs = 6`, was 2) before dropping a new one as `write_queue_full`. More of the prefixes donated while the single SSD writer is busy are now written, so later requests can reuse them instead of recomputing them.
+- Memory stays within the existing bounds: queued attention blocks must still fit the unchanged queued-byte cap (1,280 MiB at the default stage cap), and a queued complete checkpoint keeps its donor state and I/O scratch charged to the engine admission or process memory ledger, as before.
+- A request that donates complete checkpoints ends its stream and releases its KV memory only after they are written or refused. Under a write backlog each of them can now wait behind up to five other checkpoints instead of one, and up to six donors (was two) can wait at once, each still holding its KV memory.
+
+### SSD prefix cache keeps working and says why when it cannot
+
+- A GLM-5.3-Flash load no longer fails when `DARKBLOOM_PREFIX_CACHE_MEMORY=1` is set: GLM has no in-memory prefix tier, so it now logs that it ignores the setting and keeps its encrypted SSD checkpoints. Other models still honour the setting as before.
+- A Mac whose Secure Enclave key was replaced (by the attestation key's automatic repair, or by `darkbloom unenroll` and enrolling again) no longer loses SSD prefix caching for good. The cache key sealed to the old key is replaced at the next model load, and cache files written under it, which could no longer be read, are removed.
+- `darkbloom status` adds `prefix_cache=` to each loaded model's line and prints the cause and the fix under a cache that failed to start; `darkbloom doctor`, and so the desktop app's diagnostics, add a `prefix cache` check. A model load whose cache failed logs a line for `darkbloom logs` and the model, cause and fix in `provider.log`.
+- The heartbeat's per-model prefix-cache status carries the cause behind an error as an optional `detail` (for example `key_unavailable` behind `cache_init_failed`), which coordinators that predate it ignore. A complete-checkpoint store refused because its cache directory is missing or unsafe now reports `disk_unavailable`, as attention-block stores already did, and a store closed with its unloading slot reports `cache_closed`.
+
+### Nemotron Super and GLM-5.3-Flash logprobs
+
+- Nemotron 3.5 Super now serves `logprobs` and `top_logprobs` (0 to 20 alternatives) on text, image and video requests, through the local endpoint and, once its catalog row lists `logprobs`, through the coordinator, streamed and complete, instead of refusing them with 400. `top_logprobs` outside 0 to 20 is still refused with 400.
+- A request with logprobs decodes without speculation; requests decoding beside it keep speculating.
+- `logprobs.content` has one entry per generated token in generation order, covering reasoning, answer and tool-call tokens, as vLLM and SGLang return them. Joined, the entry tokens spell the reasoning text, the `</think>` marker that ends it and then the answer text, not the answer alone. Streamed reasoning chunks carry their tokens' entries, and a response that ends while the model is still reasoning (for example when `max_tokens` runs out) still returns them.
+- A complete response carries the same entries as the stream, except that a complete response from the local endpoint keeps only the last 4,096. Tool-call tokens lack entries only when nothing follows the call, which is rare for Super: its call turns end with a newline that carries them.
+- GLM-5.3-Flash logprobs, which stay disabled until the catalog lists them, follow the same contract.
+
+### GLM-5.3-Flash accepts OpenRouter's reasoning context and mode
+
+GLM-5.3-Flash refused requests carrying OpenRouter's documented
+`reasoning.context` or `reasoning.mode` with 400 `invalid_request`.
+`reasoning.context` now chooses which returned reasoning the model sees:
+`current_turn` keeps only the reasoning returned after the last user turn, as
+`clear_thinking: true` does, while `all_turns` and `auto` keep every turn's.
+`reasoning.mode: "standard"`, OpenRouter's default, is accepted. Other values
+of either field, including `reasoning.mode: "pro"`, and a context that
+contradicts `clear_thinking` are still refused with 400.
+
+### GLM-5.3-Flash serves hidden reasoning and Anthropic thinking controls
+
+GLM-5.3-Flash refused several documented request controls with 400
+`invalid_request`, and the coordinator counted each refusal as a failed job
+for the provider that received it. It now serves them:
+
+- OpenRouter's hidden reasoning (`reasoning.exclude: true`,
+  `include_reasoning: false`): the model still reasons, and the reasoning is
+  withheld from the response and its logprobs but billed as reasoning tokens,
+  as OpenRouter documents.
+- Anthropic's `thinking` object, which Darkbloom's Messages API forwards:
+  `budget_tokens` selects an effort like `reasoning.max_tokens`, `adaptive`
+  enables thinking, and `display: "omitted"` hides the reasoning.
+- A null `reasoning_effort`, which OpenAI documents as nullable, is unset.
+
+The prompt is unchanged in every case.
+
+### GLM-5.3-Flash serves structured-output schemas from pydantic, zod and OpenAI strict mode
+
+A GLM-5.3-Flash `response_format` `json_schema` that used keywords outside the
+subset Flint compiles into a grammar, such as `$defs` and `$ref`, `anyOf`
+nullable fields, `format`, `pattern`, numeric bounds, `maxItems` or an untyped
+property, was refused with HTTP 400 before generation. GLM compiles no grammar,
+so these requests are now served as on the other families: the schema steers
+the answer, which is withheld until generation ends and then checked against
+the caller's schema, and a violation is a 422 with no content. The check does
+not follow `$ref` references or enforce `format`, and it enforces a `pattern`
+only when the pattern is literal text, optionally anchored with `^` or `$`.
+
+### GLM-5.3-Flash serves a JSON `response_format` beside tools
+
+A GLM-5.3-Flash request with a JSON `response_format` (`json_object` or
+`json_schema`) and declared tools was refused with HTTP 400 before generation.
+It is now served as on the other families: the format governs the answer, which
+is withheld until it validates, while a tool call is exposed and validated as
+in any tool request. Text the model writes beside a call is not checked against
+the format; it is sent unchanged once generation ends.
+
+### GLM-5.3-Flash serves tool results whose `name` differs from the call
+
+A tool result whose optional `name` was empty or differed from its call's
+function, such as the unprefixed tool name some MCP clients send, was refused
+with HTTP 400. Results pair with calls by `tool_call_id`, and GLM's chat
+template never renders a result's `name`, so these histories are now served.
+
+### MiMo-V2.6-Flash serves tool results whose `name` differs from the call
+
+A tool result whose optional `name` was empty or differed from its call's
+function, such as the unprefixed tool name some MCP clients send, was refused
+with HTTP 400. Results pair with calls by `tool_call_id`, and MiMo's chat
+template never renders a result's `name`, so these histories are now served.
+
+### Legacy `function_call` histories keep their result paired with the call
+
+A conversation in OpenAI's legacy function-calling format, an assistant
+`function_call` followed by a `role: function` result, was converted to
+`tool_calls` but left the result without a call ID, so GLM-5.3-Flash refused it
+with HTTP 400 as an unmatched tool result. The result now takes the converted
+call's ID, and GLM-5.3-Flash serves the history like its `tool_calls` spelling.
+
+### Nemotron Super first token no longer stalls on prompts of about 80 to 92 tokens
+
+Nemotron 3.5 Super prefill chunks near the FP8 eager reference's 64 MiB bound (most visibly prompts of about 80 to
+92 tokens, and long prompts whose last 2,048-token chunk has that many tokens) split one projection into thousands
+of small products. The first token of a 92-token prompt took about 12 s on an M5 Ultra on 0.10.1 (about 3 s on the
+0.10.2 MLX, about 6 s on an M3 Ultra), and concurrent requests queued behind it. The SDK now regroups those products
+into at most 128 per call with the same per-output arithmetic, so the first token arrives in about 0.5 s on an M5
+Ultra and about 0.9 s on an M3 Ultra, with the same outputs as before; on M5 Macs, chunks of 87 to 92 rows (and a
+few longer bands) take the larger products already used for longer chunks, whose outputs can differ within
+rounding.
+
+### Nemotron 3.5 Super speculates for sampled and controlled requests
+
+- Sampled Super requests (temperature above zero) now speculate with the embedded MTP head through exact target-prefix acceptance. Each accepted draft equals the token the target samples with the request's own sampler and seed, so output is unchanged; before, every sampled request decoded one token per step.
+- A Super request the engine cannot draft for (a `stop` string, a repetition, frequency or presence penalty, or `logit_bias`) now decodes one ordinary token per step beside requests that speculate. Before, one such request turned speculation off for every request in the same step.
+
+### GLM-5.3-Flash and Nemotron 3.5 Super keep decoding while another request prefills
+
+While other requests decode, GLM now runs eight decode-only steps after each 2,048-token prompt chunk of a
+long prompt. Before, a decoding request got about one token per chunk (about a second each on an M5 Ultra)
+for as long as another request prefilled: 2.8 tok/s beside an 8K prompt and 1.2 to 1.5 tok/s with two
+decoders. With the held steps it measured 19.5 and 7.1 to 7.2 tok/s, while the prefilling request's first
+token arrived 6 to 20% later. A request served alone is unchanged, and first-token deadline admission prices
+the held steps. `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 steps; `0` restores the previous
+scheduling.
+
+Nemotron 3.5 Super now runs four decode-only steps after each prompt chunk while other requests decode. On an M5
+Ultra a decoder kept 16.3 tok/s during an 8K prefill instead of 5.8 (12.6 instead of 3.9 beside a 32K prefill), and
+the prefilling request's first token arrived 15 to 26% later.
+`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 steps and now reaches the launchd provider job;
+`0` restores the previous scheduling.
+
+### Nemotron 3.5 Super on an M5 speculates only while few requests decode
+
+On an M5 the managed Super slot now drafts at depth 3 for one decoding request, 2 for two, 1 for three or four,
+and decodes target-only from five (`3,2,1,1,0`; other Macs keep `3,2,2,2,1`). On an M5 Ultra speculation is
+20–24% faster alone and ties at two requests, but at four requests depth 2 cost 7–9% and at eight depth 1 cost
+13–15% of aggregate throughput against target-only decoding. `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH` lists may
+now contain `0` (target-only at that width) and still override the default.
+
+### GLM-5.3-Flash decodes faster at long context
+
+GLM's paged attention reads (index metadata, latent history and each query's selected latents) now bind up to 17
+memory segments per GPU launch and copy only the pages each segment holds, instead of one full-history launch per
+segment after a zero fill. Decode steps and MTP verification rounds also submit GPU work in larger command buffers,
+as Nemotron Super already does for plain decode. On an M5 Ultra, one request now decodes at about 73, 62 and 48
+tokens per second after 8K-, 32K- and 64K-token prompts, up from about 63, 36 and 19. Outputs are unchanged: every
+read copies the same bytes.
+
+### GLM-5.3-Flash speculates for two concurrent requests
+
+GLM's embedded MTP now verifies the draft windows of two decoding requests in one target forward, instead of
+turning speculation off as soon as a second request decodes. On an M5 Ultra, two concurrent requests decode at
+about 46 tok/s each instead of 38 (aggregate about 91 instead of 75 tok/s). One request, and three or more, decode
+as before.
+
+### `darkbloom logs` names why a request was refused before it ran
+
+A request the provider refused before its inference task started (an
+unsupported reasoning control, a malformed tool history, a body that does not
+decode, a sealed request it cannot open) wrote no readable log line, although
+coordinators count it as a failed job. Each such refusal now writes one fixed
+line, for example
+`Inference failure: invalid request (unsupported reasoning control)`, so the
+failed jobs on the console's Jobs card can be matched in `darkbloom logs`. The
+line never contains request text, and the refusal itself is unchanged.
+
+### `darkbloom logs` names why a request was refused while its prompt was prepared
+
+GLM-5.3-Flash requests refused as client errors while the provider prepared
+the prompt, such as tool histories with an unanswered call or an unmatched
+result, history arguments it cannot represent, tool names it refuses, or a
+prompt plus `max_tokens` beyond the context window, logged only the bare
+`Inference failure: invalid request`. On 0.10.1 they were most of the HTTP
+400s a GLM provider returned. Each now names a fixed reason, for example
+`Inference failure: invalid request (unanswered tool call)`, so the 400s can be
+attributed from `darkbloom logs`. The line never contains request text, and the
+refusal itself is unchanged.
+
+### Load refusals and status explain memory a load cannot reclaim
+
+- A refusal that eviction could not resolve (`All N model slot(s) are active`, `… even after evicting every idle model …` or `… and all loaded models are actively serving`, Nemotron Super's `LOAD room` refusals included) now ends with `Not evictable:` when the load could not evict a resident model, naming each such model with its resident GB and each reason: an Autopilot placement hold with its UTC expiry, requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress, and whether Autopilot adopted the model outside the selected models. Loads that never evict, such as startup preload, are unchanged. The last form says `all loaded models are actively serving` only when every model it could not evict is serving work, and otherwise `no loaded model can be evicted`, for example when only a hold blocks the load.
+- `darkbloom status` now shows `Serving outside the enabled model filter` (and why: an Autopilot operation's adoption, the running daemon's selection, which applies a changed `enabled_models` only at its next start, or the live Autopilot lease), `Autopilot placements` with each hold's expiry, `Not evictable for a load now`, and how long ago the last model-load error was recorded.
+- `darkbloom autopilot status` now prints adopted models and placement holds with their expiry.
+- The daemon state file carries the same eviction exclusions (`eviction_exclusions`) and the ordinary serving selection (`serving_selection`). Loading and eviction decisions are unchanged.
+
+### MLX stack moves to the 2026-10-22 upstream sync
+
+- The `libs/mlx`, `libs/mlx-swift` and `libs/mlx-swift-lm` forks now contain upstream `ml-explore/mlx`, `mlx-c`, `mlx-swift` and `mlx-swift-lm` from the 2026-10-22 sync. `libs/mlx` moves both at the top level and in the copy nested in `libs/mlx-swift` that Cmlx compiles, and the nested mlx-c moves from `5e9be4da` to `004c735f`. The upgrade and rollout notes above give each pin and the release metallib change.
+- The provider follows the SDK API changes: `LanguageModel.prepare` takes the request `state` and `PrefillParameters`, image and video inputs carry their payload in `.source`, Qwen 3.5 target weight sanitizing can throw, and the new `Generation.rejectedToolCall` event is ignored by the benchmark like a tool call.
+
+### Desktop app releases
+
+- Add `release-desktop.yml`: a `desktop-vX.Y.Z` tag builds the macOS desktop app, signs it with the Eigen Labs Developer ID used for the CLI, notarizes and staples the app and DMG, verifies them, and publishes the DMG, zip and `SHA256SUMS` as a GitHub Release (not marked Latest). A manual run does the same as a dry run without publishing. Releases are refused while the latest published CLI lacks the `darkbloom desktop` API.
+
+## v0.10.1
+
+Published 2026-10-24 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)).
 
 ### Upgrade and rollout notes
 

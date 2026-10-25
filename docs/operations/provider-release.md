@@ -40,16 +40,16 @@ structured-output schemas outside its grammar subset, a JSON `response_format`
 beside tools, tool results whose `name` differs from the call and legacy
 `function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
 differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
-each refusal, including client errors found while the prompt is prepared, and
-load refusals and `darkbloom status` explain the memory a load cannot reclaim:
-Autopilot placement holds, work in flight and models served outside the
-enabled model filter. Decoding is faster: Super's first token no longer
-stalls near the FP8 eager bound, Super speculates for sampled requests and
-tapers its draft depth on an M5, both models keep decoding while another
-request prefills, and GLM-5.3-Flash decodes faster at long context and
-speculates for two concurrent requests. The MLX stack moves to the 2026-10-22
-upstream sync, so the release metallib changes. See the
-[`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
+each refusal before inference and for client errors found while a
+GLM-5.3-Flash prompt is prepared, and load refusals and `darkbloom status`
+explain the memory a load cannot reclaim: Autopilot placement holds, work in
+flight and models served outside the enabled model filter. Decoding is
+faster: Super's first token no longer stalls near the FP8 eager bound, Super
+speculates for sampled requests and tapers its draft depth on an M5, both
+models keep decoding while another request prefills, and GLM-5.3-Flash decodes
+faster at long context and speculates for two concurrent requests. The MLX
+stack moves to the 2026-10-22 upstream sync, so the release metallib changes.
+See the [`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
 
 Before tagging `v0.10.2`:
 
@@ -89,7 +89,7 @@ Platform evidence, inspected on 2026-10-25 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `7bf80fdd`, which has #411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
+| Production runs platform `master` `7bf80fdd`, which has darkbloom-platform#411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
 | #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
 | A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |

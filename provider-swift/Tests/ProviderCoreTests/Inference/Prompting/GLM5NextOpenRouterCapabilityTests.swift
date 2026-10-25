@@ -538,22 +538,72 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(update.toolConstraintModels == [GLM5NextLocalQualification.modelID, Self.model].sorted())
     }
 
-    /// Unsupported shapes stay explicit client errors before any generation.
-    @Test func unsupportedJSONShapesAreRefusedBeforeGeneration() async throws {
+    /// A JSON format with tools stays an explicit client error before any
+    /// generation.
+    @Test func jsonFormatWithToolsIsRefusedBeforeGeneration() async throws {
         var withTools = Self.jsonObjectBody()
         withTools["tools"] = [["type": "function", "function": ["name": "ping",
             "parameters": ["type": "object", "properties": [String: Any]()]] as [String: Any]]]
-        var untyped = Self.jsonSchemaBody()
-        untyped["response_format"] = ["type": "json_schema", "json_schema": [
-            "name": "loose", "schema": ["type": "object", "properties": ["value": [String: Any]()]]]]
-        var pattern = Self.jsonSchemaBody()
-        pattern["response_format"] = ["type": "json_schema", "json_schema": [
-            "name": "pattern", "schema": ["type": "string", "pattern": "^a"]]]
-        for body in [withTools, untyped, pattern] {
-            let served = try await serve(body, output: [Self.austin])
-            let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
-            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
-            #expect(served.content.isEmpty)
+        let served = try await serve(withTools, output: [Self.austin])
+        let error = try #require(served.error as? MultiModelBatchSchedulerEngineError)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        #expect(served.content.isEmpty)
+    }
+
+    // Structured-output schemas as pydantic, zod and OpenAI strict mode emit
+    // them, with keywords outside the subset Flint compiles into a grammar.
+    static let pydanticReport = ##"{"$defs":{"Day":{"properties":{"day":{"title":"Day","type":"string"},"high_f":{"title":"High F","type":"integer"}},"required":["day","high_f"],"title":"Day","type":"object"}},"properties":{"city":{"title":"City","type":"string"},"note":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Note"},"days":{"items":{"$ref":"#/$defs/Day"},"title":"Days","type":"array"}},"required":["city","days"],"title":"Report","type":"object"}"##
+    static let zodPage = #"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","additionalProperties":false,"properties":{"url":{"type":"string","format":"uri"},"count":{"type":"integer","minimum":0},"tags":{"type":"array","items":{"type":"string"},"maxItems":50}},"required":["url","count","tags"]}"#
+    static let strictNullable = #"{"type":"object","additionalProperties":false,"required":["answer","note"],"properties":{"answer":{"type":"string"},"note":{"type":["string","null"]}}}"#
+    static let prefixedID = #"{"type":"object","properties":{"id":{"type":"string","pattern":"^ord_"}},"required":["id"]}"#
+    static let untypedLeaf = #"{"type":"object","properties":{"value":{"description":"any JSON value"}},"required":["value"]}"#
+
+    static func structuredOutputBody(_ schema: String) throws -> [String: Any] {
+        var body = jsonSchemaBody()
+        body["reasoning"] = ["enabled": false]
+        body["response_format"] = ["type": "json_schema", "json_schema": [
+            "name": "report", "strict": true, "schema": try JSONSerialization.jsonObject(with: Data(schema.utf8)),
+        ] as [String: Any]]
+        return body
+    }
+
+    /// GLM compiles no grammar, so these schemas are served as on the other
+    /// families, steered by the caller's schema, and a conforming answer is
+    /// exposed. They were refused with 400 before generation.
+    @Test(arguments: [
+        (pydanticReport, #"{"city":"Austin","note":null,"days":[{"day":"Mon","high_f":75}]}"#),
+        (zodPage, #"{"url":"https://a.example","count":3,"tags":["x"]}"#),
+        (strictNullable, #"{"answer":"ok","note":null}"#),
+        (prefixedID, #"{"id":"ord_42"}"#),
+        (untypedLeaf, #"{"value":[1,{"a":true}]}"#),
+    ])
+    func structuredOutputSchemaIsServed(schema: String, answer: String) async throws {
+        let prompts = PromptCapture()
+        let served = try await serve(try Self.structuredOutputBody(schema), output: ["\n", answer], prompts: prompts)
+        #expect(served.error == nil)
+        #expect(served.content == answer && served.finishReason == "stop")
+        #expect(served.nativeRefusals == [nil])
+        #expect(try #require(prompts.prompts.first).contains("JSON Schema:"))
+    }
+
+    /// The answer is validated against the caller's schema, including
+    /// keywords the subset lacks: a violation is the typed 422 with no content.
+    @Test(arguments: [
+        (pydanticReport, #"{"city":"PRIVATE","note":3,"days":[]}"#),
+        (zodPage, #"{"url":"https://a.example","count":-1,"tags":[]}"#),
+        (zodPage, #"{"url":"https://a.example","count":1,"tags":[],"PRIVATE":true}"#),
+        (zodPage, #"{"url":"https://a.example","tags":["PRIVATE"]}"#),
+        (strictNullable, #"{"answer":"PRIVATE","note":false}"#),
+        (prefixedID, #"{"id":"PRIVATE"}"#),
+    ])
+    func structuredOutputSchemaViolationIsATyped422(schema: String, answer: String) async throws {
+        let served = try await serve(try Self.structuredOutputBody(schema), output: [answer])
+        #expect(served.content.isEmpty && served.finishReason == nil)
+        let error = try #require(served.error as? MLXOpenAIServiceError)
+        guard case .invalidResponseFormatOutput(let message) = error else {
+            Issue.record("unexpected \(error)"); return
         }
+        #expect(!message.contains("PRIVATE"))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 }

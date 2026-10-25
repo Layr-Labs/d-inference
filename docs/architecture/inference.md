@@ -1031,8 +1031,9 @@ GLM's native engine refuses sampler token constraints, so a JSON
 `response_format` is likewise prompt-steered and validated, not constrained:
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
-generation ends, then decoded and checked (`json_schema` against the shared
-fail-closed subset) before it is exposed; invalid output is a 422 with no
+generation ends, then decoded and checked (`json_schema` against the caller's
+schema, through the shared compiled subset when the schema fits it) before it
+is exposed; invalid output is a 422 with no
 content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
 `tool_choice` (required or a named function) is structured post-validation, as
 on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM

@@ -195,6 +195,13 @@ enum ToolConstraintValidation {
         validate(value, against: schema)
     }
 
+    /// Response-format post-validation against a caller's JSON Schema that the
+    /// compiled subset does not cover, with the broad validator `auto` tool
+    /// calls use.
+    static func satisfies(_ value: MLXLMCommon.JSONValue, jsonSchema: MLXLMCommon.JSONValue) -> Bool {
+        validateJSONSchema(value, schema: jsonSchema, depth: 0)
+    }
+
     private static func validate(
         _ value: ToolArgumentJSONValue,
         against schema: ToolValueSchema

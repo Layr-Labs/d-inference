@@ -126,6 +126,8 @@ private struct ServedResponse {
     var nativeRefusals: [String?] = []
     /// The same decision by a native engine that does not capture logprobs (MiMo).
     var nonCapturingNativeRefusals: [String?] = []
+    /// Every SSE frame as sent.
+    var frames: [String] = []
 }
 
 @Suite("GLM-5.3-Flash OpenRouter capability requests")
@@ -194,6 +196,7 @@ struct GLM5NextOpenRouterCapabilityTests {
             for try await frame in try await MLXOpenAIService(engine: scheduler)
                 .streamChatCompletionFrames(request: request)
             {
+                served.frames.append(frame)
                 guard frame.hasPrefix("data: {"),
                     let chunk = try JSONSerialization.jsonObject(
                         with: Data(frame.dropFirst(6).utf8)) as? [String: Any],
@@ -566,6 +569,34 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(prose.content.isEmpty && prose.finishReason == nil)
         let error = try #require(prose.error as? MLXOpenAIServiceError)
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+    }
+
+    /// SSE frames with the per-response `id` and `created` fixed.
+    static func stableFrames(_ frames: [String]) -> [String] {
+        frames.map {
+            $0.replacingOccurrences(of: #""id":"[^"]*""#, with: #""id":"ID""#, options: .regularExpression)
+                .replacingOccurrences(of: #""created":[0-9]+"#, with: #""created":0"#, options: .regularExpression)
+        }
+    }
+
+    /// Without a JSON format, GLM tool requests send the frames they sent
+    /// before a JSON format could sit beside tools, byte for byte and in
+    /// order; the format's answer terminal adds nothing to them.
+    @Test func toolRequestsWithoutAJSONFormatKeepTheirFrames() async throws {
+        let chunk = #""created":0,"id":"ID","model":"glm-5.3-flash","object":"chat.completion.chunk""#
+        let role = #"data: {"choices":[{"delta":{"role":"assistant"},"index":0}],"# + chunk + "}"
+        let preamble = #"data: {"choices":[{"delta":{"content":"Checking Boston.\n"},"index":0}],"# + chunk + "}"
+        let call = #"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\"location\":\"Boston, MA\",\"unit\":\"fahrenheit\"}","name":"get_current_weather"},"id":"ID","index":0,"type":"function"}]},"index":0}],"#
+            + chunk + "}"
+        let finish = #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"# + chunk + "}"
+        for (choice, output, frames) in [
+            ("auto" as Any, ["Checking Boston.\n", Self.weatherCall], [role, preamble, call, finish, "data: [DONE]"]),
+            (Self.requiredChoice, ["\n", Self.weatherCall], [role, call, finish, "data: [DONE]"]),
+        ] {
+            let served = try await serve(try Self.forcedToolBody(choice), output: output)
+            #expect(served.error == nil)
+            #expect(Self.stableFrames(served.frames) == frames.map { $0 + "\n\n" })
+        }
     }
 
     // Structured-output schemas as pydantic, zod and OpenAI strict mode emit

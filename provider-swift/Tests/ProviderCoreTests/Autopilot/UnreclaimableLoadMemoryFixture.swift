@@ -98,6 +98,11 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         if let persistedLoadedModels { LoadedModelsStore.write(persistedLoadedModels, to: loadedModels) }
         await loop.setLoadedModelsFileForTesting(loadedModels)
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        // KV re-slice arithmetic (an operation's reserve preflight, the
+        // capacity summary) reads machine memory from these hooks, else from
+        // the Mac running the tests: pin it to the scripted machine.
+        await loop.setEngineV2SlotHooksForTesting(ProviderLoop.EngineV2SlotHooks(
+            physicalMemoryBytes: physicalBytes, makeEngine: { _, _ in throw CancellationError() }))
         await loop.setNemotronSuperSlotLoaderForTesting(NemotronSuperSlotLoader(
             pinned: true, physicalBytes: physicalBytes, kvBytesPerToken: { _ in 64 },
             load: { _ in throw InferenceError.modelLoadFailed("the scripted machine never loads Super") }),

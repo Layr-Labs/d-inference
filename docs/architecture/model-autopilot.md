@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -165,7 +165,13 @@ operator's ordinary selection and idle policy.
 Neither form is machine-level control. The idle timer keeps running, other
 models keep their ordinary idle and eviction policy, and cold loads into free
 memory proceed. A load that would have to evict a held slot fails with the
-existing transient slot or insufficient-memory refusal.
+existing transient slot or insufficient-memory refusal. Like every load
+refusal, it names each resident model the load could not evict and why
+(`Not evictable: <model> (<GB>: Autopilot hold until <UTC>; adopted by Autopilot
+outside the selected models)`, `ProviderLoop.evictionExclusions`).
+`darkbloom status` prints the placements with each hold's expiry and the models
+served outside the saved `enabled_models`; `darkbloom autopilot status` prints
+`Adopted` and `Held` lines.
 
 ## Busy reasons and stalled transitions
 

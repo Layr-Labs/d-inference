@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -353,6 +353,17 @@ snapshot (`ProviderLoop.evictableModelSlots`), and `free_for_load_gb` gives the
 held weights no reclaim credit (`ProviderLoop.autopilotHeldWeightBytes`). A load
 that fits only by evicting a held slot fails with the ordinary slot or
 insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#placements-after-an-operation).
+`ProviderLoop.evictionExclusions` is the one definition of what an eviction
+snapshot skips: an Autopilot pin while Autopilot protects pins, an unexpired
+hold, requests in flight, a local request or self-test, an unloading slot and a
+retained MTP upgrade target. Every slot and memory refusal that left a resident
+model in place ends with `Not evictable:` and, for each such model, its resident
+GB and every reason (with the hold's UTC expiry, and whether Autopilot adopted
+it outside the selected models). A refusal that found no candidate says
+`all loaded models are actively serving` only when each of them is serving work,
+and `no loaded model can be evicted` otherwise. The daemon state publishes the
+same exclusions (`eviction_exclusions`) and the ordinary serving selection
+(`serving_selection`) for `darkbloom status`.
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)

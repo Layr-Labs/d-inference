@@ -1,0 +1,6 @@
+### Load refusals and status explain memory a load cannot reclaim
+
+- A model load refused for memory or slots now ends with `Not evictable:` and names every resident model it could not evict, with its resident GB and each reason: an Autopilot placement hold with its UTC expiry, requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress, and whether Autopilot adopted the model outside the selected models. Nemotron Super's `LOAD room` refusals included. A refusal blocked only by holds or transitions no longer claims `all loaded models are actively serving`; it says `no loaded model can be evicted`.
+- `darkbloom status` now shows `Serving outside the enabled model filter` (and why: an Autopilot operation's adoption, the running daemon's selection, which applies a changed `enabled_models` only at its next start, or the live Autopilot lease), `Autopilot placements` with each hold's expiry, `Not evictable for a load now`, and how long ago the last model-load error was recorded.
+- `darkbloom autopilot status` now prints adopted models and placement holds with their expiry.
+- The daemon state file carries the same eviction exclusions (`eviction_exclusions`) and the ordinary serving selection (`serving_selection`). Loading and eviction decisions are unchanged.

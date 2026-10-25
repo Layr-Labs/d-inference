@@ -9,7 +9,7 @@ import ProviderAppAttest
 extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
-        case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
+        case startedAt, attestationPublicKey, trust, runtimeIntegrity, coordinatorUrl, currentModel
         case warmModels, advertisedModels, startupPreloadPendingModels, lifecycle, modelSwitch
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
@@ -27,6 +27,7 @@ extension DaemonState {
         startedAt = try c.decode(Double.self, forKey: .startedAt)
         attestationPublicKey = try c.decodeIfPresent(String.self, forKey: .attestationPublicKey)
         trust = try c.decodeIfPresent(Trust.self, forKey: .trust)
+        runtimeIntegrity = try c.decodeIfPresent(RuntimeIntegrity.self, forKey: .runtimeIntegrity)
         coordinatorUrl = try c.decodeIfPresent(String.self, forKey: .coordinatorUrl)
         currentModel = try c.decodeIfPresent(String.self, forKey: .currentModel)
         warmModels = try c.decode([String].self, forKey: .warmModels)
@@ -62,6 +63,7 @@ extension DaemonState {
         try c.encode(startedAt, forKey: .startedAt)
         try c.encodeIfPresent(attestationPublicKey, forKey: .attestationPublicKey)
         try c.encodeIfPresent(trust, forKey: .trust)
+        try c.encodeIfPresent(runtimeIntegrity, forKey: .runtimeIntegrity)
         try c.encodeIfPresent(coordinatorUrl, forKey: .coordinatorUrl)
         try c.encodeIfPresent(currentModel, forKey: .currentModel)
         try c.encode(warmModels, forKey: .warmModels)

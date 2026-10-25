@@ -1,0 +1,277 @@
+{
+  "configurationSHA256": "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
+  "tensors": [
+    {
+      "name": "mtp.fc.biases",
+      "shape": [
+        4096,
+        128
+      ],
+      "dtype": "BF16",
+      "byteCount": 1048576
+    },
+    {
+      "name": "mtp.fc.scales",
+      "shape": [
+        4096,
+        128
+      ],
+      "dtype": "BF16",
+      "byteCount": 1048576
+    },
+    {
+      "name": "mtp.fc.weight",
+      "shape": [
+        4096,
+        1024
+      ],
+      "dtype": "U32",
+      "byteCount": 16777216
+    },
+    {
+      "name": "mtp.layers.0.input_layernorm.weight",
+      "shape": [
+        4096
+      ],
+      "dtype": "BF16",
+      "byteCount": 8192
+    },
+    {
+      "name": "mtp.layers.0.mlp.down_proj.biases",
+      "shape": [
+        4096,
+        192
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.down_proj.scales",
+      "shape": [
+        4096,
+        192
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        1536
+      ],
+      "dtype": "U32",
+      "byteCount": 25165824
+    },
+    {
+      "name": "mtp.layers.0.mlp.gate_proj.biases",
+      "shape": [
+        12288,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.gate_proj.scales",
+      "shape": [
+        12288,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 25165824
+    },
+    {
+      "name": "mtp.layers.0.mlp.up_proj.biases",
+      "shape": [
+        12288,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.up_proj.scales",
+      "shape": [
+        12288,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1572864
+    },
+    {
+      "name": "mtp.layers.0.mlp.up_proj.weight",
+      "shape": [
+        12288,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 25165824
+    },
+    {
+      "name": "mtp.layers.0.post_attention_layernorm.weight",
+      "shape": [
+        4096
+      ],
+      "dtype": "BF16",
+      "byteCount": 8192
+    },
+    {
+      "name": "mtp.layers.0.self_attn.k_norm.weight",
+      "shape": [
+        256
+      ],
+      "dtype": "BF16",
+      "byteCount": 512
+    },
+    {
+      "name": "mtp.layers.0.self_attn.k_proj.biases",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 131072
+    },
+    {
+      "name": "mtp.layers.0.self_attn.k_proj.scales",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 131072
+    },
+    {
+      "name": "mtp.layers.0.self_attn.k_proj.weight",
+      "shape": [
+        1024,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 2097152
+    },
+    {
+      "name": "mtp.layers.0.self_attn.o_proj.biases",
+      "shape": [
+        4096,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 524288
+    },
+    {
+      "name": "mtp.layers.0.self_attn.o_proj.scales",
+      "shape": [
+        4096,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 524288
+    },
+    {
+      "name": "mtp.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 8388608
+    },
+    {
+      "name": "mtp.layers.0.self_attn.q_norm.weight",
+      "shape": [
+        256
+      ],
+      "dtype": "BF16",
+      "byteCount": 512
+    },
+    {
+      "name": "mtp.layers.0.self_attn.q_proj.biases",
+      "shape": [
+        8192,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1048576
+    },
+    {
+      "name": "mtp.layers.0.self_attn.q_proj.scales",
+      "shape": [
+        8192,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 1048576
+    },
+    {
+      "name": "mtp.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 16777216
+    },
+    {
+      "name": "mtp.layers.0.self_attn.v_proj.biases",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 131072
+    },
+    {
+      "name": "mtp.layers.0.self_attn.v_proj.scales",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "BF16",
+      "byteCount": 131072
+    },
+    {
+      "name": "mtp.layers.0.self_attn.v_proj.weight",
+      "shape": [
+        1024,
+        512
+      ],
+      "dtype": "U32",
+      "byteCount": 2097152
+    },
+    {
+      "name": "mtp.norm.weight",
+      "shape": [
+        4096
+      ],
+      "dtype": "BF16",
+      "byteCount": 8192
+    },
+    {
+      "name": "mtp.pre_fc_norm_embedding.weight",
+      "shape": [
+        4096
+      ],
+      "dtype": "BF16",
+      "byteCount": 8192
+    },
+    {
+      "name": "mtp.pre_fc_norm_hidden.weight",
+      "shape": [
+        4096
+      ],
+      "dtype": "BF16",
+      "byteCount": 8192
+    }
+  ]
+}

@@ -85,10 +85,13 @@ for enabled in 0 1; do
 done
 check pipeline-eager-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=1 --
 check tensor-parallel-eager-malformed-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=true -- --generation-mode tensor_parallel_v1
-# A fixed Qwen27 batch capacity keeps fast synchronization and native batching.
+# A fixed Qwen TP batch capacity keeps fast synchronization while retaining native batching.
 for lanes in 2 4 8; do
   CHECK_MODEL=registered_qwen38_27b check qwen27-batched-fast-synch-$lanes 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=$lanes -- --generation-mode tensor_parallel_v1
 done
+# Every other Qwen TP row serves the same batch lanes, so it widens on the same path.
+check qwen9-batched-fast-synch-2 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=2 -- --generation-mode tensor_parallel_v1
+check qwen9-single-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_qwen38_27b check qwen27-single-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_qwen38_27b check qwen27-batch-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=launcher" "" DARKBLOOM_CLUSTER_BATCH_LANES=2 MLX_METAL_FAST_SYNCH=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_qwen38_27b check qwen27-batch-invalid-lanes 1 "outside 1...8" "darkbloom-collective-sync-v1" DARKBLOOM_CLUSTER_BATCH_LANES=9 -- --generation-mode tensor_parallel_v1

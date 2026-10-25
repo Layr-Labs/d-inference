@@ -82,6 +82,106 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"],
             now: 1_000 + ClusterLinkProbeHistory.maximumAgeSeconds + 1) == nil, "A stale probe was used")
     }
+    /// The share each rank's load timed alone: kept owner-only per model and
+    /// member, read back as that member's share rates for that model only,
+    /// never stale, never another model's; an unusable record keeps nothing.
+    static func shareProbeHistory() throws {
+        let probeHome = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("share-probe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: probeHome) }
+        for path in ["", ".darkbloom", ".darkbloom/cluster"] {
+            try FileManager.default.createDirectory(at: probeHome.appendingPathComponent(path), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let artifact = String(repeating: "a", count: 64), build = String(repeating: "b", count: 64)
+        let leader = ClusterShareProbeHistory.Recorded(member: "a", buildSHA256: build, probe: .init(sharePerMille: 667,
+            plainStepMicroseconds: 32_100, windowColumns: 4, windowStepMicroseconds: 56_600, rounds: 7))
+        let follower = ClusterShareProbeHistory.Recorded(member: "b", buildSHA256: build, probe: .init(sharePerMille: 333,
+            plainStepMicroseconds: 17_400, windowColumns: 4, windowStepMicroseconds: 21_900, rounds: 7))
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"]).isEmpty,
+            "No probe: no share rates")
+        try require(ClusterShareProbeHistory.record([leader, follower], artifactSHA256: artifact, homeDirectory: probeHome, now: 1_000),
+            "Probes not kept")
+        let file = ClusterShareProbeHistory.defaultFile(homeDirectory: probeHome)
+        let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
+        try require(mode == 0o600, "The share probe file is not owner-only")
+        let rates = ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"], now: 2_000)
+        // Both loads served the speculative head, so each rank is rated by its verify window (four positions over the window step).
+        try require(rates["a"] == [ClusterShareRate(sharePerMille: 667, decodeTokensPerSecond: 4e6 / 56_600)]
+            && rates["b"] == [ClusterShareRate(sharePerMille: 333, decodeTokensPerSecond: 4e6 / 21_900)], "Probes not read back per member")
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: String(repeating: "c", count: 64),
+            members: ["a", "b"], now: 2_000).isEmpty, "Another model read this model's probes")
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"],
+            now: 1_000 + ClusterShareProbeHistory.maximumAgeSeconds + 1).isEmpty, "A stale probe was used")
+        try require(!ClusterShareProbeHistory.record([leader, leader], artifactSHA256: artifact, homeDirectory: probeHome, now: 3_000)
+            && !ClusterShareProbeHistory.record([], artifactSHA256: artifact, homeDirectory: probeHome, now: 3_000),
+            "A record of one member twice, or of nothing, was kept")
+        // A later load at 1:1 adds its share ahead of the earlier one.
+        let even = ClusterShareProbeHistory.Recorded(member: "a", buildSHA256: build, probe: .init(sharePerMille: 500,
+            plainStepMicroseconds: 24_900, rounds: 7))
+        try require(ClusterShareProbeHistory.record([even], artifactSHA256: artifact, homeDirectory: probeHome, now: 4_000)
+            && ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a"],
+                now: 5_000)["a"]?.map(\.sharePerMille) == [500, 667], "A later load's share is not kept beside the earlier one")
+        // A file that is not owner-only is not read, and one that is not a history is started again.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        try require(ClusterShareProbeHistory.read(file) == nil, "A share probe file others can read was used")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try Data("{\"schema\":\"other\"}".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try require(ClusterShareProbeHistory.record([even], artifactSHA256: artifact, homeDirectory: probeHome, now: 6_000)
+            && ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"],
+                now: 6_000) == ["a": [ClusterShareRate(sharePerMille: 500, decodeTokensPerSecond: 1e6 / 24_900)]],
+            "A file of another kind was not started again")
+    }
+    /// What the pair served is kept with each rank's worker build, and the
+    /// planner's and the router's reads take back only the records the
+    /// setup's pinned builds served: never another build's, one of two
+    /// builds, or one written before builds were recorded.
+    static func servedSpeedHistory() throws {
+        let home = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("served-speed-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        for path in ["", ".darkbloom", ".darkbloom/cluster"] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(path), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let current = String(repeating: "a", count: 64), earlier = String(repeating: "e", count: 64)
+        func record(_ id: String, _ builds: [String]?, ranks: [String] = ["a", "b"], model: String = "m") -> ClusterPairRequestTelemetry {
+            .init(requestID: id, finishedAt: 1, modelID: model, mode: "phase_split_v1", cut: "0-16|16-32", promptTokens: 100,
+                  cachedTokens: 0, completionTokens: 64, firstTokenMilliseconds: 200, decodeTokensPerSecond: 50, handoffMilliseconds: nil,
+                  handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", ranks: ranks, concurrentRequests: 0,
+                  rankBuildSHA256: builds)
+        }
+        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "served-build")
+        // The session's first request on the route warms it (telemetry only); then one record of each kind.
+        for value in [record("warm", [current, current]), record("now-1", [current, current]), record("now-2", [current, current]),
+                      record("other", [earlier, earlier]), record("mixed", [current, earlier]), record("old", nil),
+                      record("swapped", [current, current], ranks: ["b", "a"]), record("foreign", [current, current], model: "x")] {
+            log.record(value)
+        }
+        try require(log.writeFailures == 0, "speed records were not written")
+        let all = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        try require(all.count == 7 && all.first { $0.sample.finishedAt == 1 && $0.setup.rankBuildSHA256 == nil } != nil,
+            "the history did not read every speed record, the one without builds included")
+        let peers = ["a", "b"].enumerated().map { rank, id in
+            ClusterConfiguration.Peer(id: id, rank: rank, host: "host-\(id)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: current,
+                jacclDevice: "rdma_en\(rank)")
+        }
+        let builds = ClusterServedSpeedHistory.builds(peers)
+        try require(builds == ["a": current, "b": current], "the pinned builds were not read from the setup's peers")
+        let scoped = ClusterServedSpeedHistory.entries(homeDirectory: home, modelID: "m", builds: builds)
+        try require(scoped.current.count == 3 && scoped.current.allSatisfy { $0.setup.rankBuildSHA256 == [current, current] }
+            && scoped.otherBuilds == 3, "the pair's records were not scoped to its builds (\(scoped.current.count) kept, \(scoped.otherBuilds) other)")
+        // The router's live samples: its setup key names the ranks' builds, so only this build's records of the setup count.
+        let key = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_v1", cut: "0-16|16-32", ranks: ["a", "b"],
+            rankBuildSHA256: [current, current])
+        let unbuilt = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_v1", cut: "0-16|16-32", ranks: ["a", "b"])
+        try require(all.filter { $0.setup == key }.count == 2 && all.filter { $0.setup == unbuilt }.count == 1,
+            "the router's setup key did not keep this build's records apart")
+        let rebuilt = ClusterServedSpeedHistory.entries(homeDirectory: home, modelID: "m", builds: ["a": earlier, "b": earlier])
+        try require(rebuilt.current.count == 1 && rebuilt.otherBuilds == 5, "a plan for another build read this build's records")
+    }
     /// A served tensor-parallel request names its setup as the planner reads
     /// it back: every rank 0-<layers> (not the capability plan's stage cut the
     /// shards were read through), with each rank's weight when the shares are
@@ -227,6 +327,8 @@ final class EndpointBox: @unchecked Sendable {
         try installedDataPlanePolicy(fixture.capability)
         try await installedDataPlaneReadiness(fixture, prepared)
         try linkProbeHistory()
+        try shareProbeHistory()
+        try servedSpeedHistory()
         try tensorParallelSessionCut()
         try tensorQualificationShapes(fixture)
         try localOnlyServing()
@@ -375,6 +477,14 @@ final class EndpointBox: @unchecked Sendable {
         try require(environment.count==13 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
             && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"]==String(prepared.plan.budgets.stopMarginNanoseconds/1_000_000)
             && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]==nil,"native environment widened")
+        // The decode arithmetic and fusion switches are a developer process's diagnostics: an owner never forwards
+        // them, so no stray environment changes what an installed rank computes (each rank also binds its resolved
+        // decode projections into the TP load agreement).
+        let decodeSwitches=["DARKBLOOM_QWEN_TP_EXACT_VECTORS","DARKBLOOM_RESIDUAL_RMS_NORM","DARKBLOOM_GDN_FUSED_CONV",
+            "DARKBLOOM_GDN_FUSED_QK_NORM","DARKBLOOM_QWEN35_DECODE_FUSIONS_V2","DARKBLOOM_QWEN_TP_MTP_PIPELINED_DRAFT"]
+        let strayDecode=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:Dictionary(uniqueKeysWithValues:decodeSwitches.map{($0,"0")}))
+        try require(strayDecode==environment,"a decode arithmetic switch reached a native rank's environment")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
         // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
@@ -692,7 +802,9 @@ final class EndpointBox: @unchecked Sendable {
                 let memberProfile = try DistributedResidentExecutionProfile(capability: prepared.plan.capability,
                     generationMode: prepared.plan.configuration.selectedGenerationMode,
                     requestTimeout: .seconds(prepared.plan.configuration.requestTimeoutSeconds))
-                let supported = adapter == .glm5NextLayerStage && mode == .tensorParallel
+                // GLM and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
+                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage
+                    || adapter.servesQwenTensorLanes(runtimeModelID: registered.runtimeModelID))
                 try require(installed.profile.supportsLogprobs == supported && memberProfile.supportsLogprobs == supported,
                     "logprob support did not follow the installed adapter and selected mode")
                 for profile in [installed.profile, memberProfile] {

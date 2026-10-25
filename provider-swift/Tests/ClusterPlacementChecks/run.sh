@@ -19,9 +19,17 @@ xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name Dar
   -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
   -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
   "$task_repo"/libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
+# The planner keeps a model to the modes that preserve its endpoint features
+# (`ClusterModelFeaturePolicy`), whose readiness rule names the resident owner's
+# values; their request values come from MLXLMCommon, built here from the value
+# stand-ins the installed-session checks use.
+xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name MLXLMCommon \
+  -emit-module-path "$task_build/MLXLMCommon.swiftmodule" \
+  -Xlinker -install_name -Xlinker @rpath/libMLXLMCommon.dylib \
+  "$task_repo"/libs/darkbloom-cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift -o "$task_build/libMLXLMCommon.dylib"
 # DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS: the check's synthetic artifacts stand for the registered artifacts the
 # shipped qualification records ran (never in a product build).
-xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
+xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lMLXLMCommon \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
   "$task_config/ClusterGenerationSelection.swift" "$task_config/ClusterCapabilityRecord.swift" \
@@ -38,19 +46,15 @@ xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -par
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/ClusterBenchChip.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift" -o "$task_build/setup-check"
-# PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
+# PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its three libraries
 # there, for `setup-check flow ...` (see PlacementSetupCheck.swift); run it
 # with DYLD_LIBRARY_PATH set to that directory.
 if [[ -n "${PLACEMENT_CHECK_KEEP:-}" ]]; then
   mkdir -p "$PLACEMENT_CHECK_KEEP"
-  cp "$task_build/setup-check" "$task_build"/libDarkbloomCluster*.dylib "$PLACEMENT_CHECK_KEEP/"
+  cp "$task_build/setup-check" "$task_build"/libDarkbloomCluster*.dylib "$task_build/libMLXLMCommon.dylib" "$PLACEMENT_CHECK_KEEP/"
 fi
 "$task_build/setup-check"
-# PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
-# there, for `setup-check flow ...` (see PlacementSetupCheck.swift); run it
-# with DYLD_LIBRARY_PATH set to that directory.
-if [[ -n "${PLACEMENT_CHECK_KEEP:-}" ]]; then
-  mkdir -p "$PLACEMENT_CHECK_KEEP"
-  cp "$task_build/setup-check" "$task_build"/libDarkbloomCluster*.dylib "$PLACEMENT_CHECK_KEEP/"
-fi

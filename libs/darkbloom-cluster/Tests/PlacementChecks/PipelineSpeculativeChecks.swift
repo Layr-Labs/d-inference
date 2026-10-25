@@ -55,23 +55,28 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
     let placedCut = free.ranks.map { "\($0["firstLayer"] as? Int ?? -1)-\($0["endLayer"] as? Int ?? -1)" }.joined(separator: "|")
     let decodingDevice = placedRanks.last ?? "-"
 
-    // Credit from served records only: the same placement served plainly and with rounds; the
-    // speed-up rides on the decoding rank and the planner then prefers the rounds, or does not.
-    func served(rounds: Double) throws -> URL {
+    // Credit from served records only: the same placement served plainly and with rounds, by the
+    // worker build the plan is for; the speed-up rides on the decoding rank and the planner then
+    // prefers the rounds, or does not.
+    let build = String(repeating: "c", count: 64), earlier = String(repeating: "d", count: 64)
+    func served(rounds: Double, plainBuild: String? = nil) throws -> URL {
         func entries(_ mode: ClusterGenerationMode, _ decode: Double) -> [ClusterServedSpeedRecords.Entry] {
-            (0..<3).map { index in
-                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: placedCut, ranks: placedRanks),
+            let servedBuild = mode == .pipeline ? plainBuild ?? build : build
+            return (0..<3).map { index in
+                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: placedCut, ranks: placedRanks,
+                                   rankBuildSHA256: [servedBuild, servedBuild]),
                       sample: .init(route: .pair, member: nil, promptTokens: 4096, outputTokens: 64, firstTokenSeconds: 3.7,
                                     decodeTokensPerSecond: decode + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
             }
         }
-        let file = scratch.appendingPathComponent("served-\(rounds).json")
+        let file = scratch.appendingPathComponent("served-\(rounds)-\(plainBuild ?? build).json")
         try ClusterServedSpeedRecords(entries: entries(.pipeline, 41.6) + entries(.pipelineMTP, rounds)).encoded().write(to: file)
         return file
     }
-    func planned(rounds: Double) throws -> (mode: String, decode: Double, explanation: String) {
+    func planned(rounds: Double, plainBuild: String? = nil) throws -> (mode: String, decode: Double, explanation: String) {
         let printed = try ClusterPlacementTool.run(["plan", "--layout", edited.path] + peers
-            + ["--served", try served(rounds: rounds).path, "--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
+            + ["--served", try served(rounds: rounds, plainBuild: plainBuild).path, "--served-build", build, "--json"],
+            sampleDevice: { throw ProbeError("recorded profiles only") })
         let value = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
         let chosen = (value?["result"] as? [String: Any])?["chosen"] as? [String: Any]
         let rested = chosen?["rested"] as? [String: Any]
@@ -85,6 +90,13 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
         slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
     checks.require("the credited prediction is the plain one scaled by the measured speed-up",
         abs(faster.decode / max(1e-9, try planned(rounds: 41.7).decode) - 55.7 / 41.7) < 0.05)
+    // The plain pipeline another worker build served is no measure of this build's rounds: it is left out with the
+    // rest of that build's records, and the rounds earn no credit.
+    let crossBuild = try planned(rounds: 55.6, plainBuild: earlier)
+    checks.require("rounds this build served against a plain pipeline an earlier build served earn no credit (chose \(crossBuild.mode))",
+        (crossBuild.mode == ClusterGenerationMode.pipeline.rawValue || crossBuild.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+            && crossBuild.explanation.contains("3 record(s) from other worker builds ignored")
+            && !crossBuild.explanation.contains("served plainly: speed-up"))
 
     // The served speed-up is recorded as the pipeline's own figure on the decoding rank, never as that
     // Mac's rate with the head (which a phase split or the Mac alone would then be credited with).
@@ -111,12 +123,12 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
         let file = scratch.appendingPathComponent("served-rounds-only.json")
         try ClusterServedSpeedRecords(entries: (0..<3).map { index in
             .init(setup: .init(modelID: layout.runtimeModelID, mode: ClusterGenerationMode.pipelineMTP.rawValue,
-                               cut: placedCut, ranks: placedRanks),
+                               cut: placedCut, ranks: placedRanks, rankBuildSHA256: [build, build]),
                   sample: .init(route: .pair, member: nil, promptTokens: 4096, outputTokens: 64, firstTokenSeconds: 3.7,
                                 decodeTokensPerSecond: 58 + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
         }).encoded().write(to: file)
-        let printed = try ClusterPlacementTool.run(["plan", "--layout", edited.path] + peers + ["--served", file.path, "--json"],
-            sampleDevice: { throw ProbeError("recorded profiles only") })
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", edited.path] + peers
+            + ["--served", file.path, "--served-build", build, "--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
         let value = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
         let mode = ((value?["result"] as? [String: Any])?["chosen"] as? [String: Any])?["mode"] as? String ?? "-"
         checks.require("rounds served with no plain record of the same placement earn no credit (chose \(mode))",
@@ -179,10 +191,12 @@ func checkQwenPipelineSpeculative(_ golden: URL, _ checks: PlacementChecks) thro
     let free = try plan([])
     checks.require("27B, sharded modes, nothing measured: the planner keeps a plain pipeline mode (chose \(free.mode))",
         free.mode == ClusterGenerationMode.pipeline.rawValue || free.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+    let build = String(repeating: "c", count: 64)
     func served(plain: Double, rounds: Double) throws -> URL {
         func entries(_ mode: ClusterGenerationMode, _ decode: Double) -> [ClusterServedSpeedRecords.Entry] {
             (0..<3).map { index in
-                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: "0-8|8-64", ranks: ["mac-a", "mac-b"]),
+                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: "0-8|8-64", ranks: ["mac-a", "mac-b"],
+                                   rankBuildSHA256: [build, build]),
                       sample: .init(route: .pair, member: nil, promptTokens: 1024, outputTokens: 64, firstTokenSeconds: 1.0,
                                     decodeTokensPerSecond: decode + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
             }
@@ -191,10 +205,10 @@ func checkQwenPipelineSpeculative(_ golden: URL, _ checks: PlacementChecks) thro
         try ClusterServedSpeedRecords(entries: entries(.pipeline, plain) + entries(.pipelineMTP, rounds)).encoded().write(to: url)
         return url
     }
-    let faster = try plan(["--served", try served(plain: 30.0, rounds: 45.0).path])
+    let faster = try plan(["--served", try served(plain: 30.0, rounds: 45.0).path, "--served-build", build])
     checks.require("27B: the same placement served 1.5x faster with rounds: the planner chooses pipeline_mtp_v1 (chose \(faster.mode))",
         faster.mode == ClusterGenerationMode.pipelineMTP.rawValue && faster.explanation.contains("credited to mac-b"))
-    let slower = try plan(["--served", try served(plain: 30.0, rounds: 27.0).path])
+    let slower = try plan(["--served", try served(plain: 30.0, rounds: 27.0).path, "--served-build", build])
     checks.require("27B: rounds served slower than plain: the planner keeps a plain pipeline mode (chose \(slower.mode))",
         slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
 

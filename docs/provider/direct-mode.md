@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -289,6 +289,20 @@ If a short burst drains before planning finishes, the host may retain the metada
 
 The replacement must preserve the exact model and request limits and must fit both Macs. If a wider mode cannot start, a fresh previous-mode session may be restored after the failed replacement releases. Missing release proof stops the transition; it is never treated as free memory. The HTTP API gains no mode-selection parameter or credential change from this mechanism.
 
+### Speed records of cluster requests
+
+A cluster endpoint records how fast each request ran that computed its whole
+prompt, completed and had the pair to itself, for the next plan of the pair
+(`~/.darkbloom/cluster/served-speed.json` on the Mac where requests enter;
+values only: no prompt, output or client identity). Each record
+names the worker build each Mac served the request with, and a plan or route
+uses a speed only for the build that served it, so speeds an earlier build
+served no longer steer the pair's plan after an update
+([served speed records](../architecture/inference.md#served-speed-records-and-worker-builds)).
+The HTTP API is unchanged. Source:
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Startup.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/DistributedPairTelemetryRecorder.swift`.
+
 ### Qwen27 image and video requests on a pair
 
 An installed pair that explicitly reports the Qwen media contract accepts the
@@ -307,8 +321,8 @@ qualification records. The implementation is in
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`
 and `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedQwenMediaIngress+Preparation.swift`.
 
-For exact Qwen3.8 27B, a queued-demand replacement can select a priced TP batch
-or plain pipeline. The chosen mode still follows measured stage/link rates,
+For every registered Qwen TP row (9B, 27B, Qwen3.5/3.6 35B A3B), a queued-demand
+replacement can select a priced TP batch or plain pipeline. The chosen mode still follows measured stage/link rates,
 qualification shape gates and current memory on both Macs. The installed width
 default remains one; a wider saved plan propagates through both owners to the
 native ranks. This integration does not claim a full-artifact throughput result.

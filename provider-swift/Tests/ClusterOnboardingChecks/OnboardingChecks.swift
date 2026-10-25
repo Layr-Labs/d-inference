@@ -73,6 +73,8 @@ import Darwin
         servingScopeValues()
         notOfferedGroupedByReason()
         sameTitleShowsTheID()
+        // Tensor parallel made visible (2026-10-24).
+        tensorParallelNotesOnTheModelLine()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -1293,6 +1295,60 @@ import Darwin
         expect(run.waitFor("  Pipeline: this model has no tensor-parallel plan.\n"), "twins: the reason once chosen")
         expect(run.finish() == 0, "twins: served")
         expect(!run.text.contains("qualified for public traffic"), "twins: no public-traffic line when serving locally only")
+    }
+
+    /// Why not tensor parallel, at the end of the model's one line (owner, 2026-10-15: one line per model): a few words
+    /// for a model with a tensor-parallel plan that the planner split otherwise, nothing for one without (no noise). A
+    /// note from another build that is too long or not plain text is not said.
+    static func tensorParallelNotesOnTheModelLine() {
+        typealias C = ClusterOnboardingModelChoice
+        let notes = ["tensor parallel: slower here", "tensor parallel: about as fast", "tensor parallel: does not fit now",
+                     "tensor parallel: does not fit", "tensor parallel: link unmeasured", "tensor parallel: failed a check",
+                     "tensor parallel: pipeline kept", "tensor parallel: excluded here", "no tensor parallel for this model"]
+        func line(_ note: String?) -> String {
+            C(title: "m", lines: ["a"], blocker: nil, tensorParallelNote: note).listLine(sameTitleElsewhere: false)
+        }
+        for note in notes {
+            expect(note.count <= C.tensorParallelNoteLimit && line(note) == "m — a · " + note,
+                "TP note: at the end of the model's line: \(note)")
+        }
+        expect(line(String(repeating: "x", count: C.tensorParallelNoteLimit + 1)) == "m — a",
+            "TP note: a note longer than the limit is not said")
+        expect(line("tensor parallel: \u{1B}[2J") == "m — a", "TP note: a note with terminal control characters is not said")
+        expect(line(nil) == "m — a" && line("") == "m — a", "TP note: no note, nothing added")
+        let older = try? JSONDecoder().decode(C.self, from: Data(#"{"title":"m","lines":["a"]}"#.utf8))
+        expect(older != nil && older?.tensorParallelNote == nil, "TP note: an older Mac's choice decodes without it")
+        let listed = [
+            C(title: "Qwen3.5-9B", lines: ["6.1 GB · pipeline · M3 Ultra 16 layers / M5 Max 16 layers · about 92 tokens/s",
+                "Pipeline: tensor parallel is predicted slower for requests of 1024 prompt and 256 answer tokens."], blocker: nil,
+                tensorParallelNote: "tensor parallel: slower here"),
+            C(title: "Qwen3.8-27B", lines: ["16.3 GB · tensor parallel · M3 Ultra 40% / M5 Max 60% · about 41 tokens/s",
+                "Tensor parallel: pipeline is left out (Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel)."],
+                blocker: nil),
+            C(title: "Bonsai 27B", lines: ["7.2 GB · pipeline · M3 Ultra 4 layers / M5 Max 60 layers"], blocker: nil,
+                fitRemedy: "Quit apps on Apple M5 Max, 128 GB first."),
+            C(title: "Qwen3.6-35B-A3B", lines: ["19.5 GB · pipeline · M3 Ultra 4 layers / M5 Max 36 layers"], blocker: nil,
+                fitRemedy: "Quit apps on Apple M5 Max, 128 GB first.", tensorParallelNote: "tensor parallel: does not fit now")]
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [],
+            pairResult: .failed([]), choices: listed), columns: 40)
+        expect(run.waitFor("Choose a model [1-4, enter = 1]: "), "TP note: the list")
+        let text = run.text
+        expect(text.contains("  1. Qwen3.5-9B — 6.1 GB · pipeline · M3 Ultra 16 layers / M5 Max 16 layers · about 92 tokens/s"
+            + " · tensor parallel: slower here\n  2. Qwen3.8-27B — "), "TP note: at the end of the line it is about: \(text)")
+        expect(text.contains("about 41 tokens/s\n  3. Bonsai 27B — 7.2 GB · pipeline · M3 Ultra 4 layers / M5 Max 60 layers\n"
+            + "       does not fit now: Quit apps on Apple M5 Max, 128 GB first.\n  4. Qwen3.6-35B-A3B — "),
+            "TP note: none for tensor parallel chosen or a model without it: \(text)")
+        expect(text.contains("M5 Max 36 layers · tensor parallel: does not fit now\n       does not fit now: Quit apps on Apple M5 Max, 128 GB first.\n"),
+            "TP note: on the line, before the fit remedy: \(text)")
+        expect(!text.contains("Tensor parallel: pipeline is left out") && !text.contains("Pipeline: tensor parallel is predicted slower"),
+            "TP note: the full reasons wait until a model is chosen")
+        let rows = visible(text).filter { $0.hasPrefix("       tensor parallel:") || $0.hasPrefix("       no tensor parallel") }
+        expect(rows.isEmpty, "TP note: no row of its own (one line per model): \(rows)")
+        run.type("\r")
+        expect(run.waitFor("  Pipeline: tensor parallel is predicted slower for requests of 1024 prompt and 256 answer tokens.\n"),
+            "TP note: the planner's reason once chosen")
+        expect(run.finish() == 0, "TP note: served")
     }
 
     /// The scope's values: from the record, the bind addresses it takes, what reaches the network, and its line.

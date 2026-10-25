@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -871,8 +871,8 @@ allowance is reduced and no width-times-speed estimate is inferred. See
 ### Gemma paged cluster lanes
 
 `DistributedInstalledPlan.nativeEnvironment` keeps the native paged default
-for Gemma plain pipelines at widths 1, 2, 4 and 8. The explicit local
-`DARKBLOOM_CLUSTER_KV_BACKEND=contiguous` diagnostic remains available.
+for Gemma plain pipelines at widths 1, 2, 4 and 8. Stage KV is paged only:
+the former `DARKBLOOM_CLUSTER_KV_BACKEND=contiguous` diagnostic stops the load.
 Neither lane eligibility nor a successful tiny cache test establishes
 full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
@@ -953,13 +953,14 @@ a ceiling, not a memory grant. Wider lanes require the exact27 model and keyed
 pair. The tiny numerical fixtures do not establish safe full-artifact capacity,
 throughput or automatic placement; each requires installed hardware evidence.
 Capacity is not observed decode width: the TP driver briefly coalesces nearby
-owner token credits within the [bounded scheduling contract](inference.md#independent-qwen27-tensor-parallel-batch-lanes).
+owner token credits within the [bounded scheduling contract](inference.md#qwen-tensor-parallel-request-owned-lanes).
 A completed native decode marker on both ranks is required to establish a width;
 concurrent HTTP requests alone do not establish it.
 An explicit local `MLX_METAL_FAST_SYNCH=0|1` choice can reach an installed TP
 worker through the typed owner launch. This enables a synchronization comparison
 without changing model placement or arithmetic. TP workers default to fast
-synchronization at every capacity, widened Qwen3.8 27B workers included. Both
+synchronization at every capacity, widened Qwen TP workers (the 9B, 27B and
+both 35B A3B rows) included (`WorkerCollectiveSynchronization`). Both
 paths still require paired
 native progress, actual decode width, output comparisons and retirement; a
 service-job setting alone proves none of these.
@@ -973,7 +974,8 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Res
 
 ### Automatic Qwen27 TP width quotation
 
-Exact Qwen27 automatic batching retains the feature-preserving TP mode filter.
+Qwen TP automatic batching (every registered TP row, each priced by its own
+geometry) retains the feature-preserving TP mode filter.
 TP uses the same canonical-inventory full request allowance as its native owner
 at widths 2, 4 and 8; a narrower reference request or installed chunk does not
 shrink that floor. During LOAD, this complete future reservation coexists with

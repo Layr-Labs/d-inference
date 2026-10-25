@@ -41,7 +41,7 @@ enum ClusterPlacementTensorAssistantSelection {
                                    artifactSHA256: String, manifestSHA256: String,
                                    environment: [String: String]) throws -> Bool {
         guard mode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: environment),
-              runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID else { return false }
+              ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(runtimeModelID) else { return false }
         guard let manifest = ClusterSetupModelFolders.readManifest(modelDirectory.appendingPathComponent("manifest.json")),
               ClusterConfigurationCodec.sha256(manifest) == manifestSHA256 else {
             throw ClusterConfigurationError.invalid("The embedded assistant's manifest changed after capability discovery")
@@ -92,11 +92,14 @@ enum ClusterPlacementTensorAssistantSelection {
         } else { try quote.requireAssistant(nil) }
     }
 
+    /// Every Qwen TP row's request-owned owner reserves its quote at LOAD,
+    /// so each row is quoted (its target alone where it has no assistant).
     static func readAutomatic(tool: URL, modelDirectory: URL, publicModelID: String,
                               capability: ClusterRuntimeCapability, mode: MTPMode,
                               chunkTokens: Int, deadline: UInt64, lanes: Int = 1,
                               environment: [String: String] = ProcessInfo.processInfo.environment) throws -> ClusterPlacementTensorBatchQuote? {
-        guard capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID,
+        guard ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID),
+              capability.supportedGenerationModes.contains(.tensorParallel),
               !capability.hasPrivateImages else { return nil }
         let assistant = try automaticCandidate(mode: mode, runtimeModelID: capability.runtimeModelID,
             modelDirectory: modelDirectory, publicModelID: publicModelID, artifactSHA256: capability.artifactSHA256,

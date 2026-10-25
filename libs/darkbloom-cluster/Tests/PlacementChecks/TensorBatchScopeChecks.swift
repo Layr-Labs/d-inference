@@ -114,7 +114,7 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         ("width", { (x: inout [String: Any]) in x["lanes"] = 4 }),
         ("shared ledger", { (x: inout [String: Any]) in x["sharedBytesExcludingCollectives"] = 1 }),
         ("negative lane", { (x: inout [String: Any]) in x["perLaneStateBytes"] = -1 }),
-        ("foreign model", { (x: inout [String: Any]) in var r = x["request"] as! [String: Any]; r["runtimeModelID"] = "registered_qwen35_9b"; x["request"] = r }),
+        ("foreign model", { (x: inout [String: Any]) in var r = x["request"] as! [String: Any]; r["runtimeModelID"] = "registered_ternary_bonsai_2_27b"; x["request"] = r }),
         ("short LOAD context", { (x: inout [String: Any]) in var a = x["allowance"] as! [String: Any]; a["maximumContextTokens"] = 4096; x["allowance"] = a }),
         ("short LOAD chunk", { (x: inout [String: Any]) in var a = x["allowance"] as! [String: Any]; a["maximumChunkTokens"] = 128; x["allowance"] = a }),
     ] {

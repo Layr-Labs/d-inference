@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -511,6 +511,21 @@ its original limits. Sources: `ClusterPlacementTool.run` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Placement/ClusterPlacementTool.swift`
 and `ClusterPlacementFlow.run` in
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow+Run.swift`.
+
+Without `--link LINK.json`, `darkbloom-cluster-plan plan` prices the link of two
+devices as setup does: from the probes saved for that pair in owner-only
+`~/.darkbloom/cluster/link-probes.json` (the median of the pair's last eight
+loads within 30 days), or from `--link-probes FILE`. The two device labels must
+be the pair's member IDs. The plan's first lines say which probes were used, or
+why none were (no file, no probe for the pair, a file others can read), and the
+plan is then unmeasured. A named file without the pair stops the command. The
+tensor-parallel section prints the reductions' cost per decode step in ms or µs.
+Each device's tensor-parallel share steps come from owner-only
+`~/.darkbloom/cluster/share-probes.json` the same way (each Mac's newest timing
+per share of this model within 30 days, by member ID), or from
+`--share-probes FILE`; the plan's first lines name the shares used, and without
+any every share is predicted as before. A named file that is not a share probe
+history stops the command.
 
 ### `darkbloom cluster local`
 
@@ -1798,8 +1813,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
-| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, live) |
-| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, checkpoint) |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, live), as `EngineV2KVQuantizationPolicy`; cluster pairs: `DistributedInstalledKVQuantization` |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, checkpoint), as `EngineV2KVQuantizationPolicy` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
@@ -1946,7 +1961,8 @@ batch width and other guards fixed when comparing synchronization behavior.
 
 The private `darkbloom-cluster-plan tensor-batch-scope --model-dir DIR
 --prompt-tokens N --output-tokens N --batch-lanes N --chunk-size N` helper emits
-exact Qwen27's full native batch LOAD quotation; it never loads model tensors
+the full native batch LOAD quotation of every registered Qwen TP row (9B, 27B,
+Qwen3.5/3.6 35B A3B); it never loads model tensors
 or selects a deployment. Automatic placement uses it before draining and
 again after old-owner release. The normal measured mode comparison remains
 authoritative. The [configuration reference](../reference/configuration.md#native-automatic-batch-quote)
@@ -1957,7 +1973,7 @@ defines the response and supported saved widths. Source:
 
 Run the normal `darkbloom cluster` setup for the catalog Qwen3.8 27B model. Its embedded assistant is discovered and fully priced under the existing `backend.mtp_mode` setting; no internal verification or inventory option is required in the normal flow. Verify the saved policy against both workers' actual READY before serving. Explicit `off` retains the ordinary target with its complete width-one quote. See [configuration](../reference/configuration.md#qwen27-tp-assistant-policy) and [native ownership](../architecture/inference.md#qwen27-tensor-parallel-resident-assistant).
 
-The internal worker still accepts diagnostic `--mtp-depth N` in 1...4 for exact keyed Qwen27 TP with paged KV. Installed launches also carry the pinned inventory and typed verification mode from the saved policy; these are implementation arguments, not user setup choices. Omitted policy preserves the legacy ordinary contract. Unsupported model, memory, backend, startup and conflicting speculative controls are refused before serving.
+The internal worker still accepts diagnostic `--mtp-depth N` in 1...4 for keyed 9B or 27B Qwen TP with paged KV (the A3B rows' heads are not loaded, so an explicit depth is refused for them). Installed launches also carry the pinned inventory and typed verification mode from the saved policy; these are implementation arguments, not user setup choices. Omitted policy preserves the legacy ordinary contract. Unsupported model, memory, backend, startup and conflicting speculative controls are refused before serving.
 
 Code: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` (`WorkerConfiguration`) and `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift` (`readAutomatic`).
 

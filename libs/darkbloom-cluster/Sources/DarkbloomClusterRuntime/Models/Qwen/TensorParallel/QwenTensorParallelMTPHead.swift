@@ -43,7 +43,7 @@ final class QwenTensorParallelMTPProjection: Linear {
         let contribution = reduction.rank == 0 ? input.asType(.float32)
             : -MLXArray.zeros(input.shape, dtype: .float32)
         let authoritative = reduction.allSum(contribution).asType(input.dtype)
-        let selected = local(authoritative)
+        let selected = Self.rowsAlone(local, authoritative)
         // FP32 exactly represents every BF16/F16 head result and index.
         let values = selected.asType(.float32)
         let mine = concatenated([values.max(axis: -1, keepDims: true),
@@ -54,6 +54,31 @@ final class QwenTensorParallelMTPProjection: Linear {
         let winner = which(upper, both[.ellipsis, 3 ..< 4], both[.ellipsis, 1 ..< 2])
         let maximum = which(upper, both[.ellipsis, 2 ..< 3], both[.ellipsis, 0 ..< 1])
         return which(positions .== winner, maximum, MLXArray(-Float.infinity)).asType(selected.dtype)
+    }
+
+    /// The head's product for each row exactly as that row's own call computes
+    /// it. One row calls the head itself. Several rows (a cohort's proposals)
+    /// go through one call that keeps every row at M=1 with a leading broadcast
+    /// dimension: MLX multiplies M >= 2 vectors with another kernel on Apple GPU
+    /// family 15 and later (qmv_wide), whose reduction differs from the
+    /// single-vector kernel's. A head other than an exact affine
+    /// `QuantizedLinear` whose constants already have the input's dtype runs
+    /// each row through its own forward.
+    static func rowsAlone(_ head: Linear, _ x: MLXArray) -> MLXArray {
+        let width = x.dim(-1), rows = x.size / max(1, width)
+        guard rows > 1 else { return head(x) }
+        let flat = x.reshaped([rows, 1, width])
+        let product: MLXArray
+        if type(of: head) == QuantizedLinear.self, let packed = head as? QuantizedLinear, packed.bias == nil,
+           packed.scales.dtype == x.dtype, packed.biases.map({ $0.dtype == x.dtype }) ?? true {
+            product = quantizedMM(flat, packed.weight.expandedDimensions(axis: 0),
+                scales: packed.scales.expandedDimensions(axis: 0),
+                biases: packed.biases.map { $0.expandedDimensions(axis: 0) }, transpose: true,
+                groupSize: packed.groupSize, bits: packed.bits, mode: packed.mode)
+        } else {
+            product = concatenated((0..<rows).map { head(flat[$0 ..< $0 + 1]) }, axis: 0)
+        }
+        return product.reshaped(Array(x.shape.dropLast()) + [product.dim(-1)])
     }
 }
 

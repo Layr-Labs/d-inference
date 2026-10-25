@@ -64,6 +64,49 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
         (tensorShareRates ?? []).min { abs(Double($0.sharePerMille) / 1000 - fraction) < abs(Double($1.sharePerMille) / 1000 - fraction) }
             .flatMap { abs(Double($0.sharePerMille) / 1000 - fraction) <= 0.005 ? $0 : nil }
     }
+
+    /// These rates with `points` (this device's own share probes) added at
+    /// every share they have no point within 5 per mille of: a point already
+    /// here (a measurement's, or one served requests corrected) stays. At most
+    /// sixteen points, these rates' own first.
+    public func addingShareRates(_ points: [ClusterShareRate]) -> ClusterSpeedRates {
+        var merged = tensorShareRates ?? []
+        for point in points where point.valid && merged.count < 16
+            && !merged.contains(where: { abs($0.sharePerMille - point.sharePerMille) <= 5 }) {
+            merged.append(point)
+        }
+        return .init(prefillTokensPerSecond: prefillTokensPerSecond, decodeTokensPerSecond: decodeTokensPerSecond,
+            speculativeDecodeTokensPerSecond: speculativeDecodeTokensPerSecond, pipelineSpeculativeFactor: pipelineSpeculativeFactor,
+            tensorShardPrefillTokensPerSecond: tensorShardPrefillTokensPerSecond,
+            tensorShardDecodeTokensPerSecond: tensorShardDecodeTokensPerSecond, tensorShareRates: merged)
+    }
+
+    /// Seconds per prompt token of a tensor-parallel rank holding `fraction`
+    /// of every layer among `ranks`, as far as these rates measured it: a
+    /// probe's prefill at this share, else the half's in proportion to the
+    /// share, else the nearest share point's in proportion (a share's prefill
+    /// is its share of the compute; a served share's point is that share's,
+    /// not every share's). Nil when nothing here measured a share's prefill.
+    public func measuredSharePrefillSeconds(fraction: Double, ranks: Int) -> Double? {
+        if let probed = shareRate(near: fraction)?.prefillTokensPerSecond { return 1 / probed }
+        if let half = tensorShardPrefillTokensPerSecond { return fraction * Double(max(1, ranks)) / half }
+        let points = (tensorShareRates ?? []).compactMap { point in
+            point.prefillTokensPerSecond.map { (fraction: Double(point.sharePerMille) / 1000, seconds: 1 / $0) }
+        }
+        guard let nearest = points.min(by: { abs($0.fraction - fraction) < abs($1.fraction - fraction) }) else { return nil }
+        return nearest.seconds * fraction / nearest.fraction
+    }
+
+    /// These rates without the share probes that timed decode only (no
+    /// prefill figure): what a share's prefill is predicted from, so that a
+    /// decode probe leaves every prefill prediction as it was.
+    var withoutDecodeOnlyShareRates: ClusterSpeedRates {
+        .init(prefillTokensPerSecond: prefillTokensPerSecond, decodeTokensPerSecond: decodeTokensPerSecond,
+            speculativeDecodeTokensPerSecond: speculativeDecodeTokensPerSecond, pipelineSpeculativeFactor: pipelineSpeculativeFactor,
+            tensorShardPrefillTokensPerSecond: tensorShardPrefillTokensPerSecond,
+            tensorShardDecodeTokensPerSecond: tensorShardDecodeTokensPerSecond,
+            tensorShareRates: tensorShareRates?.filter { $0.prefillTokensPerSecond != nil })
+    }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
@@ -266,6 +309,16 @@ public struct ClusterDeviceSpeed: Codable, Equatable, Sendable {
     public static let assumedEqual = ClusterDeviceSpeed(source: .assumedEqual, absolute: false,
         rested: .init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1), sustained: nil,
         explanation: "no measurement of this model on this Mac; assumed equal to the other")
+
+    /// This speed with this device's own share probes in both regimes
+    /// (`ClusterSpeedRates.addingShareRates`). A probe's steps are seconds, so
+    /// a speed known only as a ratio to another device takes none.
+    public func addingShareRates(_ points: [ClusterShareRate]) -> ClusterDeviceSpeed {
+        guard absolute, !points.isEmpty else { return self }
+        return .init(source: source, absolute: absolute, rested: rested.addingShareRates(points),
+            sustained: sustained?.addingShareRates(points), hashBytesPerSecond: hashBytesPerSecond,
+            materializeBytesPerSecond: materializeBytesPerSecond, promptTokens: promptTokens, explanation: explanation)
+    }
 }
 
 /// Link and protocol costs of one transport and mode: properties of the cable
@@ -398,9 +451,10 @@ public enum ClusterSpeedEstimator {
 }
 
 extension ClusterLinkCosts {
-    /// The link costs a pair's latest link probe gives (`ClusterWorkerLinkProbe`,
-    /// measured at load as the sharded modes use the link): the reduction is
-    /// the all-sum's fixed part and per-byte slope between its small and large
+    /// The link costs one link probe gives (`ClusterWorkerLinkProbe`, measured
+    /// at load as the sharded modes use the link; a pair's recent probes give
+    /// theirs together, `init(measurements:)`): the reduction is the all-sum's
+    /// fixed part and per-byte slope between its small and large
     /// measurements (keyed when the probe's all-sums were sealed); a pipeline
     /// decode step pays two one-way small records (the step's hand-off and the
     /// token back), or `servedPipelineStepSeconds` when the pair served the

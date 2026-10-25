@@ -33,7 +33,18 @@ final class QwenTensorParallelTargetWindow {
     private let state: CBv2OwnedRequestState
     private var window: (offset: Int, count: Int, kept: Int?)?
     private var failed = false
+    /// A deferred check that the window's tokens lie in the vocabulary
+    /// (`deferTokenRangeCheck`), evaluated with the window, read in `confirm`.
+    private var pendingTokenRange: MLXArray?
     var isIdle: Bool { !failed && window == nil }
+
+    /// The caller vouches for a window's tokens (the assistant's drafts, an
+    /// argmax over the vocabulary rows that both ranks read from the same
+    /// exchange) and has not evaluated them yet: their range check is
+    /// evaluated with the window and read in `confirm` instead of
+    /// synchronizing on the drafts before the window can be built. Every
+    /// rank derives the same drafts, so a refusal is the same on both.
+    @TaskLocal static var deferTokenRangeCheck = false
 
     init(model: QwenTensorParallelModel, request: QwenLayerStageGenerationRequest,
          state: CBv2OwnedRequestState) {
@@ -46,16 +57,21 @@ final class QwenTensorParallelTargetWindow {
                 guard isIdle, request.qwenMedia == nil else { throw ProbeError("Qwen TP MTP window is unfinished or has media") }
                 try state.requireOpen()
                 let count = tokens.ndim == 2 ? tokens.dim(1) : 0
+                let deferred = Self.deferTokenRangeCheck
+                let inRange = all((tokens .>= 0) .&& (tokens .< model.plan.vocabularySize))
                 guard tokens.ndim == 2, tokens.dim(0) == 1, tokens.dtype == .int32,
                       (1...5).contains(count), state.committedTokens == offset,
                       offset >= request.promptCount, count <= request.maximumTokens - offset,
-                      all((tokens .>= 0) .&& (tokens .< model.plan.vocabularySize)).item(Bool.self) else {
+                      deferred || inRange.item(Bool.self) else {
                     throw ProbeError("Qwen TP MTP verify window differs from its committed frontier")
                 }
                 try error.check()
+                let stride = Self.layerStride(packed: state.packedStorage)
                 let built = try state.beginWindow(tokenCount: count) { caches, evaluation in
-                    let result = self.model.model.cbv2ForwardWithHiddenCaptured(tokens,
-                        caches: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil)
+                    let result = Qwen35LayerSubmission.$stride.withValue(stride) {
+                        self.model.model.cbv2ForwardWithHiddenCaptured(tokens,
+                            caches: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil)
+                    }
                     return [result.logits, result.lastHidden]
                 }
                 guard built.outputs.count == 2,
@@ -66,9 +82,26 @@ final class QwenTensorParallelTargetWindow {
                     throw ProbeError("Qwen TP MTP captured target output contract differs")
                 }
                 try error.check(); window = (offset, count, nil)
+                if deferred {
+                    pendingTokenRange = inRange
+                    return (outputs: built.outputs, roots: built.roots + [inRange])
+                }
                 return built
             }
         } catch { failed = true; throw error }
+    }
+
+    /// A window's forward is submitted to the GPU layer by layer, as a decode
+    /// step's is (`QwenTensorParallelBatchSession.decodeLayerStride`): the GPU
+    /// and the collectives run the layers already built while the host builds
+    /// the rest, instead of idling for the whole graph construction.
+    /// Evaluation order only: every primitive, input and rounded value is the
+    /// one the whole-window evaluation computes, and each submission holds its
+    /// layers' collectives in layer order on every rank. A packed-storage
+    /// window is evaluated whole (its refused writes are checked after the
+    /// graph is built and before any of it runs, `checkStepWrites`).
+    static func layerStride(packed: Bool) -> Int {
+        QwenTensorParallelBatchSession.layerStride ?? (packed ? 0 : QwenTensorParallelBatchSession.decodeLayerStride)
     }
 
     /// A single target forward owns all rows; the assistant's draft state is
@@ -100,11 +133,14 @@ final class QwenTensorParallelTargetWindow {
                 // (decode columns too): quantized matmul picks its kernel from the
                 // total row count, so one B·S product changes reduction order
                 // once it reaches a device's vector limit.
+                let stride = layerStride(packed: windows.contains { $0.state.packedStorage })
                 let built = try CBv2OwnedRequestState.beginBatchWindow(windows.map(\.state), tokenCount: count) { caches, evaluations in
                     let result = Qwen35BatchDecodeScope.$enabled.withValue(true) {
                         Qwen35BatchDecodeScope.$verifyRows.withValue(true) {
-                            first.model.model.cbv2ForwardWithHiddenCaptured(tokens,
-                                caches: caches.map { $0 as! any KVCache }, recurrentState: evaluations, positionIds: nil)
+                            Qwen35LayerSubmission.$stride.withValue(stride) {
+                                first.model.model.cbv2ForwardWithHiddenCaptured(tokens,
+                                    caches: caches.map { $0 as! any KVCache }, recurrentState: evaluations, positionIds: nil)
+                            }
                         }
                     }
                     return [result.logits, result.lastHidden]
@@ -166,6 +202,13 @@ final class QwenTensorParallelTargetWindow {
         do {
             try MLX.withError { error in
                 guard !failed, window != nil else { throw ProbeError("Qwen TP MTP has no open window") }
+                if let range = pendingTokenRange {
+                    // Evaluated with the window's roots: no wait.
+                    pendingTokenRange = nil
+                    guard range.item(Bool.self) else {
+                        throw ProbeError("Qwen TP MTP drafted tokens fall outside the vocabulary")
+                    }
+                }
                 try state.confirmWindow(check: { try error.check(); try check() })
             }
         } catch { failed = true; throw error }

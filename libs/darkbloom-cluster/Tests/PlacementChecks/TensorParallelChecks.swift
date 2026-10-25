@@ -36,10 +36,12 @@ private func checkShareProbes(_ checks: PlacementChecks) {
         tensorShareRates: [.init(sharePerMille: 250, decodeTokensPerSecond: 1 / 0.01634, prefillTokensPerSecond: 1152)]))
     checks.require("share probes: without them a quarter is extrapolated on the line (floor 23.18 ms + weights x 1/4 = 23.92 ms)",
         abs(line.shareStepSeconds(fraction: 0.25) - 0.023920) < 2e-5 && line.measuredSteps == nil)
-    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them on the measured segment",
+    // Past the half the measured segment goes on (41.30 ms at the whole), not to the whole model's 26.14 ms step:
+    // that step is no tensor-parallel figure.
+    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them and past them on the measured segment",
         abs(probed.shareStepSeconds(fraction: 0.25) - 0.01634) < 1e-9 && abs(probed.shareStepSeconds(fraction: 0.5) - 0.02466) < 1e-9
-            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.02614) < 1e-9
-            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5, 1])
+            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.0413) < 1e-9
+            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5])
     checks.require("share probes: below the smallest probe the line is used but never above that probe's own step",
         probed.shareStepSeconds(fraction: 0.1) <= 0.01634)
     let rates = ClusterSpeedRates(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,

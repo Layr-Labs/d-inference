@@ -74,7 +74,7 @@ struct QwenTensorParallelBatchMTPWindowTests {
     /// prompt depends only on its index), so a row can be run alone.
     private func pair(rows: [Int]) throws -> (owners: [Owner], wire: Wire) {
         let width = rows.count
-        let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4,
             heads: 4, kvHeads: 2, vocabulary: 256)
         var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
         var text = root["text_config"] as! [String: Any]

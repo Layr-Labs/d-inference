@@ -33,6 +33,11 @@ build_module DarkbloomClusterRemote "DarkbloomClusterProtocol DarkbloomClusterPr
 build_module MLXLMCommon "" "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
 build_module ProviderCoreFoundation "" "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
 task_all="DarkbloomClusterProtocol DarkbloomClusterPlacement DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote MLXLMCommon ProviderCoreFoundation"
+# The step's run reads the provider configuration's MTP mode and, for an
+# embedded assistant, the catalog manifest (`ClusterModelProvisioning.swift`);
+# `FlowRunProviderStandIn.swift` stands in for the provider pieces plain swiftc
+# cannot build. The batch setup's adoption transaction (Installed) checks its
+# replacement with the supervisor handoff, as in the installed-session checks.
 build_module InstalledContract "$task_all" \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
@@ -58,10 +63,18 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterAutomaticSetupHandoff.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
+  "$task_provider/Tests/ClusterPlacementChecks/FlowRunProviderStandIn.swift" \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lInstalledContract \
   "$task_provider/Tests/ClusterPlacementChecks/FlowRunCheck.swift" -o "$task_build/flow-run-check"
-(cd "$task_build" && ./flow-run-check)
+# The step records both Macs' profiles in the home directory's cluster state and
+# reads the pair's served speeds and link probes there. Foundation takes the home
+# from CFFIXED_USER_HOME, so the check runs with a private one and never touches
+# this Mac's own cluster state.
+mkdir -m 700 "$task_build/home"
+(cd "$task_build" && HOME="$task_build/home" CFFIXED_USER_HOME="$task_build/home" ./flow-run-check)

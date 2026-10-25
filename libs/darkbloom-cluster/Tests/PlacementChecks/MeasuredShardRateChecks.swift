@@ -26,9 +26,11 @@ func checkMeasuredShardRates(_ baseLayout: ClusterModelLayout, _ checks: Placeme
             && close(explicit.shareStepSeconds(ranks: 4), 1 / 8.0)
             && close(explicit.shareStepSeconds(fraction: 0.5), 0.1)
             && close(explicit.shareStepSeconds(ranks: 2), 0.1))
-    checks.require("measured shares: between points keeps the measured interpolation and whole endpoint",
+    // The whole model's step (1/60 s) is no endpoint: past the largest share the measured segment goes on, never
+    // below that share's own step (this segment falls, so the step stays at the half's).
+    checks.require("measured shares: between points keeps the measured interpolation; past them no whole endpoint and never faster",
         close(explicit.shareStepSeconds(fraction: 0.375), 0.1125)
-            && close(explicit.shareStepSeconds(fraction: 1), 1 / 60.0))
+            && close(explicit.shareStepSeconds(fraction: 1), 0.1) && explicit.measuredSteps?.map(\.fraction) == [0.25, 0.5])
     for neighbor in [499, 501] {
         for (half, nearby) in [(10.0, 90.0), (90.0, 10.0)] {
             let split = ClusterDecodeSplit(rates: .init(prefillTokensPerSecond: 1000,

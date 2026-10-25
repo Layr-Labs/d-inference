@@ -25,7 +25,7 @@ final class DistributedAutomaticBatchPlannerTests {
         return result
     }
 
-    private func profile(free: Int = 200 * 1_073_741_824) throws -> ClusterDeviceProfile {
+    private func profile(free: Int = 200 * 1_073_741_824, decodeIndex: Double = 25_000) throws -> ClusterDeviceProfile {
         let physical = 256 * gib
         var p = try ClusterDeviceProfile(chip: "Constructed planner fixture", performanceCores: 8, efficiencyCores: 4,
             gpuCores: 40, osVersion: "27.0", osBuild: "CHECK", physicalMemoryBytes: physical,
@@ -39,7 +39,7 @@ final class DistributedAutomaticBatchPlannerTests {
                 allocatorHeadroomBytes: 2 * gib, loadScratchBytes: 8 * 1_048_576, pageSizeBytes: 16_384),
             power: .init(onExternalPower: true, lowPowerMode: false, thermalState: "nominal"))
         p.speedIndex = .init(chip: p.chip, osBuild: p.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
-            prefillIndex: 1_000_000, decodeIndex: 25_000)
+            prefillIndex: 1_000_000, decodeIndex: decodeIndex)
         return p
     }
 
@@ -103,6 +103,24 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(ClusterLinkProbeHistory.record(probe, members: members, homeDirectory: home, now: now))
     }
 
+    /// Three records of the leader's served-speed file, as the product writes it. `builds`: each rank's worker build;
+    /// nil writes a record as an earlier build did, without any. The fixture's pair runs build hash("a").
+    private func writeServed(_ home: URL, model: String = "fixture-model", ranks: [String] = ["a", "b"], concurrent: Int = 0,
+                             cached: Int = 0, prompt: Int = 1024, completion: Int = 128, builds: [String]?) throws {
+        let records = (0..<3).map { index in
+            ClusterPairRequestTelemetry(requestID: "fixture-\(index)", finishedAt: Date().timeIntervalSince1970,
+                modelID: model, mode: "tensor_parallel_v1", cut: "0-2|0-2", promptTokens: prompt, cachedTokens: cached,
+                completionTokens: completion, firstTokenMilliseconds: 1000, decodeTokensPerSecond: 1,
+                handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+                route: "pair", ranks: ranks, concurrentRequests: concurrent, rankBuildSHA256: builds)
+        }
+        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
+            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records))]
+        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
     @Test func profileEnvelopeSingletonQuoteCoversThePlannedReference() throws {
         let home = try home(); record(home)
         let (pair, cap, layout, _) = try fixture()
@@ -148,18 +166,8 @@ final class DistributedAutomaticBatchPlannerTests {
         let (pair, cap, layout, scope) = try fixture()
         // Served requests unlike the quoted envelope: before the fix the served
         // mix replaced the reference and the quote's scope refused planning.
-        let records = (0..<3).map { index in
-            ClusterPairRequestTelemetry(requestID: "served-\(index)", finishedAt: Date().timeIntervalSince1970,
-                modelID: pair.publicModelID, mode: "tensor_parallel_v1", cut: "0-2|0-2", promptTokens: 700, cachedTokens: 0,
-                completionTokens: 90, firstTokenMilliseconds: 1000, decodeTokensPerSecond: 1,
-                handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
-                route: "pair", ranks: ["a", "b"], concurrentRequests: 0)
-        }
-        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
-            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records))]
-        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
-        try JSONSerialization.data(withJSONObject: json).write(to: file)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        // Served by the pair's own worker build, so the plan takes them.
+        try writeServed(home, model: pair.publicModelID, prompt: 700, completion: 90, builds: [hash("a"), hash("a")])
         let served = ClusterServedSpeedHistory.entries(homeDirectory: home)
         #expect(!served.isEmpty)
         #expect(scope.request.promptTokens != 700 || scope.request.outputTokens != 90)
@@ -296,6 +304,73 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(try scope(2).lanes == 2 && scope(4).lanes == 4)
     }
 
+    /// The preview may credit the running owner's resident weights on a Mac
+    /// (released before the replacement loads), never its unallocated request
+    /// reservation and never a hardware bound: a width short by less than
+    /// those weights is proposed, one short by more is not, and the uncredited
+    /// predicate the post-release recheck applies is unchanged. A credited
+    /// width that recheck refused is not credited again until the refusal
+    /// expires, and every refusal line carries each rank's numbers.
+    @Test func testPreviewCreditsOnlyTheRunningOwnersWeightsAndRemembersRefusals() throws {
+        let home = try home(); record(home)
+        let (pair, cap, layout, original) = try fixture()
+        func scope(_ lanes: Int) throws -> ClusterPlacementBatchScope {
+            let payload = max(512 * 4096, lanes * 248320 * 4)
+            let quote = try ClusterPlacementTensorBatchQuote(request: original.request, lanes: lanes,
+                chunkTokens: 128, perLaneStateBytes: gib, sharedBytesExcludingCollectives: gib,
+                allowance: .init(maximumContextTokens: 65536, maximumChunkTokens: 512,
+                    requestBytesExcludingCollectives: (lanes + 1) * gib,
+                    maximumCollectivePayloadBytes: payload, maximumCollectiveFrameBytes: payload + 1024,
+                    allocationBound: { (($0 + 16383) / 16384) * 16384 }))
+            return try ClusterPlacementBatchScope(request: original.request, lanes: lanes, tensorParallelQuote: quote)
+        }
+        func choose(_ lanes: Int, free: Int) throws -> ClusterPlacementCandidate {
+            let decision = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap,
+                localMemberID: "a", localProfile: profile(free: free), peerProfile: profile(), layout: layout,
+                scope: scope(lanes), homeDirectory: home)
+            return try #require(decision.result.chosen)
+        }
+        let roomy = try choose(4, free: 200 * gib)
+        let need = roomy.ranks[0].needBytes, weights = roomy.ranks[0].weightsBytes
+        #expect(weights > 0 && roomy.mode == .tensorParallel)
+        let short = try choose(4, free: need - weights / 2)
+        #expect(short.mode == .tensorParallel && short.ranks[0].fit != .now)
+        let shares = short.tensorShares ?? [1, 1]
+        #expect(!DistributedAutomaticBatchPlanner.accepts(short, requireNow: true))
+        #expect(DistributedAutomaticBatchPlanner.acceptsCreditingIncumbentWeights(short, incumbentShares: shares))
+        // Another split's weights are not the running owner's: never credited.
+        #expect(!DistributedAutomaticBatchPlanner.acceptsCreditingIncumbentWeights(short,
+            incumbentShares: shares.map { $0 + 1 }))
+        let shorter = try choose(4, free: need - weights - gib)
+        #expect(!DistributedAutomaticBatchPlanner.acceptsCreditingIncumbentWeights(shorter, incumbentShares: shares))
+        #expect(DistributedAutomaticBatchPlanner.acceptsCreditingIncumbentWeights(roomy, incumbentShares: shares))
+
+        let refusals = DistributedAutomaticBatchCreditRefusals(), start = ContinuousClock.now
+        #expect(refusals.allowsCredit(setup: "setup", lanes: 4, now: start))
+        refusals.record(setup: "setup", lanes: 4, now: start)
+        #expect(!refusals.allowsCredit(setup: "setup", lanes: 4, now: start.advanced(by: .seconds(30))))
+        #expect(refusals.allowsCredit(setup: "setup", lanes: 2, now: start))
+        #expect(refusals.allowsCredit(setup: "other", lanes: 4, now: start))
+        #expect(refusals.allowsCredit(setup: "setup", lanes: 4,
+            now: start.advanced(by: DistributedAutomaticBatchCreditRefusals.hold)))
+
+        let fields = DistributedAutomaticBatchPlanner.refusalFields(short, lanes: 4, previous: 2,
+            requireNow: true, planned: true)
+        #expect(fields["reason"] == "not_now" && fields["requested_lanes"] == "4" && fields["previous_lanes"] == "2")
+        #expect(fields["phase"] == "preview" && fields["require_now"] == "1")
+        #expect(fields["rank0_need_bytes"] == String(short.ranks[0].needBytes))
+        #expect(fields["rank0_load_need_bytes"] == String(short.ranks[0].loadNeedBytes))
+        #expect(fields["rank0_admissible_now_bytes"] == String(short.ranks[0].admissibleNowBytes))
+        #expect(short.ranks[0].needBytes > short.ranks[0].admissibleNowBytes
+            && fields["rank0_short_bytes"] == String(short.ranks[0].needBytes - short.ranks[0].admissibleNowBytes))
+        #expect(fields["rank1_short_bytes"] == "0")
+        #expect(DistributedAutomaticBatchPlanner.refusalFields(short, lanes: 4, previous: 2, requireNow: true,
+            planned: true, phase: "post_release")["phase"] == "post_release")
+        #expect(fields["rank0_weights_bytes"] == String(weights) && fields["rank1_fit"] == "now")
+        #expect(DistributedAutomaticBatchPlanner.refusalFields(nil, lanes: 8, previous: 2,
+            requireNow: true, planned: false)["reason"] == "no_placement")
+    }
+
     @Test func testForeignStaleMalformedAndNonPrivateMeasurementsCannotLoseFeatures() throws {
         for kind in ["foreign", "stale", "malformed", "public"] {
             let home = try home()
@@ -321,32 +396,39 @@ final class DistributedAutomaticBatchPlannerTests {
 
     @Test func testServedHistoryReachesCalibrationButForeignAndConcurrentRecordsDoNot() throws {
         let home = try home(); record(home)
-        func write(model: String, ranks: [String], concurrent: Int, cached: Int = 0) throws {
-            let records = (0..<3).map { index in
-                ClusterPairRequestTelemetry(requestID: "fixture-\(index)", finishedAt: Date().timeIntervalSince1970,
-                    modelID: model, mode: "tensor_parallel_v1", cut: "0-2|0-2", promptTokens: 1024, cachedTokens: cached,
-                    completionTokens: 128, firstTokenMilliseconds: 1000, decodeTokensPerSecond: 1,
-                    handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
-                    route: "pair", ranks: ranks, concurrentRequests: concurrent)
-            }
-            let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
-                "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records))]
-            let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
-            try JSONSerialization.data(withJSONObject: json).write(to: file)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        }
+        let own = [hash("a"), hash("a")]
         for (model, ranks, concurrent) in [("other", ["a", "b"], 0), ("fixture-model", ["a", "other"], 0),
                                            ("fixture-model", ["a", "b"], 1)] {
-            try write(model: model, ranks: ranks, concurrent: concurrent)
+            try writeServed(home, model: model, ranks: ranks, concurrent: concurrent, builds: own)
             #expect(!(try decide(home).lines.contains("Speed records from served requests")))
         }
-        try write(model: "fixture-model", ranks: ["a", "b"], concurrent: 0, cached: 128)
+        try writeServed(home, cached: 128, builds: own)
         #expect(!(try decide(home).lines.contains("Speed records from served requests")))
-        try write(model: "fixture-model", ranks: ["a", "b"], concurrent: 0)
+        try writeServed(home, builds: own)
         let result = try decide(home)
         #expect(result.lines.contains("Speed records from served requests"))
         #expect(result.lines.contains { $0.contains("tensor_parallel_v1") && $0.contains("request(s)") })
+        #expect(!result.lines.contains { $0.contains("other worker builds") })
         #expect(result.result.tensorParallel?.devices.contains { $0.split.measured } == true)
+    }
+
+    /// A served speed counts only for the worker build that served it: what an earlier build served (or a record
+    /// written before builds were recorded, or one whose ranks ran different builds) never reaches the replacement's
+    /// calibration; the plan says how many records it left out.
+    @Test func testServedHistoryOfAnotherWorkerBuildDoesNotReachCalibration() throws {
+        let home = try home(); record(home)
+        for builds in [nil, [hash("9"), hash("9")], [hash("a"), hash("9")]] as [[String]?] {
+            try writeServed(home, builds: builds)
+            let result = try decide(home)
+            #expect(result.lines.contains("Speed records from served requests"))
+            #expect(result.lines.contains { $0.hasPrefix("  3 record(s) from other worker builds ignored") && $0.contains(String(hash("a").prefix(12))) })
+            #expect(!result.lines.contains { $0.contains("tensor_parallel_v1") && $0.contains("request(s)") })
+            #expect(result.result.tensorParallel?.devices.contains { $0.split.measured } != true)
+        }
+        try writeServed(home, builds: [hash("a"), hash("a")])
+        let current = try decide(home)
+        #expect(current.result.tensorParallel?.devices.contains { $0.split.measured } == true)
+        #expect(!current.lines.contains { $0.contains("other worker builds") })
     }
 
     @Test func testGLMRemainsOutsideAutomaticBatchEligibility() async throws {
@@ -397,7 +479,8 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(required.chosen?.mode == .tensorParallel)
         #expect(required.alternatives.allSatisfy { $0.mode == .tensorParallel })
         // Identical geometry, devices and link under another existing dense
-        // registration retain the ordinary cheaper-pipeline policy.
+        // registration keep the pipeline as a candidate; tensor parallel still
+        // goes first where it fits (owner, 2026-10-24), its gain never claimed.
         var co = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(cap)) as! [String: Any]
         co["runtimeModelID"] = "registered_qwen35_9b"
         var cp = co["profile"] as! [String: Any]; cp["id"] = "registered_qwen35_9b_greedy_generation_v1"; co["profile"] = cp
@@ -413,11 +496,106 @@ final class DistributedAutomaticBatchPlannerTests {
         let ordinary = try ClusterPlacementFlow.decide(description: otherPair, capability: other, localMemberID: "a",
             localProfile: profile(), peerProfile: profile(), layout: otherLayout, promptTokens: 1024, outputTokens: 128,
             link: slowReduction, environment: [:]).result
-        #expect(ordinary.chosen?.mode == .pipeline)
-        let sameTP = try #require(ordinary.alternatives.first { $0.mode == .tensorParallel })
+        #expect(ordinary.chosen?.mode == .tensorParallel)
+        #expect(ordinary.alternatives.contains { $0.mode == .pipeline })
+        let sameTP = try #require(ordinary.chosen)
         let requiredTP = try #require(required.chosen)
         #expect(sameTP.prediction(.rested) == requiredTP.prediction(.rested))
         #expect(ClusterModelFeaturePolicy.admissibleModes(other) == other.supportedGenerationModes)
+        // The reason line says why the 27B has no pipeline (its features), never that none fits (2026-10-24); the
+        // other row, which keeps the pipeline as a candidate, gives the rule, not a gain it does not predict.
+        #expect(ClusterPlacementExplanation.deploymentReason(required) == "Tensor parallel: pipeline is left out "
+            + "(Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel).")
+        #expect(required.modesReason != nil && ordinary.modesReason == nil)
+        #expect(ClusterPlacementExplanation.tensorParallelNote(required) == nil)
+        let listed = ClusterSetupPlanning.summary(ordinary, chosen: try #require(ordinary.chosen), lines: [], localMemberID: "a",
+            profiles: [:])
+        #expect(listed.tensorParallelNote == nil)
+        #expect(ClusterPlacementExplanation.deploymentReason(ordinary)
+            == "Tensor parallel: the model fits, so both Macs share every layer of every token.")
+    }
+
+    @Test func testLinkHistoryKeepsRecentLoadsAndPlansOnTheirMedian() throws {
+        let home = try home(), now = Date().timeIntervalSince1970
+        func probe(_ fixed: Int) -> ClusterWorkerLinkProbe {
+            ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 170,
+                pointToPointLargeBytes: 4_194_304, pointToPointLargeMicroseconds: 2_600, allSumSmallBytes: 20_480,
+                allSumSmallMicroseconds: fixed, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: fixed + 1_260)
+        }
+        // Ten loads, the reduction's fixed part as the pair's loads spread (43 to 109 us); either member order.
+        let loads = [43, 109, 72, 60, 95, 51, 88, 101, 66, 79]
+        for (index, fixed) in loads.enumerated() {
+            #expect(ClusterLinkProbeHistory.record(probe(fixed), members: index % 2 == 0 ? ["a", "b"] : ["b", "a"],
+                homeDirectory: home, now: now - Double(loads.count - index) * 600))
+        }
+        let file = ClusterLinkProbeHistory.defaultFile(homeDirectory: home)
+        let saved = try #require(ClusterLinkProbeHistory.read(file))
+        #expect(saved.measurements(members: ["a", "b"], now: now).map(\.probe.allSumSmallMicroseconds) == Array(loads.suffix(8).reversed()))
+        let costs = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["b", "a"], now: now))
+        // The last eight sorted: 51 60 66 72 79 88 95 101; the median lies between the 72 and 79 us loads.
+        let middle = [72, 79].map { ClusterLinkCosts(probe: probe($0), measuredUTC: "t")!.reduction!.fixedSeconds }.reduce(0, +) / 2
+        #expect(abs((costs.reduction?.fixedSeconds ?? 0) - middle) < 1e-12)
+        #expect(costs.reduction?.keyed == true && costs.provenance.hasPrefix("the median of 8 loads' probes"))
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        // An earlier build reads the latest load where it always did.
+        struct EarlierEntry: Decodable { let measuredAt: Double; let probe: ClusterWorkerLinkProbe }
+        struct Earlier: Decodable { let schema: String; let pairs: [String: EarlierEntry] }
+        let earlier = try JSONDecoder().decode(Earlier.self, from: Data(contentsOf: file))
+        #expect(earlier.schema == ClusterLinkProbeHistory.schemaName && earlier.pairs["a|b"]?.probe == probe(79))
+    }
+
+    /// Each Mac's own share steps, as its last load timed them alone and the
+    /// serving leader kept them (`ClusterShareProbeHistory`, in this home), are
+    /// what a replacement balances the tensor-parallel split by: the device
+    /// index alone gives the faster-indexed "a" two thirds; "a" measured 9 ms at
+    /// 2/3 and "b" 4 ms at 1/3 move the plan to 1:1. Another model's probes and
+    /// an unrelated member's change nothing.
+    @Test func testRecordedShareProbesBalanceTheTensorSplit() throws {
+        let home = try home(); record(home)
+        let (pair, cap, original, scope) = try fixture()
+        var object = try JSONSerialization.jsonObject(with: original.encoded()) as! [String: Any]
+        var tensor = object["tensorParallel"] as! [String: Any], family = tensor["family"] as! [String: Any]
+        family["shareOptions"] = [[1, 2], [2, 1]]; tensor["family"] = family; object["tensorParallel"] = tensor
+        let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        func shares() throws -> [Int] {
+            let decided = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: profile(decodeIndex: 50_000), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
+            #expect(decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
+            return decided.result.chosen?.tensorShares ?? [1, 1]
+        }
+        func probe(_ share: Int, _ microseconds: Int) -> ClusterWorkerShareProbe {
+            .init(sharePerMille: share, plainStepMicroseconds: microseconds, rounds: 7)
+        }
+        #expect(try shares() == [2, 1])
+        #expect(ClusterShareProbeHistory.record([.init(member: "a", buildSHA256: hash("a"), probe: probe(667, 9_000)),
+            .init(member: "c", buildSHA256: hash("a"), probe: probe(333, 4_000))], artifactSHA256: hash("9"), homeDirectory: home))
+        #expect(ClusterShareProbeHistory.record([.init(member: "c", buildSHA256: hash("a"), probe: probe(333, 4_000))],
+            artifactSHA256: hash("b"), homeDirectory: home))
+        #expect(try shares() == [2, 1], "another model's or another member's probes moved the split")
+        #expect(ClusterShareProbeHistory.record([.init(member: "a", buildSHA256: hash("a"), probe: probe(667, 9_000)),
+            .init(member: "b", buildSHA256: hash("a"), probe: probe(333, 4_000))], artifactSHA256: hash("b"), homeDirectory: home))
+        #expect(try shares() == [1, 1])
+    }
+
+    @Test func testSingleProbeFileAnEarlierBuildWroteStillPlansAndGrows() throws {
+        let home = try home(), now = Date().timeIntervalSince1970
+        let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 167,
+            pointToPointLargeBytes: 4_194_304, pointToPointLargeMicroseconds: 2_622, allSumSmallBytes: 20_480,
+            allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296)
+        let directory = home.appendingPathComponent(".darkbloom/cluster", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let measuredAt = now - 3_600
+        let old: [String: Any] = ["schema": "darkbloom_cluster_link_probes_v1", "pairs": ["a|b": ["measuredAt": measuredAt,
+            "probe": try JSONSerialization.jsonObject(with: JSONEncoder().encode(probe))]]]
+        let file = ClusterLinkProbeHistory.defaultFile(homeDirectory: home)
+        try JSONSerialization.data(withJSONObject: old).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let utc = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: measuredAt))
+        #expect(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["b", "a"], now: now)
+            == ClusterLinkCosts(probe: probe, measuredUTC: utc))
+        #expect(ClusterLinkProbeHistory.record(probe, members: ["a", "b"], homeDirectory: home, now: now))
+        #expect(ClusterLinkProbeHistory.read(file)?.measurements(members: ["a", "b"], now: now).count == 2)
     }
 
     @Test func testMissingShapeAndMemoryCannotFallBackToPipeline() throws {

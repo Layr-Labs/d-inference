@@ -58,27 +58,39 @@ struct QwenTensorParallelBatchMTPBudget {
             guard logical > 0, allocated >= logical else { throw ProbeError("Qwen TP cohort allocator bound is invalid") }
             return try product([allocated, count])
         }
-        var retainedCohort = 0, cohortTransient = 0
+        var retainedCohort = 0, retainedRow = 0, cohortTransient = 0
         if maximumSpeculativeWidth > 1 {
             let state = try QwenLongPrefillTensorBudget.estimate(geometry: local,
                 maximumTokens: maximumTokens, chunkSize: chunkSize)
-            // A committed row can retain the entire B*S captured backing even
-            // after every other row retires. Charge that physical rectangle
-            // per admitted survivor, separately from the next in-flight cohort.
-            retainedCohort = try sum([
-                bound(product([windowRows, state.convolutionBytesPerLayer]), count: geometry.recurrentLayers),
-                bound(product([windowRows, state.ssmBytesPerLayer]), count: geometry.recurrentLayers),
-                bound(product([windowRows, geometry.hiddenSize, 4]), count: 8),
-                bound(product([windowRows, plan.vocabularySize, 4]), count: 4),
-                bound(product([windowRows, 4]), count: 8),
-            ])
+            func retained(stateRows: Int) throws -> Int {
+                try sum([
+                    bound(product([windowRows, state.convolutionBytesPerLayer]), count: geometry.recurrentLayers),
+                    bound(product([stateRows, state.ssmBytesPerLayer]), count: geometry.recurrentLayers),
+                    bound(product([windowRows, geometry.hiddenSize, 4]), count: 8),
+                    bound(product([windowRows, plan.vocabularySize, 4]), count: 4),
+                    bound(product([windowRows, 4]), count: 8),
+                ])
+            }
+            // The in-flight cohort's whole B*S captured rectangle (shared, below).
+            retainedCohort = try retained(stateRows: windowRows)
+            // What a settled row keeps until its next round. Its recurrent
+            // SSM states are its own: a cohort row replays from its own
+            // committed input and a fully accepted state is copied out of the
+            // cohort's final states (Qwen35 GatedDeltaNet), so the state rows
+            // it keeps are its own S window rows, not B x S
+            // (`QwenTensorParallelBatchMemoryTests.cohortSurvivorKeepsOnlyItsOwnRows`
+            // measures them). Every other term keeps the whole B x S window:
+            // the small transformed window inputs (conv input, q/k/v/a/b) may
+            // still view the cohort's arrays, and the hidden, logit and scalar
+            // terms are not measured per row.
+            retainedRow = try retained(stateRows: min(depth + 1, maximumTokens))
             let one = try QwenResidentPrefillTransient.bytes(geometry: local,
                 stageHasAttention: local.attentionLayers > 0,
                 chunkTokens: min(depth + 1, maximumTokens), contextTokens: maximumTokens)
             cohortTransient = one == 0 ? 0 : try bound(product([one, maximumSpeculativeWidth]))
         }
         let perLane = try sum([full.assistantPageBytes, full.assistantGatherBytes,
-            full.trustedHistoryBytes, full.prefix.captureBytes, carryBytes, retainedCohort])
+            full.trustedHistoryBytes, full.prefix.captureBytes, carryBytes, retainedRow])
         // Retain the existing complete target batch ledger. The additional
         // full target-page/gather supplement conservatively covers the one
         // captured window's COW/rollback bank; it is never used to reduce any
@@ -109,7 +121,7 @@ struct QwenTensorParallelBatchMTPBudget {
         return .init(target: target, assistantPerLaneBytes: perLane, assistantSharedBytes: shared,
             assistantCarryBytes: carryBytes,
             prefix: full.prefix, maximumSpeculativeWidth: maximumSpeculativeWidth, depth: depth,
-            retainedCohortBytesPerLane: retainedCohort, cohortTransientBytes: cohortTransient,
+            retainedCohortBytesPerLane: retainedRow, cohortTransientBytes: cohortTransient,
             allowance: allowance,
             perLaneStateBytes: laneTotal, sharedBytesExcludingCollectives: sharedTotal)
     }

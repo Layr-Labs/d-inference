@@ -27,6 +27,8 @@ final class CBv2OwnedRequestState {
     private var windowCohort: [ObjectIdentifier]?
     private enum WindowPhase { case built, evaluated, settled }
     private var windowPhase: WindowPhase?
+    /// This request's packed window is counted open on its host.
+    private var countsPackedWindow = false
     private(set) var committedTokens = 0
     private(set) var isClosed = false
     private(set) var isFailed = false
@@ -71,6 +73,9 @@ final class CBv2OwnedRequestState {
          attention: [Int: (keys: MLXArray, values: MLXArray)],
          slidingTails: [Int: (keys: MLXArray, values: MLXArray)] = [:],
          recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)]) throws {
+        // Native arrays cannot become packed rows and their native band
+        // exactly; main refuses snapshot adoption into packed storage too.
+        try (geometry.host?.quantization ?? .native).requireNative("an adopted prefix or hand-off")
         guard (1...ClusterWorkerLimits.promptTokens).contains(promptCount), (1...ClusterWorkerLimits.outputTokens).contains(outputCount),
             promptCount <= ClusterWorkerLimits.contextTokens - outputCount, (1...(promptCount + outputCount)).contains(committed),
             attention.count + slidingTails.count == geometry.kinds.count,
@@ -181,6 +186,7 @@ final class CBv2OwnedRequestState {
                     .deliver(to: observer, check: check)
             }
             let output = try forward(caches, evaluation!)
+            try geometry.host?.checkStepWrites()
             if let observer {
                 try CBv2OwnerPhaseObservation(phase: .graphConstructionEnd, tokenCount: tokenCount, committedTokens: committedTokens)
                     .deliver(to: observer, check: check)
@@ -219,6 +225,7 @@ final class CBv2OwnedRequestState {
                 == Set(geometry.recurrent.modelLayerIndices) else {
                 throw ProbeError("CBv2 recurrent generation did not commit every local layer")
             }
+            try geometry.host?.finishStep()
             if let observer {
                 try CBv2OwnerPhaseObservation(phase: .validationCommitEnd, tokenCount: tokenCount, committedTokens: committedTokens)
                     .deliver(to: observer, check: check)
@@ -252,9 +259,11 @@ final class CBv2OwnedRequestState {
             }
             let caches = bank.layerCaches(rowStates: [rows])
             evaluation = try recurrent.bind(); evaluationWasStaged = false
+            beginPackedWindowTransaction()
             let outputs = try Self.buildingWindow(bank: bank, pagedHost: pagedHost) {
                 try forward(caches, evaluation!)
             }
+            try geometry.host?.checkStepWrites()
             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
             guard evaluation!.isCaptured else {
                 throw ProbeError("CBv2 speculative window did not capture its recurrent positions")
@@ -285,10 +294,12 @@ final class CBv2OwnedRequestState {
             let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
             for state in states {
                 state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
+                state.beginPackedWindowTransaction()
             }
             let outputs = try buildingWindow(bank: host.bank, pagedHost: states[0].pagedHost) {
                 try forward(caches, states.map { $0.evaluation! })
             }
+            try host.checkStepWrites()
             var roots: [MLXArray] = []
             for state in states {
                 roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
@@ -381,6 +392,7 @@ final class CBv2OwnedRequestState {
             for (lane, state) in states.enumerated() {
                 try state.validateBatchRow(lane: lane, after: state.committedTokens)
             }
+            try host.finishStep()
             states.forEach { $0.windowCohort = nil }
         } catch {
             states.forEach { $0.isFailed = true }
@@ -472,6 +484,8 @@ final class CBv2OwnedRequestState {
                 // The caches' device offsets ran ahead with the window.
                 bank.invalidateBoundComposition()
             }
+            if packedStorage { for row in rows { row?.commitSpeculativeWrite() } }
+            endPackedWindow()
             committedTokens += kept
             _ = bank.layerCaches(rowStates: [rows])
             // The kept state is a selection from the window; make it the only
@@ -496,6 +510,7 @@ final class CBv2OwnedRequestState {
     func confirmSettled(check: () throws -> Void) throws {
         try requireIndependentWindow()
         try confirmOwnedSettlement(check: check)
+        do { try geometry.host?.finishStep() } catch { isFailed = true; throw error }
     }
 
     private func confirmOwnedSettlement(check: () throws -> Void) throws {
@@ -533,6 +548,25 @@ final class CBv2OwnedRequestState {
     /// step checks each row's frontier and binding; the attendable views' shape
     /// and dtype are checked at adoption. Contiguous hosts keep every check.
     var pagedHost: Bool { geometry.host?.kind == .paged }
+
+    /// Rows on a host whose pool stores packed rows (main's live quantization).
+    var packedStorage: Bool { (geometry.host?.quantization ?? .native) != .native }
+
+    /// A packed window writes inside a speculative transaction on every row,
+    /// as main's verification round does, so a step completed meanwhile never
+    /// compacts a row's native band past rows the settlement may roll back.
+    /// The host counts it open until its settlement or the request's
+    /// retirement (`CBv2StageKVHost.openPackedWindows`).
+    private func beginPackedWindowTransaction() {
+        guard packedStorage, let host = geometry.host else { return }
+        for row in rows { row?.beginSpeculativeWrite() }
+        host.openPackedWindows += 1; countsPackedWindow = true
+    }
+
+    private func endPackedWindow() {
+        guard countsPackedWindow, let host = geometry.host else { return }
+        host.openPackedWindows -= 1; countsPackedWindow = false
+    }
 
     /// The frontier a cache's `positionOffsets` holds. A paged cache keeps the
     /// host values its device array is advanced by (item 25: the per-layer
@@ -594,6 +628,7 @@ final class CBv2OwnedRequestState {
             do { try evaluation.rollback() } catch { cleanupError = error }
         }
         evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil; windowCohort = nil
+        endPackedWindow()
         if PagedLayerCache.engineTrace, pagedHost {
             // Diagnosis only (cumulative per host cache): which paged paths served the request.
             let paged: [PagedLayerCache] = geometry.caches.compactMap { $0 as? PagedLayerCache }
@@ -611,6 +646,9 @@ final class CBv2OwnedRequestState {
         bank.releaseBoundRows()
         releasedRows = rows.compactMap { $0 }
         backend.release(rows); rows.removeAll()
+        // The streams drained above; a failed packed step leaves scratch and
+        // a latched write fault that the next request must not inherit.
+        if isFailed { geometry.host?.discardFailedStep() }
         do { try recurrent.release() } catch { cleanupError = cleanupError ?? error }
         isClosed = true
         // A host's pool may still hold other lanes: this request's own rows
@@ -662,6 +700,7 @@ extension CBv2OwnedRequestState {
                 state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
             }
             let output = try forward(caches, states.map { $0.evaluation! })
+            try host.checkStepWrites()
             var roots: [MLXArray] = []
             for state in states {
                 roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
@@ -691,6 +730,7 @@ extension CBv2OwnedRequestState {
                     throw ProbeError("CBv2 batched recurrent generation did not commit every local layer")
                 }
             }
+            try host.finishStep()
             return output
         } catch {
             states.forEach { $0.isFailed = true }

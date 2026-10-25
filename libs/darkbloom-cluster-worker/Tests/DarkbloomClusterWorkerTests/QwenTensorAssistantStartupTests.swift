@@ -45,7 +45,11 @@ final class QwenTensorAssistantStartupTests: XCTestCase {
             var args = arguments; args[args.count - 1] = hash
             XCTAssertThrowsError(try WorkerConfiguration(arguments: args, now: 100))
         }
-        var foreign = arguments; foreign[foreign.firstIndex(of: "--model-id")! + 1] = "registered_qwen35_9b"
+        // The 9B's artifact ships the same dense inline head; a routed-expert
+        // row's head is an expert layer the tensor owner does not load.
+        var nine = arguments; nine[nine.firstIndex(of: "--model-id")! + 1] = "registered_qwen35_9b"
+        XCTAssertEqual(try WorkerConfiguration(arguments: nine, now: 100).tensorAssistantPolicy?.depth, 2)
+        var foreign = arguments; foreign[foreign.firstIndex(of: "--model-id")! + 1] = "registered_qwen35_35b_a3b"
         XCTAssertThrowsError(try WorkerConfiguration(arguments: foreign, now: 100))
         var pipeline = arguments; pipeline[pipeline.firstIndex(of: "--generation-mode")! + 1] = ClusterGenerationMode.pipelineMTP.rawValue
         XCTAssertThrowsError(try WorkerConfiguration(arguments: pipeline, now: 100))

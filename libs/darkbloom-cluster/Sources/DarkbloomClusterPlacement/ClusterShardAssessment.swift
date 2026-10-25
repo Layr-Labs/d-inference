@@ -273,8 +273,6 @@ extension ClusterPlacementPlanner {
         for (index, stage) in stages.enumerated() {
             let range = layout.range(bounds[index]..<bounds[index + 1])
             let k = stage.count, share = range.cost / total
-            let reductions = k > 1 ? tp.family.reductionsPerLayer * range.layers.count
-                + (range.layers.upperBound == layout.layerCount ? tp.family.reductionsPerStep : 0) : 0
             var stageDecode = 0.0, stagePrefill = 0.0
             for member in stage {
                 let device = context.devices[member], memory = device.profile.memory
@@ -327,9 +325,10 @@ extension ClusterPlacementPlanner {
                 let shard = k > 1 ? (rates.tensorShardPrefillTokensPerSecond ?? rates.prefillTokensPerSecond) : rates.prefillTokensPerSecond
                 stagePrefill = max(stagePrefill, share / shard)
             }
-            decode.append(stageDecode + Double(reductions) * reduction.seconds(bytes: tp.family.partialBytesPerToken))
-            prefill.append(stagePrefill + (k > 1 ? Double(tp.family.reductionsPerLayer * range.layers.count)
-                * reduction.seconds(bytes: chunk * tp.family.partialBytesPerToken) / Double(chunk) : 0))
+            decode.append(stageDecode + (k > 1 ? tp.family.decodeReductionSeconds(layers: range.layers.count,
+                head: range.layers.upperBound == layout.layerCount, reduction: reduction) : 0))
+            prefill.append(stagePrefill + (k > 1 ? tp.family.prefillReductionSeconds(chunks: 1, chunk: chunk,
+                layers: range.layers.count, reduction: reduction) / Double(chunk) : 0))
         }
         let chunks = (context.prompt + chunk - 1) / chunk
         let slowest = prefill.max() ?? 0, sum = prefill.reduce(0, +)

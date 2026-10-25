@@ -83,14 +83,19 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 
     var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
         tensorParallel.map { plan in
-            // The largest routed-expert reduction retains top-K hidden
-            // vectors before weighting. The existing scalar cost model uses
-            // that maximum conservatively for each collective.
+            // A routed-expert layer's MoE collective packs top-K expert rows
+            // and the shared expert's row (the largest payload, which sizes
+            // the collective scratch); its mixer collective carries one row.
+            // The per-layer bytes charge the top-K rows once per layer, not
+            // the largest payload to every collective. A dense layer's two
+            // collectives are equal, so it keeps the scalar charge.
             ClusterTensorParallelFamilyPlan(
                 plan: plan.routedExperts ? "qwen_moe_heads_and_expert_channels_v1" : "qwen_dense_heads_and_channels_v1",
                 ranks: [plan.size],
                 reductionsPerLayer: plan.reductionsPerForward / plan.layerCount, reductionsPerStep: 1,
-                partialBytesPerToken: plan.maximumPartialBytesPerToken, stateDividesByHeads: true,
+                partialBytesPerToken: plan.maximumPartialBytesPerToken,
+                layerPartialBytesPerToken: plan.routedExperts ? plan.layerPartialBytesPerToken : nil,
+                stateDividesByHeads: true,
                 shareOptions: tensorParallelShareOptions, requestAllowance: tensorParallelRequestAllowance,
                 additionalResidentBytes: tensorParallelAdditionalResidentBytes)
         }

@@ -49,8 +49,6 @@ struct QwenTensorParallelBatchSessionTests {
         let host: CBv2StageKVHost
         var sessions: [QwenTensorParallelBatchSession] = []
         var output: MLXArray?
-        var legacyCache: [KVCache] = []
-        var legacyPages: QwenTensorParallelPageReservation?
         var executor: QwenTensorParallelNativeBatchExecutor<SelectionReservation>?
         var nativeLanes: [QwenTensorParallelNativeBatchLane] = []
         var selected: [Int] = []
@@ -107,52 +105,76 @@ struct QwenTensorParallelBatchSessionTests {
     func actualHybridShardsPreserveAttentionConvAndSSMRows() throws {
         try verify(hybrid: true)
     }
+    /// A dense geometry with the 9B's head ratios (four query heads per
+    /// key/value head, two linear value heads per key head) batches exactly.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func nineBRatioDenseShardsBatchExactly() throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 8, kvHeads: 2,
+            vocabulary: 256, linearKeyHeads: 2, linearValueHeads: 4)
+        try verifyBatchedRows(configuration: fixture.configuration, tensors: fixture.tensors, hiddenSize: 256,
+            recurrentLayers: 3, collectivesPerDecode: 8)
+    }
+    /// The A3B rows' routed-expert layout, scaled down: each row's router,
+    /// shared expert and selected experts keep that row's own arithmetic,
+    /// and a cohort's packed expert partials cross in one collective a layer.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func routedExpertShardsBatchExactly() throws {
+        let fixture = try QwenTensorParallelFixtures.routedCheckpoint()
+        try verifyBatchedRows(configuration: fixture.configuration, tensors: fixture.tensors, hiddenSize: 128,
+            recurrentLayers: 2, collectivesPerDecode: 8)
+    }
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"
+        && ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged"))
+    func routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory() throws {
+        let fixture = try QwenTensorParallelFixtures.routedCheckpoint()
+        try verifyCapacityParity(configuration: fixture.configuration, tensors: fixture.tensors,
+            hiddenSize: 128, recurrentLayers: 2)
+    }
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"
         && ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged"))
     func capacityOneAndTwoKeepExactPagedLogitsAndHistory() throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4,
+            heads: 4, kvHeads: 2, vocabulary: 256)
+        try verifyCapacityParity(configuration: fixture.configuration, tensors: fixture.tensors,
+            hiddenSize: 256, recurrentLayers: 3)
+    }
+
+    /// One request at capacity one and at capacity two: the same paged
+    /// logits, keys, values and recurrent rows on both ranks at every step,
+    /// so an owner that widens or narrows serves every row's bytes unchanged.
+    private func verifyCapacityParity(configuration fixture: Data, tensors: [(String, MLXArray)],
+                                      hiddenSize: Int, recurrentLayers: Int) throws {
         try Device.withDefaultDevice(.gpu) {
-            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
-                heads: 4, kvHeads: 2, vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var root = try JSONSerialization.jsonObject(with: fixture) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
             text["max_position_embeddings"] = 4096; root["text_config"] = text
             let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen27-capacity-parity-tiny",
-                vocabularySize: 256, hiddenSize: 256, activationDType: "bfloat16",
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-capacity-parity-tiny",
+                vocabularySize: 256, hiddenSize: hiddenSize, activationDType: "bfloat16",
                 maximumPromptTokens: 128, maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
             func pair(capacity: Int) throws -> [Owned] {
                 let wire = Rendezvous()
                 return try (0..<2).map { rank in
                     let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
                         role: .shard(rank: rank, size: 2), reduction: Rank(rank, wire)) { _, keep in
-                        for (name, value) in fixture.tensors { try keep(name, value) }
+                        for (name, value) in tensors { try keep(name, value) }
                     }
                     return try Owned(model, lanes: capacity)
                 }
             }
-            let singleton = try pair(capacity: 1), wider = try pair(capacity: 2), legacy = try pair(capacity: 1)
-            defer {
-                for owner in singleton + wider { for session in owner.sessions { try? session.retire() } }
-                for owner in legacy { owner.legacyCache = []; owner.legacyPages = nil }
-            }
+            let singleton = try pair(capacity: 1), wider = try pair(capacity: 2)
+            defer { for owner in singleton + wider { for session in owner.sessions { try? session.retire() } } }
             let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
                 promptTokenIDs: (0..<29).map { ($0 * 17 + 2) % 256 }, chunkSize: 5,
                 outputCount: 12, stopTokenIDs: [])
             for owner in singleton + wider {
                 owner.sessions = [try .init(model: owner.model, configuration: configuration, host: owner.host, request: request)]
             }
-            for owner in legacy {
-                owner.model.attentionPagePool = try owner.model.makeAttentionPagePool(pageSize: 64)
-                owner.legacyPages = try QwenTensorParallelResidentRuntime.reservePages(model: owner.model, tokens: 128)
-                owner.legacyCache = owner.model.newCache(account: owner.legacyPages?.account)
-            }
-            var legacyDifferent = false
             func compare(_ label: String) throws {
                 for rank in 0..<2 {
                     let a = singleton[rank], b = wider[rank]
                     let actual = try #require(a.output), expected = try #require(b.output)
                     #expect(bytes(actual) == bytes(expected), "capacity parity \(label) rank=\(rank)")
-                    if let old = legacy[rank].output { legacyDifferent = legacyDifferent || bytes(actual) != bytes(old) }
                     let x = a.sessions[0], y = b.sessions[0]
                     #expect(x.committedTokens == y.committedTokens)
                     for (left, right) in zip(x.state.rows, y.state.rows) {
@@ -160,71 +182,70 @@ struct QwenTensorParallelBatchSessionTests {
                         #expect(l.offset == r.offset && bytes(l.keys) == bytes(r.keys) && bytes(l.values) == bytes(r.values))
                     }
                     let l = x.state.recurrent.confirmedStateSnapshot() ?? [:], r = y.state.recurrent.confirmedStateSnapshot() ?? [:]
-                    #expect(l.keys.sorted() == r.keys.sorted() && l.count == 3)
+                    #expect(l.keys.sorted() == r.keys.sorted() && l.count == recurrentLayers)
                     for layer in l.keys {
                         #expect(bytes(l[layer]!.conv!) == bytes(r[layer]!.conv!))
                         #expect(bytes(l[layer]!.ssm!) == bytes(r[layer]!.ssm!))
                     }
                 }
             }
-            var offset = 0
-            while offset < request.promptCount {
-                let end = min(request.promptCount, offset + request.chunkSize)
-                let chunk = Array(request.promptTokenIDs[offset..<end])
+            while singleton[0].sessions[0].schedule.committedPromptTokens < request.promptCount {
+                let final = singleton[0].sessions[0].schedule.committedPromptTokens + request.chunkSize >= request.promptCount
                 try parallel(singleton) { $0.output = try $0.sessions[0].prefill(check: {}) }
                 try parallel(wider) { $0.output = try $0.sessions[0].prefill(check: {}) }
-                try parallel(legacy) { owner in
-                    let logits = owner.model.forwardForRuntime(MLXArray(chunk.map(Int32.init)).reshaped(1, chunk.count),
-                        cache: owner.legacyCache)
-                    eval([logits] + owner.legacyCache.flatMap { $0.innerState() })
-                    owner.output = end == request.promptCount ? logits[0..., -1, 0...] : nil
-                }
-                if end == request.promptCount { try compare("prefill") }
-                offset = end
+                if final { try compare("prefill") }
             }
             for step in 0..<8 {
                 let token = (step * 13 + 9) % 256
-                try parallel(singleton) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
-                try parallel(wider) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
-                try parallel(legacy) { owner in
-                    owner.output = owner.model.step(MLXArray([Int32(token)]), cache: owner.legacyCache)
-                    eval([owner.output!] + owner.legacyCache.flatMap { $0.innerState() })
+                // The singleton evaluates each step at once; the wider owner
+                // submits it layer by layer (the product's decode): same bits.
+                try parallel(singleton) { owner in
+                    try QwenTensorParallelBatchSession.$layerStride.withValue(0) {
+                        owner.output = try QwenTensorParallelBatchSession.decode(owner.sessions, tokens: [token], check: {})
+                    }
                 }
+                try parallel(wider) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
                 try compare("decode-\(step)")
             }
-            // Observation only: at this tiny geometry the former scalar path
-            // matched byte-for-byte, so it cannot serve as a negative control.
-            print("darkbloom-test-qwen27-legacy-scalar-observation differs=\(legacyDifferent ? 1 : 0)")
             for owner in singleton + wider {
                 try owner.sessions[0].retire()
                 #expect(owner.sessions[0].state.isClosed && owner.host.isDrained)
-            }
-            for owner in legacy {
-                owner.legacyCache = []; owner.legacyPages = nil
-                #expect(owner.model.attentionPagePool?.book.reservedPages == 0)
             }
         }
     }
 
     private func verify(hybrid: Bool) throws {
-        try Device.withDefaultDevice(device) {
-            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
-            var text = root["text_config"] as! [String: Any]
-            text["max_position_embeddings"] = 4096
-            var tensors = fixture.tensors
-            if !hybrid {
-                text["full_attention_interval"] = 1
-                tensors.removeAll { $0.0.contains(".linear_attn.") }
-                let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
-                for layer in 0..<3 {
-                    tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
-                }
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+        var text = root["text_config"] as! [String: Any]
+        var tensors = fixture.tensors
+        if !hybrid {
+            text["full_attention_interval"] = 1
+            tensors.removeAll { $0.0.contains(".linear_attn.") }
+            let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+            for layer in 0..<3 {
+                tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) }
             }
-            root["text_config"] = text
+        }
+        root["text_config"] = text
+        try verifyBatchedRows(configuration: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
+            tensors: tensors, hiddenSize: 256, recurrentLayers: hybrid ? 3 : 0, collectivesPerDecode: 8)
+    }
+
+    /// Rows decoded alone (the reference pair) and together in a rotating
+    /// order (the candidate pair) at widths 2, 4 and 8: every row's logits,
+    /// keys, values and recurrent rows equal byte for byte on both ranks, a
+    /// departed row's slot restarts cold, and one decode's collectives do not
+    /// grow with its width. Odd rows carry request-owned media positions.
+    private func verifyBatchedRows(configuration fixture: Data, tensors: [(String, MLXArray)], hiddenSize: Int,
+                                   recurrentLayers: Int, collectivesPerDecode: Int) throws {
+        try Device.withDefaultDevice(device) {
+            var root = try JSONSerialization.jsonObject(with: fixture) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; root["text_config"] = text
             let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen27-tp-native-tiny", vocabularySize: 256,
-                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-native-tiny", vocabularySize: 256,
+                hiddenSize: hiddenSize, activationDType: "bfloat16", maximumPromptTokens: 128,
                 maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
             for width in [2, 4, 8] {
                 let referenceWire = Rendezvous(), candidateWire = Rendezvous()
@@ -282,8 +303,12 @@ struct QwenTensorParallelBatchSessionTests {
                     let tokens = (0..<width).map { ($0 * 23 + step * 13 + 9) % 256 }
                     var expected = [[Data]](repeating: [], count: 2)
                     for row in 0..<width {
-                        try parallel(reference) {
-                            $0.output = try QwenTensorParallelBatchSession.decode([$0.sessions[row]], tokens: [tokens[row]], check: {})
+                        try parallel(reference) { owner in
+                            // Alone and in one evaluation; the cohort is submitted layer by layer.
+                            try QwenTensorParallelBatchSession.$layerStride.withValue(0) {
+                                owner.output = try QwenTensorParallelBatchSession.decode([owner.sessions[row]],
+                                    tokens: [tokens[row]], check: {})
+                            }
                         }
                         for rank in 0..<2 { expected[rank].append(bytes(reference[rank].output!)) }
                     }
@@ -293,7 +318,8 @@ struct QwenTensorParallelBatchSessionTests {
                         owner.output = try QwenTensorParallelBatchSession.decode(order.map { owner.sessions[$0] },
                             tokens: order.map { tokens[$0] }, check: {})
                     }
-                    #expect(candidateWire.step - before == 8, "one collective per row-parallel projection, independent of lane count")
+                    #expect(candidateWire.step - before == collectivesPerDecode,
+                        "one collective per row-parallel projection, independent of lane count")
                     for rank in 0..<2 {
                         for (slot, row) in order.enumerated() {
                             let a = reference[rank].sessions[row], b = candidate[rank].sessions[row]
@@ -306,7 +332,7 @@ struct QwenTensorParallelBatchSessionTests {
                             }
                             let left = a.state.recurrent.confirmedStateSnapshot() ?? [:], right = b.state.recurrent.confirmedStateSnapshot() ?? [:]
                             #expect(left.keys.sorted() == right.keys.sorted())
-                            #expect(left.count == (hybrid ? 3 : 0))
+                            #expect(left.count == recurrentLayers)
                             for layer in left.keys {
                                 #expect(bytes(left[layer]!.conv!) == bytes(right[layer]!.conv!))
                                 #expect(bytes(left[layer]!.ssm!) == bytes(right[layer]!.ssm!))
@@ -331,7 +357,7 @@ struct QwenTensorParallelBatchSessionTests {
 
     private func verifySelectionBoundary(nonfinite: Bool) throws {
         try Device.withDefaultDevice(device) {
-            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+            let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
             text["max_position_embeddings"] = 4096; text["full_attention_interval"] = 1; root["text_config"] = text
@@ -403,17 +429,34 @@ struct QwenTensorParallelBatchSessionTests {
     }
 
     @Test func actualNativeMixedSamplingKeepsSeedsHistoryLogprobsAndRowsIndependent() throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+        var text = root["text_config"] as! [String: Any]
+        text["full_attention_interval"] = 1; root["text_config"] = text
+        var tensors = fixture.tensors.filter { !$0.0.contains(".linear_attn.") }
+        let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
+        for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+        try verifyMixedSampling(configuration: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
+            tensors: tensors, hiddenSize: 256)
+    }
+
+    /// Routed experts on the native executor: greedy, sampled and
+    /// logprob rows of one cohort select what each selects alone, on the GPU
+    /// (the product backend), as the hybrid fixtures run.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"))
+    func routedExpertNativeMixedSamplingKeepsRowsIndependent() throws {
+        let fixture = try QwenTensorParallelFixtures.routedCheckpoint(fullAttentionInterval: 1)
+        try verifyMixedSampling(configuration: fixture.configuration, tensors: fixture.tensors, hiddenSize: 128)
+    }
+
+    private func verifyMixedSampling(configuration fixture: Data, tensors: [(String, MLXArray)], hiddenSize: Int) throws {
         try Device.withDefaultDevice(device) {
-            let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
-            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var root = try JSONSerialization.jsonObject(with: fixture) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
-            text["max_position_embeddings"] = 4096; text["full_attention_interval"] = 1; root["text_config"] = text
-            var tensors = fixture.tensors.filter { !$0.0.contains(".linear_attn.") }
-            let attention = fixture.tensors.filter { $0.0.contains(".layers.3.self_attn.") }
-            for layer in 0..<3 { tensors += attention.map { ($0.0.replacingOccurrences(of: ".layers.3.", with: ".layers.\(layer)."), $0.1) } }
+            text["max_position_embeddings"] = 4096; root["text_config"] = text
             let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
-            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen27-tp-selection-tiny", vocabularySize: 256,
-                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 128,
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-selection-tiny", vocabularySize: 256,
+                hiddenSize: hiddenSize, activationDType: "bfloat16", maximumPromptTokens: 128,
                 maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 256)
             for width in [2, 4, 8] {
                 func pair(_ wire: Rendezvous) throws -> [Owned] {
@@ -501,7 +544,7 @@ struct QwenTensorParallelBatchSessionTests {
     /// unless `hybrid` (then with its linear-attention layers).
     private func warmFixture(hybrid: Bool) throws -> (configuration: Data, tensors: [(String, MLXArray)],
                                                       profile: QwenLayerStageGenerationProfile) {
-        let fixture = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4,
             heads: 4, kvHeads: 2, vocabulary: 256)
         var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
         var text = root["text_config"] as! [String: Any]

@@ -154,15 +154,16 @@ struct DistributedInstalledPlan: Sendable {
         return result
     }
 
-    /// The local leader and link follower pass their own effective lane count
-    /// and optional typed synchronization choice to the fixed owner child.
-    /// No peer-supplied environment is used.
+    /// The local leader and link follower pass their own effective lane count,
+    /// optional typed synchronization choice and live KV precision switch to
+    /// the fixed owner child. No peer-supplied environment is used.
     func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
         throws -> ClusterLocalOwnerConfiguration {
         try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
             batchLanes: batchLanes(ownerEnvironment),
             fastSynchronization: fastSynchronization(ownerEnvironment),
-            eagerFenceCommit: eagerFenceCommit(ownerEnvironment))
+            eagerFenceCommit: eagerFenceCommit(ownerEnvironment),
+            kvQuantization: DistributedInstalledKVQuantization.forwardedSwitch(ownerEnvironment))
     }
 
     func nativeEnvironment(matrix: URL,
@@ -182,17 +183,17 @@ struct DistributedInstalledPlan: Sendable {
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
-        // Continuous batching (the pipeline's lane adapters, Qwen27 and GLM tensor
+        // Continuous batching (the pipeline's lane adapters, Qwen and GLM tensor
         // parallel): both owners must give their workers the same lane count
         // (the workers' load agreement refuses a mismatch). A setup in any
         // other mode keeps one request at a time.
         if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
             environment[Self.batchLanesSwitch] = String(lanes)
         }
-        // Diagnosis only: the stages' KV storage (paged unless contiguous is named).
-        if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
-            environment[Self.kvBackendSwitch] = value
-        }
+        // The live KV precision main resolves for this model
+        // (`DistributedInstalledKVQuantization`); native adds nothing.
+        environment.merge(DistributedInstalledKVQuantization.environment(publicModelID: configuration.publicModelID,
+            ownerEnvironment: ownerEnvironment)) { current, _ in current }
         // Diagnosis only: how a tensor-parallel rank reads its weights, and its per-array digests (to compare load
         // paths and builds on the real model; `GLM5NextTensorParallelLoadPath`).
         for (name, values) in Self.loadDiagnosisSwitches {
@@ -243,7 +244,6 @@ struct DistributedInstalledPlan: Sendable {
     static let fastSynchronizationSwitch = "MLX_METAL_FAST_SYNCH"
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
-    static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
     static let loadDiagnosisSwitches: [String: Set<String>] = [
         "DARKBLOOM_CLUSTER_LOAD_PATH": ["prepared", "prepared-uncached", "per-tensor"],
         "DARKBLOOM_CLUSTER_LOAD_DIGESTS": ["1", "tensors"],
@@ -275,7 +275,7 @@ struct DistributedInstalledPlan: Sendable {
 
     /// True when the pair's workers retire a cancelled started lane alone (a
     /// cancel or a deadline ends that request, not the pair): Qwen-family
-    /// pipeline lanes and exact Qwen27/GLM tensor parallel. Bound to both owners' plan.
+    /// pipeline lanes and Qwen/GLM tensor parallel. Bound to both owners' plan.
     func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let lanes = batchLanes(environment), lanes > 1,
               let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
@@ -289,7 +289,7 @@ struct DistributedInstalledPlan: Sendable {
         switch mode {
         case .tensorParallel:
             return tensorParallelLaneAdapters.contains(adapter)
-                || (adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages)
+                || (servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages)
         case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
         default: return false
         }
@@ -299,8 +299,9 @@ struct DistributedInstalledPlan: Sendable {
     /// its workers serve one request at a time there.
     /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
     ///   `defaultBatchLanes`.
-    /// - Exact Qwen27 tensor parallel: one by default; a priced saved width
-    ///   or explicit local diagnostic may select its native 2...8 lane owner.
+    /// - Qwen tensor parallel (every registered TP row, dense or routed
+    ///   experts): one by default; a priced saved width or explicit local
+    ///   diagnostic may select its native 2...8 lane owner.
     /// - Other tensor parallel: GLM (`GLM5NextTensorParallelResidentRuntime`'s lane
     ///   loop), at `tensorParallelBatchLanes`. Each lane keeps its request's
     ///   own arithmetic, so a request's tokens are those it gets alone. A
@@ -312,10 +313,16 @@ struct DistributedInstalledPlan: Sendable {
         switch mode {
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
         case .tensorParallel where tensorParallelLaneAdapters.contains(adapter): tensorParallelBatchLanes
-        case .tensorParallel where adapter == .qwen35Dense && runtimeModelID == "registered_qwen38_27b" && !hasPrivateImages:
+        case .tensorParallel where servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages:
             defaultBatchLanes
         default: nil
         }
+    }
+
+    /// A Qwen TP row under its registered adapter, whose owner serves
+    /// request-owned lanes at every capacity.
+    static func servesQwenTensorLanes(adapter: ClusterRuntimeAdapter, runtimeModelID: String?) -> Bool {
+        runtimeModelID.map(adapter.servesQwenTensorLanes) ?? false
     }
 
     /// Concurrent requests a lane-serving pair batches by default. Both

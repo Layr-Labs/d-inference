@@ -36,14 +36,22 @@ struct QwenTensorParallelBatchMTPBudgetTests {
                         tensors: tensors, maximumTokens: context, promptTokens: prompt, chunkSize: chunk,
                         lanes: lanes, depth: depth, allocationBound: bound)
                     let target = value.target
-                    // A batched lane keeps its prompt's chunk roots until its
-                    // first round or ordinary flush, then at most one flush
-                    // bound of one-token roots. Every trusted root and the
+                    // A batched lane keeps at most its prompt checkpoint's
+                    // rows, or one flush block plus one prompt frame, of chunk
+                    // roots (leading complete blocks move into head K/V as
+                    // the prompt is observed), then at most one flush bound
+                    // of one-token roots. Every held root and the
                     // concatenated first-draft banks stay charged.
                     let piece = min(chunk, prompt), chunks = (prompt + piece - 1) / piece
-                    let historyFloor = 2 * chunks * bound(piece * 5120 * 2) + 2 * min(rows, context) * bound(5120 * 2)
-                        + 3 * bound(min(context, prompt + rows) * 5120 * 2)
+                    let held = min(prompt, max(min(4096, context), rows + piece + 1))
+                    let heldChunks = min(chunks, (held + piece - 1) / piece + 2)
+                    let historyFloor = 2 * heldChunks * bound(piece * 5120 * 2) + 2 * min(rows, context) * bound(5120 * 2)
+                        + 3 * bound(min(context, held + min(rows, context)) * 5120 * 2)
                     #expect(solo.trustedHistoryBytes >= historyFloor)
+                    if prompt > held {
+                        // Never the whole prompt's banks any more.
+                        #expect(solo.trustedHistoryBytes < 3 * bound(min(context, prompt + rows) * 5120 * 2))
+                    }
                     #expect(value.assistantCarryBytes == bound(max(lanes, chunk, depth + 1) * 5120 * 2))
                     #expect(value.assistantPerLaneBytes == solo.assistantPageBytes + solo.assistantGatherBytes
                         + solo.trustedHistoryBytes + solo.prefix.captureBytes + value.assistantCarryBytes)
@@ -89,7 +97,14 @@ struct QwenTensorParallelBatchMTPBudgetTests {
         #expect(throws: (any Error).self) { try quote(allocator: { _ in Int.max }) }
     }
 
-    @Test func fullCohortKeepsPriorBackingPerSurvivorAndPricesTheNextWindowSeparately() throws {
+    /// A settled survivor keeps its own S window rows of recurrent SSM state
+    /// (it replays from its own input and a kept state is copied out of the
+    /// cohort), measured by
+    /// `QwenTensorParallelBatchMemoryTests.cohortSurvivorKeepsOnlyItsOwnRows`;
+    /// every other retained term (convolution-sized inputs that may view the
+    /// cohort, hidden, logits, scalars) stays priced at the whole B*S window,
+    /// and the in-flight cohort's whole B*S rectangle is priced once, shared.
+    @Test func eachSurvivorKeepsItsOwnRowsAndTheNextWindowIsPricedSeparately() throws {
         let (family, tensors) = try input(), plan = try #require(family.tensorParallel)
         for lanes in [2, 4, 8] {
             for depth in [1, 4] {
@@ -107,15 +122,18 @@ struct QwenTensorParallelBatchMTPBudgetTests {
                     chunkSize: 1, depth: depth, allocationBound: bound)
                 let state = try QwenLongPrefillTensorBudget.estimate(geometry: family.geometry,
                     maximumTokens: context, chunkSize: chunk)
-                let backing = 48 * (bound(rows * state.convolutionBytesPerLayer) + bound(rows * state.ssmBytesPerLayer))
-                    + 8 * bound(rows * 5120 * 4) + 4 * bound(rows * 248320 * 4) + 8 * bound(rows * 4)
+                func backing(state stateRows: Int) -> Int {
+                    48 * (bound(rows * state.convolutionBytesPerLayer) + bound(stateRows * state.ssmBytesPerLayer))
+                        + 8 * bound(rows * 5120 * 4) + 4 * bound(rows * 248320 * 4) + 8 * bound(rows * 4)
+                }
+                let cohort = backing(state: rows), own = backing(state: depth + 1)
                 #expect(value.maximumSpeculativeWidth == lanes && value.depth == depth)
                 #expect(value.assistantCarryBytes == bound(rows * 5120 * 2))
-                #expect(value.retainedCohortBytesPerLane == backing)
+                #expect(value.retainedCohortBytesPerLane == own && own < cohort)
                 #expect(value.assistantPerLaneBytes == full.assistantPageBytes + full.assistantGatherBytes
-                    + full.trustedHistoryBytes + full.prefix.captureBytes + value.assistantCarryBytes + backing)
+                    + full.trustedHistoryBytes + full.prefix.captureBytes + value.assistantCarryBytes + own)
                 #expect(value.cohortTransientBytes > 0)
-                #expect(value.assistantSharedBytes == full.promptWorkspaceBytes + backing + value.cohortTransientBytes
+                #expect(value.assistantSharedBytes == full.promptWorkspaceBytes + cohort + value.cohortTransientBytes
                     + lanes * full.targetPageSupplementBytes + full.prefix.residentBytes)
                 #expect(value.allowance.requestBytesExcludingCollectives == lanes * value.perLaneStateBytes
                     + value.sharedBytesExcludingCollectives)

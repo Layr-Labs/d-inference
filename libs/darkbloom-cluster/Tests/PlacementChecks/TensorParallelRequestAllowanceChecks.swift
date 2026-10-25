@@ -176,16 +176,21 @@ func checkQwenMoEProjectionAllowance(golden: URL, _ checks: PlacementChecks) thr
     // mixer outputs 40 MiB. Each of 120 projections has two retained arrays.
     checks.require("Qwen 3.6: complete quote includes full persistent expert, shared and mixer constants",
         budget.projectionConstantBytes == 1325 * mib + 240 * 16_384)
-    checks.require("Qwen 3.6: collective retains all eight expert vectors until router weighting",
-        plan.expertsPerToken == 8 && plan.maximumPartialBytesPerToken == 8 * 2048 * 4
-            && budget.allowance.maximumCollectivePayloadBytes == family.maximumChunkTokens * 8 * 2048 * 4
-            && plan.reductionsPerForward == 120)
+    let row = 2048 * 4, chunk = family.maximumChunkTokens
+    checks.require("Qwen 3.6: one packed collective retains all eight expert vectors and the shared row until weighting",
+        plan.expertsPerToken == 8 && plan.maximumPartialBytesPerToken == 9 * row
+            && plan.layerPartialBytesPerToken == 10 * row
+            && budget.allowance.maximumCollectivePayloadBytes == chunk * 9 * row
+            && plan.reductionsPerForward == 80)
+    checks.require("Qwen 3.6: the packed payload's two source partials are charged beside it, each bounded",
+        budget.packingBytes == (chunk * 8 * row + 16_384) + (chunk * row + 16_384))
     let layout = try ClusterPlacementLayouts.layout(configuration: input.configuration,
         tensors: input.stored, tensorParallelAllocationBound: { $0 + 16_384 })
-    checks.require("Qwen 3.6: planner and native budget retain the same widened-constant charge",
+    checks.require("Qwen 3.6: planner and native budget retain the same widened-constant and packing charge",
         layout.tensorParallel!.family.requestAllowance!.reservedBytes == budget.allowance.reservedBytes
             && budget.allowance.requestBytesExcludingCollectives == budget.stateBytes + budget.fusionBytes
-                + budget.transientBytes + budget.logitsBytes + budget.projectionConstantBytes)
+                + budget.transientBytes + budget.logitsBytes + budget.projectionConstantBytes + budget.packingBytes)
+    try checkQwenMoEReductionCharge(layout, checks)
     let constants = canonical.filter { $0.name.contains(".switch_mlp.down_proj.") && $0.name.hasSuffix(".scales") }
     checks.require("Qwen 3.6: regression fixture covers every real expert layer", constants.count == 40)
     checks.refuses("Qwen 3.6: missing expert constant cannot become a smaller quote", because: "projection constant") {
@@ -193,4 +198,50 @@ func checkQwenMoEProjectionAllowance(golden: URL, _ checks: PlacementChecks) thr
             tensors: canonical.filter { $0.name != constants[0].name }, maximumTokens: family.largestContextTokens,
             chunkSize: family.maximumChunkTokens, allocationBound: { $0 + 16_384 })
     }
+}
+
+/// A routed-expert layer's reductions as placement prices them: the mixer's
+/// collective carries one residual row a token, the packed MoE collective
+/// the eight selected experts' rows and the shared expert's, so the top-K
+/// rows are charged once a layer. The same layout without its per-layer
+/// bytes is the earlier scalar charge (the largest payload on each of the
+/// layer's reductions), so the difference isolates the new charge.
+private func checkQwenMoEReductionCharge(_ base: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let row = 2048 * 4
+    guard let family = base.tensorParallel?.family else {
+        checks.require("Qwen 3.6 placement: the layout carries tensor-parallel facts", false)
+        return
+    }
+    checks.require("Qwen 3.6 placement: two reductions a layer, the packed payload sizes the scratch, ten rows a layer",
+        family.reductionsPerLayer == 2 && family.reductionsPerStep == 1
+            && family.partialBytesPerToken == 9 * row && family.layerPartialBytesPerToken == 10 * row)
+    let layout = try executing(base, [.tensorParallel])
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as! [String: Any]
+    var facts = object["tensorParallel"] as! [String: Any]
+    var scalarFamily = facts["family"] as! [String: Any]
+    checks.require("Qwen 3.6 placement: the layout encodes the per-layer bytes",
+        scalarFamily["layerPartialBytesPerToken"] as? Int == 10 * row)
+    scalarFamily["layerPartialBytesPerToken"] = nil
+    facts["family"] = scalarFamily; object["tensorParallel"] = facts
+    let scalar = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+    let link = linkCosts(reductionMicroseconds: 35)
+    let devices = try [SyntheticMac.idle(128).device("a"), SyntheticMac.idle(128).device("b")]
+    var policy = ClusterPlacementPolicy()
+    policy.promptTokens = 1024; policy.outputTokens = 256
+    func predict(_ value: ClusterModelLayout) throws -> ClusterPlacementPrediction {
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel,
+            prefillSchedule: .serial, layout: value, policy: policy, link: link).rested
+    }
+    let packed = try predict(layout), largest = try predict(scalar)
+    let perByte = link.reduction!.secondsPerByte
+    let chunk = min(layout.maximumChunkTokens, 1024), chunks = (1024 + chunk - 1) / chunk
+    // A chunk's layer: the scalar charge carries 2 x 9 rows, the packed charge 10.
+    let prefillSaved = Double(chunks * layout.layerCount * chunk * 8 * row) * perByte
+    // A step: 81 reductions of 9 rows against 81 fixed costs, 40 x 10 rows and a 16-byte selection.
+    let stepSaved = Double(81 * 9 * row - layout.layerCount * 10 * row - 16) * perByte
+    func close(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= 1e-9 * max(abs(a), abs(b)) }
+    checks.require("Qwen 3.6 placement: TP prefill charges each layer's ten rows once a chunk (\(prefillSaved) s less at 1024 tokens)",
+        layout.layerCount == 40 && close(largest.firstTokenSeconds - packed.firstTokenSeconds, prefillSaved))
+    checks.require("Qwen 3.6 placement: a TP decode step charges 80 layer reductions by their own rows and one small selection",
+        close(1 / largest.decodeTokensPerSecond - 1 / packed.decodeTokensPerSecond, stepSaved))
 }

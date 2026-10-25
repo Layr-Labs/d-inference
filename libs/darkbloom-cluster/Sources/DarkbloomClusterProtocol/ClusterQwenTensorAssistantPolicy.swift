@@ -1,8 +1,10 @@
 import Foundation
 
-/// A requested resident assistant on the existing Qwen27 tensor owner.
-/// The exact artifact/configuration/build pins remain authoritative. This
-/// value grants neither memory nor readiness and selects no generation mode.
+/// A requested resident assistant on a dense Qwen tensor owner whose artifact
+/// ships the inline head (`runtimeModelIDs`; the schema keeps its first,
+/// Qwen27, name). The exact artifact/configuration/build pins remain
+/// authoritative. This value grants neither memory nor readiness and selects
+/// no generation mode.
 public struct ClusterQwenTensorAssistantPolicy: Codable, Equatable, Sendable {
     public enum Verification: String, Codable, Sendable {
         case singleton = "singleton_ready_set_v1"
@@ -12,6 +14,9 @@ public struct ClusterQwenTensorAssistantPolicy: Codable, Equatable, Sendable {
     public static let inventoryArgument = "--tp-mtp-inventory-sha256"
     public static let verificationArgument = "--tp-mtp-verification"
     public static let runtimeModelID = "registered_qwen38_27b"
+    /// The rows whose tensor owner loads the inline head: the 9B and the 27B.
+    /// The routed-expert rows' heads are expert layers it does not load.
+    public static let runtimeModelIDs: Set<String> = ["registered_qwen35_9b", runtimeModelID]
     public let schema: String
     public let depth: Int
     public let inventorySHA256: String

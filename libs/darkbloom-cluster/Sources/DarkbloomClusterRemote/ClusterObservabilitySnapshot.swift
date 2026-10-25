@@ -125,7 +125,7 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
             }
         }
         if let speedRecords {
-            result.append("Speed records from served requests (the next plan and every route use them): \(speedRecords.records), "
+            result.append("Speed records from served requests (the next plan and every route use the current worker build's): \(speedRecords.records), "
                 + speedRecords.byRoute.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
         }
         if let followers {

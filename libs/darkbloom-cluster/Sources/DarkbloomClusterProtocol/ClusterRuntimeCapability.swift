@@ -84,6 +84,19 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     public static func registering(runtimeModelID: String) -> ClusterRuntimeAdapter? {
         allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
     }
+
+    /// The registered Qwen rows a tensor-parallel pair serves through the
+    /// request-owned batch lanes, each priced by its own geometry: the 9B and
+    /// 27B dense rows and the Qwen3.5 and Qwen3.6 35B A3B routed-expert rows.
+    public static let qwenTensorParallelRuntimeModelIDs: Set<String> = [
+        "registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
+    ]
+
+    /// Whether `runtimeModelID` is one of those rows, registered under this adapter.
+    public func servesQwenTensorLanes(runtimeModelID: String) -> Bool {
+        Self.qwenTensorParallelRuntimeModelIDs.contains(runtimeModelID)
+            && Self.registering(runtimeModelID: runtimeModelID) == self
+    }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

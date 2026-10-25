@@ -46,7 +46,7 @@ struct QwenTensorParallelAssistantQuoteTests {
             ($0.name, (shape: $0.shape, dtype: $0.dtype == "U32" ? DType.uint32 : .bfloat16, byteCount: $0.byteCount))
         })
         let footprint = try QwenTensorParallelMTPInventory.footprint(tensors: descriptors,
-            specification: family.definition.specification, allocationBound: bound)
+            specification: family.definition.specification, configuration: configuration, allocationBound: bound)
         #expect(footprint.storageBytes == 238_930_944 && footprint.allocationBytes >= footprint.storageBytes)
         #expect(footprint.loadBytes == footprint.allocationBytes + footprint.constructionBytes
             + 2 * footprint.largestTensorBytes + CheckpointAlignedReadPlan.maximumScratchAllocationBytes)

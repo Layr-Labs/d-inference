@@ -52,9 +52,14 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     /// Routed experts (0 for a dense model) and the shared expert's width.
     public let expertCount: Int
     public let expertsPerToken: Int
-    /// Largest FP32 collective payload per token, retaining selected experts
-    /// until their down projections have been summed and rounded.
+    /// Largest FP32 collective payload per token: a dense layer's one residual
+    /// row; a routed-expert layer's MoE collective, which packs every selected
+    /// expert's row (retained until summed and rounded) and the shared
+    /// expert's row.
     public let maximumPartialBytesPerToken: Int
+    /// FP32 bytes per token one rank's partials carry through all of one
+    /// layer's collectives together (the mixer's row and the MLP's).
+    public let layerPartialBytesPerToken: Int
     public let sharedExpertIntermediateSize: Int
     public var routedExperts: Bool { expertCount > 0 }
     public let groupSize: Int
@@ -113,10 +118,12 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public static let candidateShares: [[Int]] = [[1, 3], [1, 2], [2, 3], [3, 2], [2, 1], [3, 1]]
 
     /// Expert and shared down projections reduce in FP32 before rounding,
-    /// weighting and gating. Refuse peers using the previous combined-block
-    /// reduction; existing dense agreements stay exact.
+    /// weighting and gating, packed into one collective per layer (each
+    /// element's sum, and so every rounded value, unchanged from v2's two
+    /// collectives). Peers with another collective schedule refuse to load
+    /// together; existing dense agreements stay exact.
     static func arithmeticAgreementFields(routedExperts: Bool) -> [String] {
-        routedExperts ? ["qwen-moe-down-projections-f32-sum-before-weighting-v2"] : []
+        routedExperts ? ["qwen-moe-down-projections-f32-sum-before-weighting-packed-v3"] : []
     }
 
     /// `text` is the checkpoint's `text_config` object; `quantization` the
@@ -179,12 +186,17 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         linearValueHeadDim = try integer("linear_value_head_dim")
         expertCount = experts
         expertsPerToken = experts > 0 ? try integer("num_experts_per_tok") : 0
-        let elements = hiddenSize.multipliedReportingOverflow(by: max(1, expertsPerToken))
-        let bytes = elements.partialValue.multipliedReportingOverflow(by: 4)
-        guard !elements.overflow, !bytes.overflow else {
+        // Rows per token: the MLP collective packs top-K expert rows and the
+        // shared expert's row (one row for a dense MLP); the mixer adds one.
+        let mlpRows = experts > 0 ? expertsPerToken + 1 : 1
+        let rowBytes = hiddenSize.multipliedReportingOverflow(by: 4)
+        let mlpBytes = rowBytes.partialValue.multipliedReportingOverflow(by: mlpRows)
+        let layerBytes = mlpBytes.partialValue.addingReportingOverflow(rowBytes.partialValue)
+        guard !rowBytes.overflow, !mlpBytes.overflow, !layerBytes.overflow else {
             throw ProbeError("Tensor parallel plan: expert reduction byte count overflows")
         }
-        maximumPartialBytesPerToken = bytes.partialValue
+        maximumPartialBytesPerToken = mlpBytes.partialValue
+        layerPartialBytesPerToken = layerBytes.partialValue
         intermediateSize = try integer(experts > 0 ? "moe_intermediate_size" : "intermediate_size")
         sharedExpertIntermediateSize = experts > 0 ? try integer("shared_expert_intermediate_size") : 0
         vocabularySize = try integer("vocab_size")
@@ -439,8 +451,9 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     /// The module paths (relative to the model root) whose outputs are partial
     /// sums under this plan, where the reduction is applied: the attention
     /// output, the linear attention output and the MLP down projection of
-    /// every layer. Routed and shared expert down projections reduce
-    /// separately before weighting, gating and their BF16 combination.
+    /// every layer. A routed-expert layer's expert and shared down
+    /// projections share one packed collective, each value summed before
+    /// weighting, gating and their BF16 combination.
     public func rowParallelModulePaths() -> [String] {
         inputColumnModulePaths()
     }
@@ -456,8 +469,9 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         }
     }
 
-    /// Collectives one forward step issues (one per row-parallel module).
-    public var reductionsPerForward: Int { (routedExperts ? 3 : 2) * layerCount }
+    /// Collectives one forward step issues: per layer the mixer's and the
+    /// MLP's (a routed-expert layer packs its expert and shared partials).
+    public var reductionsPerForward: Int { 2 * layerCount }
 
 
     /// Vocabulary rows this rank's LM head holds.

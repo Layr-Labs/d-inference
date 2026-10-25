@@ -115,6 +115,52 @@ import Foundation
         require("the printed lines say what was detected, what each Mac holds and what happens next",
             outcome.lines.contains("What each Mac detected") && outcome.lines.contains { $0.contains("While the session is up") }
                 && outcome.lines.contains("What happens next") && outcome.lines.contains { $0.contains("Wrote a setup for each Mac") })
+
+        // The leader's served-speed file, as the product writes it: records of this pair and model from before builds
+        // were recorded (no `rankBuildSHA256`), from another worker build, and from the build the pair description
+        // names (hash "a", the capability's). Only the last are calibrated; the plan counts the others in one line.
+        // What clients sent is no build's: every record's lengths make the plan's request.
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let cluster = home.appendingPathComponent(".darkbloom/cluster", isDirectory: true)
+        try FileManager.default.createDirectory(at: cluster, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        func served(_ id: String, prompt: Int, output: Int, builds: [String]?) -> [String: Any] {
+            var record: [String: Any] = ["requestID": id, "finishedAt": 1_792_900_000, "modelID": "fixture/qwen", "mode": "pipeline_v1",
+                "cut": "0-8|8-32", "promptTokens": prompt, "cachedTokens": 0, "completionTokens": output, "firstTokenMilliseconds": 500,
+                "decodeTokensPerSecond": 40, "outcome": "length", "ranks": ["mac-one", "mac-two"], "concurrentRequests": 0]
+            if let builds { record["rankBuildSHA256"] = builds }
+            return record
+        }
+        let stale = (0..<3).map { served("old-\($0)", prompt: 4_000, output: 20, builds: nil) }
+            + (0..<2).map { served("other-\($0)", prompt: 4_000, output: 20, builds: [hash("9"), hash("9")]) }
+        let current = [(64, 100), (128, 120), (96, 110)].enumerated().map { served("now-\($0.offset)", prompt: $0.element.0,
+            output: $0.element.1, builds: [hash("a"), hash("a")]) }
+        let servedFile = cluster.appendingPathComponent("served-speed.json")
+        func writeServed(_ records: [[String: Any]]) throws {
+            try JSONSerialization.data(withJSONObject: ["schema": "darkbloom_served_speed_v1", "updatedAt": 1_792_900_001,
+                "records": records], options: [.sortedKeys]).write(to: servedFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: servedFile.path)
+        }
+        func planned(_ name: String) throws -> ClusterPlacementFlow.Outcome {
+            try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+                localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent(name)), deadline: deadline())
+        }
+        try writeServed(stale + current)
+        let scoped = try planned("served-out")
+        let ignoredLine = "  5 record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build aaaaaaaaaaaa)"
+        require("the step reads the leader's served-speed file and calibrates this build's three records only",
+            scoped.lines.contains { $0.contains("pipeline_v1 cut 0-8|8-32 (mac-one, mac-two): 3 pair and 0 alone request(s) ->") }
+                && !scoped.lines.contains { $0.contains("8 pair and 0 alone request(s)") })
+        require("the plan says in one line that the records of other worker builds (and from before builds were recorded) were ignored, and writes it to plan.txt",
+            scoped.lines.contains("Speed records from served requests") && scoped.lines.contains(ignoredLine)
+                && (try? String(contentsOf: root.appendingPathComponent("served-out/plan.txt"), encoding: .utf8))?.contains(ignoredLine) == true)
+        require("every build's records make the plan's request, what clients sent (median 4000-token prompt, 64-token answer; got \(scoped.result.promptTokens)/\(scoped.result.outputTokens), \(outcome.result.promptTokens)/\(outcome.result.outputTokens) unserved)",
+            scoped.result.promptTokens == 4_000 && scoped.result.outputTokens == 64 && outcome.result.promptTokens == layout.maximumPromptTokens)
+        try writeServed(stale)
+        let staleOnly = try planned("stale-out")
+        require("with only other builds' records nothing is calibrated, the request is still theirs, and the plan says why",
+            !staleOnly.lines.contains { $0.contains("request(s) ->") } && staleOnly.lines.contains { $0.hasPrefix("  5 record(s) from other worker builds ignored") }
+                && staleOnly.result.promptTokens == 4_000 && staleOnly.result.outputTokens == 64)
+        try FileManager.default.removeItem(at: servedFile)
         func refused(_ name: String, because reason: String, _ body: () throws -> Void) {
             do { try body(); failures.append("accepted: " + name) } catch {
                 if String(describing: error).contains(reason) { passed += 1 } else { failures.append("\(name): \(error)") }

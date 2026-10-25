@@ -238,6 +238,44 @@ struct ClusterWorkerProtocolTests {
             try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
                 requestID: nil, event: .ready(value))) }
         }
+        // The share a tensor-parallel load timed alone travels in readiness, with
+        // or without its verify window; absent when nil, so a record without it
+        // reads as before; refused when malformed or carrying an unknown field.
+        func shared(_ share: ClusterWorkerShareProbe?) -> ClusterWorkerEventFrame {
+            ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: .ready(ClusterWorkerReady(
+                identity: identity, rank: 1, profile: profile, executionPlanSHA256: ready.executionPlanSHA256,
+                requestCapacityBytes: 1024, linkProbe: probe, shareProbe: share)))
+        }
+        let window = ClusterWorkerShareProbe(sharePerMille: 667, plainStepMicroseconds: 32_100, windowColumns: 4,
+            windowStepMicroseconds: 56_600, rounds: 7)
+        for share in [window, ClusterWorkerShareProbe(sharePerMille: 333, plainStepMicroseconds: 17_400, rounds: 3)] {
+            try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(shared(share))) == shared(share),
+                "Share probe round trip")
+        }
+        try check(!String(decoding: try ClusterWorkerCodec.encode(shared(nil)), as: UTF8.self).contains("shareProbe"),
+            "A worker without a share probe writes none")
+        func edited(_ change: (inout [String: Any]) -> Void) throws -> Data {
+            var object = try JSONSerialization.jsonObject(with: ClusterWorkerCodec.encode(shared(window))) as! [String: Any]
+            change(&object)
+            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) + Data([10])
+        }
+        try check(try ClusterWorkerCodec.decodeEvent(edited { object in
+            var value = object["ready"] as! [String: Any]
+            value.removeValue(forKey: "shareProbe"); object["ready"] = value
+        }) == shared(nil), "A ready record without a share probe (an earlier worker's) reads without one")
+        try refuses { _ = try ClusterWorkerCodec.decodeEvent(edited { object in
+            var value = object["ready"] as! [String: Any], share = value["shareProbe"] as! [String: Any]
+            share["prefillMicroseconds"] = 1; value["shareProbe"] = share; object["ready"] = value
+        }) }
+        for (share, plain, columns, step, rounds) in [(0, 32_100, nil, nil, 7), (1_000, 32_100, nil, nil, 7), (667, 0, nil, nil, 7),
+                                                      (667, 60_000_001, nil, nil, 7), (667, 32_100, 4, nil, 7), (667, 32_100, nil, 56_600, 7),
+                                                      (667, 32_100, 1, 56_600, 7), (667, 32_100, 6, 56_600, 7), (667, 32_100, 4, 0, 7),
+                                                      (667, 32_100, nil, nil, 2), (667, 32_100, nil, nil, 65)] as [(Int, Int, Int?, Int?, Int)] {
+            let bad = ClusterWorkerShareProbe(sharePerMille: share, plainStepMicroseconds: plain, windowColumns: columns,
+                windowStepMicroseconds: step, rounds: rounds)
+            try check(!bad.valid, "Share probe bounds")
+            try refuses { _ = try ClusterWorkerCodec.encode(shared(bad)) }
+        }
         // Refused for capacity: idle and available, the next reservation proceeds.
         var refused = try Conversation()
         try refused.command(.reserve(reservation()))

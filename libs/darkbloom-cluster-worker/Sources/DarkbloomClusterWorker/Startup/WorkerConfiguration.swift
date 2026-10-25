@@ -175,24 +175,25 @@ struct WorkerConfiguration {
             generationMode = mode
         } else { generationMode = .pipeline }
         if let text = fields["--mtp-depth"] {
-            let tensorAssistant = generationMode == .tensorParallel && fields["--model-id"] == "registered_qwen38_27b"
+            let tensorAssistant = generationMode == .tensorParallel
+                && fields["--model-id"].map(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains) == true
                 && dataPlaneEncrypted && fields["--runtime-profile"] == nil
             guard generationMode.usesSpeculativeHead || tensorAssistant,
                   let depth = Int(text), String(depth) == text,
                   let terms = try? QwenMTPTerms(depth: depth) else {
-                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with exact keyed Qwen27 TP or a speculative generation mode ("
+                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with keyed Qwen TP on a row with an inline head or a speculative generation mode ("
                     + ClusterGenerationMode.allCases.filter(\.usesSpeculativeHead).map(\.rawValue).joined(separator: ", ") + ")")
             }
             speculativeTerms = terms
         } else { speculativeTerms = nil }
         if let inventory = fields[ClusterQwenTensorAssistantPolicy.inventoryArgument] {
             guard generationMode == .tensorParallel,
-                  fields["--model-id"] == ClusterQwenTensorAssistantPolicy.runtimeModelID,
+                  fields["--model-id"].map(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains) == true,
                   dataPlaneEncrypted, prefillSchedule == .serial,
                   fields["--runtime-profile"] == nil, fields["--evidence-directory"] == nil,
                   fields["--startup-deadline-uptime-nanoseconds"] != nil,
                   let terms = speculativeTerms else {
-                throw WorkerFailure.invalid("A pinned tensor assistant requires exact keyed Qwen27 TP, explicit depth, serial prefill, startup guard and the native runtime")
+                throw WorkerFailure.invalid("A pinned tensor assistant requires keyed Qwen TP on a row with an inline head, explicit depth, serial prefill, startup guard and the native runtime")
             }
             let verification: ClusterQwenTensorAssistantPolicy.Verification
             if let text = fields[ClusterQwenTensorAssistantPolicy.verificationArgument] {

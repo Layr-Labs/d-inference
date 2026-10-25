@@ -29,11 +29,11 @@ struct ClusterAutomaticSetupHandoff: Codable, Equatable, Sendable {
         guard before.tensorAssistant == after.tensorAssistant else {
             throw ClusterConfigurationError.invalid("Automatic replacement changed the resident tensor assistant policy")
         }
-        if runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID,
+        if let runtimeModelID, ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(runtimeModelID),
            before.selectedGenerationMode == .tensorParallel {
             guard after.selectedGenerationMode == .tensorParallel,
                   (before.tensorShares ?? [1, 1]) == (after.tensorShares ?? [1, 1]) else {
-                throw ClusterConfigurationError.invalid("A Qwen27 capacity replacement changed its tensor arithmetic partition")
+                throw ClusterConfigurationError.invalid("A Qwen TP capacity replacement changed its tensor arithmetic partition")
             }
         }
         func identity(_ configuration: ClusterConfiguration) throws -> Data {

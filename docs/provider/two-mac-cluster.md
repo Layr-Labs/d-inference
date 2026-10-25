@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -65,14 +65,17 @@ position, as the verify window computes it; the window's arithmetic differs in
 its last bits from one-token decode, so, as with the pipeline itself, output
 matches a single Mac's up to near ties. Your pair's own measured speed-up
 replaces the records' figure in the choice once the pair has served the same
-placement both with and without the rounds.
+placement both with and without the rounds. Speeds the pair served count only
+for the Darkbloom build that served them: after an update, speeds an earlier
+build served no longer steer the plan (`darkbloom cluster plan` says how many
+records it left out).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
 | 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
-| 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
+| 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
 | 5 | — | Choosing is starting: "Starting <model> on both Macs in 3 s; press n to stop here." The leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request. | nothing |
 
 When it serves, the screen says how in one line, for example:
@@ -197,7 +200,9 @@ to pipeline when eligible and fitting, without requesting a link measurement. Fo
 runtime, automatic selection still requires measured encrypted-link costs,
 memory fit and a predicted advantage over pipeline. A new pair without those
 link measurements uses an eligible fitting pipeline; a supported worker's first load records
-the measurements for later planning. GLM currently has a pipeline adapter only.
+the measurements for later planning, and each later load adds one. Plans use the median of the
+pair's last eight measurements from the last 30 days, so one fast or slow load does not switch
+the mode. GLM currently has a pipeline adapter only.
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 
@@ -289,6 +294,18 @@ When several splits predict the same time (two identical Macs, or Macs with
 equal measured speed), the one that leaves each Mac the largest share of its
 own memory is chosen: identical Macs split the layers evenly, and a Mac with
 more memory takes more. A faster split is never given up for an even one.
+
+Under tensor parallel both Macs run every token, so the slower Mac's share sets
+the pace. Each time a dense Qwen model loads in tensor parallel, each Mac times
+its own share, alone and with nothing crossing the cable, before the pair is
+ready (at most about a second and a half; a Mac short of memory skips it). The
+leading Mac keeps those timings per model in
+`~/.darkbloom/cluster/share-probes.json` (each Mac's newest timing at each share
+for 30 days) and the next plan balances the shares by them, with no step from
+you. For example, with the timings an M3 Ultra and an M5 Max measured for
+Qwen3.8 27B, a pair first split 2:1 toward the M3 Ultra is planned 1:1 after
+one load. A split that gives a Mac more is still chosen only when that Mac's
+memory holds its share.
 
 ## Prompt prefixes on the pair
 

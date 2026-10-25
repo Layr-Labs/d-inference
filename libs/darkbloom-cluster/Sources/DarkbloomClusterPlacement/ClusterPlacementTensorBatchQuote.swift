@@ -14,9 +14,10 @@ public struct ClusterPlacementTensorRankQuote: Codable, Equatable, Sendable {
     }
 }
 
-/// The exact Qwen27 native TP batch LOAD reservation. The allowance is the
-/// whole-model figure either rank stays under; `rankQuotes`, when present,
-/// are what each rank actually reserves under each supported split.
+/// A registered Qwen TP row's exact native batch LOAD reservation (dense and
+/// routed-expert rows alike, each priced by its own geometry). The allowance
+/// is the whole-model figure either rank stays under; `rankQuotes`, when
+/// present, are what each rank actually reserves under each supported split.
 /// Separate from the pipeline's whole-model per-lane state. Header-only
 /// native derivation supplies the allocator bound; this value never grants
 /// capacity or scales a measured single-request rate.
@@ -26,7 +27,8 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
     /// dropping its additional resident/LOAD charge.
     public static let assistantSchemaName = "darkbloom_cluster_placement_tensor_assistant_quote_v1"
     public static let maximumEncodedBytes = 32_768
-    public static let runtimeModelID = "registered_qwen38_27b"
+    /// The rows whose owner serves request-owned TP lanes at every capacity.
+    public static let runtimeModelIDs = ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs
     public let schema: String
     public let request: ClusterPlacementRequestScope
     public let lanes: Int
@@ -57,14 +59,14 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         let state = perLaneStateBytes.multipliedReportingOverflow(by: lanes)
         let total = state.partialValue.addingReportingOverflow(sharedBytesExcludingCollectives)
         guard schema == (assistant == nil ? Self.schemaName : Self.assistantSchemaName),
-              request.runtimeModelID == Self.runtimeModelID,
+              Self.runtimeModelIDs.contains(request.runtimeModelID),
               [1, 2, 4, 8].contains(lanes), (1...512).contains(chunkTokens), perLaneStateBytes > 0,
               sharedBytesExcludingCollectives > 0, !state.overflow, !total.overflow,
               total.partialValue == allowance.requestBytesExcludingCollectives,
               allowance.maximumContextTokens == request.maximumContextTokens,
               allowance.maximumChunkTokens == 512,
               allowance.reservedBytes <= ClusterWorkerLimits.capacityBytes else {
-            throw ClusterPlacementError("Invalid Qwen27 tensor batch quote identity, width or full LOAD allowance")
+            throw ClusterPlacementError("Invalid Qwen tensor batch quote identity, width or full LOAD allowance")
         }
         if let rankQuotes {
             // A rank never reserves more than the whole-model figure, and
@@ -76,7 +78,7 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
                   rankQuotes.allSatisfy({ $0.requestBytesExcludingCollectives.count == 2
                       && $0.requestBytesExcludingCollectives.allSatisfy { (1...allowance.requestBytesExcludingCollectives).contains($0) } })
             else {
-                throw ClusterPlacementError("Invalid Qwen27 tensor rank quotes")
+                throw ClusterPlacementError("Invalid Qwen tensor rank quotes")
             }
         }
     }
@@ -110,6 +112,20 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         }
         try request.applyCovering(to: &policy, layout: layout)
         policy.modes = [.tensorParallel]; policy.schedules = [.serial]
+        policy.tensorParallelBatchQuote = self
+    }
+
+    /// Initial automatic placement of a row whose other modes stay
+    /// admissible: tensor parallel is priced by this request-owned singleton
+    /// (what its owner reserves at LOAD), every other mode as before. Only a
+    /// plain target quote; an assistant's binds the placement to its mode.
+    public func applySingletonCandidate(to policy: inout ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
+        try validate(layout: layout)
+        guard lanes == 1, assistant == nil, policy.modes?.contains(.tensorParallel) ?? true,
+              policy.forcedMode == nil || policy.forcedMode == .tensorParallel else {
+            throw ClusterPlacementError("A singleton tensor candidate requires its plain serial tensor quote")
+        }
+        try request.applyCovering(to: &policy, layout: layout)
         policy.tensorParallelBatchQuote = self
     }
 

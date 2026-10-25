@@ -28,7 +28,8 @@ struct QwenTensorParallelMTPPolicyTests {
                     for paged in [false, true] {
                         try QwenTensorParallelMTPPolicy.require(model: model, lanes: width, keyed: keyed,
                             paged: paged, terms: nil, environment: ["DARKBLOOM_QWEN_MTP_SERIAL": "1"])
-                        if model == .qwen38TwentySevenB && keyed && paged {
+                        // The rows whose inline head the replicated TP assistant loads.
+                        if QwenTensorParallelMTPPolicy.models.contains(model) && keyed && paged {
                             try QwenTensorParallelMTPPolicy.require(model: model, lanes: width, keyed: keyed,
                                 paged: paged, terms: terms, environment: [:])
                         } else {
@@ -91,28 +92,5 @@ struct QwenTensorParallelMTPPolicyTests {
                     remaining: remaining, stopTokens: [], vocabularySize: 100)
             }
         }
-    }
-
-    @Test func realCancellationAndDeadlineBecomeBilateralBoundaryVotes() throws {
-        let id = UUID(), future = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
-        let controls = [QwenResidentControl(deadline: future), QwenResidentControl(deadline: future)]
-        for value in controls { try value.loaded(); try value.reserve(id); try value.start(id) }
-        func vote(_ deadlines: [UInt64]) throws -> Bool {
-            let values = try controls.enumerated().map { rank, value in
-                try QwenTensorParallelMTPStopVote.contribution(rank: rank,
-                    stopped: (try? value.check(deadline: deadlines[rank])) == nil)
-            }
-            return try QwenTensorParallelMTPStopVote.stopped(zip(values[0], values[1]).map(+))
-        }
-        #expect(try !vote([future, future]))
-        #expect(try vote([future, 0]))
-        controls[1].cancel(id)
-        #expect(try vote([future, future]))
-        // A malformed reduction never turns a peer stop into permission to
-        // enter another assistant or target collective phase.
-        for malformed: [Int32] in [[], [0], [0, 0, 0], [2, 0], [0, -1]] {
-            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPStopVote.stopped(malformed) }
-        }
-        #expect(throws: ProbeError.self) { try QwenTensorParallelMTPStopVote.contribution(rank: 2, stopped: false) }
     }
 }

@@ -12,13 +12,21 @@ import Foundation
 /// only changes how the CPU waits, never what the GPU computes.
 ///
 /// Set before any native initialization (MLX reads it once, on first use).
-/// Every tensor-parallel owner, multi-lane Qwen3.8 27B included, uses fast
-/// fences: the event path cost each of a round's ~140 sealed sums about
-/// 230 us on the pair (a widened owner's one-request round 99.7 vs 67.4 ms,
-/// installed c30). The earlier multi-lane stall (c14/c17) came before the
-/// c34 rule that never evaluates independent rows' collectives together;
-/// the installed c37 acceptance runs widened owners this way. The capacity
-/// is still parsed, so an invalid Qwen27 capacity refuses before anything
+/// Every tensor-parallel owner, widened Qwen rows included, uses fast fences.
+/// The event path cost each of a round's ~140 sealed sums about 230 us on the
+/// pair (a widened owner's one-request round 99.7 vs 67.4 ms). The fast fence
+/// once stalled widened owners (c14, c17, and c39 on 2026-10-25: the ranks
+/// stopped meeting in the next collective right after a row retired): a fast
+/// GPU fence wait spun on one Metal queue for another GPU stream of the same
+/// decode graph (MLX cast the batched projections' scales on the thread's
+/// default stream, not mlx-swift's), which Metal need not run meanwhile. MLX
+/// now keeps those casts on the caller's stream and never spins one GPU stream
+/// on another, and batched rows reuse the single-row path's cached FP32 scales
+/// (`QuantizedLinear.independentRowsForward`), so nothing is cast per step; the
+/// pair diagnostic qwen27-c40-fast1-02 (two lanes) and the installed
+/// acceptances since c41 (four lanes on c44, rows retiring mid-cohort) ran
+/// widened owners on fast fences without a stall. Every Qwen TP row's
+/// capacity is still parsed, so an invalid capacity refuses before anything
 /// changes. A launcher value is always kept.
 enum WorkerCollectiveSynchronization {
     static let variable = "MLX_METAL_FAST_SYNCH"
@@ -30,9 +38,11 @@ enum WorkerCollectiveSynchronization {
         if let explicit = environment[variable] {
             return "darkbloom-collective-sync-v1 fast_synch=\(explicit) source=launcher"
         }
-        // Use the runtime's own lane parser; do not silently turn an invalid
-        // Qwen27 capacity into a different synchronization policy.
-        if modelID == "registered_qwen38_27b" { _ = try QwenBatchSettings.fromEnvironment(environment) }
+        // Use the runtime's own lane parser: an invalid Qwen TP capacity
+        // refuses here, before the setting changes.
+        if ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs.contains(modelID) {
+            _ = try QwenBatchSettings.fromEnvironment(environment)
+        }
         let value = "1"
         setenv(variable, value, 1)
         return "darkbloom-collective-sync-v1 fast_synch=\(value) source=worker"

@@ -42,9 +42,10 @@ public struct ClusterServedSample: Codable, Equatable, Sendable {
 
 /// Speed records written from served requests, per setup: the model, the
 /// generation mode and the layers each rank holds (`0-4|4-32`, rank 0 first),
-/// which is what the leader's pair telemetry names a request's setup by.
-/// Kept across serving sessions (the telemetry log keeps one session), newest
-/// last, bounded per setup and route so that old hardware states age out.
+/// which is what the leader's pair telemetry names a request's setup by, and
+/// the worker build each rank served with. Kept across serving sessions (the
+/// telemetry log keeps one session), newest last, bounded per setup and route
+/// so that old hardware states age out.
 public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
     public static let schemaName = "darkbloom_cluster_served_speed_v1"
     public static let maximumEncodedBytes = 1 << 20
@@ -58,8 +59,30 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
         /// The members' labels in rank order, when the writer knew them: the
         /// calibration needs to know which Mac held which range.
         public let ranks: [String]?
-        public init(modelID: String, mode: String, cut: String, ranks: [String]? = nil) {
-            self.modelID = modelID; self.mode = mode; self.cut = cut; self.ranks = ranks
+        /// The worker build each rank served with, rank order: the SHA-256 of
+        /// that rank's worker binary as the pair's admission identity names it
+        /// (`ClusterWorkerIdentity.peers[].buildSHA256`, the value share probes
+        /// and the prefix SSD scope use). A served speed is evidence only for
+        /// the build that served it, so a plan or a route uses only the setups
+        /// its own builds served (`servedBy`). Nil in a record written before
+        /// builds were recorded, which counts as another build's.
+        public let rankBuildSHA256: [String]?
+        public init(modelID: String, mode: String, cut: String, ranks: [String]? = nil, rankBuildSHA256: [String]? = nil) {
+            self.modelID = modelID; self.mode = mode; self.cut = cut; self.ranks = ranks; self.rankBuildSHA256 = rankBuildSHA256
+        }
+
+        /// Whether every rank of this setup ran the worker build `builds` names
+        /// for its member (member ID: SHA-256 of that member's worker binary).
+        /// A setup that names no ranks or no builds, or other builds, was not
+        /// served by these builds.
+        public func servedBy(_ builds: [String: String]) -> Bool {
+            guard let ranks, let served = rankBuildSHA256, !ranks.isEmpty, ranks.count == served.count else { return false }
+            return zip(ranks, served).allSatisfy { builds[$0.0] == $0.1 }
+        }
+
+        /// A worker build's SHA-256: 64 lowercase hexadecimal digits.
+        public static func isBuild(_ value: String) -> Bool {
+            value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         }
 
         /// The cuts of a `0-4|4-32` cut string over `layerCount` layers; nil when it is not one.
@@ -158,7 +181,8 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
     /// `keptPerRoute`.
     public mutating func add(_ sample: ClusterServedSample, setup: Setup) {
         guard sample.valid, !setup.modelID.isEmpty, setup.modelID.utf8.count <= 256, setup.mode.utf8.count <= 64,
-              setup.cut.utf8.count <= 256, (setup.ranks ?? []).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) else { return }
+              setup.cut.utf8.count <= 256, (setup.ranks ?? []).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }),
+              (setup.rankBuildSHA256 ?? []).count <= 8, (setup.rankBuildSHA256 ?? []).allSatisfy(Setup.isBuild) else { return }
         entries.append(.init(setup: setup, sample: sample))
         let same = entries.indices.filter {
             entries[$0].setup == setup && entries[$0].sample.route == sample.route && entries[$0].sample.member == sample.member
@@ -178,6 +202,33 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
         guard schema == Self.schemaName, entries.allSatisfy({ $0.sample.valid }) else {
             throw ClusterPlacementError("Served speed records are malformed")
         }
+    }
+
+    /// The entries a plan or a route for these worker builds may use, and how
+    /// many others `entries` held. `builds` is each member's worker build
+    /// (SHA-256 of its worker binary) by member ID, the builds the plan is
+    /// for; an entry counts only when every rank ran its member's build
+    /// (`Setup.servedBy`). A build changes the kernels a request runs, so what
+    /// one build served says nothing of another's: on the M3 Ultra + M5 Max
+    /// pair (2026-10-25) requests served by builds before c41, some while the
+    /// M3 Ultra was busy, kept steering the 27B's plans, which stayed at 3:2
+    /// where c41's own share probes balance it 1:1 (taken as c41's, they cut
+    /// its predicted decode from 55.7 to 23.2 tok/s). A new build therefore
+    /// plans without served speeds until it has served, as a share probe from
+    /// another build starts its member again (`ClusterShareProbeHistory`). An
+    /// entry written before builds were recorded counts as another build's.
+    public static func servedBy(_ builds: [String: String], _ entries: [Entry]) -> (current: [Entry], otherBuilds: Int) {
+        let current = entries.filter { $0.setup.servedBy(builds) }
+        return (current, entries.count - current.count)
+    }
+
+    /// The plan's one line for `count` records left out because another worker
+    /// build served them (`servedBy`); nil when there were none.
+    public static func otherBuildsLine(_ count: Int, builds: [String: String]) -> String? {
+        guard count > 0 else { return nil }
+        let named = Set(builds.values).sorted().map { String($0.prefix(12)) }
+        return "  \(count) record(s) from other worker builds ignored: a served speed counts only for the build that served it"
+            + (named.isEmpty ? "" : " (this plan is for worker build\(named.count == 1 ? "" : "s") \(named.joined(separator: ", ")))")
     }
 }
 
@@ -327,7 +378,11 @@ public enum ClusterServedCalibration {
     /// same for the shard prefill of `tensor_parallel_v1` by the first token
     /// (the hybrid's prefill is a pipeline's and corrects nothing here). A
     /// pair that served slower than predicted lowers the shard rates, and the
-    /// next plan stops choosing tensor parallel where it no longer wins.
+    /// next plan stops choosing tensor parallel where it no longer wins. The
+    /// factor scales every share point a device has (its share probes), not
+    /// only the served share's, so the ratio the probes measured between the
+    /// ranks and between one rank's shares stands: one observed step cannot
+    /// say which rank was the slower.
     static func tensorParallelMeasurements(_ usable: [ClusterServedSample], placement: Placement,
                                            runtimeBinarySHA256: String, measuredUTC: String) throws -> [ClusterSpeedMeasurement] {
         let layout = placement.layout, devices = placement.devices
@@ -335,7 +390,7 @@ public enum ClusterServedCalibration {
         let pair = usable.filter { $0.route == .pair }
         guard !pair.isEmpty else { return [] }
         var policy = ClusterPlacementPolicy()
-        let reductionStep = Double(tp.reductionsPerStep(layerCount: layout.layerCount)) * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+        let reductionStep = tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true, reduction: reduction)
         var decodeFactors: [Double] = [], prefillFactors: [Double] = []
         for s in pair {
             policy.promptTokens = s.promptTokens; policy.outputTokens = max(1, s.outputTokens)
@@ -360,19 +415,29 @@ public enum ClusterServedCalibration {
             let split = ClusterDecodeSplit(rates: base,
                 hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout),
                 hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
+            // Its prefill as the planner predicted it: a probe that timed decode only says nothing of prefill.
+            let prefillFromHardware = ClusterDecodeSplit(rates: base.withoutDecodeOnlyShareRates,
+                hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout),
+                hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout)).fromHardware == true
             var shardDecode = base.tensorShardDecodeTokensPerSecond, shardPrefill = base.tensorShardPrefillTokensPerSecond
-            var shareRates = base.tensorShareRates
+            // Every share point this Mac has, scaled as its served step is.
+            var shareRates = base.tensorShareRates?.map { point in
+                ClusterShareRate(sharePerMille: point.sharePerMille,
+                    decodeTokensPerSecond: point.decodeTokensPerSecond / (decodeFactor ?? 1),
+                    prefillTokensPerSecond: point.prefillTokensPerSecond.map { $0 / (prefillFactor ?? 1) })
+            }
             if let weights = placement.tensorShares {
                 // Unequal shares: what was served corrects this Mac's step at
                 // its own share (a share rate), never the equal half's.
                 let fraction = Double(weights[index]) / total
-                let perMille = Int((fraction * 1000).rounded())
-                let step = split.shareStepSeconds(fraction: fraction) * (decodeFactor ?? 1)
-                // As the planner predicted it: a probe at this share, the half's scaled, the hardware prior
-                // (its share of every layer), else the whole model's rate.
-                let prefillPerToken = (base.shareRate(near: fraction)?.prefillTokensPerSecond.map { 1 / $0 }
-                    ?? base.tensorShardPrefillTokensPerSecond.map { fraction * Double(devices.count) / $0 }
-                    ?? (split.fromHardware == true ? fraction / base.prefillTokensPerSecond : 1 / base.prefillTokensPerSecond))
+                // A probe at this share is scaled as every other point is, at its own share.
+                let probed = base.shareRate(near: fraction)
+                let perMille = probed?.sharePerMille ?? Int((fraction * 1000).rounded())
+                let step = (probed.map { 1 / $0.decodeTokensPerSecond } ?? split.shareStepSeconds(fraction: fraction)) * (decodeFactor ?? 1)
+                // As the planner predicted it: a probe at this share, the half's or another share's scaled, the
+                // hardware prior (its share of every layer), else the whole model's rate.
+                let prefillPerToken = (base.measuredSharePrefillSeconds(fraction: fraction, ranks: devices.count)
+                    ?? (prefillFromHardware ? fraction / base.prefillTokensPerSecond : 1 / base.prefillTokensPerSecond))
                     * (prefillFactor ?? 1)
                 let kept = (shareRates ?? []).filter { abs($0.sharePerMille - perMille) > 5 }.suffix(15)
                 shareRates = Array(kept) + [ClusterShareRate(sharePerMille: perMille, decodeTokensPerSecond: 1 / step,
@@ -380,8 +445,11 @@ public enum ClusterServedCalibration {
             } else {
                 shardDecode = decodeFactor.map { 1 / (split.shareStepSeconds(ranks: devices.count) * $0) }
                     ?? base.tensorShardDecodeTokensPerSecond
-                let predictedShardPrefill = base.tensorShardPrefillTokensPerSecond
-                    ?? (split.fromHardware == true ? base.prefillTokensPerSecond * Double(devices.count) : base.prefillTokensPerSecond)
+                // As the planner predicted it (`measuredSharePrefillSeconds`), the hardware prior, else the whole model's.
+                let equal = 1 / Double(devices.count)
+                let predictedShardPrefill = base.shareRate(near: equal)?.prefillTokensPerSecond ?? base.tensorShardPrefillTokensPerSecond
+                    ?? base.measuredSharePrefillSeconds(fraction: equal, ranks: devices.count).map { 1 / $0 }
+                    ?? (prefillFromHardware ? base.prefillTokensPerSecond * Double(devices.count) : base.prefillTokensPerSecond)
                 shardPrefill = prefillFactor.map { predictedShardPrefill / $0 } ?? base.tensorShardPrefillTokensPerSecond
             }
             let prompt = Int(median(pair.map { Double($0.promptTokens) }) ?? Double(layout.maximumChunkTokens))
@@ -405,7 +473,10 @@ public enum ClusterServedCalibration {
     /// `devices` (labels) and whose cut fits `layout`, with one plain line per
     /// setup. The plan tool (`plan --served`) and the provider's planning use
     /// it the same way: the measurements join the others before the speeds
-    /// are estimated, so the next plan starts from what was served.
+    /// are estimated, so the next plan starts from what was served. Callers
+    /// pass only the entries the plan's worker builds served
+    /// (`ClusterServedSpeedRecords.servedBy`); a setup is one build's, so
+    /// samples of two builds are never one median.
     public static func measurements(entries: [ClusterServedSpeedRecords.Entry], devices: [ClusterPlacementDevice],
                                     layout: ClusterModelLayout, link: ClusterLinkCosts, measuredUTC: String) throws
         -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
@@ -424,11 +495,12 @@ public enum ClusterServedCalibration {
             guard ordered.count == ranks.count else { lines.append("  \(setup.mode) cut \(setup.cut): skipped (a rank is not a planned device)"); continue }
             let samples = entries.filter { $0.setup == setup }.map(\.sample)
             let schedule: ClusterPrefillSchedule = layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial
-            // A pipeline's speculative rounds are measured against what the same placement served plainly:
-            // their speed-up then rides on the decoding rank's plain measurement (one record per device).
+            // A pipeline's speculative rounds are measured against what the same placement served plainly
+            // with the same builds: their speed-up then rides on the decoding rank's plain measurement (one
+            // record per device).
             if mode.usesSpeculativeHead, !mode.isPhaseSplit, let decoder = ordered.last {
                 let plainSetup = ClusterServedSpeedRecords.Setup(modelID: setup.modelID, mode: ClusterGenerationMode.pipeline.rawValue,
-                    cut: setup.cut, ranks: setup.ranks)
+                    cut: setup.cut, ranks: setup.ranks, rankBuildSHA256: setup.rankBuildSHA256)
                 if let plain = median(entries.filter { $0.setup == plainSetup && $0.sample.route == .pair }.compactMap(\.sample.decodeTokensPerSecond)),
                    let rounds = median(samples.filter { $0.route == .pair }.compactMap(\.decodeTokensPerSecond)) {
                     speculativeFactors.append((decoder, rounds / plain))

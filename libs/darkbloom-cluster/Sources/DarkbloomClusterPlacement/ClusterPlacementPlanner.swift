@@ -26,6 +26,11 @@ public struct ClusterPlacementPolicy: Sendable {
     /// Nil means every mode and schedule the layout lists.
     public var modes: [ClusterGenerationMode]?
     public var schedules: [ClusterPrefillSchedule]?
+    /// Why `modes` leaves out modes the layout lists, in plain words (a model
+    /// feature only tensor parallel keeps, a quote priced for one mode): the
+    /// plan's reason line says it instead of comparing with a mode it never
+    /// placed. Nil, the default, says nothing.
+    public var modesReason: String?
     /// A Mac alone is reported "as fast" when its predicted request time is
     /// within this share of the chosen placement's.
     public var tieTolerance = 0.03
@@ -105,6 +110,21 @@ public struct ClusterPlacementPolicy: Sendable {
     /// first. Nil, the default, keeps nothing.
     public var keptMode: ClusterGenerationMode?
     public var keptModeMargin = 0.10
+    /// Tensor parallel goes first wherever it fits (owner, 2026-10-24: "if tensor parallel fits it will and
+    /// should always be faster"; the provider's placement step sets it): within each hardware group a
+    /// tensor-parallel candidate ranks ahead of every other mode, fastest split first, whatever the predictions
+    /// say, and neither `tensorParallelMargin` nor `keptMode` holds it back; a better group (one that loads now
+    /// while tensor parallel would not) still goes first. Predictions are still made and reported. False, the
+    /// default here: the speed comparison decides (the plan tool without `--tensor-parallel-first`, and the
+    /// checks of that comparison).
+    public var tensorParallelFirst = false
+    /// With `tensorParallelFirst`: before a load has measured the link, plan tensor parallel on the keyed
+    /// reduction a forced plan assumes (`ClusterForcedMode.assumedReduction`, labelled as assumed), so the first
+    /// plan of a new pair is tensor parallel too. Only a first placement sets it (the provider's placement step,
+    /// the request router pricing what it chose); an automatic replacement never does, because it prices only the
+    /// pair's own recorded keyed link and invents no rate (`DistributedAutomaticBatchPlanner`): without one it
+    /// keeps the running setup.
+    public var tensorParallelAssumesUnmeasuredLink = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
     public init() {}
@@ -309,6 +329,11 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     /// why it was or was not chosen. Nil under the hand-off opt-in, whose plan
     /// is the earlier planner's byte for byte.
     public var shards: ClusterShardAssessment? = nil
+    /// `ClusterPlacementPolicy.modesReason` when the policy's modes left out
+    /// every pipeline mode or every tensor-parallel mode the layout lists;
+    /// nil otherwise (omitted then, so every other plan is byte for byte what
+    /// it was).
+    public var modesReason: String? = nil
 }
 
 /// Decides how a model is divided between devices from what the devices
@@ -395,6 +420,12 @@ public enum ClusterPlacementPlanner {
                 link = link.assumingForcedReduction()
             }
         }
+        if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
+           modes.contains(.tensorParallel),
+           let tp = layout.tensorParallel, tp.family.ranks.contains(min(policy.maximumRanges, devices.count)) {
+            // Tensor parallel goes first where it fits: before a load measured the link, an assumed keyed reduction.
+            link = link.assumingForcedReduction()
+        }
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
@@ -406,9 +437,10 @@ public enum ClusterPlacementPlanner {
                        candidate.cuts, candidate.mode)
             }
         } ?? admitted
-        let unheld = context.holdingTensorParallelToItsMargin(
-            context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime)
-        let ranked = context.holdingKeptMode(unheld, regime: policy.regime)
+        let byTime = context.ordered(qualified.filter(\.possible), regime: policy.regime)
+        let unheld = policy.tensorParallelFirst ? context.tensorParallelFirst(byTime)
+            : context.holdingTensorParallelToItsMargin(byTime, regime: policy.regime)
+        let ranked = policy.tensorParallelFirst ? unheld : context.holdingKeptMode(unheld, regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -467,6 +499,14 @@ public enum ClusterPlacementPlanner {
         if let kept = policy.keptMode, ranked.first?.mode == kept, unheld.first?.mode != kept {
             result.keptModeReason = policy.keptModeReason ?? "kept \(kept.rawValue), the mode this pair keeps"
         }
+        // A family the policy left out entirely (every pipeline mode, or tensor parallel) is said with the
+        // policy's reason, never as one that does not fit (2026-10-24: Qwen3.8 27B, whose images, video and
+        // logprobs only tensor parallel keeps, read "no pipeline placement fits these Macs").
+        if let reason = policy.modesReason, let allowed = policy.modes {
+            let sharded = layout.generationModes.filter(\.isSharded)
+            let families = [sharded.filter { !$0.usesTensorParallelDecode }, sharded.filter(\.usesTensorParallelDecode)]
+            if families.contains(where: { !$0.isEmpty && !$0.contains(where: allowed.contains) }) { result.modesReason = reason }
+        }
         if layout.tensorParallel != nil {
             result.tensorParallel = try assessTensorParallel(devices: devices, layout: layout, policy: policy, link: link,
                 prompt: prompt, outputs: outputs, schedules: schedules, ranked: ranked, alone: alone)
@@ -513,7 +553,8 @@ public enum ClusterPlacementPlanner {
             (policy.modes?.contains(mode) ?? true) && (policy.forcedMode?.admits(mode) ?? true)
         }
         guard !modes.isEmpty else {
-            return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes; using pipeline candidates")
+            let why = implemented.contains(where: { policy.modes?.contains($0) == false }) ? policy.modesReason.map { " (\($0))" } ?? "" : ""
+            return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes\(why); using pipeline candidates")
         }
         let most = min(policy.maximumRanges, devices.count)
         guard tp.family.ranks.contains(where: { $0 <= most }) else {
@@ -531,7 +572,7 @@ public enum ClusterPlacementPlanner {
         let possible = try context.candidates(.admitted).filter(\.possible)
         let best = context.ordered(possible.filter { $0.mode == .tensorParallel }, regime: regime).first
         let hybrid = context.ordered(possible.filter { $0.mode == .pipelinePrefillTensorDecode }, regime: regime).first
-        let perStep = Double(steps) * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+        let perStep = tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true, reduction: reduction)
         func make(_ verdict: ClusterTensorParallelAssessment.Verdict, _ reason: String) -> ClusterTensorParallelAssessment {
             .init(verdict: verdict, reason: reason, tensorParallel: best, hybrid: hybrid, bestOtherSeconds: bestOther,
                   bestAloneSeconds: bestAlone, devices: speeds, reductionsPerStep: steps, reductionSecondsPerStep: perStep,
@@ -584,7 +625,11 @@ public enum ClusterPlacementPlanner {
               cuts == Array(Set(cuts)).sorted(), cuts.allSatisfy({ (1..<layout.layerCount).contains($0) }) else {
             throw ClusterPlacementError("A placement is one device per range and ascending cuts inside the model")
         }
+        var link = link
         if mode.usesTensorParallelDecode {
+            // As `plan` does: tensor parallel goes first wherever it fits, on an assumed keyed reduction until a load measures the link.
+            if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
+               mode == .tensorParallel { link = link.assumingForcedReduction() }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(devices.count), link.reduction != nil else {
                 throw ClusterPlacementError("A tensor-parallel placement needs the layout's tensor-parallel facts for this many ranks and a measured reduction")
             }
@@ -960,6 +1005,18 @@ public enum ClusterPlacementPlanner {
             return kept + [other] + held + ordered[(otherIndex + 1)...]
         }
 
+        /// `policy.tensorParallelFirst`: within each hardware group the tensor-parallel candidates go first (in
+        /// their order, fastest first), then the rest in theirs; the groups keep their order.
+        func tensorParallelFirst(_ ordered: [ClusterPlacementCandidate]) -> [ClusterPlacementCandidate] {
+            ordered.enumerated().sorted { a, b in
+                let ga = hardwareGroup(a.element), gb = hardwareGroup(b.element)
+                if ga != gb { return ga < gb }
+                let ta = a.element.mode == .tensorParallel, tb = b.element.mode == .tensorParallel
+                if ta != tb { return ta }
+                return a.offset < b.offset
+            }.map(\.element)
+        }
+
         /// `policy.keptMode`: a candidate of another mode ahead of the kept mode's best in the same hardware group
         /// stays ahead only when it is predicted at least `keptModeMargin` faster; otherwise it goes right after
         /// it. A better group (the kept mode does not load now) is never overtaken.
@@ -1009,18 +1066,19 @@ public enum ClusterPlacementPlanner {
                 var perToken = 0.0
                 for (index, device) in order.enumerated() {
                     let rate = rates(device, regime).0
-                    // A measured probe at this share wins over scaling the half's.
-                    let probed = rate.shareRate(near: share[index])?.prefillTokensPerSecond.map { 1 / $0 }
+                    // A measured probe at this share wins over scaling the half's, or another share's.
+                    let probed = rate.measuredSharePrefillSeconds(fraction: share[index], ranks: order.count)
                     // Without a probe, a Mac whose split comes from its hardware computes its share of
-                    // every layer (prefill is compute-bound); otherwise no gain is assumed.
-                    let prior = split(device, regime).fromHardware == true ? share[index] / rate.prefillTokensPerSecond : nil
-                    perToken = max(perToken, probed ?? rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
-                        ?? prior ?? 1 / rate.prefillTokensPerSecond)
+                    // every layer (prefill is compute-bound); otherwise no gain is assumed. A share probe that
+                    // timed decode only says nothing of prefill (`prefillSplit`).
+                    let prior = prefillSplit(device, regime).fromHardware == true ? share[index] / rate.prefillTokensPerSecond : nil
+                    perToken = max(perToken, probed ?? prior ?? 1 / rate.prefillTokensPerSecond)
                 }
                 first = Double(prompt) * perToken
-                    + Double(chunks * tp.family.reductionsPerLayer * layout.layerCount)
-                        * reduction.seconds(bytes: chunk * tp.family.partialBytesPerToken)
-                    + Double(tp.family.reductionsPerStep) * reduction.seconds(bytes: 16)
+                    + tp.family.prefillReductionSeconds(chunks: chunks, chunk: chunk, layers: layout.layerCount,
+                        reduction: reduction)
+                    + Double(tp.family.reductionsPerStep)
+                        * reduction.seconds(bytes: ClusterTensorParallelFamilyPlan.selectionReductionBytes)
             } else {
                 // Serial: each chunk passes through every range in turn. Lookahead:
                 // the slowest range sets the pace and one chunk passes through the rest.
@@ -1038,8 +1096,8 @@ public enum ClusterPlacementPlanner {
                 for (index, device) in order.enumerated() {
                     slowest = max(slowest, split(device, regime).shareStepSeconds(fraction: share[index]))
                 }
-                step = slowest + Double(tp.reductionsPerStep(layerCount: layout.layerCount))
-                    * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+                step = slowest + tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true,
+                    reduction: reduction)
                 if !mode.usesTensorParallelPrefill {
                     // After a pipeline prefill each rank sends the state of the
                     // heads it does not keep: (k - 1) / k of its range's.
@@ -1074,6 +1132,15 @@ public enum ClusterPlacementPlanner {
         /// else no gain.
         func split(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
             ClusterDecodeSplit(rates: rates(device, regime).0, hardwareWeightSeconds: device.speed.absolute
+                ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
+                hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
+        }
+
+        /// The same split without the share probes that timed decode only:
+        /// whether a share's prefill comes from the device's hardware, as it
+        /// did before such a probe.
+        func prefillSplit(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
+            ClusterDecodeSplit(rates: rates(device, regime).0.withoutDecodeOnlyShareRates, hardwareWeightSeconds: device.speed.absolute
                 ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
                 hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
         }

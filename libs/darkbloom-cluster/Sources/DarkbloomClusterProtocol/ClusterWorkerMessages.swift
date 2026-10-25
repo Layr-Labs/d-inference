@@ -212,8 +212,8 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
 /// the way the sharded modes use it (`keyed`: over the keyed data plane, the
 /// all-sums sealed): one-way point-to-point records, small and large, and the
 /// all-sum at a decode step's width and at a prefill chunk's. Medians, in
-/// microseconds. The pair's owner keeps the latest per pair; a placement
-/// planner derives the link's costs from it.
+/// microseconds. The pair's owner keeps the pair's recent ones; a placement
+/// planner derives the link's costs from their median.
 public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     public static let transports: Set<String> = ["jaccl"]
     public let transport: String
@@ -245,6 +245,39 @@ public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     }
 }
 
+/// What a tensor-parallel rank measured of its own share at load, alone:
+/// every reduction local, so nothing crossed the cable and the outputs were
+/// not a tensor-parallel result. `sharePerMille` is this rank's share of every
+/// divided part; the plain decode step is one request's one-token step and,
+/// when the load serves the model's speculative head, the verify window is one
+/// request's window of `windowColumns` tokens (verified and settled). Medians
+/// of `rounds` timed rounds, in microseconds. The pair's owner keeps each
+/// member's recent ones per model; a placement planner reads them as that
+/// Mac's share steps, so the next plan balances the shares by them.
+public struct ClusterWorkerShareProbe: Codable, Equatable, Sendable {
+    public let sharePerMille: Int
+    public let plainStepMicroseconds: Int
+    public let windowColumns: Int?
+    public let windowStepMicroseconds: Int?
+    public let rounds: Int
+    public init(sharePerMille: Int, plainStepMicroseconds: Int, windowColumns: Int? = nil,
+                windowStepMicroseconds: Int? = nil, rounds: Int) {
+        self.sharePerMille = sharePerMille; self.plainStepMicroseconds = plainStepMicroseconds
+        self.windowColumns = windowColumns; self.windowStepMicroseconds = windowStepMicroseconds
+        self.rounds = rounds
+    }
+    /// A share strictly between none and all, positive steps within the link
+    /// probe's bounds, a window of the speculative head's widths (depth 1 to 4
+    /// plus the committed token) exactly when its step is given, a few rounds.
+    public var valid: Bool {
+        (1...999).contains(sharePerMille) && (1...60_000_000).contains(plainStepMicroseconds)
+            && (windowColumns == nil) == (windowStepMicroseconds == nil)
+            && (windowColumns.map { (2...5).contains($0) } ?? true)
+            && (windowStepMicroseconds.map { (1...60_000_000).contains($0) } ?? true)
+            && (3...64).contains(rounds)
+    }
+}
+
 /// This worker's local readiness. The owner must aggregate both workers.
 public struct ClusterWorkerReady: Equatable, Sendable {
     public let identity: ClusterWorkerIdentity
@@ -269,16 +302,21 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// text only, and then the record's bytes are those of a worker without it.
     public let media: String?
     public let tensorAssistant: ClusterQwenTensorAssistantReady?
+    /// This rank's own share as its tensor-parallel load timed it; nil from
+    /// other modes and from a load whose probe did not run (then the record's
+    /// bytes are those of a worker without it).
+    public let shareProbe: ClusterWorkerShareProbe?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
                 servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil,
-                tensorAssistant: ClusterQwenTensorAssistantReady? = nil) {
+                tensorAssistant: ClusterQwenTensorAssistantReady? = nil, shareProbe: ClusterWorkerShareProbe? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
         self.linkProbe = linkProbe
         self.media = media; self.tensorAssistant = tensorAssistant
+        self.shareProbe = shareProbe
     }
 }
 

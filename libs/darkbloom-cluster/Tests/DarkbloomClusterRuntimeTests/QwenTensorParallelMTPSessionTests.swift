@@ -209,7 +209,7 @@ struct QwenTensorParallelMTPSessionTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func realAssistantAndTargetRoundsSettleBeforePublicationAndRetireAfterFault() throws {
         try Device.withDefaultDevice(.gpu) {
-            let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4,
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
@@ -331,7 +331,7 @@ struct QwenTensorParallelMTPSessionTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func boundedHistoryFlushKeepsTargetVerifiedOutputs() throws {
         try Device.withDefaultDevice(.gpu) {
-            let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4,
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
@@ -409,6 +409,98 @@ struct QwenTensorParallelMTPSessionTests {
         }
     }
 
+    /// Leading complete history blocks move into head K/V while the prompt is
+    /// observed: the same blocks, in the same order and shapes, as the first
+    /// round's draft would flush, so every proposal, round and token is the
+    /// whole-prompt flush's, while the queued trusted rows stay within one
+    /// flush block instead of growing with the prompt (67 tokens in frames of
+    /// 31, 8-row blocks, greedy and sampled speculation).
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func promptHistoryFlushesKeepDraftsAndBoundTheBacklog() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
+                kvHeads: 2, vocabulary: 256)
+            var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 256; text["mtp_num_hidden_layers"] = 1
+            root["text_config"] = text
+            root["mtplx_mtp"] = ["included": true, "prefix": "mtp.", "block_size": 3]
+            root["mtplx_mtp_quantization"] = ["group_size": 64, "bits": 4, "mode": "affine"]
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let config = try JSONDecoder().decode(Qwen35TextConfiguration.self,
+                from: JSONSerialization.data(withJSONObject: text))
+            MLXRandom.seed(817)
+            let donor = Qwen35MTPModule(config)
+            donor.update(parameters: ModuleParameters.unflattened(donor.parameters().flattened().map {
+                ($0.0, $0.1.asType(.bfloat16))
+            }))
+            quantize(model: donor, groupSize: 64, bits: 4); eval(donor)
+            let weights = Dictionary(uniqueKeysWithValues: donor.parameters().flattened())
+            struct Run: Equatable { let tokens: [Int]; let rounds: Int; let emitted: Int; let examined: [Int]; let accepted: [Int] }
+            func generate(_ item: CombinedCase, early: Bool) throws -> (run: Run, backlog: Int) {
+                let wire = Rendezvous(), id = UUID()
+                let owners = try (0..<2).map { rank -> DecoderOwner in
+                    let group = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: group) { _, keep in
+                        for (name, value) in source.tensors { try keep(name, value) }
+                    }
+                    let request = try combinedRequest(item, id: id)
+                    let host = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: 1,
+                        maximumTokensPerRequest: 256, maximumChunkTokens: 64)
+                    let target = try QwenTensorParallelMTPSession(model: model, configuration: configuration,
+                        host: host, request: request)
+                    let head = try QwenTensorParallelMTPHead(model: model, configuration: configuration,
+                        indexedWeights: weights, reduction: group)
+                    head.assistant.historyFlushRows = 8
+                    return try DecoderOwner(target: target, decoder: .init(target: target, head: head, group: group,
+                        depth: item.depth, flushesHistoryDuringPrompt: early), host: host)
+                }
+                defer { for owner in owners { try? owner.decoder.retire() } }
+                var backlog = 0
+                while owners[0].target.state.committedTokens < 67 {
+                    try parallelDecoders(owners) { owner, _ in
+                        owner.logits = try owner.decoder.prefill(check: {}) ?? owner.logits
+                    }
+                    backlog = max(backlog, owners[0].decoder.trustedBacklogRows)
+                    #expect(owners[0].decoder.trustedBacklogRows == owners[1].decoder.trustedBacklogRows)
+                }
+                try parallelDecoders(owners) { owner, rank in
+                    let model = owner.target.model, request = owner.target.request
+                    let full = model.gatheredLogits(try #require(owner.logits)); eval(full)
+                    let sampled = rank == 0 ? (request.sampler?.sample(full) ?? argMax(full, axis: -1)) : nil
+                    let (selection, flags) = model.broadcastChoice(sampled, stop: 0); eval(selection, flags)
+                    let token = Int(selection.item(Int32.self))
+                    if rank == 0 { request.sampler?.commit(token) }
+                    try owner.decoder.begin(firstToken: token); owner.tokens = [token]; owner.logits = nil
+                }
+                while owners[0].tokens.count < 11 {
+                    try parallelDecoders(owners) { owner, _ in
+                        let round = try owner.decoder.step(lastToken: owner.tokens.last!,
+                            remaining: 11 - owner.tokens.count, check: {})
+                        owner.tokens += round.tokens
+                    }
+                    #expect(owners[0].tokens == owners[1].tokens)
+                }
+                let statistics = owners[0].decoder.statistics
+                for owner in owners {
+                    try owner.decoder.retire()
+                    #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0)
+                }
+                return (Run(tokens: owners[0].tokens, rounds: statistics.rounds, emitted: statistics.emittedTokens,
+                    examined: statistics.examinedByPosition, accepted: statistics.acceptedByPosition), backlog)
+            }
+            for item in [CombinedCase(depth: 2, sampling: nil, history: false, capture: false, failAfterDraft: false),
+                         combinedCases[1]] {
+                let whole = try generate(item, early: false), early = try generate(item, early: true)
+                print("darkbloom-prompt-history-flush-test depth=\(item.depth) whole_backlog=\(whole.backlog)"
+                    + " early_backlog=\(early.backlog) rounds=\(early.run.rounds) accepted=\(early.run.accepted)")
+                #expect(early.run == whole.run && early.run.tokens.count == 11 && early.run.rounds > 0)
+                #expect(whole.backlog >= 60 && early.backlog <= 8)
+            }
+        }
+    }
+
     /// The MTP ledger prices a verify window's speculation, not a second
     /// history: columns are written into the row's own pages, rollback moves
     /// the frontier, and attention gathers one layer at a time. Over an 8K
@@ -417,7 +509,7 @@ struct QwenTensorParallelMTPSessionTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func capturedWindowsAllocateNoSecondHistory() throws {
         try Device.withDefaultDevice(.gpu) {
-            let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 8, heads: 4, kvHeads: 2, vocabulary: 256)
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 8, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any]
             text["max_position_embeddings"] = 16384
@@ -480,7 +572,7 @@ struct QwenTensorParallelMTPSessionTests {
 
     private func verify(hybrid: Bool) throws {
         try Device.withDefaultDevice(gpu ? .gpu : .cpu) {
-            let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any], tensors = source.tensors
             text["max_position_embeddings"] = 256
@@ -592,7 +684,7 @@ struct QwenTensorParallelMTPSessionTests {
         if device == .cpu { _ = mlx_detail_compile_clear_cache() }
         defer { if device == .cpu { _ = mlx_detail_compile_clear_cache() } }
         try Device.withDefaultDevice(device) {
-            let source = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4, heads: 4,
+            let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)
             var root = try JSONSerialization.jsonObject(with: source.configuration) as! [String: Any]
             var text = root["text_config"] as! [String: Any], tensors = source.tensors

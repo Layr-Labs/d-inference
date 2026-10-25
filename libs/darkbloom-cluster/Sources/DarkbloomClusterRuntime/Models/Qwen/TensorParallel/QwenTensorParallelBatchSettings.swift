@@ -1,22 +1,29 @@
 import Foundation
 
 /// Exact product admission, separate from the reusable arithmetic primitive.
-/// Other TP rows and unkeyed singleton probes keep their earlier behavior.
+/// Every registered Qwen TP row serves request-owned CBv2 lanes at every
+/// capacity, one included, and keeps one execution/cache family across
+/// capacity changes. Only an authenticated sealed pair serves them.
 struct QwenTensorParallelBatchSettings {
     let lanes: Int
     let backend: ClusterStageKVBackendKind
-    /// Keyed Qwen27 keeps one execution/cache family across capacity changes.
-    var requestOwned = false
+    /// A routed-expert row's cohort packs every row's expert and shared
+    /// partials into one collective a layer (`Qwen35SparseMoeBlock`).
+    var routedExperts = false
     static func resolve(model: QwenRegisteredDenseModel, keyed: Bool,
                         environment: [String: String]) throws -> Self {
-        guard model == .qwen38TwentySevenB else { return .init(lanes: 1, backend: .paged) }
+        let definition = try QwenResidentModelDefinition(model: model)
+        guard definition.supportedGenerationModes.contains(.tensorParallel) else {
+            throw ProbeError("\(model.rawValue) has no tensor-parallel row")
+        }
+        guard keyed else { throw ProbeError("Qwen TP serves request-owned lanes over an authenticated sealed pair only") }
         let requested = try QwenBatchSettings.fromEnvironment(environment)
-        guard !requested.batching || keyed else { throw ProbeError("Qwen27 TP batching requires an authenticated sealed pair") }
-        return try .init(lanes: requested.lanes,
-            backend: keyed ? ClusterStageKVBackendKind.fromEnvironment(environment) : .paged, requestOwned: keyed)
+        return try .init(lanes: requested.lanes, backend: ClusterStageKVBackendKind.fromEnvironment(environment),
+            routedExperts: definition.arithmetic == .routedExperts)
     }
     var agreementFields: [String] {
-        !requestOwned && lanes == 1 ? [] : [QwenTensorParallelBatchWire.agreement, "lanes=\(lanes)", "kv=\(backend.rawValue)",
+        [QwenTensorParallelBatchWire.agreement, "lanes=\(lanes)", "kv=\(backend.rawValue)",
             "fp32-row-m1-v1", "request-local-original-rope-v1", "batch-inventory-budget-v3-rank-heads", QwenTensorParallelBatchPrefixBudget.policy]
+            + (routedExperts ? ["moe-rows-one-collective-v1"] : [])
     }
 }

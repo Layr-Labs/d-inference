@@ -241,5 +241,19 @@ struct Gemma4StagePagedSyntheticTests {
                 chunkSize: min(tokens, limits.maximumChunkTokens))
             #expect(all + CBv2StageKVHost.segmentBytes <= budget.stateAndBoundaryBytes, "tokens=\(tokens)")
         }
+        // Packed live precisions: packed pages plus every layer's recent native
+        // rows at main's whole-chunk quotation, from the length where that
+        // quotation is a request's own (a recent band and a prompt chunk).
+        var recent: [String: Int] = [:]
+        for tokens in [4096, limits.maximumContextTokens] {
+            let budget = try Gemma4StateBudget.estimate(maximumTokens: tokens,
+                chunkSize: min(tokens, limits.maximumChunkTokens))
+            for selection in [PagedKVQuantizationSelection.balanced, .k8v4, .k8v8] {
+                let request = try CBv2StageKVAllowanceTests.requestBytes(configuration.cbv2LayerKinds, dtype: .bfloat16,
+                    selection, tokens: tokens, chunk: limits.maximumChunkTokens, recent: &recent)
+                #expect(request + CBv2StageKVHost.segmentBytes <= budget.stateAndBoundaryBytes,
+                    "tokens=\(tokens) kv=\(selection)")
+            }
+        }
     }
 }

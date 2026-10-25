@@ -377,9 +377,20 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         try ClusterQwenTensorAssistantReady.require(assistantReadiness.tensorAssistant,
             policy: configuration.tensorAssistant, capacity: prepared.plan.batchLanes() ?? 1)
         // The link as this load measured it (every load over the cable measures it, pipeline or tensor parallel):
-        // the next plan of this pair uses it, with no user step.
+        // kept with the pair's other recent loads, whose median the next plan of this pair uses, with no user step.
         if let probe = values.compactMap({ $0.readiness?.linkProbe }).first {
             ClusterLinkProbeHistory.record(probe, members: wireIdentity.peers.map(\.id),
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        }
+        // Each rank's own share as this load timed it (a tensor-parallel load times it alone before it is ready):
+        // kept per member and model, so the next plan of this pair balances the shares by them, with no user step.
+        let shareProbes = values.compactMap { $0.readiness }.compactMap { ready -> ClusterShareProbeHistory.Recorded? in
+            guard let probe = ready.shareProbe, wireIdentity.peers.indices.contains(ready.rank) else { return nil }
+            let peer = wireIdentity.peers[ready.rank]
+            return .init(member: peer.id, buildSHA256: peer.buildSHA256, probe: probe)
+        }
+        if !shareProbes.isEmpty {
+            ClusterShareProbeHistory.record(shareProbes, artifactSHA256: wireIdentity.artifactSHA256,
                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
         }
         try lock.withLock {

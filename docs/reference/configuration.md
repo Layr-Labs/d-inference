@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-24
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -395,8 +395,8 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.live`) | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
-| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.checkpoint`) | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.live`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. A cluster pair resolves it the same way on each Mac; see [cluster stage KV precision](#cluster-stage-kv-precision). |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.checkpoint`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_CBV2_PAGED_KV` | `0`, `false`, `no`, `off` disable paging | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the backend setting. Nemotron Super, which serves paged KV only, fails its load instead (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`). Native live precision can serve contiguous; non-MiMo live-packed precision refuses construction when paging is unavailable. See [backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). A backend default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
@@ -730,7 +730,7 @@ for exclusions, rollback and the unchanged singleton preference at initial setup
 
 | Variable | Installed behavior | Source |
 |---|---|---|
-| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: fast synchronization for every TP model and capacity. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
+| `MLX_METAL_FAST_SYNCH` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values use the worker default: fast synchronization for every TP model and every lane count. | `DistributedInstalledPlan.fastSynchronization`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerCollectiveSynchronization.apply` |
 | `MLX_EAGER_FENCE_COMMIT` | Exact local `0` or `1`, forwarded as a typed boolean through the fixed owner child and native launch in TP mode only. Absent or malformed values are not forwarded; MLX keeps its existing off default. Explicit values are reported before MLX initializes. | `DistributedInstalledPlan.eagerFenceCommit`, `ClusterLocalOwnerConfiguration.launch`, and `WorkerEagerFenceCommit.report` |
 
 These settings are read from each Mac's own cluster service process; they are not taken
@@ -740,6 +740,31 @@ service job. Restart jobs with the intended environment, confirm fresh native
 Macs, and restore/restart the original jobs after the comparison. This does not
 add general environment inheritance or change automatic placement. Native
 progress, width and retirement remain independent validation requirements.
+
+### Cluster stage KV precision
+
+A cluster pair's stage KV is paged only, on the provider's own segmented pool
+(`PagedKVBackend.segmented`), and stored at the single-Mac live precision.
+Each Mac's owner resolves `DARKBLOOM_CBV2_KV_QUANTIZATION`, then
+`[backend] engine_v2_kv_quantization_by_model` for the pair's public model ID,
+then `engine_v2_kv_quantization` (default `native`), exactly as the single-Mac
+engine does, and starts its rank with the resolved name; native passes nothing.
+
+| Setting | Installed behavior | Source |
+|---|---|---|
+| `[backend] engine_v2_kv_quantization`, `engine_v2_kv_quantization_by_model` | Read once by `cluster worker-owner` from the saved provider configuration on each Mac. Both ranks bind the precision into their load agreement, so Macs that resolved different precisions refuse to load before either stage is read (the load agreement differs); there is no leader sync. A per-model `native` keeps a packed global setting off the pair. | `DistributedInstalledKVQuantization` (`installProduct`, `environment`) in `provider-swift/Sources/ProviderCore/Inference/Distributed/` |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | The provider forwards its own switch to the owner it starts (`ClusterLocalOwnerConfiguration`), where it takes precedence as on one Mac: empty selects native, a malformed value reaches the rank as `invalid`, which the rank refuses by name. | `DistributedInstalledPlan.localOwnerConfiguration` |
+| `DARKBLOOM_CLUSTER_KV_BACKEND` | Removed. `paged` is still accepted; `contiguous` or any other value stops the load by name. | `ClusterStageKVBackendKind.fromEnvironment` |
+
+A packed precision serves the Qwen 3.5 family (Bonsai included), Gemma 4 and
+Nemotron 3.5 stages and every Qwen tensor-parallel row's request-owned lanes, after the
+same in-process kernel preflight (`PagedKernelSmokePlan`). Those hosts then keep
+no prompt prefixes (memory or SSD), as the single-Mac engine keeps no snapshot
+prefixes for packed rows. A phase-split hand-off and a family without a stage KV
+host (GPT-OSS, GLM) refuse a packed precision; MiMo stays native as on one Mac. The checkpoint precision
+(`engine_v2_kv_checkpoint_quantization`) is not applied to the pair's SSD
+prefix records, which stay exact native states. See
+[inference](../architecture/inference.md#cluster-stage-kv-precision).
 
 ### Private batch qualification diagnostics
 
@@ -814,6 +839,19 @@ predicted speed and the reason it was or was not chosen. Tensor parallel is
 chosen only where the runtime executes it for the model, a reduction over the
 keyed data plane has been measured, no failed qualification covers the shape,
 and it is predicted at least 5 % faster than every pipeline.
+
+The link is measured by every load over the cable. The serving leader keeps
+each pair's last eight measurements from the last 30 days in owner-only
+`~/.darkbloom/cluster/link-probes.json`, and every plan of the pair uses their
+median, so a single fast or slow load does not change the chosen mode. A file
+written by an earlier release is read as one measurement. In the setup's model
+list, a model that has tensor parallel but was split otherwise shows a short
+reason under its line (for example `tensor parallel: slower here`); a model
+without tensor parallel shows nothing extra. When the planner's policy leaves a
+mode out (Qwen3.8 27B keeps images, video and logprobs only in tensor parallel),
+the reason line says that instead of "no pipeline placement fits"
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterLinkProbeHistory.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift`).
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -1308,14 +1346,15 @@ to the same model, artifact and configuration before planning. This metadata
 neither grants native capacity nor admits images, speculative modes or GLM.
 See `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBatchQuote.swift`.
 
-The private `tensor-batch-scope` helper takes the same five arguments for exact
-Qwen3.8 27B. Its `darkbloom_cluster_placement_tensor_batch_quote_v1` response
+The private `tensor-batch-scope` helper takes the same five arguments for every
+registered Qwen TP row (9B, 27B, Qwen3.5/3.6 35B A3B), each priced by its own geometry. Its `darkbloom_cluster_placement_tensor_batch_quote_v1` response
 binds the original chunk and width to the complete native LOAD allowance,
 per-lane state and shared workspace. `ClusterPlacementTensorBatchQuote` rejects
-other models, shortened LOAD scope and inconsistent ledger totals. It reads
+other models (`ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs` names the rows), shortened LOAD scope
+and inconsistent ledger totals. It reads
 registered headers and requires the native allocator metadata bound. Saved
-`batchLanes` may select 2, 4 or 8 in exact Qwen27 `tensor_parallel_v1`; omission
-keeps one. Other Qwen TP rows and GLM defaults remain unchanged.
+`batchLanes` may select 2, 4 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
+keeps one. GLM defaults remain unchanged.
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
 
 ### Qwen27 saved mode compatibility
@@ -1328,7 +1367,7 @@ Normal setup discovers the embedded assistant from the native quote; the saved f
 
 | Setting | Bound and behavior | Source |
 |---|---|---|
-| `[backend] mtp_mode` | Existing `auto`/`on` allow exact Qwen27 embedded-assistant discovery; `off` retains the ordinary fully quoted target. Automatic discovery selects depth `2` and admitted-cohort verification. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `automaticCandidate`, `automaticDepth` |
+| `[backend] mtp_mode` | Existing `auto`/`on` allow embedded-assistant discovery for the 9B and the 27B (`ClusterQwenTensorAssistantPolicy.runtimeModelIDs`); `off` retains the ordinary fully quoted target. Automatic discovery selects depth `3` and admitted-cohort verification. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorAssistantSelection.swift`, `automaticCandidate`, `automaticDepth` |
 | Saved `tensorAssistant` | Optional `qwen27_tensor_assistant_v1` object containing `depth` 1...4 and native `inventorySHA256`; omitted policy preserves legacy ordinary setup bytes. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `ClusterQwenTensorAssistantPolicy` |
 | Saved `tensorAssistant.verification` | `singleton_ready_set_v1` is the omitted legacy value; `admitted_target_cohort_v1` verifies eligible rows together up to the completely priced capacity. Unknown/null values are refused. | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantPolicy.swift`, `Verification` |
 | Native worker `--mtp-depth`, `--tp-mtp-inventory-sha256`, `--tp-mtp-verification` | Installed launch arguments derived from saved policy, bilaterally bound at LOAD. Normal setup does not ask the user to choose them. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledGenerationSelection.swift`; `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerConfiguration.swift` |

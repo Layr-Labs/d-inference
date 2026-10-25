@@ -152,6 +152,8 @@ public enum ClusterRequestRouter {
         guard promptTokens >= 1, outputTokens >= 1 else { throw ClusterPlacementError("A routed request has a prompt and an output") }
         var policy = ClusterPlacementPolicy()
         policy.regime = setup.regime
+        // A tensor-parallel setup the product chose before a load measured its link is priced as it was planned.
+        policy.tensorParallelFirst = true; policy.tensorParallelAssumesUnmeasuredLink = true
         func pairPrediction(prompt: Int, outputs: Int) throws -> ClusterPlacementPrediction {
             policy.promptTokens = prompt; policy.outputTokens = outputs
             return try ClusterPlacementPlanner.evaluate(devices: setup.devices, cuts: setup.cuts, mode: setup.mode,

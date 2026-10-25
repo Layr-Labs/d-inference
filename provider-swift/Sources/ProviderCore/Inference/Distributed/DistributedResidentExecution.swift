@@ -86,8 +86,8 @@ public struct DistributedResidentExecutionProfile: Sendable {
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
             supportsLogprobs: generationMode == .tensorParallel && (
                 capability.adapterID == ClusterRuntimeAdapter.glm5NextLayerStage.rawValue
-                || (capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
-                    && capability.runtimeModelID == "registered_qwen38_27b")))
+                || ClusterRuntimeAdapter(rawValue: capability.adapterID)?
+                    .servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID) == true))
     }
 }
 

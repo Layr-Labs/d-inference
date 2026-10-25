@@ -1,8 +1,8 @@
 import DarkbloomClusterPlacement
 import Foundation
 
-/// Additional storage for the exact one-layer Qwen27 assistant and captured
-/// target windows. The unchanged full target ledger remains charged. Loaded
+/// Additional storage for a dense row's exact one-layer assistant and captured
+/// target windows, at that row's own geometry. The unchanged full target ledger remains charged. Loaded
 /// assistant weights and constructor peak are separate resident/LOAD charges.
 /// The replicated assistant is priced whole on every rank; with a rank, the
 /// target's terms are that rank's own heads (`QwenTensorParallelRankLedger`).
@@ -23,16 +23,12 @@ struct QwenTensorParallelMTPBudget {
                        flushRows: Int? = QwenTensorParallelMTPPolicy.historyFlushRows, rank: Int? = nil,
                        allocationBound: (Int) throws -> Int) throws -> Self {
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
-        guard g.hiddenSize == 5120, g.layers == 64, g.queryHeads == 24, g.kvHeads == 4,
-              g.headDimension == 256, g.attentionLayers == 16, g.recurrentLayers == 48,
-              g.linearKeyHeads == 16, g.linearValueHeads == 48,
-              g.linearKeyDimension == 128, g.linearValueDimension == 128,
-              plan.vocabularySize == 248320, !plan.routedExperts,
-              (1...4).contains(depth), (1...(1 << 20)).contains(maximumTokens),
+        guard g.hiddenSize == plan.hiddenSize, g.layers == plan.layerCount, !plan.routedExperts,
+              plan.intermediateSize > 0, (1...4).contains(depth), (1...(1 << 20)).contains(maximumTokens),
               promptTokens > 0, promptTokens <= maximumTokens,
               chunkSize > 0, chunkSize <= maximumTokens,
               flushRows.map({ $0 > 0 }) ?? true else {
-            throw ProbeError("Qwen TP MTP budget requires its exact registered one-layer geometry")
+            throw ProbeError("Qwen TP MTP budget requires a dense one-layer assistant geometry")
         }
         func bound(_ bytes: Int, count: Int = 1) throws -> Int {
             let allocated = try allocationBound(bytes)
@@ -60,12 +56,27 @@ struct QwenTensorParallelMTPBudget {
         // assumption that prompt history is bounded by the final chunk. With
         // bounded flushes, ordinary decode leaves at most `flushRows`
         // one-token roots before the whole backlog moves into head K/V.
+        // With bounded flushes the prompt also moves its leading complete
+        // history blocks into head K/V as it is observed, once past any
+        // prompt prefix checkpoint (`flushCompleteHistoryBlocks`, exactly the
+        // blocks the first draft would flush first): a lane holds at most the
+        // checkpoint frontier's rows (the assistant prefix budget's), or one
+        // flush block plus one prompt frame and its transition row, as at most
+        // that many chunk roots plus one copied remainder, never its whole
+        // prompt (`QwenTensorParallelMTPSessionTests.promptHistoryFlushes
+        // KeepDraftsAndBoundTheBacklog`). Without bounded flushes the whole
+        // prompt stays one rectangle, as before.
         let chunks = (promptTokens + chunkSize - 1) / chunkSize
         let decodeRoots = min(flushRows ?? 0, maximumTokens)
-        let banked = min(maximumTokens, promptTokens + decodeRoots)
+        let checkpointRows = min(QwenTensorParallelBatchPrefixBudget.maximumTokens, maximumTokens)
+        let heldRows = flushRows.map {
+            $0 >= promptTokens ? promptTokens : min(promptTokens, max(checkpointRows, $0 + chunkSize + 1))
+        } ?? promptTokens
+        let heldChunks = min(chunks, (heldRows + chunkSize - 1) / chunkSize + 2)
+        let banked = min(maximumTokens, heldRows + decodeRoots)
         let history = try sum([
-            bound(product([min(promptTokens, chunkSize), g.hiddenSize, 2]), count: 2 * chunks),
-            bound(product([min(promptTokens, chunkSize), 4]), count: 2 * chunks),
+            bound(product([min(promptTokens, chunkSize), g.hiddenSize, 2]), count: 2 * heldChunks),
+            bound(product([min(promptTokens, chunkSize), 4]), count: 2 * heldChunks),
             bound(product([g.hiddenSize, 2]), count: 2 * decodeRoots), bound(4, count: 2 * decodeRoots),
             bound(product([banked, g.hiddenSize, 2]), count: 3),
             bound(product([banked, 4]), count: 3), bound(product([g.hiddenSize, 2]), count: 4),
@@ -84,7 +95,7 @@ struct QwenTensorParallelMTPBudget {
             bound(product([rectangle, kvWidth, 4]), count: 12),
             bound(product([rectangle, g.hiddenSize / 8, 4])),
             bound(product([rectangle, g.hiddenSize / 64, 4]), count: 2),
-            bound(product([width, 17_408, 4]), count: 8),
+            bound(product([width, plan.intermediateSize, 4]), count: 8),
             bound(product([width, g.queryHeads, maximumTokens, 4]), count: 2),
         ])
         let captured = try sum([

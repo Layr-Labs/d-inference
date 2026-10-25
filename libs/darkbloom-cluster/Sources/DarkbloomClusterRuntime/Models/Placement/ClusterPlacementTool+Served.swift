@@ -6,14 +6,18 @@ import Foundation
 /// plan command (`plan --served`, `route`).
 extension ClusterPlacementTool {
     public static let servedUsage = """
-          darkbloom-cluster-plan plan ... [--served FILE ...] [--served-ranks LABEL,LABEL]
+          darkbloom-cluster-plan plan ... [--served FILE ...] [--served-build SHA256] [--served-ranks LABEL,LABEL]
               Adds the speed records of requests a setup served: FILE is the records file the leader keeps
               (`served-speed.json`) or its pair telemetry (`pair-telemetry.json`). They are turned into
-              measurements of each Mac (`ClusterServedCalibration`) before planning. `--served-ranks` names
-              the Macs in rank order when the file does not.
+              measurements of each Mac (`ClusterServedCalibration`) before planning. A served speed counts
+              only for the worker build that served it: `--served-build` names the build the plan is for
+              (the capability record's runtimeBinarySHA256, one build on every Mac), and only records every
+              rank of which ran it are used; without it no record is. `--served-ranks` names the Macs in rank
+              order when the file does not.
           darkbloom-cluster-plan route (--model-dir DIR | --layout FILE) --peer LABEL=PROFILE.json --peer ...
                                        --cut N --mode MODE --ranks LABEL,LABEL [--schedule SCHEDULE]
-                                       --prompt-tokens N[,N...] [--output-tokens N] [--served FILE ...] [--json]
+                                       --prompt-tokens N[,N...] [--output-tokens N] [--served FILE ...]
+                                       [--served-build SHA256] [--json]
               For each prompt length: does the setup serve the request as placed (the pair), or does the
               member that holds the whole model serve it alone? Also the shortest prompt the pair is chosen for.
         """
@@ -35,14 +39,17 @@ extension ClusterPlacementTool {
             let ranks: [String]?
             /// Other requests in flight while it ran (`ClusterPairRequestTelemetry.concurrentRequests`).
             let concurrentRequests: Int?
+            /// The worker build of each rank (`ClusterPairRequestTelemetry.rankBuildSHA256`); nil before builds were recorded.
+            let rankBuildSHA256: [String]?
         }
         let schema: String
         let records: [Record]
     }
 
-    /// Served samples from `files`, each with its setup. Telemetry records
-    /// count only when completed and cold (nothing restored from a prefix
-    /// cache: a restored prompt's first token is not its prefill).
+    /// Served samples from `files`, each with its setup (with each rank's
+    /// worker build when the record names it). Telemetry records count only
+    /// when completed and cold (nothing restored from a prefix cache: a
+    /// restored prompt's first token is not its prefill).
     static func servedEntries(_ files: [String], ranks: [String]?) throws -> [ClusterServedSpeedRecords.Entry] {
         var result: [ClusterServedSpeedRecords.Entry] = []
         for file in files {
@@ -50,7 +57,8 @@ extension ClusterPlacementTool {
             if let records = try? ClusterServedSpeedRecords.decode(data) {
                 result += records.entries.map { entry in
                     guard let ranks, entry.setup.ranks == nil else { return entry }
-                    return .init(setup: .init(modelID: entry.setup.modelID, mode: entry.setup.mode, cut: entry.setup.cut, ranks: ranks),
+                    return .init(setup: .init(modelID: entry.setup.modelID, mode: entry.setup.mode, cut: entry.setup.cut, ranks: ranks,
+                                              rankBuildSHA256: entry.setup.rankBuildSHA256),
                                  sample: entry.sample)
                 }
                 continue
@@ -67,12 +75,40 @@ extension ClusterPlacementTool {
                     promptTokens: record.promptTokens, outputTokens: record.completionTokens,
                     firstTokenSeconds: first / 1_000, decodeTokensPerSecond: record.decodeTokensPerSecond, finishedAt: record.finishedAt)
                 if sample.valid {
-                    result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks),
+                    result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks,
+                                                     rankBuildSHA256: record.rankBuildSHA256),
                                        sample: sample))
                 }
             }
         }
         return result
+    }
+
+    /// The served entries a plan for worker build `build` may use, and the
+    /// plan's line for the rest. A pair runs one build on every Mac (a setup
+    /// requires it), so `build` stands for each of `labels`; an entry whose
+    /// ranks are all among them counts only when every rank ran that build
+    /// (`ClusterServedSpeedRecords.servedBy`), and the others of the pair are
+    /// left out and counted. Entries of other devices pass on unchanged (the
+    /// calibration skips them and says why). This tool cannot know by itself
+    /// which build will serve the plan: without `build` it uses none of the
+    /// pair's records and says so, the safe side of a speed that may be
+    /// another build's.
+    static func servedScope(_ entries: [ClusterServedSpeedRecords.Entry], build: String?, labels: [String]) throws
+        -> (entries: [ClusterServedSpeedRecords.Entry], lines: [String]) {
+        if let build, !ClusterServedSpeedRecords.Setup.isBuild(build) {
+            throw ProbeError("--served-build is a worker build's SHA-256 (64 lowercase hexadecimal digits), the capability record's runtimeBinarySHA256")
+        }
+        let planned = Set(labels)
+        let elsewhere = entries.filter { !($0.setup.ranks.map { !$0.isEmpty && Set($0).isSubset(of: planned) } ?? false) }
+        let pair = entries.filter { $0.setup.ranks.map { !$0.isEmpty && Set($0).isSubset(of: planned) } ?? false }
+        guard let build else {
+            return (elsewhere, pair.isEmpty ? [] : ["  \(pair.count) record(s) ignored: a served speed counts only for the worker build that served it, "
+                + "and no --served-build names the build this plan is for"])
+        }
+        let builds = Dictionary(labels.map { ($0, build) }, uniquingKeysWith: { first, _ in first })
+        let scoped = ClusterServedSpeedRecords.servedBy(builds, pair)
+        return (scoped.current + elsewhere, ClusterServedSpeedRecords.otherBuildsLine(scoped.otherBuilds, builds: builds).map { [$0] } ?? [])
     }
 
     /// Measurements derived from every setup the entries name whose ranks are
@@ -93,7 +129,7 @@ extension ClusterPlacementTool {
 
     static func route(_ arguments: [String]) throws -> String {
         let parsed = try Arguments(arguments, flags: ["--json"], options: ["--model-dir", "--layout", "--peer", "--speed", "--link",
-            "--cut", "--mode", "--ranks", "--schedule", "--prompt-tokens", "--output-tokens", "--served", "--tolerance"])
+            "--cut", "--mode", "--ranks", "--schedule", "--prompt-tokens", "--output-tokens", "--served", "--served-build", "--tolerance"])
         let layout: ClusterModelLayout
         switch (try parsed.one("--model-dir"), try parsed.one("--layout")) {
         case (let directory?, nil): layout = try ClusterPlacementArtifact.layout(directory: URL(fileURLWithPath: directory, isDirectory: true))
@@ -138,8 +174,13 @@ extension ClusterPlacementTool {
             return zip(ordered, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
         }
         let setupKey = ClusterServedSpeedRecords.Setup.cut(cuts, layerCount: layout.layerCount)
-        let entries = try servedEntries(parsed.values["--served"] ?? [], ranks: ranks)
-            .filter { $0.setup.cut == setupKey && $0.setup.mode == mode.rawValue }
+        guard parsed.values["--served"] != nil || parsed.values["--served-build"] == nil else {
+            throw ProbeError("--served-build names the worker build of the --served records to use; give --served too")
+        }
+        // Only what this setup's worker build served (`--served-build`): another build's speed says nothing of it.
+        let scoped = try servedScope(try servedEntries(parsed.values["--served"] ?? [], ranks: ranks)
+            .filter { $0.setup.cut == setupKey && $0.setup.mode == mode.rawValue }, build: try parsed.one("--served-build"), labels: ranks)
+        let entries = scoped.entries
         // The planner's estimates first, then the same with what this setup served.
         var devices = estimate(measured)
         let served = try servedMeasurements(entries, devices: devices, layout: layout, link: link)
@@ -171,7 +212,7 @@ extension ClusterPlacementTool {
         for device in devices {
             lines.append("  \(device.label): \(device.speed.source.rawValue): \(device.speed.explanation)")
         }
-        if !served.lines.isEmpty { lines.append("Speed records from served requests"); lines += served.lines }
+        if !served.lines.isEmpty || !scoped.lines.isEmpty { lines.append("Speed records from served requests"); lines += served.lines + scoped.lines }
         let absolute = devices.allSatisfy(\.speed.absolute)
         lines.append("Routes (priced at \(outputs) output tokens" + (absolute ? ")"
             : "; times in the index's relative units: no speed of this model was measured or served yet, only their ratio decides)"))

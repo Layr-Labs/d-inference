@@ -360,6 +360,12 @@ public enum ClusterWorkerCodec {
             .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
             .merging(r.media.map { ["media": $0] } ?? [:]) { first, _ in first }
             .merging(r.tensorAssistant.map { ["tensorAssistant": $0.object] } ?? [:]) { first, _ in first }
+            .merging(r.shareProbe.map { ["shareProbe": shareProbe($0)] } ?? [:]) { first, _ in first }
+    }
+    private static func shareProbe(_ p: ClusterWorkerShareProbe) -> [String: Any] {
+        (["sharePerMille": p.sharePerMille, "plainStepMicroseconds": p.plainStepMicroseconds, "rounds": p.rounds] as [String: Any])
+            .merging(p.windowColumns.map { ["windowColumns": $0] } ?? [:]) { first, _ in first }
+            .merging(p.windowStepMicroseconds.map { ["windowStepMicroseconds": $0] } ?? [:]) { first, _ in first }
     }
     private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
         ["transport": p.transport, "keyed": p.keyed,
@@ -398,10 +404,18 @@ public enum ClusterWorkerCodec {
             try l.finish()
         }
         let assistant = try r.optionalObject("tensorAssistant").map(ClusterQwenTensorAssistantReady.decodeObject)
+        var share: ClusterWorkerShareProbe?
+        if r.values["shareProbe"] != nil {
+            var s = WorkerObject(try r.object("shareProbe"))
+            share = try ClusterWorkerShareProbe(sharePerMille: s.int("sharePerMille"),
+                plainStepMicroseconds: s.int("plainStepMicroseconds"), windowColumns: s.optionalInt("windowColumns"),
+                windowStepMicroseconds: s.optionalInt("windowStepMicroseconds"), rounds: s.int("rounds"))
+            try s.finish()
+        }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
             dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe,
-            media: r.values["media"] == nil ? nil : try r.string("media"), tensorAssistant: assistant)
+            media: r.values["media"] == nil ? nil : try r.string("media"), tensorAssistant: assistant, shareProbe: share)
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

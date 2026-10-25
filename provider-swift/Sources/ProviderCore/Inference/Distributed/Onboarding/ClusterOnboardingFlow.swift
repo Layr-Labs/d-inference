@@ -202,18 +202,36 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     /// Whether public traffic may reach it yet, in one line; said once it is chosen, and only when the cluster serves
     /// through Darkbloom. Nil from an older build (which put the line in `lines`).
     public var publicTraffic: String?
+    /// Why the planner's split is not tensor parallel, in a few words ("tensor parallel: slower here"), for a model
+    /// with a tensor-parallel plan that the planner did not give one. Nil when the split is tensor parallel, when the
+    /// model has no such plan (no line for it), and from an older build.
+    public var tensorParallelNote: String?
 
     public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
-                modelID: String? = nil, publicTraffic: String? = nil) {
+                modelID: String? = nil, publicTraffic: String? = nil, tensorParallelNote: String? = nil) {
         self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
-        self.modelID = modelID; self.publicTraffic = publicTraffic
+        self.modelID = modelID; self.publicTraffic = publicTraffic; self.tensorParallelNote = tensorParallelNote
     }
 
-    /// The list's one line: the title (with the model's id when another choice shows the same title) and the first of
-    /// its lines (size and how it is split, or how it gets onto the Macs). The rest is said once it is chosen.
+    /// The list's one line: the title (with the model's id when another choice shows the same title), the first of
+    /// its lines (size and how it is split, or how it gets onto the Macs) and, at its end, the tensor-parallel note
+    /// when there is one it can say. The rest is said once it is chosen.
     public func listLine(sameTitleElsewhere: Bool) -> String {
         let name = sameTitleElsewhere ? "\(title) (\(modelID ?? title))" : title
-        return lines.first.map { "\(name) — \($0)" } ?? name
+        let line = lines.first.map { "\(name) — \($0)" } ?? name
+        return sayableTensorParallelNote.map { line + " · " + $0 } ?? line
+    }
+
+    /// The longest tensor-parallel note the list says, a few words at the end of the model's line (the planner keeps
+    /// its notes within it: `ClusterPlacementExplanation.tensorParallelNoteLimit`).
+    public static let tensorParallelNoteLimit = 33
+
+    /// `tensorParallelNote` when the list can say it: plain words within the limit (the note may come from the other
+    /// Mac's build).
+    public var sayableTensorParallelNote: String? {
+        guard let note = tensorParallelNote, !note.isEmpty, note.count <= Self.tensorParallelNoteLimit,
+              ClusterOnboardingDeployment.shownPlainly(note) else { return nil }
+        return note
     }
 }
 
@@ -941,8 +959,9 @@ public enum ClusterOnboardingDriver {
         // The choices that fit now come first, so enter (= 1) is one that fits.
         let offered = choices.indices.filter { choices[$0].blocker == nil }
         let open = offered.filter { choices[$0].fitRemedy == nil } + offered.filter { choices[$0].fitRemedy != nil }
-        // One line per model (owner, 2026-10-15: shorter screens); a second only when it does not fit now. What moves
-        // and the planner's reasons are said once a model is chosen.
+        // One line per model (owner, 2026-10-15: shorter screens), ending with a few words when the model has tensor
+        // parallel and the planner split it otherwise (why not); a second only when it does not fit now. What moves
+        // and the planner's full reasons are said once a model is chosen.
         let titles = choices.map(\.title)
         for (number, index) in open.enumerated() {
             let shared = titles.filter { $0 == choices[index].title }.count > 1

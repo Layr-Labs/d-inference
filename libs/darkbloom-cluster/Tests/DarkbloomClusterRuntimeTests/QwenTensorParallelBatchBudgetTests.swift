@@ -1,5 +1,6 @@
 import DarkbloomClusterPlacement
 import Foundation
+import MLXLMCommon
 import Testing
 @testable import DarkbloomClusterRuntime
 
@@ -26,22 +27,36 @@ struct QwenTensorParallelBatchBudgetTests {
         let context = family.largestContextTokens, chunk = family.maximumChunkTokens
         let scalar = try QwenTensorParallelRequestBudget.derive(geometry: family.geometry, plan: plan,
             tensors: tensors, maximumTokens: context, chunkSize: chunk, allocationBound: bound)
+        var recent: [String: Int] = [:]
         for lanes in [1, 2, 4, 8] {
             let candidate = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
                 tensors: tensors, maximumTokens: context, chunkSize: chunk, lanes: lanes, paged: true, allocationBound: bound)
             #expect(candidate.batchProjectionConstantBytes == scalar.projectionConstantBytes)
-            #expect(candidate.perLaneStateBytes >= scalar.stateBytes)
+            // A lane holds its own page bank; the full-history gather bank is one
+            // prompt frame's, shared. One lane plus that bank still covers the
+            // whole scalar request (its F32 KV term is two BF16 banks).
+            let bank = 2 * family.geometry.attentionLayers
+                * bound(((context + CBv2PagedDefaults.pageSize - 1) / CBv2PagedDefaults.pageSize) * CBv2PagedDefaults.pageSize
+                    * family.geometry.kvHeads * family.geometry.headDimension * 2)
+            #expect(candidate.promptGatherBytes == bank)
+            #expect(candidate.perLaneStateBytes + candidate.promptGatherBytes >= scalar.stateBytes)
+            #expect(candidate.perLaneStateBytes < scalar.stateBytes)
             #expect(candidate.allowance.requestBytesExcludingCollectives == lanes * candidate.perLaneStateBytes + candidate.sharedBytesExcludingCollectives)
             let logits = 3 * bound(lanes * plan.vocabularySize * 4)
             #expect(candidate.sharedBytesExcludingCollectives == scalar.fusionBytes + scalar.transientBytes + logits
-                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes + candidate.prefix.residentBytes)
+                + 2 * scalar.projectionConstantBytes + candidate.pagedPoolSlackBytes + candidate.prefix.residentBytes
+                + candidate.promptGatherBytes)
             #expect(candidate.pagedPoolSlackBytes >= 2 * CBv2StageKVHost.segmentBytes)
             // The underlying host's entire admitted page capacity, its gather
-            // and replacement pages fit inside the full state charges.
-            let pages = try CBv2StageKVHost.pageRoundedRequestBytes(kvShapes:
-                Array(repeating: (family.geometry.kvHeads, family.geometry.headDimension), count: family.geometry.attentionLayers),
-                maximumTokens: context, dtypeSize: 2)
-            #expect(lanes * pages + CBv2StageKVHost.segmentBytes <= lanes * candidate.perLaneStateBytes + candidate.pagedPoolSlackBytes)
+            // and replacement pages fit inside the full state charges, at every
+            // live precision (packed pages and each lane's recent native rows).
+            let kinds = CBv2StageKVAllowanceTests.attention(family.geometry, count: family.geometry.attentionLayers)
+            for selection in PagedKVQuantizationSelection.allCases {
+                let request = try CBv2StageKVAllowanceTests.requestBytes(kinds, dtype: .bfloat16, selection,
+                    tokens: context, chunk: chunk, recent: &recent)
+                #expect(lanes * request + CBv2StageKVHost.segmentBytes
+                    <= lanes * candidate.perLaneStateBytes + candidate.pagedPoolSlackBytes, "lanes=\(lanes) kv=\(selection)")
+            }
         }
     }
 

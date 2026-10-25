@@ -7,6 +7,9 @@ import MLXLMCommon
 /// speculative verification. Both ranks must execute identical calls. This
 /// seam neither selects tokens nor owns assistant state or peer publication.
 /// Media keeps the ordinary target-only path, matching standalone MTP policy.
+/// The owner serves every request through `QwenTensorParallelBatchSession`
+/// (capacity one included); this lone target remains the decoder suites'
+/// single-request fixture (`QwenTensorParallelMTPSessionTests`).
 final class QwenTensorParallelMTPSession: QwenTensorParallelMTPTarget {
     typealias PromptResult = QwenTensorParallelMTPPromptResult
     let model: QwenTensorParallelModel

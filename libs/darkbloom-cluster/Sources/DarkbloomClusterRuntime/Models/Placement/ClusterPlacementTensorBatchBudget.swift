@@ -7,7 +7,8 @@ import MLX
 extension ClusterPlacementArtifact {
     /// Uses the owner's actual canonical inventory and budget derivation at
     /// its complete LOAD envelope, regardless of the reference prompt or
-    /// installed frame size. Both supported KV backends fit the paged quote.
+    /// installed frame size. Cluster stage KV is paged only
+    /// (`ClusterStageKVBackendKind`), so this prices the paged owner.
     public static func requestedTensorBatchQuote(directory: URL, promptTokens: Int, outputTokens: Int,
                                                  chunkTokens: Int, lanes: Int, assistantDepth: Int? = nil,
                                                  assistantVerification: ClusterQwenTensorAssistantPolicy.Verification = .singleton,
@@ -40,11 +41,11 @@ extension ClusterPlacementArtifact {
         guard assistantDepth != nil || assistantVerification == .singleton else {
             throw ProbeError("Target cohort quotation requires an explicit assistant depth")
         }
-        guard family.definition.specification.model == .qwen38TwentySevenB,
+        guard ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(family.runtimeModelID),
               let plan = family.tensorParallel,
               [1, 2, 4, 8].contains(lanes),
               (1...family.profile.maximumChunkTokens).contains(chunkTokens) else {
-            throw ProbeError("Tensor batch quotation requires exact Qwen27 and a supported width/chunk")
+            throw ProbeError("Tensor batch quotation requires a registered Qwen TP row and a supported width/chunk")
         }
         let canonical = try family.requireRegisteredInventory(stored)
         // Each rank reserves only its own heads, rows and input columns at
@@ -58,6 +59,9 @@ extension ClusterPlacementArtifact {
         }
         if let depth = assistantDepth {
             let specification = family.definition.specification
+            guard QwenTensorParallelMTPPolicy.models.contains(specification.model) else {
+                throw ProbeError("\(family.runtimeModelID) has no tensor-parallel assistant")
+            }
             guard sha256(configuration) == specification.configurationSHA256 else {
                 throw ProbeError("Tensor assistant metadata configuration differs from its registered identity")
             }
@@ -72,7 +76,7 @@ extension ClusterPlacementArtifact {
                 assistantTensors[tensor.name] = (tensor.shape, dtype, tensor.byteCount)
             }
             let footprint = try QwenTensorParallelMTPInventory.footprint(tensors: assistantTensors,
-                specification: specification, allocationBound: allocationBound)
+                specification: specification, configuration: configuration, allocationBound: allocationBound)
             let policy = try ClusterQwenTensorAssistantPolicy(depth: depth, inventorySHA256: footprint.fingerprint, verification: assistantVerification)
             let assistant = try ClusterPlacementTensorAssistantQuote(policy: policy,
                 residentBytes: footprint.allocationBytes, loadBytes: footprint.loadBytes,

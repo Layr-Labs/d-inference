@@ -988,9 +988,9 @@ must prove native and media retirement before a clean capture enters the cache;
 cancelled or failed requests donate nothing. Reused/stored counts are published
 through the existing prompt-cache report. Cache entries are separate from live
 paged rows, swept on failure and shutdown, and explicitly charged beside them.
-The existing prefix disable switch offers and captures nothing. Singleton TP
-and other models retain their existing behavior; the SSD tier is described
-below.
+The existing prefix disable switch offers and captures nothing. Capacity one
+is the same batch owner one lane wide, with both tiers; other models retain
+their existing behavior. The SSD tier is described below.
 
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelBatchPrefixCache.swift`
 (`QwenTensorParallelBatchPrefixCache`) and
@@ -1006,7 +1006,7 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Tensor
 
 ### Qwen27 TP prefix SSD tier
 
-Both ranks of the Qwen27 TP batch owner also keep their prefix snapshots in the
+Both ranks of every Qwen TP row's batch owner (9B, 27B, Qwen3.5/3.6 35B A3B) also keep their prefix snapshots in the
 pipeline's encrypted SSD tier (`QwenStagePrefixDiskTier`), so a repeated long
 prompt restores its prefix after both Macs restart. Each rank writes only its
 own shard: its heads' attention rows and its recurrent state at the captured
@@ -1031,8 +1031,7 @@ agreement carries `qwen-tensor-parallel-prefix-v2`.
 The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
 `restore-confirmed`, `restore-declined`, `close`); the
 `darkbloom-tp-batch-prefix-v1` events are unchanged. Shutdown closes the tier
-(queued writes finish, bounded) before the model is released. Singleton TP
-keeps the resident tier only.
+(queued writes finish, bounded) before the model is released.
 
 Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixDisk.swift`,
 `QwenTensorParallelNativeBatchExecutor.swift` (`agreePrefix`, `confirmedRetirement`) and

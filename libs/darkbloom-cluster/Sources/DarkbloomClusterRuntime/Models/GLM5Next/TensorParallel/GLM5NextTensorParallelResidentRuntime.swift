@@ -281,6 +281,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let enteredUnixMilliseconds = Int64(Date().timeIntervalSince1970 * 1000)
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        // Main serves GLM's payload KV native FP32 only and refuses any other live precision.
+        try PagedKVQuantizationSelection.clusterLive(environment).requireNative("GLM, whose payload KV stays native FP32")
         GLM5NextTensorParallelPrefillPlan.commandBuffers = prefillCommandBuffers
         let frameTiming = GLM5NextTensorParallelPrefillPlan.enableFrameTimingFromSwitch()
         let lanes = try QwenBatchSettings.fromEnvironment(environment)

@@ -17,8 +17,8 @@ enum DistributedInstalledGenerationSelection {
         var arguments = mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
         if let assistant = configuration.tensorAssistant {
             try assistant.validate()
-            guard mode == .tensorParallel, capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID else {
-                throw ClusterConfigurationError.invalid("Tensor assistant launch differs from the saved Qwen27 TP policy")
+            guard mode == .tensorParallel, ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID) else {
+                throw ClusterConfigurationError.invalid("Tensor assistant launch differs from the saved Qwen TP policy")
             }
             arguments += ["--mtp-depth", String(assistant.depth),
                 ClusterQwenTensorAssistantPolicy.inventoryArgument, assistant.inventorySHA256] + assistant.verificationArguments
@@ -62,7 +62,7 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
 
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
         if configuration.tensorAssistant != nil, configuration.selectedGenerationMode == .tensorParallel,
-           capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID {
+           ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID) {
             self.init(enabled: true, offReason: Self.enabledReason)
             return
         }

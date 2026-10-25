@@ -2,45 +2,23 @@ import Foundation
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 
-/// The link as the pair's last load measured it (`ClusterWorkerLinkProbe`, in
-/// each worker's ready record: every load over the cable, pipeline or tensor
-/// parallel, measures it before it reads a weight), by pair of members, in
-/// `~/.darkbloom/cluster/link-probes.json` (owner-only). The serving leader
-/// writes it when the pair becomes ready; every plan of that pair reads it
-/// (`ClusterLinkCosts(probe:)`), so a re-plan always uses the link as it was
-/// last measured, with no user step. Figures only: no name, no address.
-public struct ClusterLinkProbeHistory: Codable, Sendable, Equatable {
-    public static let schemaName = "darkbloom_cluster_link_probes_v1"
-    public static let maximumBytes = 65_536
-    public static let maximumPairs = 16
-    /// Older measurements are not used: a cable or a Mac may have changed.
-    public static let maximumAgeSeconds = 30.0 * 86_400
-
-    public struct Entry: Codable, Sendable, Equatable {
-        public let measuredAt: Double
-        public let probe: ClusterWorkerLinkProbe
-    }
-    public let schema: String
-    public let pairs: [String: Entry]
-
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/link-probes.json")
-    }
-
-    /// The members in either order name one pair.
-    public static func key(members: [String]) -> String { members.sorted().joined(separator: "|") }
-
+/// The pair's recent link probes (`ClusterLinkProbeHistory`, kept per pair of
+/// members in `~/.darkbloom/cluster/link-probes.json`) as this provider keeps
+/// them: owner-only, replaced under the configuration lock. The serving
+/// leader records each load's probe when the pair becomes ready; every plan of
+/// that pair reads them, so a re-plan uses the link as the pair's last loads
+/// measured it (their median, `ClusterLinkCosts(measurements:)`), with no user
+/// step.
+extension ClusterLinkProbeHistory {
     /// Nil when absent, unreadable, not owner-only or malformed.
     public static func read(_ file: URL) -> ClusterLinkProbeHistory? {
-        guard let data = try? ClusterConfigurationFiles.read(file, maximum: maximumBytes, privateMode: true),
-              let value = try? JSONDecoder().decode(ClusterLinkProbeHistory.self, from: data),
-              value.schema == schemaName, value.pairs.count <= maximumPairs,
-              value.pairs.values.allSatisfy({ $0.probe.valid }) else { return nil }
-        return value
+        guard let data = try? ClusterConfigurationFiles.read(file, maximum: maximumBytes, privateMode: true) else { return nil }
+        return decode(data)
     }
 
-    /// Replaces this pair's measurement; other pairs stay. Never throws into
-    /// serving: a pair whose probe cannot be kept plans as before.
+    /// Adds this load's measurement to the pair's (`recording`); other pairs
+    /// stay. Never throws into serving: a pair whose probe cannot be kept
+    /// plans as before.
     @discardableResult
     public static func record(_ probe: ClusterWorkerLinkProbe, members: [String], homeDirectory: URL,
                               now: Double = Date().timeIntervalSince1970) -> Bool {
@@ -48,23 +26,22 @@ public struct ClusterLinkProbeHistory: Codable, Sendable, Equatable {
         let file = defaultFile(homeDirectory: homeDirectory)
         do {
             try ClusterConfigurationFiles.update(file, maximum: maximumBytes) { old in
-                var kept = old.flatMap { try? JSONDecoder().decode(ClusterLinkProbeHistory.self, from: $0) }?.pairs ?? [:]
-                kept[key(members: members)] = .init(measuredAt: now, probe: probe)
-                if kept.count > maximumPairs { kept = [key(members: members): .init(measuredAt: now, probe: probe)] }
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-                return try encoder.encode(ClusterLinkProbeHistory(schema: schemaName, pairs: kept))
+                // A file that is not a history (or another schema) is started again.
+                let kept = old.flatMap(decode) ?? ClusterLinkProbeHistory()
+                let next = try encoder.encode(kept.recording(probe, members: members, now: now))
+                // Within the bound by construction; should it ever not be, this measurement alone is kept.
+                if next.count <= maximumBytes { return next }
+                return try encoder.encode(ClusterLinkProbeHistory().recording(probe, members: members, now: now))
             }
             return true
         } catch { return false }
     }
 
-    /// The planner's link costs for this pair from its latest measurement, or
-    /// nil (unmeasured: no tensor-parallel mode is chosen then).
+    /// The planner's link costs for this pair from its recent measurements
+    /// (their median), or nil (unmeasured: no tensor-parallel mode is chosen then).
     public static func costs(homeDirectory: URL, members: [String],
                              now: Double = Date().timeIntervalSince1970) -> ClusterLinkCosts? {
-        guard let entry = read(defaultFile(homeDirectory: homeDirectory))?.pairs[key(members: members)],
-              now - entry.measuredAt <= maximumAgeSeconds, entry.measuredAt <= now + 300 else { return nil }
-        return ClusterLinkCosts(probe: entry.probe,
-            measuredUTC: ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: entry.measuredAt)))
+        read(defaultFile(homeDirectory: homeDirectory))?.costs(members: members, now: now)
     }
 }

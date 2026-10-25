@@ -32,6 +32,12 @@ enum ClusterModelFeaturePolicy {
         }
     }
 
+    /// Why the plan leaves the pipeline out, for its reason line (`ClusterPlacementPolicy.modesReason`); nil when
+    /// this policy leaves no mode out.
+    static func modesReason(_ capability: ClusterRuntimeCapability) -> String? {
+        requiresQwenMediaAndLogprobs(capability) ? "Qwen3.8 27B keeps images, video and committed-token logprobs only in tensor parallel" : nil
+    }
+
     static let explanation = "Qwen3.8 27B retains images, video and committed-token logprobs only in tensor parallel. Pipeline modes are ineligible for this model contract; measured speed estimates are unchanged."
     static let unavailable = "No tensor-parallel placement can preserve those features under the current link, shape and memory checks. No reduced-feature setup was saved."
 }

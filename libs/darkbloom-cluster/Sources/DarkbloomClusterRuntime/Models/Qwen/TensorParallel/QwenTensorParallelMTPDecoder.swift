@@ -7,7 +7,10 @@ import MLXLMCommon
 /// Wall-clock split of one speculative round on this rank, for the
 /// `darkbloom-tp-mtp-profile-v1` diagnostic (never fields of the audited
 /// round marker). Each phase ends at a host synchronization, so GPU work is
-/// counted in the phase whose evaluation waited for it.
+/// counted in the phase whose evaluation waited for it: with the single-row
+/// draft chain pipelined (`QwenTensorParallelMTPDecoder.pipelinesDrafts`),
+/// `draft` and `build` are host submission time and the drafts' GPU work
+/// lands in `verify`.
 struct QwenTensorParallelMTPRoundProfile: Equatable {
     var rows = 0
     /// Assistant proposals: draft steps, their evaluation and exchange.
@@ -57,6 +60,10 @@ final class QwenTensorParallelMTPDecoder {
     private let stops: Set<Int>
     private let captureFrontier: Int
     private let captureLimitBytes: Int
+    /// Leading complete history blocks move into head K/V during the prompt
+    /// (`flushCompleteHistoryBlocks`); off only to compare against the
+    /// whole-prompt first-draft flush.
+    private let flushesHistoryDuringPrompt: Bool
     private let allocationBound: (Int) throws -> Int
     private var captured: QwenTensorParallelMTPPrefixState?
     private var promptFrontier: MLXArray?
@@ -72,7 +79,8 @@ final class QwenTensorParallelMTPDecoder {
     init(target: any QwenTensorParallelMTPTarget, head: QwenTensorParallelMTPHead,
          group: any QwenTensorParallelReduction, depth: Int,
          restored: QwenTensorParallelMTPPrefixState? = nil, captureFrontier: Int = 0,
-         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
+         captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil,
+         flushesHistoryDuringPrompt: Bool = true) throws {
         guard (1...4).contains(depth), head.assistant.maximumDraftTokens.map({ depth <= $0 }) == true,
               head.assistant.maximumSpeculativeBatch == 1,
               case .shard(let rank, let size) = target.model.role,
@@ -89,6 +97,7 @@ final class QwenTensorParallelMTPDecoder {
         self.target = target; self.head = head; self.group = group; self.depth = depth
         stops = Set(target.request.stopTokenIDs)
         self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
+        self.flushesHistoryDuringPrompt = flushesHistoryDuringPrompt
         self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP assistant prefix capture") }
         if let restored {
             guard restored.assistant.targetInputCount == restored.committedTokens,
@@ -120,6 +129,14 @@ final class QwenTensorParallelMTPDecoder {
                     captured = try .capture(target: target, assistant: head.assistant, requestState: state,
                         frontier: captureFrontier, limitBytes: captureLimitBytes,
                         allocationBound: allocationBound, check: checked)
+                }
+                // Past any prompt checkpoint, move the leading complete history
+                // blocks the first round would flush first into head K/V now,
+                // so a long prompt does not hold its whole trusted history.
+                if flushesHistoryDuringPrompt, captureFrontier == 0 || end >= captureFrontier {
+                    if head.assistant.flushCompleteHistoryBlocks(requestState: state) > 0 {
+                        eval(head.assistant.evaluationTargets(for: state)); try checked()
+                    }
                 }
                 return output.logits
             }
@@ -154,10 +171,19 @@ final class QwenTensorParallelMTPDecoder {
                 var drafted: [MLXArray] = []
                 let started = DispatchTime.now().uptimeNanoseconds
                 var clock = QwenTensorParallelMTPRoundProfile.Clock(), profile = QwenTensorParallelMTPRoundProfile(rows: 1)
+                // Pipelined (`pipelinesDrafts`): each draft step is submitted
+                // and the next built on its unevaluated output, and the window
+                // is built on the unevaluated drafts, so the GPU runs the
+                // chain and the window back to back while the host builds
+                // ahead. The collectives keep their order (each rank submits
+                // the same steps in the same order); only waits move.
+                let pipelined = Self.pipelinesDrafts
                 for _ in 0..<count {
                     let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden!, shortlist: nil,
                         requestState: state)
-                    eval([next.tokens, next.hidden] + head.assistant.evaluationTargets(for: state)); try checked()
+                    let roots = [next.tokens, next.hidden] + head.assistant.evaluationTargets(for: state)
+                    if pipelined { asyncEval(roots) } else { eval(roots) }
+                    try checked()
                     // Both ranks read the proposal from the same exchanged
                     // (maximum, index) pairs (`QwenTensorParallelMTPProjection`),
                     // so their argmax is the same token without a broadcast.
@@ -167,7 +193,9 @@ final class QwenTensorParallelMTPDecoder {
                 let drafts = drafted.isEmpty ? nil : concatenated(drafted, axis: 1)
                 let inputs = drafts.map { concatenated([seed, $0], axis: 1) } ?? seed
                 profile.draft = clock.lap()
-                let built = try target.beginWindow(tokens: inputs, offset: target.state.committedTokens)
+                let built = try QwenTensorParallelTargetWindow.$deferTokenRangeCheck.withValue(pipelined && speculative) {
+                    try target.beginWindow(tokens: inputs, offset: target.state.committedTokens)
+                }
                 profile.build = clock.lap()
                 eval(built.outputs + built.roots); try checked(); try target.confirmWindow(check: checked)
                 profile.verify = clock.lap()
@@ -238,15 +266,35 @@ final class QwenTensorParallelMTPDecoder {
                 lastProfile = speculative ? profile : nil
                 return .init(tokens: decision.tokens, logprobs: logprobs, speculative: speculative)
             }
-        } catch { failed = true; throw error }
+        } catch {
+            failed = true
+            // A pipelined round may leave submitted steps running: let them
+            // (and their collectives, which every rank submitted in the same
+            // order) finish before the caller retires this request.
+            if Self.pipelinesDrafts { Stream.gpu.synchronize(); Stream.cpu.synchronize() }
+            throw error
+        }
     }
+
+    /// Whether single-row rounds pipeline the assistant's draft chain into the
+    /// verify window (on; diagnostic only:
+    /// `DARKBLOOM_QWEN_TP_MTP_PIPELINED_DRAFT=0` waits for each draft step).
+    static let pipelinesDraftsByEnvironment =
+        ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_MTP_PIPELINED_DRAFT"] != "0"
+    /// A test's own choice (nil: the environment's).
+    @TaskLocal static var pipelinesDraftsOverride: Bool?
+    static var pipelinesDrafts: Bool { pipelinesDraftsOverride ?? pipelinesDraftsByEnvironment }
 
     /// Draft each request through its existing B=1 assistant state, then
     /// verify the entire cohort in one captured target rectangle. This does
     /// not widen the assistant SDK's supported draft shape. Admission must
     /// quote the simultaneous target windows and their retained backings.
+    /// With `batchesDrafts` (and an assistant that `splitsDrafts`), each row
+    /// keeps its own B=1 history and graph, and one head call per draft step
+    /// chooses every row's proposal.
     static func stepBatch(_ decoders: [QwenTensorParallelMTPDecoder], lastTokens: [Int],
-                          remaining: [Int], check: () throws -> Void) throws -> [Emitted] {
+                          remaining: [Int], batchesDrafts: Bool = true,
+                          check: () throws -> Void) throws -> [Emitted] {
         do {
             return try MLX.withError { error in
                 func checked() throws { try error.check(); try check() }
@@ -270,23 +318,48 @@ final class QwenTensorParallelMTPDecoder {
                 let columns = first.depth + 1, started = DispatchTime.now().uptimeNanoseconds
                 var clock = QwenTensorParallelMTPRoundProfile.Clock()
                 var profile = QwenTensorParallelMTPRoundProfile(rows: decoders.count)
-                // Each row drafts through its own B=1 assistant state with the
-                // same graphs as alone, evaluated on its own in request order: a
-                // draft step holds two collectives (rank 0's hidden, then the
-                // score exchange), and rows evaluated together would leave the
-                // order of independent rows' collectives to each rank's graph
-                // schedule, which differs by rank.
                 let seeds = lastTokens.map { MLXArray([Int32($0)]).reshaped([1, 1]) }
                 var feeds = decoders.indices.map { (tokens: seeds[$0], hidden: decoders[$0].carry!.hidden) }
                 var proposed = [[MLXArray]](repeating: [], count: decoders.count)
                 for _ in 0..<first.depth {
                     var next: [(tokens: MLXArray, hidden: MLXArray)] = []
-                    for (row, decoder) in decoders.enumerated() {
-                        let step = decoder.head.assistant.draftStep(tokens: feeds[row].tokens, hidden: feeds[row].hidden,
-                            shortlist: nil, requestState: decoder.state)
-                        eval([step.tokens, step.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
-                        try checked()
-                        next.append(step)
+                    if batchesDrafts, first.head.assistant.splitsDrafts {
+                        // Each row's assistant forward is its own B=1 graph over
+                        // its own history; the vocabulary-sharded head chooses
+                        // every row's proposal in one call, so a draft step holds
+                        // two collectives for the whole cohort (rank 0's hidden
+                        // rows, then the score exchange), in one evaluation, in
+                        // the same order on both ranks. Each row's choice is its
+                        // own call's: both sums are element-wise, the head shard
+                        // multiplies its rows with MLX's vector kernel (below the
+                        // vector limit every vector's reduction is the same at
+                        // any count) and the first maximum is taken per row.
+                        let hiddens = decoders.indices.map { row in
+                            decoders[row].head.assistant.draftHidden(tokens: feeds[row].tokens,
+                                hidden: feeds[row].hidden, requestState: decoders[row].state)
+                        }
+                        let scores = first.head.projection(concatenated(hiddens, axis: 0))
+                        let choices = argMax(scores[0..., -1, 0...], axis: -1).asType(.int32)
+                        var roots = [choices]
+                        for (row, decoder) in decoders.enumerated() {
+                            let draft = choices[row ..< row + 1]
+                            decoder.head.assistant.recordDraft(lastHidden: hiddens[row], draft: draft,
+                                requestState: decoder.state)
+                            roots += [hiddens[row]] + decoder.head.assistant.evaluationTargets(for: decoder.state)
+                            next.append((draft, hiddens[row]))
+                        }
+                        eval(roots); try checked()
+                    } else {
+                        // One row at a time, each row's proposal evaluated alone:
+                        // its two collectives must not interleave with another
+                        // row's in a schedule that can differ by rank.
+                        for (row, decoder) in decoders.enumerated() {
+                            let step = decoder.head.assistant.draftStep(tokens: feeds[row].tokens, hidden: feeds[row].hidden,
+                                shortlist: nil, requestState: decoder.state)
+                            eval([step.tokens, step.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
+                            try checked()
+                            next.append(step)
+                        }
                     }
                     // Both ranks read every proposal from the same exchanged
                     // (maximum, index) pairs, so no broadcast is needed.
@@ -379,6 +452,17 @@ final class QwenTensorParallelMTPDecoder {
             && (request.sampler?.admitsSpeculativeVerification ?? true)
     }
 
+    /// This request's next round from its own settled carry: the input and the
+    /// output allowance a round may use even while earlier selections still
+    /// wait for client credit (the decoder is then ahead of the driver). Nil
+    /// when that round could not speculate, or when the carry is a stop token:
+    /// the request ends there, so nothing may be verified past it.
+    func settledFrontier() -> (lastToken: Int, remaining: Int)? {
+        guard let token = carry?.token, !stops.contains(token) else { return nil }
+        let remaining = request.outputCount - selectedCount
+        return canSpeculate(lastToken: token, remaining: remaining) ? (token, remaining) : nil
+    }
+
     /// A genuine ordinary batch already evaluated and committed this target
     /// input and selected the next token. Extend only this request's assistant
     /// history, allowing singleton speculation to resume without a reload.
@@ -406,6 +490,9 @@ final class QwenTensorParallelMTPDecoder {
     }
 
     func discardCapturedPrefix() { captured = nil }
+
+    /// Trusted target rows queued for head K/V (inspection).
+    var trustedBacklogRows: Int { head.assistant.trustedBacklogRows(requestState: state) }
 
     static func accept(drafts: [Int], targets: [Int], remaining: Int, stopTokens: Set<Int>,
                        vocabularySize: Int) throws -> (tokens: [Int], accepted: Int) {

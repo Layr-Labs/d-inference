@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 extension QwenResidentRuntime {
@@ -41,10 +42,13 @@ extension QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
         // Graph-shaping terms both ranks bind into the load agreement: the
-        // stages' KV storage (paged unless the diagnosis switch names contiguous) and the batch lanes.
+        // stages' KV storage (paged), its live precision (main's policy, as
+        // the owner resolved it) and the batch lanes.
         let batch = try QwenBatchSettings.fromEnvironment(launchEnvironment)
-        let kvKind = try ClusterStageKVBackendKind.resolved(environment: launchEnvironment,
-            speculative: mode.usesSpeculativeHead, batchLanes: batch.lanes)
+        let kvKind = try ClusterStageKVBackendKind.fromEnvironment(launchEnvironment)
+        let kvQuantization = try PagedKVQuantizationSelection.clusterLive(launchEnvironment)
+        // A hand-off moves the producer's rows as native arrays.
+        if mode.isPhaseSplit { try kvQuantization.requireNative("the \(mode.rawValue) hand-off") }
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         // A recording request may be asked to commit this; fixed here, once.
@@ -154,7 +158,8 @@ extension QwenResidentRuntime {
             let probesLink = transport != .localSocketTest
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
-                + kvKind.loadAgreementFields + batch.loadAgreementFields(runtimeModelID: admission.runtimeModelID)
+                + kvKind.loadAgreementFields + kvQuantization.loadAgreementFields
+                + batch.loadAgreementFields(runtimeModelID: admission.runtimeModelID)
                 + Gemma4BatchArithmeticAgreement.fields(runtimeModelID: admission.runtimeModelID, lanes: batch.lanes)
                 + (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
@@ -283,7 +288,7 @@ extension QwenResidentRuntime {
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
                         try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
                             maximumTokensPerRequest: admission.profile.maximumContextTokens,
-                            maximumChunkTokens: admission.profile.maximumChunkTokens)
+                            maximumChunkTokens: admission.profile.maximumChunkTokens, quantization: kvQuantization)
                     }
                     if batch.batching, loaded.loaded.kvHost.host == nil {
                         throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
@@ -349,8 +354,11 @@ extension QwenResidentRuntime {
             }
             // The prompt-prefix cache and, when the owner configured one, its
             // SSD tier for this plan and rank. Opening it sweeps the directories
-            // of other plans under the tier's root on this rank.
-            let prefixCache = QwenStagePrefixCache.fromEnvironment(launchEnvironment)
+            // of other plans under the tier's root on this rank. Packed rows
+            // have no exact snapshot to keep, so a quantized stage keeps no
+            // prefixes, as main keeps no snapshot prefixes for packed storage.
+            let prefixCache = kvQuantization == .native ? QwenStagePrefixCache.fromEnvironment(launchEnvironment)
+                : QwenStagePrefixCache(enabled: false)
             if prefixCache.enabled, let loadedStage = stage {
                 prefixCache.disk = QwenStagePrefixDiskTier.open(
                     configuration: .fromEnvironment(launchEnvironment, key: prefixSSDKey),

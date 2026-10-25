@@ -6,6 +6,8 @@ import DarkbloomClusterSecurity
 @testable import DarkbloomClusterRemote
 @testable import InstalledContract
 
+private let removedKVBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
+
 extension InstalledSessionCheck {
     /// The actual child boundary that previously dropped the operator's lane
     /// count while provider admission still used it. No inherited environment
@@ -143,15 +145,23 @@ extension InstalledSessionCheck {
             }
             try malformedOverrideKeepsOneLane(plan, matrix: prepared.matrixURL)
         }
-        for model in ["registered_qwen35_9b", "registered_qwen35_35b_a3b", "unknown"] {
-            try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .qwen35Dense, mode: .tensorParallel,
-                hasPrivateImages: false, runtimeModelID: model) == nil, "Other model inherited Qwen27 TP lanes")
+        // Every Qwen TP row serves request-owned lanes under its registered
+        // adapter; another adapter or model inherits none.
+        for (model, adapter) in [("registered_qwen35_9b", ClusterRuntimeAdapter.qwen35Dense),
+                                 ("registered_qwen35_35b_a3b", .qwen35RoutedExperts),
+                                 ("registered_qwen36_35b_a3b", .qwen35RoutedExperts)] {
+            try require(DistributedInstalledPlan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel,
+                hasPrivateImages: false, runtimeModelID: model) == 1, "A Qwen TP row lost its request-owned lanes")
         }
-        try rejected {
-            _ = try InstalledFixture.make(root: f.root.appendingPathComponent("qwen9-unpriced-tp-width"),
-                probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
-                advertisedModes: [.pipeline, .tensorParallel], batchLanes: 2)
+        for (model, adapter) in [("registered_qwen35_35b_a3b", ClusterRuntimeAdapter.qwen35Dense),
+                                 ("registered_ternary_bonsai_2_27b", .qwen35PrismHadamard), ("unknown", .qwen35Dense)] {
+            try require(DistributedInstalledPlan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel,
+                hasPrivateImages: false, runtimeModelID: model) == nil, "Another adapter or model inherited Qwen TP lanes")
         }
+        let nine = try InstalledFixture.make(root: f.root.appendingPathComponent("qwen9-priced-tp-width"),
+            probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+            advertisedModes: [.pipeline, .tensorParallel], batchLanes: 2)
+        try require(try nine.prepare().plan.batchLanes([:]) == 2, "A saved Qwen9 TP width did not reach its plan")
         // A default greater than one exposes the nil/absent mismatch which
         // the current Qwen singleton default would otherwise hide.
         let glm = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-default"),
@@ -183,7 +193,7 @@ extension InstalledSessionCheck {
             try require(gptPrepared.plan.batchLanes(caller) == lanes && gptPrepared.plan.batchLanes(child) == lanes
                 && Int(native[key] ?? "1") == lanes, "GPT-OSS provider/actual child/native lane widths differ")
             try require(gptPrepared.plan.lanesRetireAlone(caller) == (lanes > 1), "GPT-OSS cancel isolation width differs")
-            try require(native[DistributedInstalledPlan.kvBackendSwitch] != "contiguous", "GPT-OSS pages were disabled by batching")
+            try require(native[removedKVBackendSwitch] == nil, "GPT-OSS pages were disabled by batching")
         }
         try malformedOverrideKeepsOneLane(gptPrepared.plan, matrix: gptPrepared.matrixURL)
         let gemma = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-paged"),
@@ -195,7 +205,7 @@ extension InstalledSessionCheck {
             let child = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [key: String(lanes)]))
             let native = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL, ownerEnvironment: child)
             try require(Int(native[key] ?? "1") == lanes, "Gemma native lane width differs from its actual owner")
-            try require(native[DistributedInstalledPlan.kvBackendSwitch] == nil, "Gemma batching changed the paged default")
+            try require(native[removedKVBackendSwitch] == nil, "Gemma batching changed the paged default")
         }
         for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
             for choice in ["0", "1"] {
@@ -205,9 +215,29 @@ extension InstalledSessionCheck {
                 try require(owner[sync] == nil && native[sync] == nil, "Pipeline gained a TP synchronization override")
             }
         }
+        // Stage KV is paged only: the removed contiguous switch never reaches a rank.
         let diagnostic = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
-            ownerEnvironment: [key: "8", DistributedInstalledPlan.kvBackendSwitch: "contiguous"])
-        try require(diagnostic[DistributedInstalledPlan.kvBackendSwitch] == "contiguous", "Explicit local KV diagnostic was lost")
+            ownerEnvironment: [key: "8", removedKVBackendSwitch: "contiguous"])
+        try require(diagnostic[removedKVBackendSwitch] == nil, "The removed contiguous KV switch reached a rank")
+        // The live KV precision: the provider's own switch reaches the owner it
+        // starts as a short name only; the owner's resolver (main's resolution,
+        // installed by `cluster worker-owner`) names the rank's precision.
+        let precision = DistributedInstalledKVQuantization.switchName
+        let plain = try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))
+        let forwarded = try observed(gemmaPrepared.plan.localOwnerConfiguration(
+            ownerEnvironment: [precision: " K8V4 ", "UNRELATED": "must-not-forward"]))
+        var expectedOwner = plain; expectedOwner[precision] = "k8v4"
+        try require(forwarded == expectedOwner, "local owner did not forward exactly the KV precision switch")
+        var refused = plain; refused[precision] = "invalid"
+        try require(try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [precision: "k8 v4"])) == refused,
+            "a malformed KV precision switch did not reach the owner as a refusable name")
+        DistributedInstalledKVQuantization.install(nil)
+        try require(gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
+            ownerEnvironment: forwarded)[precision] == nil, "an owner without a resolver named a precision")
+        DistributedInstalledKVQuantization.install { _, environment in environment[precision] }
+        try require(gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
+            ownerEnvironment: forwarded)[precision] == "k8v4", "the owner's resolved KV precision did not reach the rank")
+        DistributedInstalledKVQuantization.install(nil)
         for mode in ClusterGenerationMode.allCases where mode != .pipeline {
             try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .gptossLayerStage, mode: mode,
                 hasPrivateImages: false) == nil, "GPT-OSS batch mode widened")

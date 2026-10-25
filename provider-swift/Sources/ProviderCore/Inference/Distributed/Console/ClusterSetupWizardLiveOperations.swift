@@ -587,7 +587,7 @@ final class LiveContext: @unchecked Sendable {
             var discoveredWidening: ClusterPlacementTensorBatchQuote?, fallbackWidening: ClusterPlacementTensorBatchQuote?
             if !settings.privateImageQualification,
                case .success(let admittedValue) = capability,
-               admittedValue.record.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID {
+               ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(admittedValue.record.runtimeModelID) {
                 do {
                     let admitted = admittedValue.record, measured = try layout.get()
                     let chunk = description.derivesRequestLimits
@@ -641,6 +641,7 @@ final class LiveContext: @unchecked Sendable {
             leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
+            shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.

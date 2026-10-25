@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 /// Synchronous, process-local native owner of one rank of a resident GPT-OSS
@@ -142,6 +143,8 @@ public final class GPTOSSResidentRuntime {
                             dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> GPTOSSResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        // Its rows are not the product's paged pool: main refuses a quantized live precision there.
+        try PagedKVQuantizationSelection.clusterLive(environment).requireNative("the GPT-OSS stage storage", paged: false)
         let batch = try GPTOSSBatchSettings.fromEnvironment(environment, mode: mode)
         // A keyed data plane (S16); its qualification fault only with the switches.
         let tamper = qualification.permitted ? try CollectiveRecordTamper.admit(environment: environment) : nil

@@ -72,12 +72,22 @@ struct ClusterObservabilityTests {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "epoch-1")
+        // Each rank's worker build, rank order, as the pair's admission identity names it: the speed record carries it.
+        let builds = [String(repeating: "c", count: 64), String(repeating: "d", count: 64)]
         let context = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
-                                                      cut: "0-16|16-32", log: log)
+                                                      cut: "0-16|16-32", log: log, ranks: ["leader", "follower"],
+                                                      rankBuildSHA256: builds)
         #expect(context.record(capture.values[0]) == nil)          // only retired requests become records
         let made = context.record(retired, now: { 1_000 })
         let record = try #require(made)
         log.record(record)
+        #expect(record.ranks == ["leader", "follower"] && record.rankBuildSHA256 == builds)
+        // A context that knows no build writes a record as an earlier build did: the planner counts it as another build's.
+        let unbuilt = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
+                                                      cut: "0-16|16-32", log: log)
+        let unbuiltMade = unbuilt.record(retired, now: { 1_000 })
+        let unbuiltRecord = try #require(unbuiltMade)
+        #expect(unbuiltRecord.rankBuildSHA256 == nil && unbuiltRecord.ranks == nil)
         #expect(record.mode == "phase_split_mtp_v1" && record.cut == "0-16|16-32" && record.outcome == "length")
         #expect(record.promptTokens == 3 && record.cachedTokens == 2 && record.completionTokens == 3)
         #expect(record.firstTokenMilliseconds == 400 && record.decodeTokensPerSecond == 10)

@@ -311,6 +311,40 @@ func telemetryChecks() throws {
     check(!shared.isSpeedRecord && alone.isSpeedRecord && older.isSpeedRecord && laneRecords.map(\.requestID) == ["l0", "old"]
             && !olderJSON.contains("concurrentRequests") && sharedRoundTrip?.concurrentRequests == 7,
           "C16 a request that shared the pair with others is no speed record; one alone, or written before the count, is")
+    // Each speed record names the worker build of each rank (the pair's admission identity): the planner and the
+    // router use a record only for the builds that served it. A record written before builds were recorded reads
+    // with none, as another build's; a malformed list is dropped.
+    let buildA = String(repeating: "a", count: 64), buildB = String(repeating: "b", count: 64)
+    func built(_ id: String, _ builds: [String]?, at: Double = 1) -> ClusterPairRequestTelemetry {
+        .init(requestID: id, finishedAt: at, modelID: "m", mode: "tensor_parallel_v1", cut: "0-64|0-64", promptTokens: 30,
+              cachedTokens: 0, completionTokens: 128, firstTokenMilliseconds: 100, decodeTokensPerSecond: 40,
+              handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+              ranks: ["a", "b"], concurrentRequests: 0, rankBuildSHA256: builds)
+    }
+    let current = built("b1", [buildA, buildA])
+    let currentRoundTrip = (try? JSONEncoder().encode(current)).flatMap { try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: $0) }
+    let oldJSON = Data(#"{"cachedTokens":0,"completionTokens":128,"concurrentRequests":0,"cut":"0-64|0-64","decodeTokensPerSecond":40,"finishedAt":1,"firstTokenMilliseconds":100,"mode":"tensor_parallel_v1","modelID":"m","outcome":"length","promptTokens":30,"ranks":["a","b"],"requestID":"old"}"#.utf8)
+    let unbuilt = try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: oldJSON)
+    let unbuiltJSON = (try? JSONEncoder().encode(built("none", nil))).map { String(decoding: $0, as: UTF8.self) } ?? "-"
+    check(currentRoundTrip == current && currentRoundTrip?.rankBuildSHA256 == [buildA, buildA]
+            && unbuilt?.rankBuildSHA256 == nil && unbuilt?.isSpeedRecord == true && !unbuiltJSON.contains("rankBuildSHA256")
+            && built("short", ["c41", buildA]).rankBuildSHA256 == nil && built("upper", [buildA.uppercased(), buildA]).rankBuildSHA256 == nil
+            && built("empty", []).rankBuildSHA256 == nil && built("many", Array(repeating: buildA, count: 9)).rankBuildSHA256 == nil,
+          "C17 a speed record names each rank's worker build; one written before builds were recorded reads with none; a malformed list is dropped")
+    // The bound keeps no build apart: as the current build serves, an earlier build's records leave their route.
+    var aging: [ClusterPairRequestTelemetry] = []
+    for index in 0..<ClusterServedSpeedFile.keptPerRoute { aging = ClusterServedSpeedFile.adding(built("e\(index)", nil, at: Double(index)), to: aging) }
+    for index in 0..<10 { aging = ClusterServedSpeedFile.adding(built("n\(index)", [buildB, buildB], at: Double(100 + index)), to: aging) }
+    check(aging.count == ClusterServedSpeedFile.keptPerRoute && aging.first?.requestID == "e10"
+            && aging.filter({ $0.rankBuildSHA256 == nil }).count == ClusterServedSpeedFile.keptPerRoute - 10
+            && aging.suffix(10).allSatisfy({ $0.rankBuildSHA256 == [buildB, buildB] }),
+          "C18 the file's bound keeps no build apart: the current build's records push an earlier build's out of their setup and route")
+    let third = ClusterPairTelemetryLog(file: file, sessionID: "session-3", capacity: 4)
+    third.record(built("w", [buildA, buildA], at: 7))      // the session's first on the pair route: telemetry only
+    third.record(built("k", [buildA, buildA], at: 8))
+    check(ClusterServedSpeedFile.read(history)?.records.last.map { $0.requestID == "k" && $0.rankBuildSHA256 == [buildA, buildA] } == true
+            && ClusterServedSpeedFile.read(history)?.records.first?.rankBuildSHA256 == nil,
+          "C19 the leader's speed records file keeps each record's builds beside the earlier records without any")
 }
 
 // MARK: D. Worker protocol

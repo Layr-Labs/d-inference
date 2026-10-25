@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// Private-selection native worker facade. Only readiness/cancel cross the
 /// control thread; every native operation is synchronous and exclusive. Retain
@@ -89,6 +90,9 @@ public final class GLM5NextResidentRuntime {
     public static func serving(_ configuration: QwenResidentLoadConfiguration,
                                qualification: QwenResidentQualificationSwitches = .refused,
                                prefixSSDKey: Data? = nil) throws -> GLM5NextResidentRuntime {
+        // Main serves GLM's payload KV native FP32 only and refuses any other live precision.
+        try PagedKVQuantizationSelection.clusterLive(ProcessInfo.processInfo.environment)
+            .requireNative("GLM, whose payload KV stays native FP32")
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         let directory = configuration.modelDirectory
         let config = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"),

@@ -36,19 +36,23 @@ struct QwenTensorParallelMTPBudgetTests {
         let tensors = Dictionary(uniqueKeysWithValues: input.tensors.map {
             ($0.name, (shape: $0.shape, dtype: $0.dtype == "U32" ? DType.uint32 : .bfloat16, byteCount: $0.byteCount))
         })
-        try QwenTensorParallelMTPInventory.validateStoredTensors(tensors)
+        let retained = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("StageMetadataChecks/Inputs/qwen-retained-inputs.json")
+        let head = try QwenTensorParallelMTPInventory.Head(configuration:
+            JSONDecoder().decode(Retained.self, from: Data(contentsOf: retained)).twentySeven.configuration)
+        try QwenTensorParallelMTPInventory.validateStoredTensors(tensors, head: head)
         for name in tensors.keys {
             var missing = tensors; missing.removeValue(forKey: name)
-            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(missing) }
+            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(missing, head: head) }
             var changed = tensors; changed[name]!.byteCount += 1
-            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed) }
+            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed, head: head) }
             changed = tensors; changed[name]!.dtype = .float32
-            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed) }
+            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed, head: head) }
             changed = tensors; changed[name]!.shape[0] += 1
-            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed) }
+            #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(changed, head: head) }
         }
         var extra = tensors; extra["mtp.unowned.weight"] = ([1], .bfloat16, 2)
-        #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(extra) }
+        #expect(throws: ProbeError.self) { try QwenTensorParallelMTPInventory.validateStoredTensors(extra, head: head) }
     }
 
     @Test func fullPromptHistoryPagesCapturedWindowsAndCollectivesStayCharged() throws {
@@ -74,10 +78,13 @@ struct QwenTensorParallelMTPBudgetTests {
                 #expect(quote.prefix.residentBytes == 2 * quote.prefix.captureBytes)
                 #expect(quote.assistantPageBytes == 2 * ((context + 63) / 64) * bound(64 * 4 * 256 * 2))
                 // Bounded flushes: one block plus the proposal row, and at most
-                // one bound of ordinary one-token roots beside the prompt.
+                // one bound of ordinary one-token roots beside the prompt rows a
+                // lane still holds: its checkpoint frontier's, or one block plus
+                // one prompt frame (leading complete blocks move during the prompt).
                 let rows = QwenTensorParallelMTPPolicy.historyFlushRows
+                let held = min(context - 1, max(min(4096, context), rows + chunk + 1))
                 #expect(quote.promptWorkspaceBytes >= 16 * bound(min(context - 1, rows + 1) * 5120 * 4))
-                #expect(quote.trustedHistoryBytes >= 3 * bound(min(context, context - 1 + rows) * 5120 * 2)
+                #expect(quote.trustedHistoryBytes >= 3 * bound(min(context, held + rows) * 5120 * 2)
                     + 2 * min(rows, context) * bound(5120 * 2))
                 // Without them the first draft keeps its whole rectangle.
                 let whole = try QwenTensorParallelMTPBudget.derive(geometry: family.geometry, plan: plan,

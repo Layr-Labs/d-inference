@@ -54,8 +54,34 @@ extension QwenTensorParallelPlan {
                 throw ProbeError("Tensor-parallel rank ledger columns of \(tensor.name) leave a group or word")
             }
             return try product([tensor.shape[0], stored])
+        case .load(.expertRows(let range)):
+            return try expertRows(of: tensor, [range])
+        case .load(.expertRowRanges(let ranges)):
+            return try expertRows(of: tensor, ranges)
+        case .load(.expertInputColumns(let columns)):
+            // [experts, rows, packed words or groups]: every expert's own columns.
+            guard tensor.shape.count == 3, let dot = tensor.name.lastIndex(of: ".") else {
+                throw ProbeError("Tensor-parallel rank ledger expert columns need a 3-D quantized leaf")
+            }
+            let (groupSize, bits) = affineQuantization(forModule: String(tensor.name[..<dot]))
+            let packed = tensor.name.hasSuffix(".weight")
+            let stored = packed ? columns.count * bits / 32 : columns.count / groupSize
+            let end = packed ? columns.upperBound * bits / 32 : columns.upperBound / groupSize
+            guard columns.count % groupSize == 0, (columns.count * bits) % 32 == 0, end <= tensor.shape[2] else {
+                throw ProbeError("Tensor-parallel rank ledger expert columns of \(tensor.name) leave a group or word")
+            }
+            return try product([tensor.shape[0], tensor.shape[1], stored])
         default:
             throw ProbeError("Tensor-parallel rank ledger does not price \(tensor.name)")
         }
+    }
+
+    /// Every expert's rows in `ranges` of axis 1 (`[experts, rows, ...]`).
+    private func expertRows(of tensor: QwenDenseCanonicalTensor, _ ranges: [Range<Int>]) throws -> Int {
+        guard tensor.shape.count == 3, !ranges.isEmpty,
+              ranges.allSatisfy({ $0.lowerBound >= 0 && $0.upperBound <= tensor.shape[1] && !$0.isEmpty }) else {
+            throw ProbeError("Tensor-parallel rank ledger expert rows exceed \(tensor.name)")
+        }
+        return try QwenLongPrefillCheckedBytes.product([tensor.shape[0], ranges.reduce(0) { $0 + $1.count }, tensor.shape[2]])
     }
 }

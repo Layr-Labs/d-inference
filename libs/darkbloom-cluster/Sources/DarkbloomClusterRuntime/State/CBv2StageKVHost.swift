@@ -4,62 +4,62 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
-/// Which KV storage a cluster stage's attention rows live in. Paged is the
-/// product's default backend (`PagedKVBackend`, segmented pool); contiguous is
-/// the earlier per-request storage, kept as a diagnosis switch only.
+/// Which KV storage a cluster stage's attention rows live in: the product's
+/// paged pool (`PagedKVBackend`, segmented), as on one Mac. Contiguous
+/// per-request storage remains only as the in-process reference the tests
+/// compare paged storage against (and run without GPU kernels); no launch can
+/// select it.
 public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     case paged
     case contiguous
 
     public static let environmentName = "DARKBLOOM_CLUSTER_KV_BACKEND"
 
-    /// Paged unless the diagnosis switch names contiguous. Anything else stops
-    /// the load by name; it never silently falls back.
+    /// Paged, for every stage and mode (owner rule 2026-10-22: paged
+    /// attention only for KV). The former diagnosis switch may still name
+    /// paged; contiguous or anything else stops the load by name, never
+    /// silently. Both ranks derive the same value.
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Self {
-        try Self.named(environment) ?? .paged
-    }
-
-    /// The backend the launch named, nil when it named none. Anything but
-    /// paged or contiguous stops the load by name.
-    public static func named(_ environment: [String: String]) throws -> Self? {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return nil }
-        guard let value = Self(rawValue: raw.lowercased()) else {
-            throw ProbeError("Unknown \(environmentName)=\(raw); only paged or contiguous can be declared")
+              !raw.isEmpty, raw.lowercased() != Self.paged.rawValue else { return .paged }
+        guard raw.lowercased() != Self.contiguous.rawValue else {
+            throw ProbeError("\(environmentName)=contiguous was removed: cluster stage KV is paged only, as on one Mac")
         }
-        return value
-    }
-
-    /// A stage's backend when the launch named none: PAGED, for every stage
-    /// and mode (owner rule 2026-10-22: paged attention only for KV, never
-    /// contiguous), MTP stages included; a named backend (the diagnosis
-    /// switch) always wins. Both ranks derive the same value.
-    ///
-    /// History of the earlier interim default (contiguous for one-request
-    /// MTP stages), kept for the measurements it records:
-    ///
-    /// Interim (2026-10-12): with the head, paged storage is still slower than
-    /// contiguous, on the pair and on one Mac alone. 9B at 30K, same binary:
-    /// verify windows (columns batched, each column still reads the whole
-    /// context) decode at 88 vs 107 tok/s on the pair (95 vs 133 on one Mac),
-    /// and prefill chunks re-gather all earlier pages (first token 9.3 vs
-    /// 7.1 s). `batchLanes` > 1 only occurs in pipeline mode, which has no
-    /// head. Paged returns for MTP stages once both gaps close.
-    ///
-    /// 2026-10-13 (items 23-25: prefill mirror, multi-query verify kernel,
-    /// host frontier): still kept. The prefill gap is nearly closed (first
-    /// token within 1-5 %), but paged MTP decode stays 7-34 % below
-    /// contiguous on the pair (9B 30K 87 vs 104 tok/s, 27B 30K 30 vs 45).
-    /// The multi-query verify window costs ~2.5x the contiguous window's
-    /// attention (attention only, 9B geometry at 30K: 10.6 vs 4.2 ms per
-    /// 4 layers, 17.6 ms before item 24).
-    public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
-        try Self.named(environment) ?? .paged
+        throw ProbeError("Unknown \(environmentName)=\(raw); only paged can be declared")
     }
 
     /// Extra load-agreement fields: both ranks must store and attend the same
     /// way. Contiguous keeps the agreement bytes it always had.
     var loadAgreementFields: [String] { self == .contiguous ? [] : ["cluster-stage-kv-v1", rawValue] }
+}
+
+extension PagedKVQuantizationSelection {
+    /// This rank's live precision: the value its owner resolved from the
+    /// provider's own settings (`engine_v2_kv_quantization`, per model, or
+    /// `DARKBLOOM_CBV2_KV_QUANTIZATION`, exactly as main resolves them) and
+    /// put in the launch environment; native when the launch names none.
+    /// Anything else stops the load by name.
+    static func clusterLive(_ environment: [String: String]) throws -> Self {
+        try PagedKVQuantizationPolicy.parseSelection(environment[PagedKVQuantizationPolicy.environmentKey] ?? "")
+    }
+
+    /// Bound into the load agreement beside the stage KV backend, so both
+    /// ranks store their rows at one precision and a mismatched peer stops
+    /// before either stage is read. Native adds nothing: every native load
+    /// keeps the agreement bytes it always had.
+    var loadAgreementFields: [String] {
+        guard let configuration else { return [] }
+        return ["cluster-stage-kv-quantization-v1", rawValue, configuration.identity]
+    }
+
+    /// Stops a load whose path cannot keep packed rows, by name: the path's
+    /// storage is not the product's paged pool (main's own refusal), or it
+    /// moves request state between owners as native arrays.
+    func requireNative(_ reason: String, paged: Bool = true) throws {
+        guard self != .native else { return }
+        guard paged else { throw PagedKVQuantizationPolicy.Failure.requiresPagedBackend(reason) }
+        throw ProbeError("Live \(rawValue) KV cannot serve \(reason); select native live precision")
+    }
 }
 
 /// Held by every copy of one `LoadedQwenLayerStage`: the stage's KV host once
@@ -91,20 +91,36 @@ final class CBv2StageKVHost {
     let lanes: Int
     let maximumTokensPerRequest: Int
     let capacityBytes: Int
+    /// The live precision the pool stores its rows at (main's policy, carried
+    /// by the launch). Native keeps every step and byte the host always had.
+    let quantization: PagedKVQuantizationSelection
+    /// One request's pages at `maximumTokensPerRequest`, at the pool's real
+    /// bytes per token (`pagedRequestBytes`); `capacityBytes` is `lanes` of
+    /// these and one segment.
+    let requestPageBytes: Int
+    /// Packed storage only: one request's peak original-precision rows (its
+    /// recent tokens and a prompt chunk) and their transfer scratch, outside
+    /// the pages, as main's admission prices them
+    /// (`PagedKVPool.admissionStorageConfig`); 0 for native storage.
+    let nativeRecentBytesPerRequest: Int
 
-    static let segmentBytes = 64 << 20
+    static let segmentBytes = PagedKVBackend.servingSegmentBytes
 
     /// Builds the host for a dense or routed-expert Qwen 3.5 stage, a Gemma 4
     /// stage (its sliding layers as page rings, as the single-Mac product
     /// pages `gemma-4-26b-qat-4bit`) or a Nemotron 3.5 stage (its attention
     /// layers; its Mamba state stays per request). Other families keep their
-    /// own per-request contiguous geometry.
+    /// own per-request contiguous geometry. A packed `quantization` takes
+    /// main's kernel preflight first, and a layout main does not pack refuses
+    /// the load as main refuses it.
     init(model: any LanguageModel, kind: ClusterStageKVBackendKind, lanes: Int,
-         maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws {
+         maximumTokensPerRequest: Int, maximumChunkTokens: Int,
+         quantization: PagedKVQuantizationSelection = .native) throws {
         guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= ClusterWorkerLimits.contextTokens,
               maximumChunkTokens > 0 else {
             throw ProbeError("Stage KV host needs 1...8 lanes and a bounded request length")
         }
+        if kind == .contiguous { try quantization.requireNative("contiguous stage KV", paged: false) }
         if let gemma = model as? Gemma4LayerStageModel {
             // Every layer owns its rows (no shared keys/values), keyed by the
             // stage's own storage index; a sliding layer's row is a page ring
@@ -112,18 +128,21 @@ final class CBv2StageKVHost {
             let geometry = try gemma.layerStageRequestGeometry(maximumTokens: maximumTokensPerRequest)
             // A paged request holds whole pages: a ring a page past the window,
             // a full layer rounded up to a page (`CBv2PagedKVResidency`).
-            let perRequest = kind == .paged
-                ? max(geometry.kvCapacityBytes, try Self.pagedRequestBytes(kinds: geometry.kinds, dtype: geometry.kvDType,
-                    maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens))
-                : geometry.kvCapacityBytes
+            // Native pages never undercut the request's own rows; packed
+            // pages are smaller by design.
+            let pages = try Self.pagedRequestBytes(kinds: geometry.kinds, dtype: geometry.kvDType,
+                quantization: quantization, maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
+            let perRequest = kind == .contiguous ? geometry.kvCapacityBytes
+                : quantization == .native ? max(geometry.kvCapacityBytes, pages) : pages
             let capacity = try QwenLongPrefillCheckedBytes.sum([
                 QwenLongPrefillCheckedBytes.product([perRequest, lanes]), Self.segmentBytes])
+            let backend: any CBv2KVBackend
             let caches: [any CBv2AttendingLayerCache]
             switch kind {
             case .paged:
                 let paged = try Self.pagedBackend(kinds: geometry.kinds, dtype: geometry.kvDType,
                     capacity: capacity, maximumTokensPerRequest: maximumTokensPerRequest,
-                    maximumChunkTokens: maximumChunkTokens)
+                    maximumChunkTokens: maximumChunkTokens, quantization: quantization)
                 caches = paged.makeLayerCaches()
                 backend = paged
             case .contiguous:
@@ -134,10 +153,11 @@ final class CBv2StageKVHost {
                   zip(caches, geometry.kinds).allSatisfy({ $0.kind == $1 && $0.rows.isEmpty }) else {
                 throw ProbeError("Stage KV host caches differ from the Gemma stage's layers")
             }
-            self.kind = kind; layerKinds = geometry.kinds
+            self.kind = kind; layerKinds = geometry.kinds; self.backend = backend
             self.caches = caches; bank = CBv2LayerCacheBank(caches: caches)
             kvDType = geometry.kvDType; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
-            capacityBytes = capacity
+            capacityBytes = capacity; self.quantization = quantization; requestPageBytes = perRequest
+            nativeRecentBytesPerRequest = try Self.nativeRecentBytes(backend)
             return
         }
         let kinds: [CBv2LayerKind]
@@ -157,8 +177,8 @@ final class CBv2StageKVHost {
                 throw ProbeError("Stage KV host supports full-attention layers without KV sharing only")
             }
         }
-        let perRequest = try Self.pageRoundedRequestBytes(kvShapes: kinds.map { ($0.kvHeads, $0.headDim) },
-            maximumTokens: maximumTokensPerRequest, dtypeSize: dtype.size)
+        let perRequest = try Self.pagedRequestBytes(kinds: kinds, dtype: dtype, quantization: quantization,
+            maximumTokens: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
         let capacity = try QwenLongPrefillCheckedBytes.sum([
             QwenLongPrefillCheckedBytes.product([perRequest, lanes]), Self.segmentBytes])
         var storageForModelLayer: [Int: Int] = [:]
@@ -178,13 +198,14 @@ final class CBv2StageKVHost {
         switch kind {
         case .paged:
             let paged = try Self.pagedBackend(kinds: kinds, dtype: dtype, capacity: capacity,
-                maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
+                maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens,
+                quantization: quantization)
             let storage = paged.makeLayerCaches()
             // Item 23: a one-request host's prompt chunks attend a transient
             // contiguous mirror instead of re-gathering the history per chunk.
             // The mirror is one more copy of the prefilling request's KV,
             // which `perRequest` bounds; batch lanes keep the gather. (Qwen
-            // only: qualified there.)
+            // only: qualified there. A packed layer keeps its own path.)
             if lanes == 1, !(model is NemotronH35Model) {
                 for cache in storage { cache.prefillMirrorAllowed = true }
             }
@@ -206,7 +227,8 @@ final class CBv2StageKVHost {
         self.kind = kind; self.layerKinds = kinds; self.backend = backend; self.caches = caches
         self.bank = CBv2LayerCacheBank(caches: caches)
         self.kvDType = dtype; self.lanes = lanes; self.maximumTokensPerRequest = maximumTokensPerRequest
-        self.capacityBytes = capacity
+        self.capacityBytes = capacity; self.quantization = quantization; self.requestPageBytes = perRequest
+        self.nativeRecentBytesPerRequest = try Self.nativeRecentBytes(backend)
     }
 
     /// True when the cache at compact position `index` is this host's.
@@ -225,38 +247,101 @@ final class CBv2StageKVHost {
         backend.bytesReserved == 0 && backend.bytesInUse == 0 && caches.allSatisfy { $0.rows.isEmpty }
     }
 
-    /// The segmented paged pool every hosted stage takes its pages from: one
-    /// group per attention geometry, a sliding layer's row a ring.
+    /// The segmented paged pool every hosted stage takes its pages from, built
+    /// as the provider builds its own (`PagedKVBackend.segmented`): one group
+    /// per attention geometry, a sliding layer's row a ring. Packed storage
+    /// first passes main's kernel preflight in this process; a packed pool
+    /// that cannot be built or probed refuses the load with main's refusal.
     static func pagedBackend(kinds: [CBv2LayerKind], dtype: DType, capacity: Int, maximumTokensPerRequest: Int,
-                             maximumChunkTokens: Int) throws -> PagedKVBackend {
+                             maximumChunkTokens: Int,
+                             quantization: PagedKVQuantizationSelection = .native) throws -> PagedKVBackend {
+        if let configuration = quantization.configuration {
+            do {
+                try PagedKernelSmokePlan(layerKinds: kinds, quantization: configuration).runInProcess()
+            } catch {
+                throw PagedKVQuantizationPolicy.Failure.requiresPagedBackend("kernel_preflight: \(error)")
+            }
+        }
         do {
-            return try PagedKVBackend(layerKinds: kinds, config: PagedKVPoolConfig(
-                capacityBytes: capacity, dtype: dtype,
-                maxPrefillChunk: maximumChunkTokens,
-                nominalMaxSequenceLength: maximumTokensPerRequest,
-                maxBufferLength: GPU.deviceInfo().maxBufferSize,
-                segmentSizeBytes: Self.segmentBytes,
-                layerDTypes: Array(repeating: dtype, count: kinds.count)), slabCommitment: .atFirstAdmission)
+            return try PagedKVBackend.segmented(admittedGrantBytes: capacity, layerKinds: kinds,
+                layerDTypes: Array(repeating: dtype, count: kinds.count), maxPrefillChunk: maximumChunkTokens,
+                nominalMaxSequenceLength: maximumTokensPerRequest, maxBufferLength: GPU.deviceInfo().maxBufferSize,
+                quantization: quantization.configuration)
         } catch {
-            throw ProbeError("Paged KV backend is ineligible for this stage: \(error)")
+            guard quantization != .native else { throw ProbeError("Paged KV backend is ineligible for this stage: \(error)") }
+            switch error as? CBv2KVError {
+            case .backendIneligible(let reason)?:
+                throw PagedKVQuantizationPolicy.Failure.requiresPagedBackend("ineligible: \(reason)")
+            case .capacityExhausted(let needed, let available)?:
+                throw PagedKVQuantizationPolicy.Failure.requiresPagedBackend(
+                    "pool_construction_capacity: needed \(needed), available \(available)")
+            case nil:
+                throw PagedKVQuantizationPolicy.Failure.requiresPagedBackend("ineligible: \(error)")
+            }
         }
     }
 
     /// One request's keys and values on the paged pool at `maximumTokens`:
-    /// each layer's whole pages as the pool reserves them (a sliding layer's
-    /// at most its ring).
-    static func pagedRequestBytes(kinds: [CBv2LayerKind], dtype: DType, maximumTokens: Int,
-                                  maximumChunkTokens: Int) throws -> Int {
+    /// each owning layer's whole pages as the pool reserves them (a sliding
+    /// layer's at most its ring), at its storage key's real bytes per token
+    /// (`PagedKVGroupKey.bytesPerToken`: packed rows and their FP32 scales and
+    /// offsets for a quantized layer). Native storage prices exactly as before.
+    static func pagedRequestBytes(kinds: [CBv2LayerKind], dtype: DType,
+                                  quantization: PagedKVQuantizationSelection = .native,
+                                  maximumTokens: Int, maximumChunkTokens: Int) throws -> Int {
+        guard maximumTokens > 0, maximumChunkTokens > 0 else {
+            throw ProbeError("Stage KV request bytes need a positive length")
+        }
         let residency = CBv2PagedKVResidency(config: PagedKVPoolConfig(capacityBytes: 1, dtype: dtype,
             maxPrefillChunk: maximumChunkTokens, nominalMaxSequenceLength: maximumTokens,
             segmentSizeBytes: Self.segmentBytes))
-        return try QwenLongPrefillCheckedBytes.sum(try kinds.map { kind in
+        let keys = PagedKVBackend.segmentedGroupKeys(layerKinds: kinds,
+            layerDTypes: Array(repeating: dtype, count: kinds.count), quantization: quantization.configuration)
+        return try QwenLongPrefillCheckedBytes.sum(try zip(kinds, keys).compactMap { kind, key in
+            guard kind.sharesKVWithLayer == nil else { return nil }
             guard let rows = residency.residentRows(layer: kind, tokens: maximumTokens) else {
                 throw ProbeError("Paged request bytes overflow")
             }
-            return try QwenLongPrefillCheckedBytes.product([rows, kind.kvHeads, kind.headDim + kind.valueHeadDim,
-                dtype.size])
+            return try QwenLongPrefillCheckedBytes.product([rows, key.bytesPerToken()])
         })
+    }
+
+    /// A packed pool's per-request peak outside its pages (see
+    /// `nativeRecentBytesPerRequest`); 0 for every other backend.
+    static func nativeRecentBytes(_ backend: any CBv2KVBackend) throws -> Int {
+        guard let paged = backend as? PagedKVBackend, paged.usesQuantizedStorage else { return 0 }
+        return try paged.pool.admissionStorageConfig(.init(watermarkFraction: 0)).minimumRequestTransientBytes
+    }
+
+    /// Speculative windows open on this host's packed rows, counted by their
+    /// requests (`CBv2OwnedRequestState`): a step's completion is pool-wide,
+    /// so none may complete under another request's open window.
+    var openPackedWindows = 0
+
+    /// After a step's graph was built and before it is evaluated: a write the
+    /// packed pool refused fails the step here, as main's engine checks before
+    /// evaluating (`PagedKVBackend.checkOwnedStepWrites`). Native storage keeps
+    /// the cluster's step path exactly as it was.
+    func checkStepWrites() throws {
+        guard quantization != .native, let paged = backend as? PagedKVBackend else { return }
+        try paged.checkOwnedStepWrites()
+    }
+
+    /// After each confirmed step of this host's rows (a speculative window
+    /// once, after its settlement): packed storage completes the step as
+    /// main's engine does (`PagedKVBackend.finishOwnedStep`).
+    func finishStep() throws {
+        guard quantization != .native, let paged = backend as? PagedKVBackend else { return }
+        guard openPackedWindows == 0 else {
+            throw ProbeError("A packed stage step would complete under another request's open speculative window")
+        }
+        try paged.finishOwnedStep()
+    }
+
+    /// After a failed request's rows were released and its streams drained.
+    func discardFailedStep() {
+        guard quantization != .native, let paged = backend as? PagedKVBackend else { return }
+        paged.discardFailedOwnedStepAfterSynchronization()
     }
 
     /// Counter reads only, on the owner executor. The materialized pool metric
@@ -272,27 +357,14 @@ final class CBv2StageKVHost {
     func report(_ purpose: String) {
         log("darkbloom-stage-kv-v1 backend=\(kind.rawValue) purpose=\(purpose) lanes=\(lanes)"
             + " max_tokens=\(maximumTokensPerRequest) capacity=\(capacityBytes) reserved=\(backend.bytesReserved)"
-            + " in_use=\(backend.bytesInUse)")
+            + " in_use=\(backend.bytesInUse) kv_quantization=\(quantization.rawValue)"
+            + (quantization == .native ? "" : " request_pages=\(requestPageBytes) native_recent=\(nativeRecentBytesPerRequest)"))
     }
 }
 
 extension CBv2StageKVHost {
-    /// One request's keys and values in this stage's attention layers at
-    /// `maximumTokens`, page-rounded as the pool reserves them. The resident
-    /// allowance charges more than this plus one segment for every request
-    /// (`CBv2StageKVAllowanceTests`).
-    static func pageRoundedRequestBytes(kvShapes: [(kvHeads: Int, headDim: Int)], maximumTokens: Int,
-                                        dtypeSize: Int) throws -> Int {
-        guard maximumTokens > 0, dtypeSize > 0 else { throw ProbeError("Stage KV request bytes need a positive length") }
-        let page = CBv2PagedDefaults.pageSize
-        let tokens = (maximumTokens + page - 1) / page * page
-        return try QwenLongPrefillCheckedBytes.sum(try kvShapes.map {
-            try QwenLongPrefillCheckedBytes.product([tokens, $0.kvHeads, $0.headDim, dtypeSize, 2])
-        })
-    }
-
     /// True for the stage models whose request geometry takes a host (so
-    /// their KV is paged unless the diagnosis switch names contiguous): the
+    /// their KV is paged, at the launch's live precision): the
     /// Qwen 3.5, Gemma 4 and Nemotron 3.5 stages. Each lane owns its
     /// attention rows and recurrent transaction; the stage decoder dispatches
     /// the model's native batch entry point.
@@ -304,14 +376,21 @@ extension CBv2StageKVHost {
     }
 
     /// Installs a host on a loaded stage. A stage of another family keeps its
-    /// per-request contiguous storage and gets none (returns nil).
+    /// per-request contiguous storage and gets none (returns nil); it cannot
+    /// keep packed rows, so a quantized precision refuses it, as main refuses
+    /// quantized KV on storage that is not paged.
     @discardableResult
     static func install(on stage: LoadedQwenLayerStage, kind: ClusterStageKVBackendKind, lanes: Int,
-                        maximumTokensPerRequest: Int, maximumChunkTokens: Int) throws -> CBv2StageKVHost? {
+                        maximumTokensPerRequest: Int, maximumChunkTokens: Int,
+                        quantization: PagedKVQuantizationSelection = .native) throws -> CBv2StageKVHost? {
         guard stage.kvHost.host == nil else { throw ProbeError("Stage KV host is already installed") }
-        guard supports(stage.model, lanes: lanes) else { return nil }
+        guard supports(stage.model, lanes: lanes) else {
+            try quantization.requireNative("\(type(of: stage.model)) stage storage", paged: false)
+            return nil
+        }
         let host = try CBv2StageKVHost(model: stage.model, kind: kind, lanes: lanes,
-            maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens)
+            maximumTokensPerRequest: maximumTokensPerRequest, maximumChunkTokens: maximumChunkTokens,
+            quantization: quantization)
         stage.kvHost.host = host
         host.report("install stage=\(stage.stageIndex)")
         return host

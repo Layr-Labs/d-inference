@@ -53,10 +53,14 @@ struct QwenTensorParallelBatchQuoteTests {
                     chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: true, allocationBound: bound)
                 #expect(quote.allowance == native.allowance)
                 #expect(quote.perLaneStateBytes == native.perLaneStateBytes)
-                let contiguous = try QwenTensorParallelBatchBudget.derive(geometry: family.geometry, plan: plan,
-                    tensors: canonical, maximumTokens: family.profile.maximumContextTokens,
-                    chunkSize: family.profile.maximumChunkTokens, lanes: lanes, paged: false, allocationBound: bound)
-                #expect(quote.allowance.reservedBytes >= contiguous.allowance.reservedBytes)
+                // Cluster stage KV is paged only (a contiguous backend is refused by
+                // name at LOAD), so the quote prices the paged owner: each lane its
+                // own pages, one shared prompt-frame gather bank.
+                #expect(throws: (any Error).self) {
+                    _ = try ClusterStageKVBackendKind.fromEnvironment([ClusterStageKVBackendKind.environmentName: "contiguous"])
+                }
+                #expect(try ClusterStageKVBackendKind.fromEnvironment([:]) == .paged)
+                #expect(native.promptGatherBytes > 0)
             }
         }
         #expect(throws: (any Error).self) {

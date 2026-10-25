@@ -3,6 +3,12 @@ import DarkbloomClusterProtocol
 /// A target-verified round can finish before the client grants credit for all
 /// of its tokens. Keep that bounded suffix request-local; returning one value
 /// consumes one ordinary driver credit and never advances native state again.
+///
+/// A row may also run its next round ahead of its credits, from its own settled
+/// carry, while at most `depth` of its tokens still wait (cohort synchronization:
+/// rows that started a step apart verify together instead of alternately). That
+/// round's input is this queue's last token and its tokens follow the queue, so
+/// the queue never holds more than `capacity(depth:)` settled selections.
 struct QwenTensorParallelAcceptedSelections {
     struct Selection {
         let token: Int
@@ -13,16 +19,22 @@ struct QwenTensorParallelAcceptedSelections {
     var isEmpty: Bool { values.isEmpty }
     var count: Int { values.count }
 
+    /// Two settled rounds: at most `depth` queued tokens, then one full window.
+    static func capacity(depth: Int) -> Int { 2 * depth + 1 }
+
     mutating func append(input: Int, tokens: [Int], logprobs: [ClusterWorkerTokenLogprobs],
                          depth: Int, vocabulary: Int) throws {
-        guard isEmpty, expectedInput == nil, (1...4).contains(depth),
-              (1...(depth + 1)).contains(tokens.count),
+        guard (1...4).contains(depth), (1...(depth + 1)).contains(tokens.count),
               logprobs.isEmpty || logprobs.count == tokens.count,
-              (0..<vocabulary).contains(input), tokens.allSatisfy({ (0..<vocabulary).contains($0) }) else {
+              (0..<vocabulary).contains(input), tokens.allSatisfy({ (0..<vocabulary).contains($0) }),
+              // An empty queue takes a round on the driver's next input; a
+              // queued suffix only a round that continues its own last token.
+              isEmpty ? expectedInput == nil : (values.count <= depth && values.last?.token == input),
+              values.count + tokens.count <= Self.capacity(depth: depth) else {
             throw ProbeError("Qwen TP accepted selection queue exceeds its settled round")
         }
-        values = tokens.enumerated().map { .init(token: $0.element, logprobs: logprobs.isEmpty ? nil : logprobs[$0.offset]) }
-        expectedInput = input
+        if isEmpty { expectedInput = input }
+        values += tokens.enumerated().map { Selection(token: $0.element, logprobs: logprobs.isEmpty ? nil : logprobs[$0.offset]) }
     }
 
     mutating func take(input: Int) throws -> Selection {

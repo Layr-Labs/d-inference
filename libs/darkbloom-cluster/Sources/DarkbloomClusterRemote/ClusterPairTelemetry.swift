@@ -53,12 +53,20 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     /// one ran (time-sliced lanes share the pair between them): 0 when it ran
     /// alone. Nil in a record written before it was counted.
     public let concurrentRequests: Int?
+    /// The worker build each rank served with, rank order: the SHA-256 of
+    /// that rank's worker binary as the pair's admission identity names it
+    /// (`ClusterWorkerIdentity.peers[].buildSHA256`, the value share probes
+    /// and the prefix SSD scope use). The planner and the router take a speed
+    /// record only for the builds that served it
+    /// (`ClusterServedSpeedRecords.servedBy`). Nil in a record written before
+    /// builds were recorded: such a record counts as another build's.
+    public let rankBuildSHA256: [String]?
 
     public init(requestID: String, finishedAt: Double, modelID: String, mode: String, cut: String,
                 promptTokens: Int, cachedTokens: Int, completionTokens: Int, firstTokenMilliseconds: Double?,
                 decodeTokensPerSecond: Double?, handoffMilliseconds: Double?, handoffBytes: Int?,
                 mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil,
-                ranks: [String]? = nil, concurrentRequests: Int? = nil) {
+                ranks: [String]? = nil, concurrentRequests: Int? = nil, rankBuildSHA256: [String]? = nil) {
         self.requestID = requestID; self.finishedAt = finishedAt; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.promptTokens = promptTokens; self.cachedTokens = cachedTokens
         self.completionTokens = completionTokens; self.firstTokenMilliseconds = firstTokenMilliseconds
@@ -72,6 +80,12 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
         self.routeReason = routeReason.map { String($0.prefix(240)) }
         self.ranks = ranks.flatMap { $0.count <= 8 && $0.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) ? $0 : nil }
         self.concurrentRequests = concurrentRequests.map { max(0, $0) }
+        self.rankBuildSHA256 = rankBuildSHA256.flatMap { (1...8).contains($0.count) && $0.allSatisfy(Self.isBuild) ? $0 : nil }
+    }
+
+    /// A worker build's SHA-256: 64 lowercase hexadecimal digits.
+    static func isBuild(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     /// A speed record: a completed request that computed its whole prompt
@@ -137,10 +151,14 @@ public struct ClusterPairTelemetryFile: Codable, Sendable, Equatable {
 /// `~/.darkbloom/cluster/served-speed.json` (owner-only), beside the pair
 /// telemetry. The planner reads it on the next plan (`darkbloom-cluster-plan
 /// plan --served`, `ClusterServedCalibration`) and the router prices each
-/// route from it. Values only, as the telemetry.
+/// route from it. Values only, as the telemetry. Each record names the worker
+/// build of each rank (`rankBuildSHA256`), and planning and routing use only
+/// the records the current builds served; the bound keeps no build apart, so
+/// the current build's records push an earlier build's out of their setup
+/// and route, and a record from before builds were recorded simply ages out.
 public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
     public static let schemaName = "darkbloom_served_speed_v1"
-    /// Kept per setup and route; the oldest goes first.
+    /// Kept per setup and route (whatever build served them); the oldest goes first.
     public static let keptPerRoute = 32
     public static let keptInAll = 512
     public let schema: String

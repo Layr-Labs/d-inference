@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -843,6 +843,7 @@ not load a model or qualify its output. Sources:
 
    ```bash
    swift test --package-path libs/darkbloom-cluster --filter QwenMoETensorParallelTests
+   swift test --package-path libs/darkbloom-cluster --filter QwenMoETensorParallelPackingTests
    swift test --package-path libs/darkbloom-cluster --filter ResidentAdmissionA3BTests
    swift test --package-path libs/darkbloom-cluster --filter QwenMixedRouterTensorParallelTests
    swift test --package-path libs/darkbloom-cluster --filter ResidentAdmissionQwen36A3BTests
@@ -850,7 +851,18 @@ not load a model or qualify its output. Sources:
 
    `QwenMoETensorParallelTests` compares canonical cuts against separate halves
    for weights, scales and biases, rejects malformed ranges, and checks the
-   exact product-row/share gate. `QwenMixedRouterTensorParallelTests` constructs
+   exact product-row/share gate. `QwenMoETensorParallelPackingTests` runs two
+   real ranks (two threads summing each other's float32 elements in rank
+   order, each submitting to its own MLX stream because the default stream is
+   process-wide and thread-unsafe) of a tiny routed model through a sorted
+   40-token prefill and greedy steps, with the shared expert packed into the
+   expert collective and with its earlier separate collective: every logit
+   must be bit-identical on both ranks, with two collectives a layer against
+   three. `QWEN_TP_MOE_GPU=1` adds the GPU variant (the test bundle needs
+   `mlx.metallib` beside it); `QWEN_TP_MOE_MODEL=<registered A3B directory>`,
+   with an optional `QWEN_TP_MOE_REQUEST=<qualification request JSON>`, runs
+   the same comparison on the artifact's real shards on the GPU, both ranks in
+   one process. `QwenMixedRouterTensorParallelTests` constructs
    tiny CPU models with independently quantized affine4 experts and affine8
    routing gates, loads both stored and canonical banks, and compares native
    BF16 full-model outputs exactly. Both rank loaders must construct without
@@ -1477,8 +1489,9 @@ exercise refusal logic and do not rerun or replace the model qualification.
 `DistributedAutomaticBatchPlannerTests` exercises the replacement planner's
 actual decision with owner-only recorded link and served-speed files. It checks
 that a measured keyed reduction reaches TP selection, foreign/stale/non-private
-measurements retain fallback, served costs reach calibration, and the real
-helper child receives `device --json --index`. These are CPU metadata checks;
+measurements retain fallback, served costs of the pair's own worker build reach
+calibration while another build's (or a record without a build) do not, and the
+real helper child receives `device --json --index`. These are CPU metadata checks;
 they do not execute models or claim measured batch throughput.
 
 The current-fit case prices descending widths 8, 4 and 2 with constructed
@@ -1848,6 +1861,72 @@ Planned-stop lifecycle checks exercise the actual peerLeaseState projection, acc
 
 ### Qwen27 capacity consistency checks
 
+Every Qwen TP row serves through these request-owned lanes. `QwenTensorParallelBatchSessionTests`
+also runs a dense fixture with the 9B's head ratios (`nineBRatioDenseShardsBatchExactly`) and a
+routed-expert fixture (`routedExpertShardsBatchExactly`, `routedExpertNativeMixedSamplingKeepsRowsIndependent`,
+with `QWEN_TP_BATCH_GPU=1`): rows decoded together equal their solo bytes on both ranks, and a cohort's
+collectives do not grow with its width. `QwenTensorParallelSlicerLayoutTests` checks that every
+interior-axis cut is a row-major copy whose quantized products equal the former gather view's, and that
+batched decode rows on the cached FP32 constants (`QuantizedLinear.independentRowsForward`) equal the call
+that widened them inside the matmul and each row alone. `QwenTensorParallelBatchMTPTransitionTests.nineBRatioAssistantSurvivesCreditJoinsRectanglesAndResumedSpeculation`
+runs the resident assistant's transitions on the 9B ratio (`QWEN_TP_MTP_GPU=1`).
+`QWEN_TP_MOE_BATCH_MODEL=<registered A3B directory>` runs `QwenTensorParallelRoutedCohortRealTests`: the
+artifact's real shards, both ranks in one process on the GPU, rows of one cohort against the same rows
+alone, byte for byte. The reference rows in these tests (and the singleton owner of the capacity-parity
+tests) evaluate each decode step at once (`QwenTensorParallelBatchSession.layerStride` 0) while the
+cohort is submitted layer by layer as the product decodes, so the same comparisons prove that layer
+submission keeps every byte. `QWEN_TP_MOE_BENCH_MODEL=<directory>` runs `QwenTensorParallelMoEDecodeBenchTests`,
+a one-rank decode profile with no peer: local, CPU-hop and evaluate-each collectives with each step split
+into graph build, encoding and GPU wait under 16- and 100-operation command buffers
+(`QWEN_TP_MOE_BENCH_OPS`), the retired single-lane loop's pipelining, the sparse block's parts, the step
+graph's primitives, the batch path at widths 1, 2 and 4 for each layer-submission stride
+(`QWEN_TP_MOE_BENCH_STRIDES`), and a byte comparison of the same rows decoded both ways with every
+collective on the CPU stream. Its numbers are one Mac's, not the pair's.
+
 Run `swift test --filter QwenTensorParallelBatchSettingsTests`, `swift test --filter QwenTensorParallelBatchBudgetTests`, `swift test --filter QwenTensorParallelAssistantQuoteTests` and `swift test --filter QwenTensorParallelSingletonHostTests` from `libs/darkbloom-cluster`. These CPU checks cover keyed singleton routing, complete plain/assistant quotations, token credit and the bilateral-retirement completion boundary. Run `swift test --filter DistributedAutomaticBatchPlannerTests` from `provider-swift` for retained-share placement, current-memory refusal and handoff compatibility.
 
-With exclusive GPU custody, run `QWEN_TP_BATCH_GPU=1 QWEN_TP_BATCH_KV=paged swift test --filter QwenTensorParallelBatchSessionTests.capacityOneAndTwoKeepExactPagedLogitsAndHistory` from `libs/darkbloom-cluster`. This synthetic two-rank test compares raw logits and attention/conv/SSM state at capacities one and two. It also prints whether the former scalar paged path differs; at this tiny geometry it matched byte-for-byte, so the fixture does not reproduce the installed divergence and is not a negative control. It does not establish full-model installed parity or physical peer transport. The installed run must retain the original singleton output and require exact equality after automatic widening, then verify media, tools, logprobs, cancellation and native retirement on both Macs.
+With exclusive GPU custody, run `QWEN_TP_BATCH_GPU=1 QWEN_TP_BATCH_KV=paged swift test --filter QwenTensorParallelBatchSessionTests.capacityOneAndTwoKeepExactPagedLogitsAndHistory` from `libs/darkbloom-cluster`. This synthetic two-rank test compares raw logits and attention/conv/SSM state at capacities one and two; `routedExpertCapacityOneAndTwoKeepExactPagedLogitsAndHistory` repeats it on a routed-expert fixture (`QwenTensorParallelFixtures.routedCheckpoint`). The former single-lane path is retired, so there is no scalar comparison any more. It does not establish full-model installed parity or physical peer transport. The installed run must retain the original singleton output and require exact equality after automatic widening, then verify media, tools, logprobs, cancellation and native retirement on both Macs.
+
+### Tensor-parallel share probe checks
+
+Run `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` for the share-step
+line (`ShareProbeChecks`: one probe in proportion, two on their line, bounded
+past them, never anchored on the whole model's step), the share probe history's
+bounds, ages, build reset and refused files, served calibration scaling every
+share point by one factor, unchanged prefill predictions, and constructed M3
+Ultra + M5 Max plans of the 27B that move from the prior's 2:1 to 1:1 on the
+measured steps, keep 1:1 after a 1:1 load, and keep a split the M5 Max's memory
+holds. Golden plans must stay byte-identical. Run
+`libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh` for the ready record's
+`shareProbe` round trip, bounds and earlier records, and
+`provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` for the owner-only
+history file.
+
+From `libs/darkbloom-cluster`, `swift test --filter QwenTensorParallelShareProbeTests`
+checks the per-mille share and the probe request's shape on the CPU. With
+exclusive GPU custody and the matching Metal library, set
+`QWEN_TP_SHARE_PROBE_GPU=1`: a synthetic shard's probe must cross nothing to its
+counting peer, reduce through it again afterwards, return its request's pages
+and cache, and give no probe (keeping nothing) when memory is refused, the
+deadline is near, the budget runs out or the load is cancelled midway. These
+fixtures time synthetic weights on one Mac; real share steps and the plan they
+lead to are paired-hardware checks.
+
+### Served speed build scope checks
+
+Served speed records count only for the worker build that served them.
+`libs/darkbloom-cluster/Tests/ObservabilityChecks/run.sh` checks that a record
+keeps each rank's build, that a file written before builds were recorded still
+reads, and that the bounded file keeps no build apart.
+`libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` (`ServedBuildScopeChecks`)
+checks which setups a build's plan may use and replays the M3 Ultra + M5 Max
+leader's own `served-speed.json` (Golden/served, member and request IDs
+relabeled) through the plan tool's `--served`/`--served-build` with c41's share
+probes. `provider-swift/Tests/ClusterPlacementChecks/run.sh` runs the same file
+through `ClusterPlacementFlow.decide` (`servedBuildRegression`) and checks the
+one-line explanation and that request lengths still come from every build;
+`run-flow.sh` reads a product-format file from the private home end to end;
+`provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` checks the history
+read and the router's build-keyed setup. `swift test --filter
+DistributedAutomaticBatchPlannerTests` and `--filter ClusterObservabilityTests`
+from `provider-swift` cover replacement calibration and the recorded builds.

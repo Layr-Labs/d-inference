@@ -94,6 +94,7 @@ enum ClusterSetupPlanning {
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
                        served: [ClusterServedSpeedRecords.Entry] = [], link: ClusterLinkCosts = .unmeasured,
+                       shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
                        peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:]) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
@@ -135,6 +136,9 @@ enum ClusterSetupPlanning {
                 // After a Darkbloom update the same model keeps the mode the pair served it in (`keeping`, by model id),
                 // unless the planner and the pair's own served requests both find another faster (`ClusterServedModes`).
                 let incumbent = keeping[reading.model.modelID]
+                // Each Mac's share probes of this model, by member ID (`ClusterShareProbeHistory`).
+                let probes = shareProbes?.shareRates(artifactSHA256: capability.record.artifactSHA256,
+                    members: description.members.map(\.id), now: now) ?? [:]
                 let discovered = try reading.tensorAssistantQuote?.get()
                 func widening(_ quote: ClusterPlacementTensorBatchQuote?) -> ClusterPlacementTensorBatchQuote? {
                     quote == nil ? nil : quote == discovered ? reading.tensorWideningQuote : reading.targetFallbackWideningQuote
@@ -144,7 +148,7 @@ enum ClusterSetupPlanning {
                     try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                         localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
                         tensorAssistantQuote: quote, tensorWideningQuote: widening(quote), leader: sessionLeader,
-                        served: served, link: link, incumbentMode: incumbent)
+                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
                 }
                 var decided = selected.decision
                 let assistantQuote = selected.quote, fellBack = discovered != nil && selected.quote != discovered
@@ -154,7 +158,7 @@ enum ClusterSetupPlanning {
                         localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
                         measurements: measurements, tensorAssistantQuote: assistantQuote,
                         tensorWideningQuote: widening(assistantQuote), leader: sessionLeader,
-                        served: served, link: link, incumbentMode: incumbent)
+                        served: served, link: link, shareProbes: probes, incumbentMode: incumbent)
                     if fellBack { decided.lines = [assistantDoesNotFit] + decided.lines }
                 }
                 guard let chosen = decided.result.chosen else {
@@ -245,7 +249,8 @@ enum ClusterSetupPlanning {
             decodeTokensPerSecond: prediction.decodeTokensPerSecond, absolute: result.basis.absolute,
             measured: result.basis.source == .measured, alone: alone, aloneAsFast: result.aloneAsFast,
             fitsNow: ranks.allSatisfy { $0.fit == "now" }, needsBytes: ranks.compactMap(\.shortBytes).max(), explanation: lines,
-            modeReason: ClusterPlacementExplanation.deploymentReason(result))
+            modeReason: ClusterPlacementExplanation.deploymentReason(result),
+            tensorParallelNote: ClusterPlacementExplanation.tensorParallelNote(result)?.rawValue)
     }
 
     static func fitCode(_ fit: ClusterPlacementFit) -> String {

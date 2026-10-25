@@ -59,6 +59,12 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     private let completedSpeculation: (UUID, Int, QwenMTPStatistics) -> Void
     private let profiledRound: (QwenTensorParallelMTPRoundProfile) -> Void
     private var incompleteOpenings: [UUID: Lane] = [:]
+    /// Cohort synchronization (`cohortFrontiers`). Off only to measure or
+    /// test the earlier empty-queue-only cohort; both ranks must agree.
+    private let cohortJoinsAhead: Bool
+    /// A cohort's proposals through one head call per draft step
+    /// (`QwenTensorParallelMTPDecoder.stepBatch`); off only to compare.
+    private let cohortBatchesDrafts: Bool
 
     init(model: QwenTensorParallelModel, configuration: Data, host: CBv2StageKVHost,
          group: any QwenTensorParallelReduction,
@@ -75,13 +81,14 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
          assistant: QwenTensorParallelBatchAssistant? = nil,
          openedLane: @escaping (UUID, String) -> Void = { _, _ in },
          completedSpeculation: @escaping (UUID, Int, QwenMTPStatistics) -> Void = { _, _, _ in },
-         profiledRound: @escaping (QwenTensorParallelMTPRoundProfile) -> Void = { _ in }) throws {
+         profiledRound: @escaping (QwenTensorParallelMTPRoundProfile) -> Void = { _ in },
+         cohortJoinsAhead: Bool = true, cohortBatchesDrafts: Bool = true) throws {
         guard case .shard(let rank, let size) = model.role, size == 2, rank == group.rank, size == group.size,
-              !model.plan.routedExperts, sha256(configuration) == model.configurationSHA256,
+              sha256(configuration) == model.configurationSHA256,
               model.plan.vocabularySize < (1 << 24),
               prefix == nil || (prefixBudget != nil && prefixScope != nil && allocationBound != nil),
               prefixDisk == nil || (prefixDiskScope != nil && prefixScope != nil) else {
-            throw ProbeError("Qwen TP native batch executor has a mismatched dense shard or group")
+            throw ProbeError("Qwen TP native batch executor has a mismatched shard or group")
         }
         if let assistant {
             guard host.kind == .paged, (1...4).contains(assistant.depth),
@@ -101,7 +108,8 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             }
         }
         self.assistant = assistant; self.openedLane = openedLane; self.completedSpeculation = completedSpeculation
-        self.profiledRound = profiledRound
+        self.profiledRound = profiledRound; self.cohortJoinsAhead = cohortJoinsAhead
+        self.cohortBatchesDrafts = cohortBatchesDrafts
         self.rank = rank; self.model = model; self.configuration = configuration; self.host = host
         self.prefix = prefix; self.prefixBudget = prefixBudget; self.prefixScope = prefixScope
         self.prefixDisk = prefixDisk; self.prefixDiskScope = prefixDiskScope
@@ -281,25 +289,54 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     }
 
     func decode(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int] {
+        try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) {
+            try decodeRound(lanes, tokens: tokens, check: check)
+        }
+    }
+
+    /// One decode step's speculative cohort, the same on both ranks (every
+    /// input is agreed lane state), as each row's round input and allowance.
+    /// Rows with an empty accepted queue that can speculate on the driver's
+    /// input start a round. When one does, every row that still holds at most
+    /// `depth` queued selections and can speculate from its own settled carry
+    /// joins it. Without that, rows whose rounds started a step apart verify
+    /// alternately, one row per round, for as long as both run (measured on
+    /// the installed pair: 1,677 of 1,863 capacity-2 rounds verified one row).
+    /// A joined row's round is the one it would run once its queue drained:
+    /// same input, same allowance, same per-row arithmetic.
+    private func cohortFrontiers(_ lanes: [Lane], tokens: [Int], depth: Int) -> [Int: (lastToken: Int, remaining: Int)] {
+        var frontiers: [Int: (lastToken: Int, remaining: Int)] = [:]
+        for index in lanes.indices where lanes[index].accepted.isEmpty {
+            let lane = lanes[index], remaining = lane.session.request.outputCount - lane.selectedCount
+            if lane.assistant?.canSpeculate(lastToken: tokens[index], remaining: remaining) == true {
+                frontiers[index] = (tokens[index], remaining)
+            }
+        }
+        guard cohortJoinsAhead, !frontiers.isEmpty else { return frontiers }
+        for index in lanes.indices where !lanes[index].accepted.isEmpty && lanes[index].accepted.count <= depth {
+            if let frontier = lanes[index].assistant?.settledFrontier() { frontiers[index] = frontier }
+        }
+        return frontiers
+    }
+
+    private func decodeRound(_ lanes: [Lane], tokens: [Int], check: () throws -> Void) throws -> [Int] {
         guard !lanes.isEmpty, lanes.count == tokens.count, lanes.count <= host.lanes,
               Set(lanes.map { ObjectIdentifier($0) }).count == lanes.count else {
             throw ProbeError("Qwen TP accepted selections require distinct scheduled lanes")
         }
         if let context = assistant, let quote = context.cohortBudget {
-            let eligible = lanes.indices.filter { index in
-                lanes[index].accepted.isEmpty && (lanes[index].assistant?.canSpeculate(lastToken: tokens[index],
-                    remaining: lanes[index].session.request.outputCount - lanes[index].selectedCount) ?? false)
-            }
+            let frontiers = cohortFrontiers(lanes, tokens: tokens, depth: context.depth)
+            let eligible = frontiers.keys.sorted()
             guard eligible.count <= quote.maximumSpeculativeWidth else {
                 throw ProbeError("Qwen TP speculative cohort exceeds its complete memory quote")
             }
             if eligible.count > 1 {
                 let decoders = eligible.map { lanes[$0].assistant! }
                 let results = try QwenTensorParallelMTPDecoder.stepBatch(decoders,
-                    lastTokens: eligible.map { tokens[$0] },
-                    remaining: eligible.map { lanes[$0].session.request.outputCount - lanes[$0].selectedCount }, check: check)
+                    lastTokens: eligible.map { frontiers[$0]!.lastToken },
+                    remaining: eligible.map { frontiers[$0]!.remaining }, batchesDrafts: cohortBatchesDrafts, check: check)
                 for (row, index) in eligible.enumerated() {
-                    try lanes[index].accepted.append(input: tokens[index], tokens: results[row].tokens,
+                    try lanes[index].accepted.append(input: frontiers[index]!.lastToken, tokens: results[row].tokens,
                         logprobs: results[row].logprobs, depth: context.depth, vocabulary: model.plan.vocabularySize)
                 }
                 // Observe only the completed target cohort after every row's
@@ -309,11 +346,10 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
                 }
                 if let profile = decoders.first?.lastProfile { profiledRound(profile) }
                 completedDecode(eligible.count)
-            } else if let index = eligible.first, let decoder = lanes[index].assistant {
-                let result = try decoder.step(lastToken: tokens[index],
-                    remaining: lanes[index].session.request.outputCount - lanes[index].selectedCount, check: check)
+            } else if let index = eligible.first, let decoder = lanes[index].assistant, let frontier = frontiers[index] {
+                let result = try decoder.step(lastToken: frontier.lastToken, remaining: frontier.remaining, check: check)
                 guard result.speculative else { throw ProbeError("Qwen TP eligible cohort row lost its speculative round") }
-                try lanes[index].accepted.append(input: tokens[index], tokens: result.tokens,
+                try lanes[index].accepted.append(input: frontier.lastToken, tokens: result.tokens,
                     logprobs: result.logprobs, depth: context.depth, vocabulary: model.plan.vocabularySize)
                 completedDecode(1); completedSpeculation(lanes[index].session.request.requestID, 1, decoder.statistics)
                 if let profile = decoder.lastProfile { profiledRound(profile) }

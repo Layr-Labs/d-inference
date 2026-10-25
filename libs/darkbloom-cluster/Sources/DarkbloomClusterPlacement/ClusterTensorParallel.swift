@@ -23,9 +23,18 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// Reductions per decode step outside the layers (the vocabulary-parallel
     /// head's distributed selection).
     public let reductionsPerStep: Int
-    /// Bytes of one rank's partial per token: the residual width times the
-    /// partials' element size (`ClusterTensorParallelTerms.partialsDType`).
+    /// Bytes of one rank's partial per token in the largest reduction: the
+    /// residual width times the partials' element size
+    /// (`ClusterTensorParallelTerms.partialsDType`), times the rows a packed
+    /// reduction carries per token. The collective scratch is sized by it.
     public let partialBytesPerToken: Int
+    /// Bytes per token one rank's partials carry through all of one layer's
+    /// reductions together, when they differ in size (a routed-expert layer:
+    /// the mixer's row, then the selected experts' and the shared expert's
+    /// rows packed in one). Nil: each of the layer's reductions carries
+    /// `partialBytesPerToken`, and nil encodes nothing (existing layouts and
+    /// predictions are unchanged).
+    public let layerPartialBytesPerToken: Int?
     /// True when each rank keeps the request state of its own heads only.
     public let stateDividesByHeads: Bool
     /// Unequal share weights the family's plan accepts for two ranks (each
@@ -45,16 +54,45 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public let additionalResidentBytes: Int?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
-                partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil,
-                shareUnits: Int? = nil, requestAllowance: ClusterTensorParallelRequestAllowance? = nil,
-                additionalResidentBytes: Int? = nil) {
+                partialBytesPerToken: Int, layerPartialBytesPerToken: Int? = nil, stateDividesByHeads: Bool,
+                shareOptions: [[Int]]? = nil, shareUnits: Int? = nil,
+                requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
+        self.layerPartialBytesPerToken = layerPartialBytesPerToken
         self.stateDividesByHeads = stateDividesByHeads
         self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
         self.shareUnits = shareUnits
         self.requestAllowance = requestAllowance
         self.additionalResidentBytes = additionalResidentBytes
+    }
+
+    /// Bytes a selection reduction carries (the head's best value and token
+    /// per rank, a few floats), as the prefill prediction has always charged it.
+    static let selectionReductionBytes = 16
+
+    /// Seconds the reductions of one decode step take over `layers` layers,
+    /// plus the head's selection when `head`. Without per-layer bytes, every
+    /// reduction is charged `partialBytesPerToken`, exactly as before.
+    func decodeReductionSeconds(layers: Int, head: Bool, reduction: ClusterReductionCost) -> Double {
+        let count = reductionsPerLayer * layers + (head ? reductionsPerStep : 0)
+        guard let layerBytes = layerPartialBytesPerToken else {
+            return Double(count) * reduction.seconds(bytes: partialBytesPerToken)
+        }
+        return Double(reductionsPerLayer * layers) * reduction.fixedSeconds
+            + Double(layers * layerBytes) * reduction.secondsPerByte
+            + (head ? Double(reductionsPerStep) * reduction.seconds(bytes: Self.selectionReductionBytes) : 0)
+    }
+
+    /// Seconds the layer reductions of `chunks` prefill chunks of `chunk`
+    /// tokens take over `layers` layers (each layer's partials summed once
+    /// per chunk). Without per-layer bytes, exactly the earlier charge.
+    func prefillReductionSeconds(chunks: Int, chunk: Int, layers: Int, reduction: ClusterReductionCost) -> Double {
+        guard let layerBytes = layerPartialBytesPerToken else {
+            return Double(chunks * reductionsPerLayer * layers) * reduction.seconds(bytes: chunk * partialBytesPerToken)
+        }
+        return Double(chunks * reductionsPerLayer * layers) * reduction.fixedSeconds
+            + Double(chunks * layers) * Double(chunk * layerBytes) * reduction.secondsPerByte
     }
 
     /// Each share option as fractions of the model (equal first).
@@ -113,6 +151,8 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
               !f.ranks.isEmpty, f.ranks.allSatisfy({ (2...8).contains($0) }), f.ranks == Array(Set(f.ranks)).sorted(),
               f.reductionsPerLayer >= 1, f.reductionsPerLayer <= 16, (0...16).contains(f.reductionsPerStep),
               f.partialBytesPerToken > 0, f.partialBytesPerToken <= 1 << 24,
+              f.layerPartialBytesPerToken.map({ $0 >= f.partialBytesPerToken
+                  && $0 <= f.reductionsPerLayer * f.partialBytesPerToken }) ?? true,
               (f.shareOptions ?? []).count <= 32,
               (f.shareOptions ?? []).allSatisfy({ $0.count == 2 && $0.allSatisfy({ (1...64).contains($0) }) }),
               f.shareUnits.map({ (2...4096).contains($0) }) ?? true,
@@ -183,17 +223,20 @@ public struct ClusterMeasuredStep: Codable, Equatable, Sendable {
 /// steps in `floor + weight part / k`. Without a half measurement, the
 /// device's own measured hardware gives the weight part (`fromHardware`,
 /// `ClusterHardwarePrior`); with neither, nothing says the step shrinks: the
-/// floor is the whole step (no gain is assumed).
+/// floor is the whole step (no gain is assumed). Shares a shard probe measured
+/// (`measuredSteps`) replace all of that: a share steps on the line through
+/// them, never on the whole model's step, which is no tensor-parallel figure.
 public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
     public let wholeStepSeconds: Double
     public let floorSeconds: Double
     public let weightSeconds: Double
-    /// True when a shard probe measured the half.
+    /// True when a shard probe measured this device at a share: the half, or
+    /// another share (`measuredSteps`).
     public let measured: Bool
 
-    /// Measured share steps (fraction, seconds): the half probe, other
-    /// shares' probes and the whole, ascending; nil without share probes
-    /// (so a split without them encodes as before).
+    /// Measured share steps (fraction, seconds): the half probe and other
+    /// shares' probes, ascending; nil without share probes (so a split without
+    /// them encodes as before).
     public let measuredSteps: [ClusterMeasuredStep]?
     /// True when no shard probe measured this device and the split comes from
     /// its own measured hardware instead (`ClusterHardwarePrior`): the weight
@@ -213,19 +256,16 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         let whole = 1 / rates.decodeTokensPerSecond
         var points = (rates.tensorShareRates ?? []).map {
             ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
-        // A measured half outside the floor/weight model is still an actual
-        // point. Kernel or host costs can make a shard slower than the whole.
-        if let shard = rates.tensorShardDecodeTokensPerSecond,
-           (1 / shard > whole || 1 / shard < whole / 2),
-           !points.contains(where: { $0.fraction == 0.5 }) {
+        // A measured half is one more point beside other shares' probes, and a
+        // point of its own outside the floor/weight model (kernel or host costs
+        // can make a shard slower than the whole); an explicit half wins.
+        if let shard = rates.tensorShardDecodeTokensPerSecond, !points.contains(where: { $0.fraction == 0.5 }),
+           !points.isEmpty || 1 / shard > whole || 1 / shard < whole / 2 {
             points.append(.init(fraction: 0.5, seconds: 1 / shard))
         }
-        if !points.isEmpty {
-            if let shard = rates.tensorShardDecodeTokensPerSecond, !points.contains(where: { $0.fraction == 0.5 }) {
-                points.append(.init(fraction: 0.5, seconds: 1 / shard))
-            }
-            points.append(.init(fraction: 1, seconds: whole))
-        }
+        // The whole model's step is not one of them: a shard runs other kernels on float32 partials (the M3 Ultra's
+        // 27B shard at 2/3 stepped in 32.1 ms on 2026-10-24, its whole model in 26.1 ms on 2026-10-14), so a line
+        // drawn to it predicted a larger share faster than a smaller one.
         measuredSteps = points.isEmpty ? nil : points.sorted { $0.fraction < $1.fraction }
         wholeStepSeconds = whole
         if let shard = rates.tensorShardDecodeTokensPerSecond {
@@ -237,7 +277,7 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
             let weight = min(whole, prior) * min(1, max(0, hardwareDividedFraction))
             floorSeconds = whole - weight; weightSeconds = weight; measured = false; fromHardware = true
         } else {
-            floorSeconds = whole; weightSeconds = 0; measured = false; fromHardware = nil
+            floorSeconds = whole; weightSeconds = 0; measured = measuredSteps != nil; fromHardware = nil
         }
     }
 
@@ -246,19 +286,32 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         return floorSeconds + weightSeconds / Double(max(1, ranks))
     }
     /// A rank holding `fraction` of the weights: the floor whole, that part of the weights.
-    /// With share probes: piecewise linear between the measured shares (below
-    /// the smallest, the floor model, never above that share's own step).
+    /// With share probes: piecewise linear between the measured shares, and
+    /// past them the nearest segment's line (with one probe, in proportion to
+    /// its share), bounded by that proportion and by the nearest share's own
+    /// step: a smaller share never steps slower, a larger one never faster,
+    /// and a share's floor never shrinks with it.
     /// Without: floor + weights x fraction.
     public func shareStepSeconds(fraction: Double) -> Double {
         let f = max(0, min(1, fraction))
-        let model = floorSeconds + weightSeconds * f
-        guard let steps = measuredSteps, let lowest = steps.first else { return model }
-        if let point = steps.first(where: { $0.fraction == f }) { return point.seconds }
-        if f <= lowest.fraction { return min(model, lowest.seconds) }
-        for (a, b) in zip(steps, steps.dropFirst()) where f <= b.fraction {
-            return a.seconds + (b.seconds - a.seconds) * (f - a.fraction) / max(1e-9, b.fraction - a.fraction)
+        guard let steps = measuredSteps, let lowest = steps.first, let highest = steps.last else {
+            return floorSeconds + weightSeconds * f
         }
-        return steps.last!.seconds
+        if let point = steps.first(where: { $0.fraction == f }) { return point.seconds }
+        func line(_ a: ClusterMeasuredStep, _ b: ClusterMeasuredStep) -> Double {
+            a.seconds + (b.seconds - a.seconds) * (f - a.fraction) / max(1e-9, b.fraction - a.fraction)
+        }
+        func proportional(_ p: ClusterMeasuredStep) -> Double { p.seconds * f / max(1e-9, p.fraction) }
+        if f < lowest.fraction {
+            let extended = steps.count > 1 ? line(lowest, steps[1]) : proportional(lowest)
+            return min(lowest.seconds, max(proportional(lowest), extended))
+        }
+        if f > highest.fraction {
+            let extended = steps.count > 1 ? line(steps[steps.count - 2], highest) : proportional(highest)
+            return max(highest.seconds, min(proportional(highest), extended))
+        }
+        for (a, b) in zip(steps, steps.dropFirst()) where f <= b.fraction { return line(a, b) }
+        return highest.seconds
     }
 }
 

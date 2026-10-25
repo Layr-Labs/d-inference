@@ -105,11 +105,23 @@ struct QwenTensorParallelBatchMTPTransitionTests {
             maximumSpeculativeWidth: capacity, allocationBound: { $0 })
     }
 
-    private func pair(capacity: Int, cohort: Bool = false) throws -> (owners: [Owner], wire: Wire) {
+    /// The target's output head. `accepting` zeroes it, so every logit is 0,
+    /// every token is 0 and every proposal is accepted (custody). `twoChoice`
+    /// keeps zero scales but gives each vocabulary row its own constant bias,
+    /// so a row's logits are bias times its input's sum: every choice is the
+    /// highest or the lowest index by that sum's sign, and the assistant's
+    /// proposals (the same head over its own hidden) are accepted some rounds
+    /// and rejected at various positions in others, deterministically.
+    enum HeadFixture { case accepting, twoChoice }
+
+    /// `heads` query heads over two key/value heads: four is the suites'
+    /// tiny geometry, eight the 9B's ratio of four query heads per KV head.
+    private func pair(capacity: Int, cohort: Bool = false, heads: Int = 4, head kind: HeadFixture = .accepting,
+                      joinsAhead: Bool = true, batchesDrafts: Bool = true) throws -> (owners: [Owner], wire: Wire) {
         let budget: QwenTensorParallelBatchMTPBudget?
         if cohort { budget = try cohortQuote(capacity: capacity) } else { budget = nil }
-        let checkpoint = QwenTensorParallelPagedKVTests.checkpoint(hidden: 256, layers: 4,
-            heads: 4, kvHeads: 2, vocabulary: 256)
+        let checkpoint = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4,
+            heads: heads, kvHeads: 2, vocabulary: 256)
         var root = try JSONSerialization.jsonObject(with: checkpoint.configuration) as! [String: Any]
         var text = root["text_config"] as! [String: Any]
         text["max_position_embeddings"] = 256; text["mtp_num_hidden_layers"] = 1
@@ -131,9 +143,12 @@ struct QwenTensorParallelBatchMTPTransitionTests {
         donor.update(parameters: ModuleParameters.unflattened(parameters))
         quantize(model: donor, groupSize: 64, bits: 4); eval(donor)
         let assistantWeights = Dictionary(uniqueKeysWithValues: donor.parameters().flattened())
-        let tensors = checkpoint.tensors.map { name, value in
-            name.hasPrefix("language_model.lm_head.") && value.dtype != .uint32
-                ? (name, MLXArray.zeros(value.shape, dtype: value.dtype)) : (name, value)
+        let tensors = checkpoint.tensors.map { name, value -> (String, MLXArray) in
+            guard name.hasPrefix("language_model.lm_head.") && value.dtype != .uint32 else { return (name, value) }
+            guard kind == .twoChoice, name.hasSuffix(".biases") else { return (name, MLXArray.zeros(value.shape, dtype: value.dtype)) }
+            let rows = value.dim(0), groups = value.dim(1)
+            let bias = MLXArray((0..<rows).map { Float($0 - rows / 2) / 4096 }).reshaped([rows, 1])
+            return (name, broadcast(bias, to: [rows, groups]).asType(value.dtype))
         }
         let wire = Wire()
         let owners = try (0..<2).map { rank -> Owner in
@@ -160,7 +175,7 @@ struct QwenTensorParallelBatchMTPTransitionTests {
                 completedSpeculation: { [unowned owner] id, width, stats in
                     owner.rounds[id, default: []].append(stats)
                     owner.verifiedWidths[id, default: []].append(width)
-                })
+                }, cohortJoinsAhead: joinsAhead, cohortBatchesDrafts: batchesDrafts)
             return owner
         }
         return (owners, wire)
@@ -178,7 +193,8 @@ struct QwenTensorParallelBatchMTPTransitionTests {
             outputCount: outputs, stopTokenIDs: [], sampling: sampling)
     }
 
-    private func open(_ owners: [Owner], row: Int, outputs: Int = 48, capture: Bool = false, history: Bool = false) throws {
+    private func open(_ owners: [Owner], row: Int, outputs: Int = 48, capture: Bool = false, history: Bool = false,
+                      zeroTokens: Bool = true) throws {
         let id = UUID()
         try paired(owners) { owner in
             // Each process has its own sampler, even though identity is shared.
@@ -191,7 +207,8 @@ struct QwenTensorParallelBatchMTPTransitionTests {
             try paired(owners) { owner in
                 let lane = owner.lanes[row]!
                 if let token = try owner.executor.prefill(lane, frame: lane.nextFrame!, check: {}) {
-                    #expect(token == 0); owner.tokens[row]!.append(token)
+                    if zeroTokens { #expect(token == 0) }
+                    owner.tokens[row]!.append(token)
                     if owner.rank == 0 { try recordLogprobs(owner, row: row) }
                 }
             }
@@ -240,9 +257,21 @@ struct QwenTensorParallelBatchMTPTransitionTests {
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func oneResidentAssistantSurvivesCreditJoinsRectanglesAndResumedSpeculation() throws {
+        try residentAssistantSurvivesCreditJoins(capacities: [2, 4, 8], heads: 4)
+    }
+
+    /// The same transitions on a dense geometry other than the suites' own
+    /// (the 9B's head ratio): the assistant and its rectangles follow the
+    /// shard's heads, not a registered row's constants.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func nineBRatioAssistantSurvivesCreditJoinsRectanglesAndResumedSpeculation() throws {
+        try residentAssistantSurvivesCreditJoins(capacities: [2, 4], heads: 8)
+    }
+
+    private func residentAssistantSurvivesCreditJoins(capacities: [Int], heads: Int) throws {
         try Device.withDefaultDevice(.gpu) {
-            for capacity in [2, 4, 8] {
-                let (owners, _) = try pair(capacity: capacity)
+            for capacity in capacities {
+                let (owners, _) = try pair(capacity: capacity, heads: heads)
                 defer {
                     for owner in owners {
                         owner.failResourceRelease = false
@@ -504,6 +533,188 @@ struct QwenTensorParallelBatchMTPTransitionTests {
                 }
                 #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0)
                 #expect(owner.released.count == 2)
+            }
+        }
+    }
+
+    /// One driver step for `rows` (any tokens), as the TP batch driver takes it.
+    private func step(_ owners: [Owner], rows: [Int]) throws {
+        try paired(owners) { owner in
+            let lanes = rows.map { owner.lanes[$0]! }
+            let selected = try owner.executor.decode(lanes, tokens: rows.map { owner.tokens[$0]!.last! }, check: {})
+            for (row, token) in zip(rows, selected) {
+                owner.tokens[row]!.append(token)
+                let lane = owner.lanes[row]!
+                // The decoder may be ahead of the driver by one queued suffix
+                // plus one round; native history is that far ahead, no further.
+                #expect(lane.session.committedTokens == lane.session.request.promptCount
+                    + owner.tokens[row]!.count + lane.accepted.count - 1)
+                #expect(lane.accepted.count <= QwenTensorParallelAcceptedSelections.capacity(depth: 4))
+            }
+        }
+        for row in rows { #expect(owners[0].tokens[row] == owners[1].tokens[row]) }
+    }
+
+    private struct RowRun: Equatable {
+        let tokens: [Int]
+        let rounds: Int, plainSteps: Int, emitted: Int
+        let examined: [Int], accepted: [Int]
+        let state: [[Data]]
+    }
+
+    private func finish(_ owners: [Owner], row: Int) throws -> RowRun {
+        let decoder = owners[0].lanes[row]!.assistant!
+        let statistics = decoder.statistics
+        for owner in owners { #expect(owner.lanes[row]!.assistant!.statistics.emittedTokens == statistics.emittedTokens) }
+        let run = RowRun(tokens: owners[0].tokens[row]!, rounds: statistics.rounds, plainSteps: statistics.plainSteps,
+            emitted: statistics.emittedTokens, examined: statistics.examinedByPosition,
+            accepted: statistics.acceptedByPosition, state: try owners.map { try state($0.lanes[row]!) })
+        for owner in owners {
+            let lane = owner.lanes[row]!
+            #expect(lane.accepted.isEmpty)
+            try owner.executor.retire(lane, reason: .length, selected: owner.tokens[row]!.count, last: owner.tokens[row]!.last)
+            try owner.executor.confirmedRetirement(lane, clean: true)
+            #expect(lane.isClosed)
+        }
+        return run
+    }
+
+    /// Rows whose rounds start a step apart (each request joins while the
+    /// previous one's accepted suffix still waits for credit) verify as one
+    /// cohort from the next round on, instead of alternately one row per
+    /// round for as long as they run. Every row's tokens, MTP statistics and
+    /// final native state (paged K/V and recurrent bytes on both ranks) equal
+    /// that row's solo run, with every proposal accepted and with proposals
+    /// rejected at varying positions; the earlier empty-queue-only cohort is
+    /// the control, and neither leaves native memory behind.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func staggeredRowsVerifyAsOneCohortAndMatchTheirSoloRuns() throws {
+        try Device.withDefaultDevice(.gpu) {
+            for head in [HeadFixture.accepting, .twoChoice] {
+                for capacity in [2, 4] {
+                    let outputs = 30
+                    var solo: [RowRun] = []
+                    for row in 0..<capacity {
+                        let (owners, _) = try pair(capacity: capacity, cohort: true, head: head)
+                        try open(owners, row: row, outputs: outputs, zeroTokens: head == .accepting)
+                        while owners[0].tokens[row]!.count < outputs { try step(owners, rows: [row]) }
+                        solo.append(try finish(owners, row: row))
+                        for owner in owners { #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0) }
+                    }
+                    var rounds: [Bool: (calls: Int, oneRow: Int)] = [:]
+                    for joinsAhead in [false, true] {
+                        let (owners, wire) = try pair(capacity: capacity, cohort: true, head: head, joinsAhead: joinsAhead)
+                        defer { for owner in owners { for lane in owner.lanes.values where !lane.isClosed {
+                            try? owner.executor.retire(lane, reason: nil, selected: 0, last: nil)
+                        } } }
+                        var runs = [RowRun?](repeating: nil, count: capacity)
+                        func active() -> [Int] { (0..<capacity).filter { runs[$0] == nil && owners[0].lanes[$0] != nil } }
+                        func advance() throws {
+                            let rows = active()
+                            guard !rows.isEmpty else { return }
+                            try step(owners, rows: rows)
+                            for row in rows where owners[0].tokens[row]!.count == outputs { runs[row] = try finish(owners, row: row) }
+                        }
+                        // Stagger: each request opens after the earlier ones took a step.
+                        for row in 0..<capacity { try open(owners, row: row, outputs: outputs, zeroTokens: head == .accepting); try advance() }
+                        let opened = owners[0].widths.count
+                        while !active().isEmpty { try advance() }
+                        for row in 0..<capacity {
+                            let run = try #require(runs[row])
+                            #expect(run == solo[row], "\(head) capacity \(capacity) row \(row) joinsAhead \(joinsAhead) differs from its solo run")
+                        }
+                        for owner in owners {
+                            #expect(owner.widths == owners[0].widths)
+                            #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0)
+                            #expect(owner.released.count == capacity)
+                        }
+                        let after = owners[0].widths[opened...]
+                        rounds[joinsAhead] = (owners[0].widths.count, after.filter { $0 == 1 }.count)
+                        print("darkbloom-cohort-sync-test head=\(head) capacity=\(capacity) joins_ahead=\(joinsAhead)"
+                            + " native_calls=\(owners[0].widths.count) one_row_after_open=\(after.filter { $0 == 1 }.count)"
+                            + " widths=\(owners[0].widths.map(String.init).joined(separator: ",")) reductions=\(wire.reductions)"
+                            + " emitted=\(solo.map { "\($0.emitted)/\($0.rounds)" }.joined(separator: ","))")
+                    }
+                    // The same tokens with fewer, wider native verifications. With every
+                    // proposal accepted the control alternates one row per round for good.
+                    let control = try #require(rounds[false]), synchronized = try #require(rounds[true])
+                    #expect(synchronized.calls <= control.calls && synchronized.oneRow <= control.oneRow)
+                    if head == .accepting { #expect(synchronized.calls < control.calls && synchronized.oneRow < control.oneRow) }
+                }
+            }
+        }
+    }
+
+    /// A row that ran ahead (two settled rounds queued) can still stop at a
+    /// client's request: its unpublished selections are discarded with its
+    /// native history, its resources drain, and the cohort's other row runs
+    /// on to exactly its solo tokens and state.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func aheadRowStopsCleanlyAndItsCohortContinues() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let outputs = 30
+            let (soloOwners, _) = try pair(capacity: 2, cohort: true)
+            try open(soloOwners, row: 1, outputs: outputs)
+            while soloOwners[0].tokens[1]!.count < outputs { try step(soloOwners, rows: [1]) }
+            let solo = try finish(soloOwners, row: 1)
+            let (owners, _) = try pair(capacity: 2, cohort: true)
+            defer { for owner in owners { for lane in owner.lanes.values where !lane.isClosed {
+                try? owner.executor.retire(lane, reason: nil, selected: 0, last: nil)
+            } } }
+            try open(owners, row: 0, outputs: outputs); try step(owners, rows: [0])
+            try open(owners, row: 1, outputs: outputs); try step(owners, rows: [0, 1])
+            // Row 0 joined row 1's first round with four queued: two rounds queued now.
+            for owner in owners {
+                #expect(owner.lanes[0]!.accepted.count == 8 && owner.lanes[1]!.accepted.count == 4)
+                #expect(owner.widths == [1, 2])
+            }
+            for owner in owners {
+                let lane = owner.lanes[0]!
+                try owner.executor.retire(lane, reason: .clientStop, selected: owner.tokens[0]!.count, last: owner.tokens[0]!.last)
+                try owner.executor.confirmedRetirement(lane, clean: true)
+                #expect(lane.isClosed && lane.accepted.isEmpty && !owner.host.isDrained)
+            }
+            while owners[0].tokens[1]!.count < outputs { try step(owners, rows: [1]) }
+            let run = try finish(owners, row: 1)
+            #expect(run == solo)
+            for owner in owners {
+                #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0 && owner.released.count == 2)
+            }
+        }
+    }
+
+    /// A cohort's proposals through one head call per draft step: the same
+    /// drafts (hence the same MTP statistics), tokens and final native state
+    /// per row as each row drafting alone, with two collectives per draft step
+    /// for the whole cohort instead of two per row.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func batchedCohortDraftsMatchRowByRowDraftsWithOneHeadCallPerStep() throws {
+        try Device.withDefaultDevice(.gpu) {
+            for capacity in [2, 4, 8] {
+                let outputs = 26
+                var runs: [Bool: (rows: [RowRun], reductions: Int, rounds: Int)] = [:]
+                for batched in [false, true] {
+                    let (owners, wire) = try pair(capacity: capacity, cohort: true, head: .twoChoice, batchesDrafts: batched)
+                    defer { for owner in owners { for lane in owner.lanes.values where !lane.isClosed {
+                        try? owner.executor.retire(lane, reason: nil, selected: 0, last: nil)
+                    } } }
+                    for row in 0..<capacity { try open(owners, row: row, outputs: outputs, zeroTokens: false) }
+                    let opened = wire.reductions
+                    var runsByRow = [RowRun?](repeating: nil, count: capacity)
+                    while runsByRow.contains(where: { $0 == nil }) {
+                        let rows = (0..<capacity).filter { runsByRow[$0] == nil }
+                        try step(owners, rows: rows)
+                        for row in rows where owners[0].tokens[row]!.count == outputs { runsByRow[row] = try finish(owners, row: row) }
+                    }
+                    for owner in owners { #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0) }
+                    runs[batched] = (runsByRow.map { $0! }, wire.reductions - opened, owners[0].widths.count)
+                    print("darkbloom-cohort-draft-test capacity=\(capacity) batched=\(batched) reductions=\(wire.reductions - opened)"
+                        + " native_calls=\(owners[0].widths.count) widths=\(owners[0].widths.map(String.init).joined(separator: ","))")
+                }
+                let alone = try #require(runs[false]), together = try #require(runs[true])
+                #expect(together.rows == alone.rows, "capacity \(capacity): batched drafts changed a row")
+                #expect(together.rounds == alone.rounds)
+                #expect(together.reductions < alone.reductions)
             }
         }
     }

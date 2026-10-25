@@ -26,6 +26,10 @@ extension Cluster {
             ClusterPrefixSSDKeyMaterial.installAsOwnerKeySource()
             ClusterPrefixCacheSettings.installProduct(
                 providerConfiguration: try ConfigManager.defaultConfigPath())
+            // The pair's live KV precision, resolved from the same saved
+            // settings and switch the single-Mac engine reads.
+            DistributedInstalledKVQuantization.installProduct(
+                providerConfiguration: try ConfigManager.defaultConfigPath())
             try DistributedInstalledOwner.serve(reference: reference)
         }
     }

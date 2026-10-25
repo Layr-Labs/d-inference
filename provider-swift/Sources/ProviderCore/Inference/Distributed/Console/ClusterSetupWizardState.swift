@@ -144,6 +144,10 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     /// Why the planner chose tensor parallel or a pipeline, in one line
     /// (`ClusterPlacementExplanation.deploymentReason`); nil in a summary written before it.
     public var modeReason: String? = nil
+    /// Why the chosen split is not tensor parallel, in a few words for the model list
+    /// (`ClusterPlacementExplanation.tensorParallelNote`): nil when it is, when the model has no tensor-parallel
+    /// plan, and in a summary written before it.
+    public var tensorParallelNote: String? = nil
 }
 
 /// What reaching the other Mac gave.

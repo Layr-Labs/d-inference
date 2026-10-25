@@ -15,6 +15,8 @@ struct QwenTensorParallelBatchBudget {
     let sharedBytesExcludingCollectives: Int
     let batchProjectionConstantBytes: Int
     let pagedPoolSlackBytes: Int
+    /// Paged: one full-history gather bank, shared (one prompt frame per step).
+    let promptGatherBytes: Int
     let prefix: QwenTensorParallelBatchPrefixBudget
     let allowance: ClusterTensorParallelRequestAllowance
 
@@ -22,8 +24,8 @@ struct QwenTensorParallelBatchBudget {
                        tensors: [QwenDenseCanonicalTensor], maximumTokens: Int, chunkSize: Int,
                        lanes: Int, paged: Bool, rank: Int? = nil,
                        allocationBound: (Int) throws -> Int) throws -> Self {
-        guard (1...8).contains(lanes), !plan.routedExperts else {
-            throw ProbeError("Qwen TP batch budget requires 1...8 dense-model lanes")
+        guard (1...8).contains(lanes) else {
+            throw ProbeError("Qwen TP batch budget requires 1...8 lanes")
         }
         let scalar = try QwenTensorParallelRequestBudget.derive(geometry: g, plan: plan, tensors: tensors,
             maximumTokens: maximumTokens, chunkSize: chunkSize, rank: rank, allocationBound: allocationBound)
@@ -34,20 +36,27 @@ struct QwenTensorParallelBatchBudget {
             guard logical > 0, allocated >= logical, count >= 0 else { throw ProbeError("Invalid Qwen TP batch allocator bound") }
             return try product([allocated, count])
         }
-        var perLaneState = scalar.stateBytes, poolSlack = 0
+        var perLaneState = scalar.stateBytes, poolSlack = 0, promptGather = 0
         if paged {
-            // Restored prefixes copy into fresh request-owned pages. Reserve one
-            // full page bank, a full-history gather bank and a partial-page
-            // replacement per layer. Replace, never add again, the existing
-            // F32 KV term (two BF16 banks) in the conservative scalar floor.
+            // Restored prefixes copy into fresh request-owned pages. Each lane
+            // holds one full page bank and a partial-page replacement per layer.
+            // The full-history gather bank is a prompt frame's transient: decode
+            // and verify windows attend the pages in place (the fused paged
+            // decode kernel, one query column at a time), and the batch driver
+            // runs at most one prompt frame per step, so one bank serves every
+            // lane (`QwenTensorParallelBatchSessionTests.fullHistoryGatherIsOne
+            // PromptFramesTransient` measures both). The scalar floor's F32 KV
+            // term (two BF16 banks) is replaced by the lane's own BF16 page
+            // bank and replacement; the gather bank moves to the shared charge.
             let page = CBv2PagedDefaults.pageSize, segment = CBv2StageKVHost.segmentBytes
             let roundedTokens = try product([(maximumTokens + page - 1) / page, page])
             let key = try product([roundedTokens, local.kvHeads, local.headDimension, 2])
             let bank = try bound(key, count: 2 * local.attentionLayers)
             let replacement = try bound(product([page, local.kvHeads, local.headDimension, 2]), count: 2 * local.attentionLayers)
             let oldKV = try bound(product([maximumTokens, local.kvHeads, local.headDimension, 4]), count: 2 * local.attentionLayers)
-            let actualKV = try sum([product([bank, 2]), replacement])
-            perLaneState = try sum([scalar.stateBytes, max(0, actualKV - oldKV)])
+            guard scalar.stateBytes >= oldKV else { throw ProbeError("Qwen TP batch state lost its F32 KV floor") }
+            perLaneState = try sum([scalar.stateBytes - oldKV, bank, replacement])
+            promptGather = bank
             // The pool's segmented backing is shared. Account both its final
             // partially filled segment and its explicit spare segment, plus
             // allocator overhead on every possible committed segment. The
@@ -70,8 +79,16 @@ struct QwenTensorParallelBatchBudget {
         let decodeTransient = try QwenResidentPrefillTransient.bytes(geometry: local,
             stageHasAttention: local.attentionLayers > 0, chunkTokens: 1, contextTokens: maximumTokens)
         let transient = max(scalar.transientBytes, decodeTransient == 0 ? 0 : try bound(decodeTransient, count: lanes))
+        // A routed-expert layer's partial sources beside their one packed
+        // collective (the collective scratch covers that payload): a prompt
+        // chunk's (`QwenTensorParallelRequestBudget.packingBytes`), or a
+        // decode cohort's, each lane's own. Zero for a dense plan.
+        let packing = max(scalar.packingBytes, plan.routedExperts ? try sum([
+            bound(product([plan.expertsPerToken, plan.hiddenSize, 4]), count: lanes),
+            bound(product([plan.hiddenSize, 4]), count: lanes),
+        ]) : 0)
         let shared = try sum([scalar.fusionBytes, transient, logits,
-            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes])
+            scalar.projectionConstantBytes, batchConstants, poolSlack, prefix.residentBytes, packing, promptGather])
         // A one-token batch can gather more bytes than a short prompt frame.
         // Control limbs and retirement votes also travel in the sealed codec.
         let payload = max(scalar.allowance.maximumCollectivePayloadBytes,
@@ -86,6 +103,6 @@ struct QwenTensorParallelBatchBudget {
             allocationBound: allocationBound)
         return .init(lanes: lanes, perLaneStateBytes: perLaneState,
             sharedBytesExcludingCollectives: shared, batchProjectionConstantBytes: batchConstants,
-            pagedPoolSlackBytes: poolSlack, prefix: prefix, allowance: allowance)
+            pagedPoolSlackBytes: poolSlack, promptGatherBytes: promptGather, prefix: prefix, allowance: allowance)
     }
 }

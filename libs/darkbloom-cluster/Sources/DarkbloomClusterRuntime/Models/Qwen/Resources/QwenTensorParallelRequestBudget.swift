@@ -12,6 +12,11 @@ struct QwenTensorParallelRequestBudget {
     let transientBytes: Int
     let logitsBytes: Int
     let projectionConstantBytes: Int
+    /// A routed-expert layer packs its selected experts' FP32 partial rows and
+    /// its shared expert's row into one collective payload (the collective
+    /// scratch covers that payload); the two source partials exist beside the
+    /// packed copy while it is built. Zero for a dense plan.
+    let packingBytes: Int
     let allowance: ClusterTensorParallelRequestAllowance
 
     static func derive(geometry g: QwenLongPrefillBudgetGeometry, plan: QwenTensorParallelPlan,
@@ -97,13 +102,19 @@ struct QwenTensorParallelRequestBudget {
             stageHasAttention: budget.attentionLayers > 0, chunkTokens: chunkSize, contextTokens: maximumTokens)
         let transient = transientLogical == 0 ? 0 : try bound(transientLogical)
         let logits = try bound(product([plan.vocabularySize, 4]), count: 3)
+        let packing = plan.routedExperts ? try sum([
+            bound(product([chunkSize, plan.expertsPerToken, plan.hiddenSize, 4])),
+            bound(product([chunkSize, plan.hiddenSize, 4])),
+        ]) : 0
         let payload = try product([chunkSize, plan.maximumPartialBytesPerToken])
         let frame = try sum([payload, QwenTensorParallelSealCodec.frameOverhead])
         let allowance = try ClusterTensorParallelRequestAllowance(maximumContextTokens: maximumTokens,
-            maximumChunkTokens: chunkSize, requestBytesExcludingCollectives: sum([state, fusion, transient, logits, constants]),
+            maximumChunkTokens: chunkSize,
+            requestBytesExcludingCollectives: sum([state, fusion, transient, logits, constants, packing]),
             maximumCollectivePayloadBytes: payload, maximumCollectiveFrameBytes: frame,
             allocationBound: allocationBound)
         return .init(stateBytes: state, fusionBytes: fusion, transientBytes: transient,
-                     logitsBytes: logits, projectionConstantBytes: constants, allowance: allowance)
+                     logitsBytes: logits, projectionConstantBytes: constants, packingBytes: packing,
+                     allowance: allowance)
     }
 }

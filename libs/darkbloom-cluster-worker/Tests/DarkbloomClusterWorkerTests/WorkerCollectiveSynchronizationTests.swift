@@ -6,6 +6,8 @@ import XCTest
 
 final class WorkerCollectiveSynchronizationTests: XCTestCase {
     private let qwen27 = "registered_qwen38_27b"
+    /// Every Qwen row a tensor-parallel pair serves through batch lanes.
+    private let qwenTensorRows = ClusterRuntimeAdapter.qwenTensorParallelRuntimeModelIDs.sorted()
     private let lanes = QwenBatchSettings.lanesEnvironmentName
     private let variable = WorkerCollectiveSynchronization.variable
 
@@ -27,19 +29,23 @@ final class WorkerCollectiveSynchronizationTests: XCTestCase {
         XCTAssertEqual(getenv(variable).map { String(cString: $0) }, expectedEnvironment, file: file, line: line)
     }
 
-    func testBatchedQwen27KeepsFastSynchronization() throws {
-        for raw in ["2", "3", "4", "5", "6", "7", "8", " 2 ", "+2", "02"] {
-            try check(model: qwen27, environment: [lanes: raw], expected: "1")
-        }
-        for environment in [[:], [lanes: "1"], [lanes: ""], [lanes: " \n"]] {
-            try check(model: qwen27, environment: environment, expected: "1")
+    func testBatchedQwenTensorRowsKeepFastSynchronization() throws {
+        XCTAssertEqual(qwenTensorRows, ["registered_qwen35_35b_a3b", "registered_qwen35_9b",
+                                        "registered_qwen36_35b_a3b", "registered_qwen38_27b"])
+        for model in qwenTensorRows {
+            for raw in ["2", "3", "4", "5", "6", "7", "8", " 2 ", "+2", "02"] {
+                try check(model: model, environment: [lanes: raw], expected: "1")
+            }
+            for environment in [[:], [lanes: "1"], [lanes: ""], [lanes: " \n"]] {
+                try check(model: model, environment: environment, expected: "1")
+            }
         }
     }
 
     func testOtherCatalogModelsKeepFastSynchronization() throws {
-        let models = ClusterResidentModelCatalog.all.map(\.runtimeModelID).filter { $0 != qwen27 }
+        let models = ClusterResidentModelCatalog.all.map(\.runtimeModelID).filter { !qwenTensorRows.contains($0) }
         XCTAssertTrue(models.contains { $0.contains("glm") })
-        XCTAssertTrue(models.contains("registered_qwen35_9b"))
+        XCTAssertFalse(models.contains("registered_qwen35_9b"))
         for model in models {
             for raw in ["1", "2", "8", "invalid"] {
                 try check(model: model, environment: [lanes: raw], expected: "1")
@@ -64,16 +70,18 @@ final class WorkerCollectiveSynchronizationTests: XCTestCase {
         }
     }
 
-    func testInvalidQwen27CapacityRefusesBeforeChangingTheSetting() throws {
+    func testInvalidQwenTensorCapacityRefusesBeforeChangingTheSetting() throws {
         let original = getenv(variable).map { String(cString: $0) }
         defer {
             if let original { setenv(variable, original, 1) } else { unsetenv(variable) }
         }
-        for raw in ["0", "9", "-1", "two", "2.0", "9999999999999999999999999"] {
-            setenv(variable, "unchanged", 1)
-            XCTAssertThrowsError(try WorkerCollectiveSynchronization.apply(mode: .tensorParallel,
-                modelID: qwen27, environment: [lanes: raw]))
-            XCTAssertEqual(getenv(variable).map { String(cString: $0) }, "unchanged")
+        for model in qwenTensorRows {
+            for raw in ["0", "9", "-1", "two", "2.0", "9999999999999999999999999"] {
+                setenv(variable, "unchanged", 1)
+                XCTAssertThrowsError(try WorkerCollectiveSynchronization.apply(mode: .tensorParallel,
+                    modelID: model, environment: [lanes: raw]))
+                XCTAssertEqual(getenv(variable).map { String(cString: $0) }, "unchanged")
+            }
         }
     }
 }

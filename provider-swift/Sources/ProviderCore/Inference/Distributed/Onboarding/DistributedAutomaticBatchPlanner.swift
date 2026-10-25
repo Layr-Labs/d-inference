@@ -15,6 +15,8 @@ struct DistributedAutomaticBatchPlanner {
         let lanes: Int
         let peerPreviousSHA256: String
         let peerPreviousConfiguration: Data
+        /// Proposed only because the running owner's weights were credited.
+        var creditedIncumbentWeights = false
     }
 
     let providerConfiguration: URL
@@ -36,9 +38,11 @@ struct DistributedAutomaticBatchPlanner {
             maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
     }
 
-    /// Replacement must price the actual pair's latest recorded keyed link and
-    /// served requests, just as initial placement does. Missing/stale/untrusted
-    /// records retain the existing unmeasured fallback; no rate is invented.
+    /// Replacement must price the actual pair's recently recorded keyed link
+    /// (its median), served requests and each Mac's share probes, just as initial placement does.
+    /// Missing/stale/untrusted records retain the existing unmeasured fallback; no rate is invented.
+    /// Served requests count only for the worker builds the saved setup pins (`description`'s members,
+    /// checked against the installed binaries before this runs): `ClusterPlacementFlow.decide` keeps them.
     static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                        localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                        layout: ClusterModelLayout, scope: ClusterPlacementBatchScope, homeDirectory: URL,
@@ -50,7 +54,9 @@ struct DistributedAutomaticBatchPlanner {
             leader: localMemberID,
             served: ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory),
             link: ClusterLinkProbeHistory.costs(homeDirectory: homeDirectory, members: description.members.map(\.id)) ?? .unmeasured,
-            incumbentTensorShares: incumbentTensorShares, environment: [:], benchDebugBuild: false)
+            shareProbes: ClusterShareProbeHistory.shareRates(homeDirectory: homeDirectory, artifactSHA256: capability.artifactSHA256,
+                members: description.members.map(\.id)),
+            incumbentTensorShares: incumbentTensorShares, assumeUnmeasuredLink: false, environment: [:], benchDebugBuild: false)
     }
 
     /// An automatic replacement cannot promise that unrelated memory will
@@ -62,8 +68,58 @@ struct DistributedAutomaticBatchPlanner {
             && (!requireNow || candidate.ranks.allSatisfy { $0.fit == .now })
     }
 
+    /// Preview only, for a request-owned TP owner whose replacement keeps its
+    /// shares: a rank that does not fit now may still be proposed when it
+    /// would once the running owner's own resident weights on that Mac (the
+    /// same split, so `weightsBytes`) are free, as they are before the
+    /// replacement loads. Only a tensor-parallel candidate with exactly the
+    /// running shares qualifies; only weights are credited, never the owner's
+    /// unallocated request reservation, and no hardware bound moves. The
+    /// mandatory post-release `requireNow` recheck, uncredited, still gates
+    /// the load; a refusal there is remembered so it is not proposed again.
+    static func acceptsCreditingIncumbentWeights(_ candidate: ClusterPlacementCandidate, incumbentShares: [Int]) -> Bool {
+        candidate.mode == .tensorParallel && (candidate.tensorShares ?? [1, 1]) == incumbentShares
+            && candidate.possible && candidate.withinGPUWorkingSet && candidate.ranks.allSatisfy { rank in
+            if rank.fit == .now { return true }
+            if case .never = rank.fit { return false }
+            let credited = rank.admissibleNowBytes.addingReportingOverflow(rank.weightsBytes)
+            return !credited.overflow && rank.needBytes <= credited.partialValue
+        }
+    }
+
+    /// One refused width's evidence for `cluster.batch_replan refused`, one
+    /// log line: the phase (preview, or the post-release recheck), the
+    /// predicate that failed and each rank's need, load need, admissible-now,
+    /// shortfall, weights and fit, in bytes (nil candidate: the planner
+    /// offered no placement at all).
+    static func refusalFields(_ candidate: ClusterPlacementCandidate?, lanes: Int, previous: Int,
+                              requireNow: Bool, planned: Bool, phase: String = "preview") -> [String: String] {
+        var fields = ["requested_lanes": String(lanes), "previous_lanes": String(previous),
+                      "require_now": requireNow ? "1" : "0", "phase": phase]
+        guard let candidate else { fields["reason"] = "no_placement"; return fields }
+        fields["reason"] = !candidate.possible ? "not_possible" : !candidate.withinGPUWorkingSet ? "outside_gpu_working_set"
+            : requireNow && !candidate.ranks.allSatisfy({ $0.fit == .now }) ? "not_now" : planned ? "not_accepted" : "no_setup"
+        fields["mode"] = candidate.mode.rawValue
+        if let shares = candidate.tensorShares { fields["tensor_shares"] = shares.map(String.init).joined(separator: ":") }
+        for rank in candidate.ranks {
+            let prefix = "rank\(rank.rank)_"
+            fields[prefix + "device"] = rank.device
+            fields[prefix + "need_bytes"] = String(rank.needBytes)
+            fields[prefix + "load_need_bytes"] = String(rank.loadNeedBytes)
+            fields[prefix + "request_need_bytes"] = String(rank.requestNeedBytes)
+            fields[prefix + "weights_bytes"] = String(rank.weightsBytes)
+            fields[prefix + "admissible_now_bytes"] = String(rank.admissibleNowBytes)
+            let short = rank.needBytes.subtractingReportingOverflow(rank.admissibleNowBytes)
+            fields[prefix + "short_bytes"] = short.overflow ? "overflow" : String(max(0, short.partialValue))
+            fields[prefix + "fit"] = rank.fit == .now ? "now" : "tier\(rank.fit.tier)"
+        }
+        return fields
+    }
+
     func snapshot(reference: ClusterConfigurationReference, demand: DistributedLocalBatchDemand,
-                  widths: [Int], requireNow: Bool) throws -> Snapshot? {
+                  widths: [Int], requireNow: Bool,
+                  creditsIncumbentWeights: (Int) -> Bool = { _ in false },
+                  phase: String = "preview") throws -> Snapshot? {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
         let configuration = saved.configuration, capability = saved.capability
         guard configuration.role == .leader, configuration.nativeMember == nil,
@@ -149,7 +205,7 @@ struct DistributedAutomaticBatchPlanner {
                 scope = try ClusterPlacementBatchScope(quote: quote)
             } else {
                 let tensorQuote: ClusterPlacementTensorBatchQuote?
-                if capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID {
+                if ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID) {
                     let quote = try ClusterPlacementTensorBatchQuote.decode(run(["tensor-batch-scope", "--model-dir", local.modelDirectory,
                         "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens),
                         "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)]
@@ -162,13 +218,27 @@ struct DistributedAutomaticBatchPlanner {
                 } else { tensorQuote = nil }
                 scope = try ClusterPlacementBatchScope(request: request!, lanes: lanes, tensorParallelQuote: tensorQuote)
             }
+            let incumbentShares: [Int]? = ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID)
+                && configuration.selectedGenerationMode == .tensorParallel ? (configuration.tensorShares ?? [1, 1]) : nil
             let decision = try Self.decide(description: description, capability: capability,
                 localMemberID: configuration.memberID, localProfile: profile, peerProfile: peerProfile,
                 layout: layout, scope: scope, homeDirectory: paths.homeDirectory,
-                incumbentTensorShares: capability.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID
-                    && configuration.selectedGenerationMode == .tensorParallel ? (configuration.tensorShares ?? [1, 1]) : nil)
+                incumbentTensorShares: incumbentShares)
+            // Credit only a replacement that keeps the running TP shares, so each
+            // rank's weights are the running owner's own weights on that Mac.
+            let creditedShares = requireNow && creditsIncumbentWeights(lanes) ? incumbentShares : nil
+            let credited = creditedShares != nil
             guard let chosen = decision.result.chosen, let setup = decision.setup,
-                  Self.accepts(chosen, requireNow: requireNow) else { continue }
+                  creditedShares.map({ Self.acceptsCreditingIncumbentWeights(chosen, incumbentShares: $0) })
+                    ?? Self.accepts(chosen, requireNow: requireNow) else {
+                // A refused width is otherwise silent: say why, with each rank's numbers.
+                var fields = Self.refusalFields(decision.result.chosen ?? decision.result.alternatives.first,
+                    lanes: lanes, previous: demand.currentCapacity, requireNow: requireNow, planned: decision.setup != nil,
+                    phase: phase)
+                fields["credits_incumbent_weights"] = credited ? "1" : "0"
+                clusterObservabilityLog(.info, "cluster.batch_replan refused lanes=\(lanes)", fields)
+                continue
+            }
             for peer in configuration.peers {
                 guard let bytes = setup.configurations[peer.id] else { return nil }
                 let after = try ClusterConfigurationCodec.decode(bytes, capability: capability,
@@ -179,7 +249,8 @@ struct DistributedAutomaticBatchPlanner {
             try verified.requireUnchanged()
             return Snapshot(reference: reference, configuration: configuration, capability: capability, setup: setup,
                 lanes: lanes, peerPreviousSHA256: peerSummary.configurationSHA256,
-                peerPreviousConfiguration: previousPeerBytes)
+                peerPreviousConfiguration: previousPeerBytes,
+                creditedIncumbentWeights: credited && !Self.accepts(chosen, requireNow: true))
         }
         return nil
     }

@@ -23,10 +23,8 @@ extension QwenTensorParallelResidentRuntime {
     }
 
     private func batchPlan() throws -> QwenTensorParallelPlan {
-        guard let model, (1...8).contains(batchLanes), !model.plan.routedExperts,
-              admission.specification.model == .qwen38TwentySevenB,
-              codec != nil, group.sealed != nil, group.requiresSealing else {
-            throw ProbeError("Qwen27 TP batch owner is not admitted or sealed")
+        guard let model, (1...8).contains(batchLanes), codec != nil, group.sealed != nil, group.requiresSealing else {
+            throw ProbeError("Qwen TP batch owner is not admitted or sealed")
         }
         return model.plan
     }

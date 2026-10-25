@@ -35,7 +35,12 @@ struct QwenTensorMTPStartupTests {
                 try WorkerConfiguration(arguments: keyed + ["--mtp-depth", "2", "--mtp-depth", "3"], now: 100)
             }
         }
-        for (model, cut) in [("registered_qwen35_9b", 8), ("registered_qwen35_35b_a3b", 8),
+        // The 9B's inline head runs as the TP assistant too; the A3B rows'
+        // heads are expert layers it does not load.
+        let nine = try WorkerConfiguration(arguments: arguments(model: "registered_qwen35_9b", cut: 8)
+            + ["--generation-mode", "tensor_parallel_v1", "--data-plane", "encrypted_v1", "--mtp-depth", "3"], now: 100)
+        #expect(nine.generationMode == .tensorParallel && nine.speculativeTerms?.depth == 3)
+        for (model, cut) in [("registered_qwen35_35b_a3b", 8), ("registered_qwen36_35b_a3b", 8),
                              ("registered_glm53_flash", 16)] {
             #expect(throws: (any Error).self) {
                 try WorkerConfiguration(arguments: arguments(model: model, cut: cut)

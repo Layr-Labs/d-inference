@@ -35,7 +35,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
          request: QwenLayerStageGenerationRequest, inputs: QwenTensorParallelBatchInputs? = nil,
          restored: QwenTensorParallelBatchPrefixState? = nil, captureFrontier: Int = 0,
          captureLimitBytes: Int = 0, allocationBound: ((Int) throws -> Int)? = nil) throws {
-        guard case .shard(_, let ranks) = model.role, ranks == 2, !model.plan.routedExperts,
+        guard case .shard(_, let ranks) = model.role, ranks == 2,
               sha256(configuration) == model.configurationSHA256,
               request.profile.hiddenSize == model.plan.hiddenSize,
               request.profile.vocabularySize == model.plan.vocabularySize,
@@ -44,7 +44,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
               captureFrontier == 0 || (captureFrontier > request.reusedPrefixTokens
                 && captureFrontier < request.promptCount && captureFrontier % request.chunkSize == 0),
               captureLimitBytes >= 0, captureFrontier == 0 || allocationBound != nil else {
-            throw ProbeError("Qwen TP batch session requires a matching dense shard and original-grid state")
+            throw ProbeError("Qwen TP batch session requires a matching shard and original-grid state")
         }
         let geometry = try Self.geometry(model: model, configuration: configuration, host: host,
             maximumTokens: request.maximumTokens)
@@ -147,6 +147,54 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         }
     }
 
+    /// A decode forward is submitted to the GPU every this many layers
+    /// (`Qwen35LayerSubmission`), so the GPU and the collectives run the
+    /// layers already built while the host builds the rest. Evaluation order
+    /// only: the logits and every committed state keep their bits.
+    static let decodeLayerStride = 1
+    /// A bench or test's own stride (0: the whole forward in one evaluation).
+    @TaskLocal static var layerStride: Int?
+    /// Command-buffer limits of a decode step, an assistant round and their
+    /// selection on the thread that encodes them (the native executor's
+    /// decode), as GLM's TP decode keeps them: the worker's 16-operation guard
+    /// would split a routed-expert step's ~2,000 small launches into ~120
+    /// buffers, each a GPU gap. The size bound stays lifted, as the worker
+    /// sets it for tensor parallel. Prefill keeps the rank's limits.
+    /// Synchronization only: results never depend on the partitioning.
+    static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+
+    /// Every plain step, verify window and batched row of a Qwen TP shard
+    /// projects through the SDK's batch-invariant affine kernel
+    /// (`Qwen35BatchDecodeScope.exactVectors`): each position of a verify
+    /// window has the bits of the plain decode step that computes the same
+    /// token, and each row the bits it has alone. Diagnostic only:
+    /// `DARKBLOOM_QWEN_TP_EXACT_VECTORS=0` keeps MLX's kernels (whose window
+    /// and cohort arithmetic depends on the vector count).
+    static let exactVectors = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_EXACT_VECTORS"] != "0"
+    /// A bench or test's own choice (nil: `exactVectors`).
+    @TaskLocal static var exactVectorsOverride: Bool?
+    static var usesExactVectors: Bool { exactVectorsOverride ?? exactVectors }
+
+    /// Bound into the tensor-parallel load agreement: both ranks resolve the
+    /// decode projections alike, or the pair refuses to load (never a mixed
+    /// configuration). Each rank's words per lane is its own arithmetic
+    /// (a rank sums only its own partials) and is not bound.
+    static var decodeAgreementFields: [String] {
+        ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels"]
+    }
+
+    /// The decode arithmetic a loaded shard runs, logged once per load so
+    /// acceptance evidence shows it per rank: whether projections take the
+    /// batch-invariant kernel, its words per lane on this GPU family (part of
+    /// the arithmetic), the layouts it picks (which never change a result)
+    /// and whether the byte-exact residual norm fusion is on.
+    static func kernelLine(rank: Int, plan: QwenTensorParallelPlan) -> String {
+        "darkbloom-aqv-kernel-v1 rank=\(rank) exact_vectors=\(usesExactVectors ? "on" : "off")"
+            + " bits=\(plan.bits) group_size=\(plan.groupSize) "
+            + AffineQuantizedVectors.resolvedDescription(bits: plan.bits, groupSize: plan.groupSize, inputs: plan.hiddenSize)
+            + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? "on" : "off")"
+    }
+
     static func decode(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
                        check: () throws -> Void) throws -> MLXArray {
         try decodeResult(sessions, tokens: tokens, capturingHidden: false, check: check).logits
@@ -191,9 +239,13 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             let input = MLXArray(tokens.map(Int32.init)).reshaped([sessions.count, 1])
             let positions = positioned ? concatenated(positionRows, axis: 1) : nil
             var hidden: MLXArray?
+            // A packed step is evaluated whole: its refused writes are checked after the graph is built and before
+            // any of it runs (`CBv2OwnedRequestState.checkStepWrites`), which layer submission would precede.
+            let stride = layerStride ?? (first.state.packedStorage ? 0 : decodeLayerStride)
             let output = try CBv2OwnedRequestState.runBatch(sessions.map(\.state), tokenCount: 1, check: checked,
                 forward: { caches, evaluations in
-                    Qwen35BatchDecodeScope.$enabled.withValue(true) {
+                    Qwen35BatchDecodeScope.$enabled.withValue(true) { Qwen35LayerSubmission.$stride.withValue(stride) {
+                      Qwen35BatchDecodeScope.$exactVectors.withValue(usesExactVectors) {
                         Qwen35BatchDecodeScope.$explicitPositionRows.withValue(sessions.map { $0.inputs != nil }) {
                             if capturingHidden {
                                 let result = first.model.model.cbv2ForwardWithHidden(input,
@@ -204,7 +256,8 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                             return first.model.model.cbv2Forward(input, caches: caches.map { $0 as! any KVCache },
                                 recurrentState: evaluations, positionIds: positions)[0..., -1, 0...]
                         }
-                    }
+                      }
+                    } }
                 }, validateOutput: { output in
                     try validateLogits(output, rows: sessions.count, model: first.model, request: first.request)
                 })
@@ -236,8 +289,10 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                     session.window = QwenTensorParallelTargetWindow(model: session.model, request: session.request, state: session.state)
                 }
             }
-            return try QwenTensorParallelTargetWindow.beginBatch(sessions.map { $0.window! }, tokens: tokens,
-                offsets: sessions.map(\.committedTokens))
+            return try Qwen35BatchDecodeScope.$exactVectors.withValue(usesExactVectors) {
+                try QwenTensorParallelTargetWindow.beginBatch(sessions.map { $0.window! }, tokens: tokens,
+                    offsets: sessions.map(\.committedTokens))
+            }
         } catch { sessions.forEach { $0.failed = true }; throw error }
     }
 
@@ -274,7 +329,9 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             _ = try schedule.admitDecode(offset: offset)
             let transaction = window ?? QwenTensorParallelTargetWindow(model: model, request: request, state: state)
             window = transaction
-            return try transaction.begin(tokens: tokens, offset: offset)
+            return try Qwen35BatchDecodeScope.$exactVectors.withValue(Self.usesExactVectors) {
+                try transaction.begin(tokens: tokens, offset: offset)
+            }
         } catch { failed = true; throw error }
     }
 

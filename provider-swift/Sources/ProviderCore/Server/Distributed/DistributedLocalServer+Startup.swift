@@ -39,12 +39,13 @@ extension DistributedLocalServer {
             ResidentPrefixCacheEvidence(modelId: session.model.publicModelID,
                 modelAggregateHash: session.expectedIdentity.artifactSHA256, promptContractID: $0)
         }
-        // Per-request pair telemetry for `cluster status` (S24).
+        // Per-request pair telemetry for `cluster status` (S24); speed records name the worker build each rank
+        // serves with (the session's identity peers, rank order).
         let telemetry: DistributedPairTelemetryContext? = observability.flatMap { observability in
             session.httpObservabilityFacts.map { facts in
                 DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
                     log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()),
-                    ranks: facts.ranks)
+                    ranks: facts.ranks, rankBuildSHA256: session.expectedIdentity.peers.map(\.buildSHA256))
             }
         }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(

@@ -13,6 +13,7 @@ public actor DistributedAutomaticBatchFactory {
     private let announce: @Sendable (DistributedInstalledStopNotice) -> Void
     private let environment: [String: String]
     private var attempts = DistributedAutomaticBatchAttempt()
+    private let creditRefusals = DistributedAutomaticBatchCreditRefusals()
 
     public init(providerConfiguration: URL,
                 stopNotice: @escaping @Sendable (DistributedInstalledStopNotice) -> Void) throws {
@@ -39,12 +40,17 @@ public actor DistributedAutomaticBatchFactory {
         let planner = DistributedAutomaticBatchPlanner(providerConfiguration: providerConfiguration, paths: paths)
         let reference = try ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration)
         guard child.configurationSHA256 == reference.sha256 else { return nil }
+        let refusals = creditRefusals
         let preview = try await Task.detached {
-            // Price Qwen27's complete simultaneous LOAD before disrupting its
-            // serving owner. Do not credit the old shard back speculatively:
-            // the descending width search can choose a smaller current fit.
+            // Price a Qwen TP row's complete simultaneous LOAD before disrupting
+            // its serving owner, crediting back only the old shard's resident
+            // weights (released before the replacement loads). Its unallocated
+            // request reservation is never credited, and the uncredited
+            // post-release recheck still gates the load. A width that recheck
+            // refused is previewed uncredited until the refusal expires.
             try planner.snapshot(reference: reference, demand: demand, widths: widths,
-                requireNow: demand.runtimeModelID == ClusterPlacementTensorBatchQuote.runtimeModelID)
+                requireNow: ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(demand.runtimeModelID),
+                creditsIncumbentWeights: { refusals.allowsCredit(setup: reference.sha256, lanes: $0) })
         }.value
         guard let preview else { return nil }
         clusterObservabilityLog(.info, "cluster.batch_replan proposal lanes=\(preview.lanes)", [
@@ -53,7 +59,7 @@ public actor DistributedAutomaticBatchFactory {
             "pid": String(getpid()),
         ])
         let transition = DistributedAutomaticBatchTransition(planner: planner, preview: preview,
-            demand: demand, announce: announce)
+            demand: demand, announce: announce, creditRefusals: creditRefusals)
         return .init(requestedCapacity: preview.lanes,
             makeSession: { try await transition.prepareReplacement() },
             restorePreviousSession: { try await transition.restorePrevious() })
@@ -69,12 +75,15 @@ private final class DistributedAutomaticBatchTransition: @unchecked Sendable {
     let preview: DistributedAutomaticBatchPlanner.Snapshot
     let demand: DistributedLocalBatchDemand
     let announce: @Sendable (DistributedInstalledStopNotice) -> Void
+    let creditRefusals: DistributedAutomaticBatchCreditRefusals
     private let lock = NSLock()
     private var attempted: DistributedAutomaticBatchPlanner.Snapshot?
 
     init(planner: DistributedAutomaticBatchPlanner, preview: DistributedAutomaticBatchPlanner.Snapshot,
-         demand: DistributedLocalBatchDemand, announce: @escaping @Sendable (DistributedInstalledStopNotice) -> Void) {
+         demand: DistributedLocalBatchDemand, announce: @escaping @Sendable (DistributedInstalledStopNotice) -> Void,
+         creditRefusals: DistributedAutomaticBatchCreditRefusals = .init()) {
         self.planner = planner; self.preview = preview; self.demand = demand; self.announce = announce
+        self.creditRefusals = creditRefusals
     }
 
     func prepareReplacement() async throws -> DistributedInstalledSession {
@@ -83,7 +92,10 @@ private final class DistributedAutomaticBatchTransition: @unchecked Sendable {
                 // Free memory measured with the old weights still resident is
                 // never credited back by arithmetic. Re-probe after release.
                 guard let fresh = try self.planner.snapshot(reference: self.preview.reference, demand: self.demand,
-                    widths: [self.preview.lanes], requireNow: true) else {
+                    widths: [self.preview.lanes], requireNow: true, phase: "post_release") else {
+                    if self.preview.creditedIncumbentWeights {
+                        self.creditRefusals.record(setup: self.preview.reference.sha256, lanes: self.preview.lanes)
+                    }
                     throw ClusterConfigurationError.invalid("The queued batch no longer fits both Macs after release")
                 }
                 self.lock.withLock { self.attempted = fresh }
@@ -236,5 +248,26 @@ private final class DistributedAutomaticBatchTransition: @unchecked Sendable {
             "setup_sha256": reference.sha256, "pid": String(getpid()),
         ])
         return session
+    }
+}
+
+/// Widths whose credited preview the post-release recheck refused, by the
+/// running setup. Such a width is previewed strictly (no credit) until the
+/// refusal expires, so a credit that did not hold cannot cause repeated
+/// release-and-restore cycles under steady demand.
+final class DistributedAutomaticBatchCreditRefusals: @unchecked Sendable {
+    static let hold: Duration = .seconds(600)
+    private let lock = NSLock()
+    private var refused: [String: ContinuousClock.Instant] = [:]
+
+    func record(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) {
+        lock.withLock { refused[setup + "|" + String(lanes)] = now }
+    }
+
+    func allowsCredit(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) -> Bool {
+        lock.withLock {
+            guard let at = refused[setup + "|" + String(lanes)] else { return true }
+            return at.duration(to: now) >= Self.hold
+        }
     }
 }

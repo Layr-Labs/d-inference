@@ -30,7 +30,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// saved before this field keeps its bytes. Passed to both workers
     /// (`--tensor-shares`), which bind it into their load agreement.
     public private(set) var tensorShares: [Int]?
-    /// A locally planned pipeline or exact Qwen27 TP width. Omission keeps the existing
+    /// A locally planned pipeline or Qwen TP width. Omission keeps the existing
     /// family default and old configuration bytes; it is never inferred from
     /// a remote memory advertisement. Both installed owners use the same
     /// pinned value, and still run their own native memory/admission gates.
@@ -133,8 +133,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
             "Tensor-parallel shares are two unequal weights of 1...64, and only under tensor_parallel_v1")
         if let batchLanes {
             let tensor = selectedGenerationMode == .tensorParallel
-                && capability.runtimeModelID == "registered_qwen38_27b"
-                && capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
+                && ClusterRuntimeAdapter(rawValue: capability.adapterID)?
+                    .servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID) == true
             let pipeline = selectedGenerationMode == .pipeline
                 && ClusterRuntimeAdapter(rawValue: capability.adapterID).map {
                     switch $0 {
@@ -145,15 +145,15 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
                 } == true
             try require([2, 4, 8].contains(batchLanes) && (pipeline || tensor)
                 && selectedPrefillSchedule == .serial && !capability.hasPrivateImages,
-                "A planned batch width requires a supported pipeline or exact Qwen27 tensor mode with serial prefill")
+                "A planned batch width requires a supported pipeline or Qwen tensor mode with serial prefill")
         }
         if let tensorAssistant {
             try tensorAssistant.validate()
-            try require(capability.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID
+            try require(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID)
                 && capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
                 && selectedGenerationMode == .tensorParallel && selectedPrefillSchedule == .serial
                 && !capability.hasPrivateImages && nativeMember == nil,
-                "A tensor assistant requires exact Qwen27 TP, serial prefill and a local cluster setup")
+                "A tensor assistant requires Qwen TP on a row with an inline head, serial prefill and a local cluster setup")
         }
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {

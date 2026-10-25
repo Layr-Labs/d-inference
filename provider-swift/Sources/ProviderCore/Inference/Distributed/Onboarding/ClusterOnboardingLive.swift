@@ -625,11 +625,13 @@ final class OnboardingLive: @unchecked Sendable {
                 // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
                 let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, localName: localName, peerName: peerName)
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
-                // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet.
+                // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,
+                // under the line: why not tensor parallel, for a model that has it and was split otherwise.
                 return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []),
                              blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
                              publicTraffic: context.settings.privateImageQualification
-                                ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic)
+                                ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
+                             tensorParallelNote: plan.tensorParallelNote)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()

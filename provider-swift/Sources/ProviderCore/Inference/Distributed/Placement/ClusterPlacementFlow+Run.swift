@@ -115,7 +115,8 @@ extension ClusterPlacementFlow {
             return value
         }
         // The profiles this plan read are kept for the serving leader's per-request route,
-        // and the speed records of requests this pair served join the measurements.
+        // and the speed records of requests this pair served join the measurements (only
+        // those the pair description's worker builds served: `decide` keeps them).
         let home = FileManager.default.homeDirectoryForCurrentUser
         if let peer = description.members.first(where: { $0.id != inputs.localMemberID }) {
             ClusterMemberProfiles.record([inputs.localMemberID: localProfile, peer.id: peerProfile], homeDirectory: home)
@@ -125,7 +126,9 @@ extension ClusterPlacementFlow {
             promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, requestScope: assistantQuote?.request ?? requestScope,
             tensorAssistantQuote: assistantQuote, regime: inputs.regime,
             served: ClusterServedSpeedHistory.entries(homeDirectory: home),
-            link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured)
+            link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured,
+            shareProbes: ClusterShareProbeHistory.shareRates(homeDirectory: home, artifactSHA256: capability.artifactSHA256,
+                members: description.members.map(\.id)))
         var written: [URL] = []
         var lines = decided.lines
         if let setup = decided.setup {

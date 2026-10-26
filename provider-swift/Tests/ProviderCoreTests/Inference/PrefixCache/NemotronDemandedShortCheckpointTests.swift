@@ -149,4 +149,17 @@ struct NemotronDemandedShortCheckpointTests {
             model: model, backend: .paged, store: store,
             constructionPurpose: .benchmark, checkpointPartition: .demandedRecurrentQualification))
     }
+
+    @Test("the capture-boundary partition stays with GLM's protected engine")
+    func captureBoundaryPartitionIsGLMOnly() throws {
+        let fixture = try NemotronShortCheckpointFixture()
+        defer { fixture.remove() }
+        let model = NemotronH35Model(fixture.configuration)
+        #expect(EngineV2Factory.demandedCaptureBoundaryMinimumTokens(model: model, store: nil) == nil)
+        for layout in [CBv2CompleteCheckpointManifest.pagedLayout,
+                       CBv2CompleteCheckpointManifest.glm5NextPagedLayout] {
+            #expect(EngineV2Factory.demandedCaptureBoundaryMinimumTokens(
+                model: model, store: try fixture.store(layout: layout)) == nil)
+        }
+    }
 }

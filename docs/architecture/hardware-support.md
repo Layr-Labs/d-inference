@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -353,6 +353,20 @@ snapshot (`ProviderLoop.evictableModelSlots`), and `free_for_load_gb` gives the
 held weights no reclaim credit (`ProviderLoop.autopilotHeldWeightBytes`). A load
 that fits only by evicting a held slot fails with the ordinary slot or
 insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#placements-after-an-operation).
+`ProviderLoop.evictionExclusions` is the one definition of what an eviction
+snapshot skips: an Autopilot pin while Autopilot protects pins, an unexpired
+hold, requests in flight, a local request or self-test, an unloading slot and a
+retained MTP upgrade target. When a load that may evict (not startup preload, an
+Autopilot operation's target or a revision update, which pass
+`allowEviction: false`) is refused at the slot cap or by the eviction gate
+(`ProviderLoop.evictUntilAvailable`, `evictUntilNemotronSuperFits`) while any
+resident model is excluded, the refusal ends with `Not evictable:` and, for each
+excluded model, its resident GB and every reason (with the hold's UTC expiry,
+and whether Autopilot adopted it outside the selected models). A refusal that
+found no candidate says `all loaded models are actively serving` only when each
+of them is serving work, and `no loaded model can be evicted` otherwise. The
+daemon state publishes the same exclusions (`eviction_exclusions`) and the
+ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
@@ -699,7 +713,7 @@ and recurrent checkpoints keep the stock kernel's bits. No chip list decides
 this: in each process, the first eligible window of each kernel instantiation
 runs the candidates and the stock kernel on a fixed 32-position window on that
 GPU and keeps the first exact candidate, or else the stock kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`,
 `GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
 kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
 ([configuration](../reference/configuration.md#engine-and-scheduler)) restores
@@ -763,7 +777,7 @@ grant or reported capacity field changes, so
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`; eviction exclusions and `Not evictable:` reasons: `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` (`evictionExclusions`) |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |

@@ -118,7 +118,16 @@ opt-in refuses target-only GLM before any load state exists, and
 `GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
 from the same fixture: the relay channel must receive one entry per generated
 token with the requested alternatives, the row must not draft, and a later
-plain request must still speculate. In the SDK,
+plain request must still speculate. Beside a concurrent plain row, a ten-step
+logprob row must carry the entries it carries alone and leave the plain row's
+text unchanged. Without a flag, `GLM5NextRelayLogprobsTests` replays scripted
+GLM tokens through the production coordinator handler and frames loop
+(`ScriptedCoordinatorRelay`): a mixed reply and a reply that ends while
+reasoning, requested streamed and not, must carry one entry per generated token
+in generation order (none for the mixed reply's stop token), reasoning tokens on
+the reasoning chunks and the marker and answer tokens on the content chunks; a
+request without logprobs carries none, and another model type keeps
+content-chunk attachment. In the SDK,
 `GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
 `protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
 values with the target's own log-softmax for serial and rectangular
@@ -198,6 +207,11 @@ only the shipped template is recognized and passes the load-time render check.
 `openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
 returned-reasoning tool turn through the coordinator and local HTTP paths to the
 rendered prompt, with each of its reasoning spellings and controls.
+`reasoningContextRendersEveryGoldenLikeItsClearThinkingSpelling` replaces each
+golden's `clear_thinking` with OpenRouter's equivalent `reasoning.context` and
+must still match it byte for byte; `currentTurnReasoningContextRendersLikeClearThinking`
+and `reasoningContextContradictingClearThinkingIsRefused` cover the current
+turn and the refused contradictions.
 `capturedOpenRouterToolRequestIsServed` and
 `capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
 `strict` weather-tool requests, held byte for byte and hash-checked, with tool
@@ -219,9 +233,41 @@ protocol v1. Each served JSON or forced submission must carry no token
 constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
 evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
 a logprobs row that the same check refuses for a native engine without logprobs
-capture. The scripted completions prove the
+capture. `openRouterSecretWordReasoningReturnIsServed` serves OpenRouter's
+secret-word `reasoning-content-return` turn (a `get_time` call whose returned
+reasoning holds the word) with each reasoning carrier, the strict declaration,
+empty-string arguments and `reasoning.context`/`reasoning.mode`; the reasoning
+must render in the call's thinking block. The scripted completions prove the
 provider's withholding and validation, not the model's compliance; that needs
 the real-model run in `GLM5NextRealArtifactQualificationTests`.
+
+`GLM5NextRealLogprobsQualificationTests` qualifies logprobs on the real GLM
+checkpoint through the production bundle and the `EngineV2Bridge` relay channel
+(the standalone `--local` HTTP server never emits logprobs). It needs the
+`GLM5NextRealModelHarness` variables (`DARKBLOOM_TEST_GLM5_REAL_MODEL_DIR`,
+`DARKBLOOM_TEST_GLM5_REAL_RESULTS_DIR`, `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REPO`,
+`DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
+`DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
+`DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
+32-token `top_logprobs: 5` request at the template-default effort, which opens
+with reasoning tokens (`reasoningPositions`; at low effort GLM closes the thought
+at once), must return one entry per token, never draft, equal the same row submitted to the raw engine, and match a
+teacher-forced dense-cache log-softmax along its own tokens within the larger
+of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
+bf16 spacings of the step's largest logit. A logprob row decodes one-token
+target steps, so the MTP greedy stream may leave it only at a reference
+near-tie. Batched with a plain row on another prompt, the logprob row keeps
+its chosen values within the same bound and its alternatives within
+`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_BATCHED_TOLERANCE` nats (default `1.0`),
+every alternative is a reference top-8 token, and every plain token is the
+reference argmax up to a near-tie; the plain row drafts again after the
+logprobs row finishes. Batch width alone moves GLM's non-top logits: the run
+also scores the reference as two identical rows and records its drift from
+the one-row reference (`pairedReferenceMaxDrift`, 0.56 nats on an M3 Ultra).
+The engine must end without a native fault or retained load. Results go to
+`logprobs-qualification.json` in the results directory. The model directory
+must hold regular files; a Hugging Face snapshot of symlinks fails with
+`regular file required`.
 
 `fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
 `minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
@@ -642,6 +688,39 @@ env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
   --filter ModelCheckpointConversationLiveTests
 ```
 
+GLM-5.3-Flash and Nemotron 3.5 Super always serve with MTP and load through
+their own managed paths, so `ModelCheckpointStorageLiveTests` cannot select
+them. Their checkpoint profiles have dedicated opt-in qualifications:
+`GLM5NextRealCheckpointProfileTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextRealCheckpointProfileTests.swift`)
+and `NemotronSuperManagedSlotTests/pinnedCheckpointCheckpointProfileQualification`
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/NemotronSuperManagedSlotLiveTests+CheckpointProfile.swift`).
+Each process runs one storage arm. Run `native`, then `balanced`, from the same
+optimized test build (`swift build -c release --build-tests -Xswiftc
+-enable-testing -Xswiftc -DDEBUG`, then the staged metallib) with exclusive GPU
+use and a fresh isolated store per arm:
+
+| Model | Selection | Prompt lengths | Report |
+|---|---|---|---|
+| GLM | the `GLM5NextRealModelHarness` variables plus `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_PROFILE=native` or `balanced` | `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_LENGTHS`, default `2048,8192,32768`; the dense reference runs up to `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_REFERENCE_MAX` tokens (default 40,000) | `checkpoint-profile-<arm>.json` in the harness results directory |
+| Super | `DARKBLOOM_SUPER_MANAGED_LIVE=1`, `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_LIVE=1`, `NEMOTRON_SUPER_CHECKPOINT_DIR`, `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, a fresh `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` and `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native` or `balanced` | `DARKBLOOM_SUPER_CHECKPOINT_LENGTHS`, default `2400,8400,32000` (checkpoints sit at whole 2,048-token chunks) | `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_OUT` |
+
+Each prompt asks for a fact placed a fifth of the way into a generated fact
+document, inside the profile's coded rows. Per length the report records cold,
+donor, restored, repeated, another tenant's, cancelled-after-first-output and
+after-cancel runs (answer, finish, TTFT, restored tokens, stage), the donor's
+bytes and file sizes, the restore's stage time, and restored and cold logprob
+rows against teacher forcing along their own tokens: GLM against the dense
+reference under `GLM5NextRealLogprobsQualificationTests`'s bounds, Super against
+`EngineV2.teacherForcedScores` under its 0.35-nat bound. GLM also records the
+profile's reconstruction error on the reference prefill's latent rows. A run
+fails when a restore reads nothing, a repeat or after-cancel restore covers a
+different depth, another tenant hits, or a cold, donor, restored, repeated or
+after-cancel answer is wrong or truncated. Super's speculation is deterministic,
+so it also fails when the donating export changes the donor's output or a restore
+of the same file differs. Compare the two arms' reports for equal restored
+coverage, bytes, TTFT and logprob deltas; one process cannot.
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:
@@ -984,6 +1063,9 @@ servers for HTML/Markdown negotiation, real 404s, discovery, canonical/structure
 metadata, sitemaps and OpenAPI validation. Pricing uses a local HTTP upstream,
 including unavailable/malformed responses. Preserve framework `Vary` tokens and
 `Accept` across alternating representations when upgrading Next.js.
+Developer and contact coverage checks browser/RSC 404s, explicit and negotiated
+Markdown, agent discovery links, and their absence from human navigation and
+the XML sitemap.
 
 `landing/tests/story-gestures.test.mjs` covers pointer, wheel and keyboard input,
 vertical-scroll passthrough, controls, cancellation and listener cleanup through
@@ -1193,15 +1275,40 @@ The managed slot is covered by `NemotronSuperServingPolicyTests` and
 plan, footprint, media charge and capacity quotes; CPU only) and
 `NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
 coordinator and local-endpoint text and image requests on the speculating
-owner, an image beside speculating text, media refusal before allocation,
-cancellation, admission refusal and retirement). Three gated cases need the
+owner, logprobs on both paths without a draft, and relayed thinking-on replies,
+mixed and ending while reasoning, with one entry per generated token on
+reasoning or content chunks; an image beside speculating text, media refusal
+before allocation, cancellation, admission refusal and retirement).
+`toolCallReplyCarriesTheSameLogprobsOnEveryPath` checks that the relay, the
+local stream and the local complete response carry identical entries for
+thinking-on replies that call a tool: only the reasoning and answer tokens'
+when the call ends the reply, and every entry before a newline that follows
+the call. `NemotronSuperLocalOutputTests` checks the same selection for a
+complete response without a model (`NemotronSuperCompleteLogprobs`). The local
+hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
+complete logprobs on the tiny installed fixture for a mixed reply and one that
+ends while reasoning, with entries on the stream's reasoning chunks, and none
+without `logprobs`, and the
+SDK's `NemotronSuperMTPMediaFallbackTests` checks a logprob row's tokens and
+logprobs against the plain owner's while a text row beside it speculates
+([logprob rows](../architecture/inference.md#nemotron-super-logprobs)). Three gated cases need the
 pinned checkpoint: `NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery
 and that the recorded LOAD constants equal the SDK quotes over every verified
 shard (hashes about 75 GB, loads no weights); adding
 `DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
 the production loader, once to serve an encrypted text request and once for PNG
-and JPEG questions and an image beside a text request. Run them only with
-exclusive GPU access.
+and JPEG questions and an image beside a text request.
+`pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
+against the engine's and, at every step the relay served, against a cold
+prefill of the prompt and the tokens before it, twice: with thinking off up to
+the end of turn, and with thinking on for a 48-token reply that ends inside
+reasoning, whose 48 entries must all ride reasoning chunks. Each served value
+must be within 0.35 nats of the reference, and the served token the reference
+argmax unless the reference prefers another token by at most 0.7 nats, a swap
+two values within the bound allow.
+`DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
+makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.
 
 `NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
 shapes, built from the captured tool request the platform's conformance fixture

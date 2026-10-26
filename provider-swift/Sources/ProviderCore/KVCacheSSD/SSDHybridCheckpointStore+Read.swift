@@ -169,7 +169,10 @@ extension SSDHybridCheckpointStore {
                 budget: budget, makeImportPlan: makeImportPlan)
             if case .staged = outcome.disposition {
                 transferred = true
-                return result(outcome.disposition, deviceBytes: outcome.deviceBytes)
+                let staged = result(outcome.disposition, deviceBytes: outcome.deviceBytes)
+                // A retried stage also paid for the refused first attempt.
+                if !retried { stageCost.record(bytes: selected.fileBytes, milliseconds: staged.stageMs) }
+                return staged
             }
             guard outcome.retryable else {
                 // The refund runs on its own task; a cold result returns only

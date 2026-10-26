@@ -55,6 +55,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
     #endif
     let statsBox = SSDHybridCheckpointStatsBox()
+    let stageCost: SSDCheckpointStageCost
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
@@ -106,8 +107,15 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
             writeBudget: writeBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
+        self.stageCost = SSDCheckpointStageCost(
+            priorOverheadMilliseconds: SSDCheckpointStageCost.priorOverheadMilliseconds(
+                backendLayout: config.backendLayout))
+        // A buffered job keeps its `writing` entry, so a buffer as deep as the
+        // `prepareWriteJob` gate never drops a job that gate admitted, even one
+        // admitted after the writer settles a job but before it dequeues the
+        // next. The gate alone bounds the queue.
         self.pipeline = BoundedSingleConsumerPipeline(
-            capacity: 1,
+            capacity: SSDPrefixCachePolicy.writeQueueMaxJobs,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
             consume: { [weak self] job in
                 guard let self else { job.finish([]); return }

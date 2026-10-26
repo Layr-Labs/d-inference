@@ -144,6 +144,8 @@ struct GLM5NextPromptPolicyTests {
         ["thinking": true],
         ["include_reasoning": NSNull(), "thinking": NSNull()],
         ["reasoning": ["enabled": true, "max_tokens": NSNull(), "exclude": NSNull(), "summary": "auto"]],
+        ["reasoning": ["context": "auto", "mode": "standard"]],
+        ["reasoning": ["enabled": true, "context": NSNull(), "mode": NSNull()]],
         ["reasoning": ["enabled": true, "exclude": false], "include_reasoning": true,
          "enable_thinking": true, "chat_template_kwargs": ["thinking": true, "enable_thinking": true]],
     ] }
@@ -172,12 +174,81 @@ struct GLM5NextPromptPolicyTests {
                 #expect(
                     !evidence.invalid && !evidence.disablesThinking && !evidence.excludesReasoning,
                     "\(fixture.id) \(controls)")
+                #expect(evidence.refusalReason == nil, "\(fixture.id) \(controls)")
                 for input in try remoteAndLocalInputs(body) {
                     let context = MLXLMCommon.JSONValue.object(
                         (input.additionalContext ?? [:]).mapValues { .from($0) })
                     #expect(context == fixture.expectedContext, "\(fixture.id) \(controls)")
                     #expect(try render(input, with: template) == fixture.rendered, "\(fixture.id) \(controls)")
                 }
+            }
+        }
+    }
+
+    /// OpenRouter's `reasoning.context` spells the template's `clear_thinking`:
+    /// `current_turn` keeps only the reasoning returned after the last user
+    /// turn, `all_turns` every turn's. With each golden's `clear_thinking`
+    /// spellings replaced by the equivalent context, every golden, the
+    /// cleared and current-turn ones included, renders byte for byte.
+    @Test func reasoningContextRendersEveryGoldenLikeItsClearThinkingSpelling() throws {
+        let template = try shippedTemplate()
+        for fixture in try goldens().cases {
+            guard case .object(let expected) = fixture.expectedContext else {
+                Issue.record("\(fixture.id) has no expected context object")
+                continue
+            }
+            var body = try #require(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture.request)) as? [String: Any])
+            body.removeValue(forKey: "clear_thinking")
+            if var kwargs = body["chat_template_kwargs"] as? [String: Any] {
+                kwargs.removeValue(forKey: "clear_thinking")
+                body["chat_template_kwargs"] = kwargs
+            }
+            var reasoning = body["reasoning"] as? [String: Any] ?? [:]
+            reasoning["context"] = expected["clear_thinking"] == .bool(true) ? "current_turn" : "all_turns"
+            body["reasoning"] = reasoning
+            for input in try remoteAndLocalInputs(JSONSerialization.data(withJSONObject: body)) {
+                let context = MLXLMCommon.JSONValue.object(
+                    (input.additionalContext ?? [:]).mapValues { .from($0) })
+                #expect(context == fixture.expectedContext, "\(fixture.id)")
+                #expect(try render(input, with: template) == fixture.rendered, "\(fixture.id)")
+            }
+        }
+    }
+
+    /// A `reasoning.context` that disagrees with the effective `clear_thinking`
+    /// is refused on both paths, never reconciled; one that agrees, or `auto`,
+    /// leaves the explicit value in place.
+    @Test func reasoningContextContradictingClearThinkingIsRefused() throws {
+        let contradictions: [[String: Any]] = [
+            ["reasoning": ["context": "current_turn"], "clear_thinking": false],
+            ["reasoning": ["context": "all_turns"], "chat_template_kwargs": ["clear_thinking": true]],
+            ["reasoning": ["context": "all_turns"], "thinking": ["type": "enabled", "clear_thinking": true]],
+        ]
+        for controls in contradictions {
+            let body = try body(controls)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(!evidence.invalid, "\(controls)")
+            #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .contradictoryReasoningControls, "\(controls)")
+            #expect(throws: (any Error).self) { try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next") }
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.normalizedInput(
+                    prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
+                    request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
+            }
+        }
+        let consistent: [([String: Any], Bool)] = [
+            (["reasoning": ["context": "current_turn"]], true),
+            (["reasoning": ["context": "current_turn"], "clear_thinking": true], true),
+            (["reasoning": ["context": "all_turns"], "chat_template_kwargs": ["clear_thinking": false]], false),
+            (["reasoning": ["context": "auto"], "clear_thinking": true], true),
+            (["reasoning": ["context": "current_turn", "enabled": false]], true),
+        ]
+        for (controls, clears) in consistent {
+            for input in try remoteAndLocalInputs(body(controls)) {
+                #expect(input.additionalContext?["clear_thinking"] as? Bool == clears, "\(controls)")
             }
         }
     }
@@ -219,11 +290,16 @@ struct GLM5NextPromptPolicyTests {
          "include_reasoning": true, "chat_template_kwargs": ["thinking": false]],
     ] }
 
-    /// Hidden reasoning: the provider cannot withhold reasoning it generates.
-    private static var reasoningExclusionControls: [[String: Any]] { [
-        ["reasoning": ["exclude": true]],
-        ["include_reasoning": false],
-        ["reasoning": ["enabled": false, "exclude": true]],
+    /// Hidden reasoning, each beside the same controls without the exclusion
+    /// and whether thinking stays on.
+    private static var reasoningExclusionControls:
+        [(excluded: [String: Any], visible: [String: Any], thinking: Bool)] { [
+        (["reasoning": ["exclude": true]], [:], true),
+        (["include_reasoning": false], [:], true),
+        (["reasoning": ["effort": "high", "exclude": true]], ["reasoning": ["effort": "high"]], true),
+        (["reasoning": ["enabled": false, "exclude": true]], ["reasoning": ["enabled": false]], false),
+        (["thinking": ["type": "enabled", "budget_tokens": 2048, "display": "omitted"]],
+         ["thinking": ["type": "enabled", "budget_tokens": 2048]], true),
     ] }
 
     /// Thinking-off beside a thinking-on switch, effort level or budget.
@@ -248,6 +324,7 @@ struct GLM5NextPromptPolicyTests {
             let body = try body(controls)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(!evidence.invalid && evidence.disablesThinking && !evidence.requestsThinking, "\(controls)")
+            #expect(evidence.refusalReason == nil, "\(controls)")
             _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
             for input in try remoteAndLocalInputs(body) {
                 #expect(input.additionalContext?["enable_thinking"] as? Bool == false, "\(controls)")
@@ -273,28 +350,43 @@ struct GLM5NextPromptPolicyTests {
         #expect(context["enable_thinking"] == nil)
     }
 
-    @Test func reasoningExclusionAndContradictionsAreRefusedOnBothPaths() throws {
-        for controls in Self.reasoningExclusionControls {
-            let body = try body(controls)
+    /// OpenRouter's hidden reasoning is served: the prompt is the one the same
+    /// request renders without the exclusion, and only the response withholds
+    /// the reasoning (`MultiModelBatchSchedulerEngine`).
+    @Test func reasoningExclusionIsServedWithTheUnchangedPromptOnBothPaths() throws {
+        let template = try shippedTemplate()
+        for (excluded, visible, thinking) in Self.reasoningExclusionControls {
+            let body = try body(excluded)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
-            #expect(!evidence.invalid && evidence.excludesReasoning, "\(controls)")
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
-                try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
-            }
+            #expect(!evidence.invalid && evidence.excludesReasoning, "\(excluded)")
+            #expect(evidence.refusalReason == nil, "\(excluded)")
+            try evidence.validate()
+            _ = try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
+            let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
+            let expected = try remoteAndLocalInputs(try self.body(visible)).map { try render($0, with: template) }
+            #expect(rendered == expected, "\(excluded)")
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
-            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
-                try ProviderPromptContractPipeline.normalizedInput(
-                    prepared: ToolChoicePromptPolicy.prepare(local.request, modelType: "glm5_next"),
-                    request: local.request, modelType: "glm5_next", templateControls: local.templateControls)
-            }
+            #expect(GLM5NextPromptPolicy.withholdsReasoning(local.templateControls, modelType: "glm5_next"))
+            #expect(ProviderPromptContractPipeline.withholdsReasoning(
+                local.request, controls: local.templateControls, modelType: "glm5_next"))
+            // Thinking-off generates no reasoning to withhold.
+            #expect(GLM5NextPromptPolicy.thinkingEnabled(request: local.request, controls: local.templateControls)
+                == thinking, "\(excluded)")
             // Other families keep their own handling of the same bodies.
             try ProviderPromptContractPipeline.validateNativeControls(local.templateControls, modelType: "llama")
+            #expect(!GLM5NextPromptPolicy.withholdsReasoning(local.templateControls, modelType: "llama"))
         }
+        let visible = try JSONDecoder().decode(LocalChatRequest.self, from: try body(["include_reasoning": true]))
+        #expect(!GLM5NextPromptPolicy.withholdsReasoning(visible.templateControls, modelType: "glm5_next"))
+    }
+
+    @Test func thinkingContradictionsAreRefusedOnBothPaths() throws {
         for controls in Self.contradictoryThinkingControls {
             let body = try body(controls)
             let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
             #expect(evidence.disablesThinking && evidence.requestsThinking, "\(controls)")
             #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .contradictoryReasoningControls, "\(controls)")
             let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
             #expect(throws: (any Error).self) {
                 try ProviderPromptContractPipeline.normalizedInput(
@@ -308,7 +400,8 @@ struct GLM5NextPromptPolicyTests {
         }
         // A malformed sibling remains the generic refusal.
         let malformed = Data(#"{"model":"m","messages":[],"reasoning":{"enabled":false,"mode":"pro"}}"#.utf8)
-        #expect(try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed).invalid)
+        let malformedEvidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: malformed)
+        #expect(malformedEvidence.invalid && malformedEvidence.refusalReason == .unsupportedReasoningControl)
     }
 
     @Test func thinkingTokenizerClosesOnlyAnOpenGenerationPromptWhenThinkingIsOff() throws {
@@ -349,21 +442,40 @@ struct GLM5NextPromptPolicyTests {
         #expect(ReasoningPromptProbe.streamingPrefix(forPromptTail: rendered + "</think>") == "<think></think>")
     }
 
-    @Test func reasoningRefusalIsAClient400WithAFixedMessageThatNeverCrossesToTheCoordinator() throws {
-        let error = MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
-        #expect(error.errorDescription == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
-        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
-        let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
-        #expect(failure.statusCode == 400)
-        #expect(failure.code == .invalidRequest)
-        #expect(failure.errorReason == .clientError)
-        #expect(classifyInferenceErrorReason(error) == nil)
-        let wire = try ProviderProtocolCodec.encodeProviderMessage(
-            .inferenceError(.init(requestId: "glm-reasoning-fixture", failure: failure)))
-        let json = try #require(JSONSerialization.jsonObject(with: wire) as? [String: Any])
-        #expect(json["status_code"] as? Int == 400)
-        #expect(json["error_reason"] as? String == "client_error")
-        #expect(json["error"] as? String == InferenceFailureCode.invalidRequest.message)
+    /// The coordinator's Anthropic Messages lowering forwards Anthropic's
+    /// `thinking` object unchanged, and OpenAI documents `reasoning_effort` as
+    /// nullable. Both select the same render as their unified spellings;
+    /// `thinking.budget_tokens` yields to `reasoning.max_tokens` and to any
+    /// effort alias.
+    @Test func anthropicThinkingAndNullReasoningEffortRenderLikeTheirUnifiedSpellings() throws {
+        let template = try shippedTemplate()
+        let pairs: [(sent: [String: Any], unified: [String: Any])] = [
+            (["thinking": ["type": "enabled", "budget_tokens": 1024]], ["reasoning": ["max_tokens": 1024]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 31999]], ["reasoning": ["max_tokens": 31999]]),
+            (["thinking": ["type": "adaptive"]], ["reasoning": ["enabled": true]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 4096, "display": "summarized"]],
+             ["reasoning": ["max_tokens": 4096]]),
+            (["reasoning_effort": NSNull()], [:]),
+            (["reasoning_effort": NSNull(), "reasoning": ["effort": "low"]], ["reasoning": ["effort": "low"]]),
+            (["thinking": ["budget_tokens": 1024], "reasoning": ["max_tokens": 100_000]],
+             ["reasoning": ["max_tokens": 100_000]]),
+            (["thinking": ["type": "enabled", "budget_tokens": 100_000], "reasoning_effort": "minimal"],
+             ["reasoning_effort": "minimal"]),
+        ]
+        for (sent, unified) in pairs {
+            let body = try body(sent)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            #expect(!evidence.invalid && !evidence.excludesReasoning, "\(sent)")
+            #expect(evidence.refusalReason == nil, "\(sent)")
+            try evidence.validate()
+            let rendered = try remoteAndLocalInputs(body).map { try render($0, with: template) }
+            let expected = try remoteAndLocalInputs(try self.body(unified)).map { try render($0, with: template) }
+            #expect(rendered == expected, "\(sent)")
+        }
+        // The budget picks the nearest rendered effort, as reasoning.max_tokens does.
+        let budget = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self,
+            from: try body(["thinking": ["type": "enabled", "budget_tokens": 1024]]))
+        #expect(budget.effort == .low && budget.requestsThinking)
     }
 
     @Test func additionalEffortAndImageMarkerGoldensMatchOfficial() throws {
@@ -481,20 +593,24 @@ struct GLM5NextPromptPolicyTests {
 
     @Test func malformedAndShadowedRawControlsFailClosed() throws {
         let controls: [[String: Any]] = [
-            ["reasoning_effort": NSNull()], ["reasoning_effort": false], ["reasoning_effort": "None"],
+            ["reasoning_effort": false], ["reasoning_effort": "None"],
             ["reasoning_effort": " none"], ["reasoning_effort": "0"],
             ["clear_thinking": NSNull()], ["clear_thinking": 0], ["clear_thinking": "false"],
             ["enable_thinking": NSNull()], ["enable_thinking": 1], ["enable_thinking": "true"],
             ["include_reasoning": "true"], ["include_reasoning": 0],
             ["preserve_thinking": true], ["preserve_thinking": NSNull()],
-            ["thinking": "enabled"], ["thinking": 1], ["thinking": ["type": "adaptive"]],
-            ["thinking": ["type": "enabled", "budget_tokens": 1024]], ["thinking": ["type": NSNull()]],
+            ["thinking": "enabled"], ["thinking": 1], ["thinking": ["type": "auto"]],
+            ["thinking": ["type": "enabled", "budget_tokens": 0]],
+            ["thinking": ["type": "enabled", "budget_tokens": "1024"]],
+            ["thinking": ["type": "enabled", "display": "full"]], ["thinking": ["type": NSNull()]],
             ["thinking": ["type": "enabled", "clear_thinking": "false"]],
             ["reasoning": true], ["reasoning": ["enabled": 1]], ["reasoning": ["exclude": "false"]],
             ["reasoning": ["max_tokens": 0]], ["reasoning": ["max_tokens": -1]],
             ["reasoning": ["max_tokens": 1.5]], ["reasoning": ["max_tokens": "1024"]],
             ["reasoning": ["summary": "verbose"]], ["reasoning": ["summary": true]],
-            ["reasoning": ["generate_summary": "Auto"]], ["reasoning": ["context": "all_turns"]],
+            ["reasoning": ["generate_summary": "Auto"]], ["reasoning": ["context": "every_turn"]],
+            ["reasoning": ["context": "All_Turns"]], ["reasoning": ["context": true]],
+            ["reasoning": ["mode": "pro"]], ["reasoning": ["mode": true]],
             ["reasoning": ["effort": "high"], "reasoning_effort": "low "],
             ["reasoning": ["enabled": false, "unrecognized": true]],
             ["clear_thinking": false, "chat_template_kwargs": ["clear_thinking": "true"]],
@@ -508,6 +624,7 @@ struct GLM5NextPromptPolicyTests {
                 from: JSONSerialization.data(withJSONObject: body))
             #expect(evidence.invalid)
             #expect(throws: (any Error).self) { try evidence.validate() }
+            #expect(evidence.refusalReason == .unsupportedReasoningControl, "\(body)")
         }
     }
 
@@ -621,6 +738,7 @@ struct GLM5NextPromptPolicyTests {
         let body = Data(#"{"model":"not-a-native-grant","model_type":"glm5_next","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"string","x-darkbloom-original-boolean-schema":true}}}}}]}"#.utf8)
         let controls = ProviderLoop.extractChatTemplateControls(from: body)
         #expect(controls.rawGLM5Controls.invalid)
+        #expect(controls.rawGLM5Controls.refusalReason == .reservedToolSchemaMetadata)
         #expect(throws: (any Error).self) {
             try ProviderLoop.decodeOpenAIRequest(body, modelType: "glm5_next")
         }
@@ -759,7 +877,8 @@ struct GLM5NextPromptPolicyTests {
     /// tool turn with OpenRouter's reasoning fields, GLM's own API spelling of
     /// the thinking switch, or OpenRouter's `strict` weather tool. MiMo and
     /// Nemotron Super serve each. GLM served only the first and refused the
-    /// others with `invalid_request` before rendering.
+    /// others with `invalid_request` before rendering, and refused OpenRouter's
+    /// `reasoning.context` and `reasoning.mode` until they were recognized.
     @Test(arguments: [
         ("{}", false),
         (#"{"reasoning":null}"#, false),
@@ -772,8 +891,10 @@ struct GLM5NextPromptPolicyTests {
         (#"{"thinking":{"type":"enabled"}}"#, false),
         (#"{"thinking":true}"#, false),
         (#"{"thinking":null}"#, false),
+        (#"{"reasoning":{"effort":"high","context":"auto","mode":"standard"}}"#, false),
         ("{}", true),
         (#"{"reasoning":{"enabled":true}}"#, true),
+        (#"{"reasoning":{"enabled":true,"context":"all_turns"}}"#, true),
     ])
     func openRouterReasoningContentReturnRequestIsServed(controls: String, strict: Bool) throws {
         let template = try shippedTemplate()
@@ -787,6 +908,31 @@ struct GLM5NextPromptPolicyTests {
             let rendered = try render(input, with: template)
             #expect(rendered.contains("<|assistant|><think>\(Self.returnedThought)</think><tool_call>"))
             #expect(rendered.hasSuffix(#"<tool_response>{"temperature":72}</tool_response><|assistant|><think>"#))
+        }
+    }
+
+    /// `reasoning.context: current_turn` keeps the reasoning returned on the
+    /// current turn's call and drops it once a later user turn follows,
+    /// exactly as `clear_thinking: true` does; `all_turns` keeps it.
+    @Test func currentTurnReasoningContextRendersLikeClearThinking() throws {
+        let template = try shippedTemplate()
+        let thought = Self.returnedThought
+        func rendered(_ controls: String, laterUserTurn: Bool) throws -> [String] {
+            var body = try #require(JSONSerialization.jsonObject(with: returnedReasoningConversation(
+                assistant: ["reasoning": thought], controls: controls)) as? [String: Any])
+            if laterUserTurn {
+                body["messages"] = (body["messages"] as? [Any] ?? []) + [["role": "user", "content": "Thanks"]]
+            }
+            return try remoteAndLocalInputs(JSONSerialization.data(withJSONObject: body)).map {
+                try render($0, with: template)
+            }
+        }
+        for laterUserTurn in [false, true] {
+            let current = try rendered(#"{"reasoning":{"context":"current_turn"}}"#, laterUserTurn: laterUserTurn)
+            #expect(try current == rendered(#"{"clear_thinking":true}"#, laterUserTurn: laterUserTurn))
+            #expect(current[0].contains("<think>\(thought)</think>") == !laterUserTurn)
+            let all = try rendered(#"{"reasoning":{"context":"all_turns"}}"#, laterUserTurn: laterUserTurn)
+            #expect(all[0].contains("<think>\(thought)</think>"))
         }
     }
 
@@ -804,6 +950,37 @@ struct GLM5NextPromptPolicyTests {
         let empty = try rendered("")
         #expect(try empty == rendered("{}"))
         #expect(empty[0].contains("</think><tool_call>get_current_weather</tool_call><|observation|>"))
+    }
+
+    /// A legacy `function_call` and its `role: function` result, which OpenAI
+    /// still accepts, render like the `tool_calls` spelling they decode to;
+    /// the result was refused as unmatched because it carried no call ID.
+    @Test func legacyFunctionCallHistoryRendersLikeItsToolCallSpelling() throws {
+        let template = try shippedTemplate()
+        func rendered(_ turns: String) throws -> String {
+            let body = Data(#"{"model":"m","messages":[{"role":"user","content":"weather?"},\#(turns)],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}"#.utf8)
+            return try render(try normalized(body), with: template)
+        }
+        let expected = try rendered(#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_legacy_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},{"role":"tool","tool_call_id":"call_legacy_1","content":"sunny"}"#)
+        #expect(expected.hasSuffix("<|observation|><tool_response>sunny</tool_response><|assistant|><think>"))
+        #expect(try rendered(#"{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},{"role":"function","name":"get_weather","content":"sunny"}"#) == expected)
+    }
+
+    /// A tool result pairs with its call by ID and the template never renders
+    /// its `name`, so a name that differs from the call (empty, or the
+    /// unprefixed name an MCP client reports) renders like no name.
+    @Test func toolResultNameIsNotComparedWithItsCall() throws {
+        let template = try shippedTemplate()
+        func rendered(_ name: String?) throws -> [String] {
+            let field = name.map { #","name":"\#($0)""# } ?? ""
+            let body = Data(#"{"model":"m","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"mcp__fs__read","arguments":"{\"path\":\"a\"}"}}]},{"role":"tool","tool_call_id":"c1"\#(field),"content":"R"}],"tools":[{"type":"function","function":{"name":"mcp__fs__read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}"#.utf8)
+            return try remoteAndLocalInputs(body).map { try render($0, with: template) }
+        }
+        let unnamed = try rendered(nil)
+        #expect(unnamed[0].hasSuffix("<|observation|><tool_response>R</tool_response><|assistant|><think>"))
+        for name in ["mcp__fs__read", "read", ""] {
+            #expect(try rendered(name) == unnamed, "\(name)")
+        }
     }
 
     /// GLM's API spells history clearing inside `thinking`; the top-level and
@@ -921,6 +1098,86 @@ struct GLM5NextPromptPolicyTests {
         #expect(rendered.contains("9223372036854775807"))
         let inexact = Data(#"{"model":"m","messages":[],"tools":[{"function":{"name":"f","parameters":{"type":"object","properties":{"n":{"type":"integer","enum":[18446744073709551615]}}}}}]}"#.utf8)
         #expect(throws: (any Error).self) { try normalized(inexact) }
+        let inexactControls = ProviderLoop.extractChatTemplateControls(from: inexact)
+        #expect(inexactControls.rawGLM5Controls.refusalReason == .invalidToolSchema)
+    }
+
+    /// Every request shape GLM refuses while its prompt is prepared names the
+    /// closed reason `darkbloom logs` shows for it.
+    @Test func promptRefusalsNameTheirReason() throws {
+        let user = #"{"role":"user","content":"q"}"#
+        let call = #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#
+        let result = #"{"role":"tool","tool_call_id":"c1","content":"r"}"#
+        func arguments(_ raw: String) -> String {
+            #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":\#(raw)}}]}"#
+        }
+        let declared = #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]"#
+        let cases: [(messages: [String], fields: String, reason: InferenceRefusalReason)] = [
+            ([user, call], "", .unansweredToolCall),
+            ([user, call, user], "", .unansweredToolCall),
+            ([user, call, #"{"role":"tool","tool_call_id":"c2","content":"r"}"#], "", .unmatchedToolResult),
+            ([user, call, result, result], "", .unmatchedToolResult),
+            ([user, #"{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#, result],
+             "", .invalidToolHistory),
+            ([user, arguments(#""{bad}""#), result], "", .invalidToolArguments),
+            ([user, arguments(#""{\"n\":1,\"n\":2}""#), result], "", .invalidToolArguments),
+            ([user, arguments(#""{\"a\":\"</arg_value>\"}""#), result], "", .nativeDelimiterInHistory),
+            ([user, arguments(#""{\"<a>\":1}""#), result], "", .nativeDelimiterInHistory),
+            ([#"{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}"#],
+             "", .nonTextContent),
+            ([user], #""response_format":{"type":"json_schema"}"#, .unsupportedResponseFormat),
+            ([user], #""tools":[{"type":"function","function":{"name":"a.b","parameters":{"type":"object"}}}]"#,
+             .invalidToolDeclaration),
+            ([user], #""tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"f"}}]"#,
+             .invalidToolDeclaration),
+            ([user], declared + #","tool_choice":{"type":"function","function":{"name":"g"}}"#, .invalidToolChoice),
+            ([user], #""tool_choice":"required","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"anyOf":[{"type":"string"},{"type":"null"}]}}}}}]"#,
+             .unsupportedForcedToolChoice),
+        ]
+        for (messages, fields, reason) in cases {
+            let extra = fields.isEmpty ? "" : "," + fields
+            let body = Data(#"{"model":"m","messages":[\#(messages.joined(separator: ","))]\#(extra)}"#.utf8)
+            do {
+                _ = try normalized(body)
+                Issue.record("served: \(reason)")
+            } catch {
+                #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(reason): \(error)")
+            }
+        }
+    }
+
+    /// The reason `darkbloom logs` gives each native-control refusal: tool
+    /// declarations the GLM capture refuses, and every family's controls.
+    @Test func refusedDeclarationsAndControlsNameTheirReason() throws {
+        let declarations: [(String, InferenceRefusalReason)] = [
+            (#"[{"type":"web_search"}]"#, .unsupportedToolType),
+            (#"[{"type":"custom","custom":{"name":"f"}}]"#, .unsupportedToolType),
+            (#"[{"type":"function","function":{"description":"no name"}}]"#, .invalidToolDeclaration),
+        ]
+        for (tools, reason) in declarations {
+            let controls = ProviderLoop.extractChatTemplateControls(
+                from: Data(#"{"model":"m","messages":[],"tools":\#(tools)}"#.utf8))
+            #expect(controls.rawGLM5Controls.refusalReason == reason, "\(tools)")
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.validateNativeControls(controls, modelType: "glm5_next")
+            }
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(controls, modelType: "glm5_next") == reason)
+            // Other families keep their own handling of the same declarations.
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(controls, modelType: "llama") == nil)
+        }
+        // MiMo and Flint refuse only reasoning controls.
+        let kwargs = ProviderLoop.extractChatTemplateControls(
+            from: try body(["chat_template_kwargs": ["unrecognized": true]]))
+        for modelType in ["mimo_v2", "flint", "glm5_next"] {
+            #expect(throws: (any Error).self) {
+                try ProviderPromptContractPipeline.validateNativeControls(kwargs, modelType: modelType)
+            }
+            #expect(ProviderPromptContractPipeline.nativeControlsRefusal(kwargs, modelType: modelType)
+                == .unsupportedReasoningControl, "\(modelType)")
+        }
+        #expect(ProviderPromptContractPipeline.nativeControlsRefusal(kwargs, modelType: "llama") == nil)
+        let served = ProviderLoop.extractChatTemplateControls(from: try body(["reasoning": ["exclude": true]]))
+        #expect(ProviderPromptContractPipeline.nativeControlsRefusal(served, modelType: "glm5_next") == nil)
     }
 }
 

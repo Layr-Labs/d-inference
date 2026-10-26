@@ -304,7 +304,7 @@ struct FlintResponseFormatPolicyTests {
                 _ = try ToolChoicePromptPolicy.prepare(request, modelType: "flint")
                 Issue.record("accepted \(format)")
             } catch let error as MultiModelBatchSchedulerEngineError {
-                guard case .invalidToolPayload(let message) = error else {
+                guard case .invalidToolPayload(let message, _) = error else {
                     Issue.record("unexpected \(error)"); continue
                 }
                 #expect(message.hasPrefix("Flint response_format is"))

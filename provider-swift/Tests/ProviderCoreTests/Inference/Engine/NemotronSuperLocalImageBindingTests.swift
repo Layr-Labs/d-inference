@@ -44,10 +44,13 @@ struct NemotronSuperLocalImageBindingTests {
                 try NemotronSuperLocalImageBinding.parseEncodedBody(data)
             }
         }
-        let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true])
+        let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true, "top_logprobs": 21])
         #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
             try NemotronSuperLocalImageBinding.parseEncodedBody(unsupported)
         }
+        let logprobs = try NemotronSuperLocalImageBinding.parseEncodedBody(
+            body(image: "data:image/png;base64,AQID", extras: ["logprobs": true, "top_logprobs": 3]))
+        #expect(logprobs.request.logprobs == true && logprobs.request.top_logprobs == 3)
         let parsed = try NemotronSuperLocalImageBinding.parseEncodedBody(
             body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
         #expect(parsed.images == [Data([1, 2, 3])])

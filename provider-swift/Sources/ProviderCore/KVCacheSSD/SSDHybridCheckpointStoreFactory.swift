@@ -19,21 +19,6 @@ enum SSDHybridCheckpointStoreFactory {
         subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
-    static func make(
-        modelId: String, identity: CBv2CompleteCheckpointIdentity,
-        backendLayout: String = CBv2CompleteCheckpointManifest.layout,
-        nativePrefillChunkSize: Int? = nil,
-        kvBudget: GlobalKVCacheBudget?,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil
-    ) async -> SSDHybridCheckpointStore? {
-        try? await build(
-            modelId: modelId, identity: identity, backendLayout: backendLayout,
-            nativePrefillChunkSize: nativePrefillChunkSize, kvBudget: kvBudget,
-            environment: environment, persistentTestNamespace: persistentTestNamespace
-        ).get()
-    }
-
     /// Builds the store, or returns the typed reason it was refused. Every
     /// refusal logs one public line naming the model and reason; the slot
     /// still loads and serves uncached.
@@ -68,6 +53,7 @@ enum SSDHybridCheckpointStoreFactory {
                 || backendLayout == CBv2CompleteCheckpointManifest.quantizedPagedLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                 || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
                  || backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
@@ -78,6 +64,7 @@ enum SSDHybridCheckpointStoreFactory {
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedAsymmetricMTPLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
         else { return refuse(.layoutUnavailable) }
         guard backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout

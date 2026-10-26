@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -188,8 +188,13 @@ with 429.
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
 calibrated prefill limit), at most one prompt chunk per step beside every decode
 or verify row, a step budget that holds a whole chunk plus those rows, and
-optional decode-only steps between chunks
-(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+four decode-only steps after each chunk while requests decode
+(`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`;
+`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 and is
+forwarded to the launchd provider job). On an M5 Ultra four held steps raised a
+decoder's rate during an 8K prefill from 5.8 to 16.3 tok/s and delayed the
+prefilling request's first token by 15 to 26%; eight gave 24.7 tok/s for 33 to
+52%. A step without decode rows is never held. A request's chunks are
 therefore the same whether or not it is served alone. Because one chunk runs per
 step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:
@@ -204,8 +209,10 @@ configured request (below). The builder refuses a KV grant that
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
-`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
+`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse. By
+default the managed slot keeps it as complete encrypted SSD checkpoints (see
+below); `DARKBLOOM_PREFIX_CACHE_MEMORY=1` selects the resident bank instead.
+For the pinned checkpoint
 `NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
 recurrent checkpoint bank from the KV grant and the machine:
 `serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
@@ -307,8 +314,71 @@ decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py
 71–91% of drafts were accepted; aggregate tok/s against the plain owner was
 57.0 / 32.5 at one client (depth 3), 65.0 / 50.7 at two and 78.4 / 67.2 at four
 (depth 2) and 86.9 / 82.8 at eight (depth 1), hence the managed default
-`3,2,2,2,1`. Sources:
+`3,2,2,2,1`. The M5 Ultra measured differently (384-token greedy and sampled
+requests; per-request tok/s against target-only decode): +20% to +24% alone at
+depth 3, a tie at two (depth 2: greedy +3%, sampled -4%), at four depth 1 within
+2% where depth 2 costs 7% to 9%, and at eight depth 1 costs 13% to 15% of
+aggregate. An M5 therefore defaults to `3,2,1,1,0`: five or more decoding
+requests run target-only. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
+
+### Nemotron Super logprobs
+
+Super serves OpenAI `logprobs` and `top_logprobs` on text, image and video
+requests. `NemotronSuperRequestPlan.topLogprobs` reads both from the raw body
+(`EngineV2Translation.topLogprobs`: `logprobs: true` captures at least one
+alternative) and the plan refuses `top_logprobs` outside 0 to 20. Entries leave
+on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
+(`NemotronSuperLocalImageHTTP.engine`, `NemotronSuperSlotOwner.chatEngine`);
+both bindings refuse a logprobs request without one. The coordinator relay
+passes the channel its frames loop splices. For a local `logprobs` body,
+`LocalChatUploadResponder` creates one and splices entries into reasoning and
+content frames with `ProviderLoop.injectLogprobs`. A complete response attaches
+the entries its stream would carry: the owner also passes each chunk through a
+streaming split of the request and keeps the entries gathered so far only when
+that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
+
+The contract matches vLLM and SGLang: `logprobs.content` has one entry per
+generated token, in generation order, covering reasoning, answer and tool-call
+tokens. Joined, the entry tokens spell the reasoning text and then the answer
+text, not the answer alone; they also include the `</think>` marker that ends
+the reasoning, which neither `reasoning_content` nor `content` shows. A
+stream's reasoning chunks carry their tokens' entries and its content chunks
+theirs. An entry rides the chunk that carries its token or a neighbouring one:
+a token that renders nothing, such as the marker or a tool call's tokens, rides
+the next chunk that shows text, and the frames loop drains whatever the bridge
+has appended. Order and exactly-once are exact, so clients accumulate entries
+across chunks. A complete response carries the same entries as one list. A
+response that ends while reasoning (its `max_tokens` spent) carries an entry
+for every token. Tokens that no shown text follows carry none, such as the stop
+token that ends a `stop` finish. Super's tool-call tokens therefore lack
+entries only in the rare case that nothing follows the call: its own call turns
+end with a newline after `</tool_call>`, whose chunk carries the call's
+entries. A held JSON answer, which shows only at the end, carries every entry
+before it, the stop token's included. On the coordinator relay
+`ProviderLoop.logprobsCoverReasoning` selects this contract for the Super owner
+and GLM5-Next; other models attach entries to content chunks only.
+
+A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
+target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`
+removes it from the draft cohort as it removes an image request, so the other
+rows keep speculating while it decodes one ordinary target token per step; the
+row-exact decode keeps every output exact. Synthetic fixtures check its tokens
+and logprobs against the plain owner's and that a text row beside it still
+speculates (`NemotronSuperMTPMediaFallbackTests`). On Super's row-exact
+recurrent target every other row the engine cannot draft for (a `stop` string,
+a repetition, frequency or presence penalty, `logit_bias`) leaves the draft
+cohort the same way, so one such request no longer turns speculation off for
+the whole step (`NemotronSuperMTPRequestControlsTests`). Sampled Super rows
+speculate: the assistant's greedy proposals are accepted only where they equal
+the token pre-sampled with the request's own sampler and seed (exact
+target-prefix acceptance), so sampled output equals target-only sampling.
+`NemotronSuperLocalMTPTests` checks both through the provider's local binding
+and bridge against the plain owner's tokens.
+Sources:
+`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Managed Nemotron Super slot
 
@@ -453,13 +523,14 @@ survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
-requests (`off` or `DARKBLOOM_CBV2_MTP=0`
+requests, `3,2,1,1,0` on an M5 (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above
-keep an operator's value. The plain owner turns exact text prefix reuse on when
-the grant holds every request's fixed bytes beside the bank, unless the
-operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
+keep an operator's value. Either owner's exact text prefix reuse is complete SSD
+checkpoints, which take no grant; the resident bank is reserved only when the
+operator sets `DARKBLOOM_PREFIX_CACHE_MEMORY=1`, and a cache kill switch turns
+both off.
 
 On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 experts
 on dedicated NAX kernels behind one fused expert route
@@ -530,9 +601,32 @@ channel, tool and structured-output validation, cancellation and usage are the
 hook's. A JSON response format may come with tools: a turn that calls tools
 returns its calls, and only an answer without calls is validated as JSON.
 Coordinator text prefix reuse is partitioned by the authenticated cache
-scope and off without one; the slot emits no cache receipts, cached-token usage
-or prefix-cache capability. A cancelled stream bills delivered output and the
-reference prompt length. Inline JPEG and PNG images (`data:` URIs, within the
+scope and off without one. The managed load binds the owner's checkpoints to
+the aggregate it published for the checkpoint and the checkpoint's
+`PromptContractIdentity` (`NemotronSuperLocalPrefixCache.RoutingIdentity`).
+Without a bank (the default) the builder keeps them in an
+`SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
+the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
+the assistant's prompt history encrypted under the provider's cache root, at
+the slot's effective checkpoint precision (`engine_v2_kv_checkpoint_quantization`,
+`balanced` by default): older attention rows are coded, while the conv/SSM
+state and the assistant's history stay exact
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
+slot then advertises a durable capability (`prefix_cache_v2_models`), its
+checkpoints survive restarts within the store's TTL, and the coordinator's
+repeat hint gates their writes as for every other model. A durable checkpoint
+outlives the process, so its identity rests on this load: every shard was
+staged against its pinned SHA-256, and the prompt contract hashes the prompt
+files the load read. A load whose post-load artifact hash differs from the
+published one is refused. With the bank the slot advertises a resident
+capability (`prefix_cache_memory_models`), and such a load advertises nothing.
+Either way the coordinator can send the slot a cache scope, and a request
+reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
+and its cache usage through the request's own usage signal, as on the generic
+engine. Image checkpoints have no durable layout, so only the bank reuses
+image turns. A cancelled stream bills delivered output and the reference
+prompt length, and reports cache usage only when the native terminal already
+recorded it. Inline JPEG and PNG images (`data:` URIs, within the
 [image format reference](../reference/nemotron-super-image-formats.md) limits)
 run on the owner's image binding. On the default speculating owner every image
 request is target-only for its whole lifetime: the engine prefills and decodes
@@ -606,7 +700,7 @@ activate a catalog entry.
 Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
 `prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
 a four-row recurrence kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`, `GatedDeltaPrefill`).
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`, `GatedDeltaPrefill`).
 In each process, the first such window of each kernel instantiation (input
 dtype and head geometry) tries the `packed` and then the `rows` kernel on a
 fixed probe window and keeps the first that reproduces `gated_delta_step` bit
@@ -632,7 +726,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (resident tiers only for engines that host them, so GLM keeps its SSD store under the memory opt-in; a refused SSD store's typed reason rides on the heartbeat status as `detail`); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -670,6 +764,14 @@ full-artifact qualification. Source lives under
 `libs/mlx-swift-lm/Libraries/MLXVLM/Models/`. See the
 [in-progress integration contract](../design/glm53-flash-native.md) for the
 required paged, complete-prefix and trained-MTP gates.
+
+The target also declares the activation dtype that the latent keys, the
+`[index keys, pool gates, validity]` values row and the KDA convolution history
+only widen to FP32 (`GLM5NextTextModel.glm5NextPagedPayloadStorage`, derived
+from the loaded weights' dtypes with the forward's own promotion). The paged
+binding passes it to the complete-checkpoint codec, which stores those roles at
+that dtype and widens them back exactly on import
+([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 
 An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
 can admit the exact pinned local artifact into standalone discovery without
@@ -721,14 +823,40 @@ engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
 with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
-across 11 DSA layers). A longer row whose selection rows would read at least
+across 11 DSA layers). Each paged read launch binds up to 17 of the 64 MiB
+segments that hold the row's pages (`PagedSegmentDispatchPlan.maximumBindings`):
+index metadata and latent-history reads cover only those segments' pages, one
+threadgroup per page, with no zero fill, and a selection read copies each row
+with one SIMD-group (`GLM5NextPagedTransfers`). Plain decode steps (every row
+one token) and MTP rounds whose rows are all decode or verification rows (at
+most 8 tokens) commit a Metal command buffer every 100 operations with no
+input-size bound, as Nemotron Super and Flint do for plain decode
+(`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer
+row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
 the page table and runs the contiguous arithmetic over it
 (`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),
 so its retained reads are bounded by the history, not the chunk. The GLM
 scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
 and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
-`glm5NextServingScheduler`). The price splits into setup bytes for the step
+`glm5NextServingScheduler`). Decode rows share that step budget and push every
+prefill range off the 256-token checkpoint grid, so with the GLM complete store
+the scheduler also ends a cacheable request's range on its checkpoint
+boundaries (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`; see
+[streamed complete checkpoints](prefix-cache.md#streamed-complete-checkpoints)).
+While other requests decode, each prompt chunk is
+followed by eight decode-only steps
+(`EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks`,
+`CBv2SchedulerConfig.decodeStepsBetweenPrefillChunks`;
+`DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64, and any other value
+refuses the load). A chunk step takes about a second on an M5 Ultra, so without
+them a decoding request got about one token per chunk while another request
+prefilled: 2.8 tok/s beside an 8K prefill and 1.2 to 1.5 with two decoders.
+Eight steps measured 19.5 and 7.1 to 7.2 tok/s, and the prefilling request's
+first token 6 to 20% later (5.3 to 5.6 s at 8K beside one decoder, 18.6 to
+21.2 s at 32K beside two). A step without decode rows is never held, so a
+request served alone prefills as before, and the
+[deadline projection](#deadlines) charges every held step. The price splits into setup bytes for the step
 geometry and a rate per context token of each request, which covers the
 request's index metadata reads, pooled index planes, latent reads and page
 tables in both its step and the chained decode successor
@@ -805,7 +933,13 @@ repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
 acceptance. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
-batch is 1, and the profile composes with the complete-prefix store
+batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
+two requests decode, every decoding row drafts and one captured forward verifies
+all windows; with three or more decoding rows the step decodes target-only. On
+an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
+target-only, while speculating three or four rows cost about 5% of aggregate
+throughput. The paged backend's gathered-attention batch holds at least the
+speculative batch. The profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
@@ -888,15 +1022,18 @@ The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-na
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
 (`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
-(`GLM5NextPromptPolicy.RawControls.returnedReasoning`), and serves `strict`
-tools by validating each `auto` call against its schema before exposure
-(`ToolConstraintValidation.validate`), not by constraining decoding.
+(`GLM5NextPromptPolicy.RawControls.returnedReasoning`); OpenRouter's
+`reasoning.context` chooses which of it renders, `current_turn` meaning the
+template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
+`strict` tools by validating each `auto` call against its schema before
+exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
 GLM's native engine refuses sampler token constraints, so a JSON
 `response_format` is likewise prompt-steered and validated, not constrained:
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
-generation ends, then decoded and checked (`json_schema` against the shared
-fail-closed subset) before it is exposed; invalid output is a 422 with no
+generation ends, then decoded and checked (`json_schema` against the caller's
+schema, through the shared compiled subset when the schema fits it) before it
+is exposed; invalid output is a 422 with no
 content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
 `tool_choice` (required or a named function) is structured post-validation, as
 on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
@@ -906,6 +1043,13 @@ The provider advertises it for the managed GLM identities. Neither mode
 installs a token constraint or requests logprobs, so these rows stay
 MTP-eligible and pass the native engine's output-control refusal
 (`EngineV2Bridge.nativeOutputControlRefusal`).
+OpenRouter's hidden reasoning (`reasoning.exclude`, `include_reasoning` false,
+or Anthropic's `thinking.display` `omitted`) leaves the prompt unchanged: on
+text and media, GLM's reasoning then also takes the native typed channel, where
+`NativeToolStreamRouter` withholds it as it does for Flint. It still counts as
+reasoning tokens, and `WithheldReasoningLogprobsFilter` starts inside the
+prompt's open `<think>` (`GLM5NextPromptPolicy.withholdsReasoning`,
+`thinkingEnabled`).
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
@@ -1321,7 +1465,15 @@ exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
-prefill estimate is available. The ordinary admission path uses valid measured
+prefill estimate is available. The engine's projection replays decode-only
+steps between prompt chunks (`decodeStepsBetweenPrefillChunks`, GLM's
+default) from the scheduler's live owed count and charges each held step as a
+decode step of the rows decoding then
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`SchedulerV2.firstTokenWorkProjection`). A prompt-row ceiling
+(`maxPrefillRowsPerStep`) is not projected (`unsupported_scheduler`); the
+Nemotron Super owner, which sets it, submits without a first-content deadline
+(`NemotronSuperLocalBinding`). The ordinary admission path uses valid measured
 isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
@@ -1760,7 +1912,12 @@ logprob row on any CBv2 engine: it never drafts or verifies
 native work. GLM has no request-scoped target-only fallback, so while such a
 row decodes beside other rows the whole step decodes target-only, as it does
 beside a GLM media row; output stays exact and the other rows speculate again
-once it finishes.
+once it finishes. Its entries follow
+[Super's contract](#nemotron-super-logprobs) on the relay
+(`ProviderLoop.logprobsCoverReasoning`): one per generated token in generation
+order, reasoning tokens included, so a response that ends while reasoning still
+carries them. GLM returns logprobs only through the relay; the standalone
+`--local` server emits none.
 
 ### Collected and streaming reasoning state
 
@@ -2184,6 +2341,17 @@ checked, including shadowed aliases. `MiMoV26TemplateFix` and the coordinator's
 reasoning history remains intact; this alias adds no granular effort or
 reasoning-budget support.
 
+MiMo tool results pair with their calls by `tool_call_id` only. The pinned
+template renders a result's content but never its `name` or ID, so
+`MiMoV26TemplateFix.normalizeHistory` keeps a result's `name` unchanged and does
+not compare it with the call's function. It reorders a complete parallel result
+batch into call order. A result without a pending call, a repeated result, and a
+call left unanswered before the next non-tool message or the end of history are
+refused with 400 `invalid_request`. The coordinator's
+[`mimo_v26::normalize_history`](https://github.com/Layr-Labs/darkbloom-platform/blob/4b048a0edb1596df055aa27db494fc4df0474a1e/coordinator/promptsidecar/src/mimo_v26.rs)
+still compares the name. For such a request it returns no exact prompt plan,
+and the coordinator dispatches the request without one.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
@@ -2352,6 +2520,20 @@ or change consumer/OpenRouter routing.
    `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
    `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
    `prefillGeometry`).
+10. A coordinator request refused as a client error, before its inference task
+   or while its prompt is prepared, writes exactly one fixed public log line
+   naming a closed `InferenceRefusalReason` and a private line pairing it with
+   the request ID, never request text; the refusal's `inference_error` frame is
+   unchanged. Prompt-time reasons ride on the typed error
+   (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
+   error case), never on its message —
+   `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+   (`handleInferenceRequest`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`
+   (`InferenceFailureLogger`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`
+   (`init(promptRefusal:)`). The lines are listed in the
+   [CLI reference](../provider/cli-reference.md#refusal-lines).
 
 ## Failure modes
 
@@ -2367,8 +2549,9 @@ or change consumer/OpenRouter routing.
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
+| `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
-| Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift` |
+| Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 
 ## Code map
@@ -2467,9 +2650,10 @@ still count in `completion_tokens` and `completion_tokens_details.reasoning_toke
 the response hash covers only emitted output, and withheld reasoning counts as
 first output for the first-content deadline. Relay logprobs cover every sampled
 token and attach to the next content frame; for withheld reasoning,
-`FlintReasoningLogprobsFilter` drops the entries of the initial
+`WithheldReasoningLogprobsFilter` drops the entries of the initial
 `<think>…</think>` span, matched on bytes like the native boundary, so hidden
-reasoning never returns as entry tokens. Output limits remain ordinary
+reasoning never returns as entry tokens. GLM-5.3-Flash withholds hidden
+reasoning through the same router and filter. Output limits remain ordinary
 completion-token limits.
 
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
@@ -2600,7 +2784,7 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Streaming/FlintReasoningLogprobsFilter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,

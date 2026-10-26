@@ -1,6 +1,6 @@
 import Foundation
 @testable import MLXLLM
-import MLXLMCommon
+@testable import MLXLMCommon
 @testable import ProviderAppAttest
 import Testing
 

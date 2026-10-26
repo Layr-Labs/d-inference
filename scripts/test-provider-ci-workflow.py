@@ -20,7 +20,7 @@ ACTION = ROOT / ".github/actions/provider-ci-build/action.yml"
 BUILD_ACTION = "./.github/actions/provider-ci-build"
 PROVIDER_TEST_COMMAND = ('python3 ../scripts/run-provider-test-watchdog.py \\\n'
                          '  --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \\\n'
-                         '  --diagnostic-after-seconds 480 --timeout-seconds 900 \\\n'
+                         '  --diagnostic-after-seconds 900 --timeout-seconds 1800 \\\n'
                          '  -- ../scripts/run-provider-tests.sh')
 READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}"
 MIMO_READY = "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}"
@@ -282,7 +282,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(runs, list(expected))
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
-        self.assertEqual(field(test_step, "timeout-minutes"), "20")
+        self.assertEqual(field(test_step, "timeout-minutes"), "35")
 
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)

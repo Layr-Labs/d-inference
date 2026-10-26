@@ -20,7 +20,7 @@ struct WorkerQwenMediaAdmissionTests {
                              route: ClusterWorkerRoute? = nil) -> ClusterWorkerReservation {
         .init(profileID: profile, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 1,
               chunkSize: 3, deadlineUptimeNanoseconds: 100, capacityLimitBytes: 4096,
-              sampling: nil, route: route, qwenMedia: media)
+              sampling: nil, prefixCache: nil, route: route, qwenMedia: media)
     }
     private func ready(rank: Int = 0, contract: String? = ClusterQwenMedia.contract,
                        protection: String = ClusterWorkerDataPlane.encrypted,

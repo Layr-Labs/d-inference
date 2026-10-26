@@ -33,11 +33,12 @@ private enum PhaseSplitFixture {
 
     static func request(promptCount: Int = 24, chunkSize: Int = 16, outputCount: Int = 8,
                         stopTokenIDs: Set<Int> = [], id: UUID = UUID(),
-                        model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationRequest {
+                        model: QwenRegisteredDenseModel = .qwen35NineB,
+                        prefixCache: ClusterWorkerPrefixCache? = nil) throws -> QwenLayerStageGenerationRequest {
         try QwenLayerStageGenerationRequest(
             profile: try QwenResidentAdapterDefinition.profile(specification: try specification(model)), requestID: id,
             promptTokenIDs: (0..<promptCount).map { 1000 + $0 }, chunkSize: chunkSize, outputCount: outputCount,
-            stopTokenIDs: stopTokenIDs)
+            stopTokenIDs: stopTokenIDs, prefixCache: prefixCache)
     }
 
     static let numericalPolicySHA256 = String(repeating: "3", count: 64)
@@ -218,6 +219,23 @@ struct PhaseSplitContractTests {
         let other = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 8)
         #expect(qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
             numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: other) != reserved)
+        // A request's partition, the same before and after the agreement and
+        // its plan: a tenant's own scope, none when its cache is off.
+        let digests = ["tenant-a", "tenant-b"].map(ClusterWorkerPrefixCache.tenantDigest(salt:))
+        var scopes: [String?] = []
+        for partition in [ClusterWorkerPrefixCache.disabled, .tenant(digests[0]), .tenant(digests[1])] {
+            let partitioned = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 16, prefixCache: partition)
+            let partitionedAgreement = try PhaseSplitFixture.agreement(partitioned, speculativeHead: .standard)
+            let atReservation = qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+                numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: partitioned)
+            #expect(atReservation == qwenStagePrefixScope(partitionedAgreement))
+            #expect(atReservation == ClusterWorkerPrefixCache.scope(try #require(reserved), partition))
+            #expect(qwenStagePrefixScope(try partitionedAgreement.planned(
+                try partitioned.planned(reusedPrefix: 512, splitFinalToken: true))) == atReservation)
+            #expect(partitionedAgreement.fingerprint != agreement.fingerprint)
+            scopes.append(atReservation)
+        }
+        #expect(scopes[0] == nil && scopes[1] != scopes[2] && Set(scopes.compactMap { $0 }).count == 2)
     }
 
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {

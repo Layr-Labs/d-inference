@@ -381,10 +381,12 @@ public final class GLM5NextResidentRuntime {
             requestActiveBaseline = nil
             var reserved = Reservation(request: request, deadline: value.deadlineUptimeNanoseconds)
             // Only what this request's capture adds after the prefix this rank
-            // holds for it, under the scope its agreement will key the cache by.
-            if request.stillImages == nil, prefixCache.enabled, let contract = bound?.value.binding.contract {
-                reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: qwenStagePrefixScope(source: contract.source,
-                    numericalPolicySHA256: contract.numericalPolicySHA256, request: request),
+            // holds for it, under the scope its agreement will key the cache by;
+            // none when its cache is off.
+            if request.stillImages == nil, prefixCache.enabled, let contract = bound?.value.binding.contract,
+               let scope = qwenStagePrefixScope(source: contract.source,
+                   numericalPolicySHA256: contract.numericalPolicySHA256, request: request) {
+                reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: scope,
                     tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
             }
             // Kept prefixes give way before a reservation is refused for memory,

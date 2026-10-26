@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 
@@ -154,21 +155,24 @@ func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], scope:
     }
 }
 
-/// The scope both ranks key their entries by for one request. Every field is
-/// part of the generation agreement both ranks already proved equal.
-func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> String {
+/// The scope both ranks key their entries by for one request, resident and on
+/// the SSD tier, with its tenant (`ClusterWorkerPrefixCache.scope`); nil when
+/// the request's cache is off. Every field is part of the generation agreement
+/// both ranks already proved equal.
+func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> String? {
     let d = agreement.descriptor
-    return [d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256, d.sourceConfigurationSHA256,
-            d.numericalPolicySHA256, d.profileFingerprint, "chunk=\(agreement.request.chunkSize)"].joined(separator: "|")
-        + (agreement.request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
+    return ClusterWorkerPrefixCache.scope([d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256,
+            d.sourceConfigurationSHA256, d.numericalPolicySHA256, d.profileFingerprint,
+            "chunk=\(agreement.request.chunkSize)"].joined(separator: "|")
+        + (agreement.request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? ""), agreement.request.prefixCache)
 }
 
 /// The same scope before the agreement exists (at reservation), from the
 /// fields the agreement takes it from.
 func qwenStagePrefixScope(source: QwenLayerStageWireSourceIdentity, numericalPolicySHA256: String,
-                          request: QwenLayerStageGenerationRequest) -> String {
-    [source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
-     source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint,
-     "chunk=\(request.chunkSize)"].joined(separator: "|")
-        + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
+                          request: QwenLayerStageGenerationRequest) -> String? {
+    ClusterWorkerPrefixCache.scope([source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
+        source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint,
+        "chunk=\(request.chunkSize)"].joined(separator: "|")
+        + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? ""), request.prefixCache)
 }

@@ -38,7 +38,7 @@ final class ClusterLinkWorkerCommandRefusalTests: XCTestCase {
 
     func testOnlyAReservationTheFollowersOwnerCouldNotTakeIsThatRequestsRefusal() {
         let reserve = ClusterWorkerCommand.reserve(.init(profileID: "invented", promptTokenIDs: [1], stopTokenIDs: [],
-            outputCount: 1, chunkSize: 1, deadlineUptimeNanoseconds: 1, capacityLimitBytes: 1, sampling: nil))
+            outputCount: 1, chunkSize: 1, deadlineUptimeNanoseconds: 1, capacityLimitBytes: 1, sampling: nil, prefixCache: nil))
         XCTAssertEqual(ClusterLinkWorkerWire.requestRefusal(relaying: reserve, failure: ClusterWorkerOwnerError.refused(.busy)), .busy)
         XCTAssertEqual(ClusterLinkWorkerWire.requestRefusal(relaying: reserve,
             failure: ClusterWorkerProtocolError.invalid("too large")), .profile)
@@ -115,7 +115,7 @@ final class ClusterLinkWorkerCommandRefusalTests: XCTestCase {
         endpoint.accept(ClusterLinkWorkerWire(kind: .accepted, epoch: epoch, session: endpoint.session, sequence: 0))
         let now = DispatchTime.now().uptimeNanoseconds
         let reservation = ClusterWorkerReservation(profileID: "invented", promptTokenIDs: Array(1 ... 8), stopTokenIDs: [],
-            outputCount: 2, chunkSize: 4, deadlineUptimeNanoseconds: now + 10_000_000_000, capacityLimitBytes: 64, sampling: nil)
+            outputCount: 2, chunkSize: 4, deadlineUptimeNanoseconds: now + 10_000_000_000, capacityLimitBytes: 64, sampling: nil, prefixCache: nil)
         let requests = [UUID(), UUID()]
         for request in requests {
             try endpoint.sendWorkerCommand(.reserve(reservation), requestID: request, deadline: now + 5_000_000_000)

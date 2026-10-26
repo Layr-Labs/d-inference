@@ -66,7 +66,7 @@ private final class HeldProofEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
               outputCount: 2, chunkSize: 2,
               deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000,
-              capacityLimitBytes: 1800, sampling: nil)
+              capacityLimitBytes: 1800, sampling: nil, prefixCache: nil)
     }
 
     static func awaitFact(_ message: String, _ fact: () -> Bool) async throws {

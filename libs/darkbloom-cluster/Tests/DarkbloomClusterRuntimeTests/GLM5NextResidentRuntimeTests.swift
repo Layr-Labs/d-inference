@@ -82,7 +82,7 @@ struct GLM5NextResidentRuntimeTests {
                 stopTokenIDs: [], outputCount: 2, chunkSize: 2,
                 deadlineUptimeNanoseconds: deadline ?? DispatchTime.now().uptimeNanoseconds + 30_000_000_000,
                 capacityLimitBytes: capacity ?? resources.requestCapacityBytes,
-                sampling: nil)
+                sampling: nil, prefixCache: nil)
         }
     }
 

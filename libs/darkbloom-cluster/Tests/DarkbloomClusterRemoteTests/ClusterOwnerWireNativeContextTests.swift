@@ -20,7 +20,7 @@ final class ClusterOwnerWireNativeContextTests: XCTestCase {
         let reservation = ClusterWorkerReservation(profileID: "native-context", promptTokenIDs: prompt,
             stopTokenIDs: Array(ClusterWorkerLimits.vocabularySize - 256 ..< ClusterWorkerLimits.vocabularySize),
             outputCount: 1, chunkSize: 2048, deadlineUptimeNanoseconds: now + 600_000_000_000,
-            capacityLimitBytes: 1 << 40, sampling: nil)
+            capacityLimitBytes: 1 << 40, sampling: nil, prefixCache: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: Self.epoch, sequence: UInt64(Int64.max) - 1,
             requestID: Self.request, command: .reserve(reservation))
         let command = try ClusterWorkerCodec.encode(frame)

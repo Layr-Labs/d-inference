@@ -177,12 +177,12 @@ struct ResidentAdmission27BTests {
         // A request within the profile is admitted under the 27B's profile ID only.
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: Self.now).maximumTokens == 8320)
         #expect(throws: (any Error).self, "the 9B's profile ID on a 27B admission") {
             _ = try leader.request(.init(profileID: QwenResidentAdapterDefinition.profileID,
                 promptTokenIDs: [1000], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: Self.now)
+                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: Self.now)
         }
     }
 

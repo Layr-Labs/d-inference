@@ -80,7 +80,7 @@ struct ResidentAdmissionTests {
         let admission = try Self.admit(leased(ClusterWorkerLease.ttlNanoseconds))
         let longRequest = try ClusterWorkerReservation(profileID: QwenResidentAdapterDefinition.profileID,
             promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 4, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 600_000_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 600_000_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         _ = try admission.request(longRequest, id: UUID(), now: Self.now)
     }
 

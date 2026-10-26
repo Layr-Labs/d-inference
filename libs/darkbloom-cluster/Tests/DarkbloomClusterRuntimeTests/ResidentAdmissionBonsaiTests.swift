@@ -123,12 +123,12 @@ struct ResidentAdmissionBonsaiTests {
         #expect(!plans.contains(dense.fingerprint))
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: F.now).maximumTokens == 8320)
         #expect(throws: (any Error).self, "the 27B's profile ID on a Bonsai admission") {
             _ = try leader.request(.init(profileID: "registered_qwen38_27b_greedy_generation_v1",
                 promptTokenIDs: [1000], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-                deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: F.now)
+                deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: F.now)
         }
     }
 

@@ -140,12 +140,12 @@ struct ResidentAdmissionNemotronTests {
         #expect(plans.count == NemotronRegisteredLightning.supportedCuts.count)
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: Self.now).maximumTokens == 8320)
         // A token ID that only a larger vocabulary has is outside this profile.
         let outside = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: [131_072], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(throws: (any Error).self) { _ = try leader.request(outside, id: UUID(), now: Self.now) }
     }
 

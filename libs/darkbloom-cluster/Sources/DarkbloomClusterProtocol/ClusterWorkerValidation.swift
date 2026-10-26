@@ -82,6 +82,7 @@ enum ClusterWorkerValidation {
                 "Qwen media reservation prompt differs")
         }
         if let sampling = value.sampling { try ClusterWorkerSamplingCodec.validate(sampling) }
+        try value.prefixCache?.validate()
     }
     static func command(_ frame: ClusterWorkerCommandFrame) throws {
         try workerRequire(frame.sequence < UInt64(Int64.max), "Invalid command sequence")

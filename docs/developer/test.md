@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1660,6 +1660,28 @@ profiles, including final-layer tail thresholds and chunk boundaries through
 off-grid refusal, the changed Gemma receipt and unchanged Qwen/Bonsai/GLM
 framing. CPU checks do not establish model-level agreement: rerun prefix-on
 full-artifact qualification and keep the separate cross-chip negative evidence.
+
+## Cluster prefix tenant partition checks
+
+The request's prompt-prefix partition (`ClusterWorkerPrefixCache`) is covered
+at every layer it crosses:
+
+| Layer | Check |
+|---|---|
+| Codec, bounds, default absent | `bash libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh` (`prefixCache` group) |
+| Owner and peer-link hops | `ClusterPrefixCacheForwardingTests` through `bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh` |
+| Fingerprint, scope helper, resident keys | `PrefixTenantScopeTests` (CPU) |
+| Stage SSD records | `PrefixDiskTierTests.aTenantsRecordsAreFoundOnlyUnderThatTenant` |
+| Qwen TP batch owner, both tiers | `QwenTensorParallelBatchSessionTests.partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing` (CPU; with `QWEN_TP_BATCH_GPU=1` on Metal) |
+| GLM pipeline and GLM TP caches | `GLM5NextPipelineGenerationTests.promptPrefixesArePartitionedByTenantAndKeptNoneWhenOff`, `GLM5NextTensorParallelPrefixCacheTests.entriesAreHeldOnlyForTheirTenant` (synthetic artifact, Metal) |
+| Qualification request files | `QualificationRequestPrefixCacheTests` in the worker package |
+| Provider owner and bridge | `DistributedPrefixPartitionTests`, `GLMPairForcedOutputTests.thePrefixCacheFieldsReachThePairReservation`, `DistributedHTTPCompletionTests.localRequestsReachThePairWithTheCacheOnAndNoSalt` |
+
+On the pair, `darkbloom-cluster-pair-check request --request-prefix-cache
+off|tenant:SALT` writes a request with that partition (the file holds only the
+salt's digest); a repeat under another tenant must report no reused tokens.
+These are synthetic checks: tenant isolation on a real model and pair, and GLM
+bit-identity with no partition, are hardware gates.
 
 ## MiMo paged speculative and phase checks
 

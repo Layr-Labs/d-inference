@@ -48,7 +48,7 @@ private func refuses(_ body: () throws -> Void) throws {
             requestID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
             command: .reserve(.init(profileID: "registered_qwen38_27b_greedy_generation_v1", promptTokenIDs: prompt,
                 stopTokenIDs: [], outputCount: 8, chunkSize: 4, deadlineUptimeNanoseconds: 1,
-                capacityLimitBytes: 1 << 30, sampling: nil, qwenMedia: media)))
+                capacityLimitBytes: 1 << 30, sampling: nil, prefixCache: nil, qwenMedia: media)))
     }
 
     static func main() throws {

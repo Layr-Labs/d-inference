@@ -65,8 +65,10 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 stopTokenIDs: baseReservation.stopTokenIDs, outputCount: baseReservation.outputCount, chunkSize: baseReservation.chunkSize,
                 deadlineUptimeNanoseconds: baseReservation.deadlineUptimeNanoseconds,
                 capacityLimitBytes: min(capacity, baseReservation.capacityLimitBytes - bytes),
-                // Both ranks get the request's sampling (the selecting rank draws with it) and its route.
-                sampling: baseReservation.sampling, route: baseReservation.route, mimoImages: baseReservation.mimoImages, stillImages: baseReservation.stillImages,
+                // Both ranks get the request's sampling (the selecting rank draws with it), its prefix
+                // partition (both key and gate their caches by it) and its route.
+                sampling: baseReservation.sampling, prefixCache: baseReservation.prefixCache,
+                route: baseReservation.route, mimoImages: baseReservation.mimoImages, stillImages: baseReservation.stillImages,
                 // GLM media bytes go to rank 0 alone, which runs the vision tower; rank 1 gets their digests.
                 glmMedia: index == 0 ? baseReservation.glmMedia : baseReservation.glmMedia?.withoutEncodedBytes,
                 qwenMedia: index == 0 ? qwenMedia : qwenMedia?.withoutEncodedBytes)
@@ -275,8 +277,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         .init(profileID: value.profileID, promptTokenIDs: value.promptTokenIDs,
             stopTokenIDs: value.stopTokenIDs, outputCount: value.outputCount, chunkSize: value.chunkSize,
             deadlineUptimeNanoseconds: value.deadlineUptimeNanoseconds,
-            capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route,
-            mimoImages: value.mimoImages, stillImages: value.stillImages, glmMedia: value.glmMedia,
+            capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, prefixCache: value.prefixCache,
+            route: value.route, mimoImages: value.mimoImages, stillImages: value.stillImages, glmMedia: value.glmMedia,
             qwenMedia: media)
     }
 

@@ -96,6 +96,11 @@ struct QwenLayerStageGenerationRequest: Equatable {
     /// The decoding rank serves this request alone (`ClusterWorkerRoute`):
     /// bound into the fingerprint, so both ranks agree before the first forward.
     let decodingRankAlone: Bool
+    /// How both ranks' prefix caches treat this request (its reservation's
+    /// `ClusterWorkerPrefixCache`): bound into the fingerprint, so ranks told
+    /// different partitions fail before any prefix exchange. Nil keeps the
+    /// fingerprint exactly a request's without it.
+    let prefixCache: ClusterWorkerPrefixCache?
     /// End offsets of the prefill frames, in order. Nil keeps the original
     /// fixed-chunk plan from offset zero.
     private var prefillFrameEnds: [Int]?
@@ -119,7 +124,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
          chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
          sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
-         qwenMedia: ClusterQwenMedia? = nil) throws {
+         qwenMedia: ClusterQwenMedia? = nil, prefixCache: ClusterWorkerPrefixCache? = nil) throws {
         try mimoImages?.validate(prompt:promptTokenIDs)
         try stillImages?.validateStructure(promptCount: promptTokenIDs.count)
         guard stillImages == nil || (mimoImages == nil && route == nil
@@ -171,6 +176,9 @@ struct QwenLayerStageGenerationRequest: Equatable {
         if let mimoImages { fields.append("mimo-images=" + mimoImages.fingerprint) }
         if let stillImages { fields.append("still-images=" + stillImages.fingerprint) }
         if let qwenMedia { fields.append("qwen-media=" + qwenMedia.fingerprint) }
+        // A request with its prefix cache on and no tenant keeps its fingerprint.
+        self.prefixCache = prefixCache
+        if let prefixCache { fields.append(prefixCache.fingerprintField) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 

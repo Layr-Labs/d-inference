@@ -121,7 +121,7 @@ func localEndpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String,
 func runRequest(_ pair: ClusterWorkerPair) throws {
     let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
         promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-        deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+        deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
     try request.start { _ in true }
     try require(wait(seconds: 6) { request.isRetired }, "Paired request over the link did not retire")
     request.releaseResources()
@@ -270,7 +270,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
     static func codec() throws {
         let epoch = fixtureIdentity.membershipEpoch, session = UUID(), request = UUID()
         let reserve = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
-            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil))
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil, prefixCache: nil))
         let wire = try ClusterLinkWorkerWire.command(reserve, requestID: request, epoch: epoch, session: session, sequence: 3,
             now: 8_000, deliveryDeadline: 8_200)
         let bytes = try wire.encoded()
@@ -291,7 +291,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: 7, stream: 11,
             logitBias: [.init(tokenID: 3, bias: -1)])
         let sampled = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
-            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: sampling))
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: sampling, prefixCache: nil))
         let sampledLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(sampled, requestID: request, epoch: epoch,
             session: session, sequence: 4, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
         guard case .reserve(let s) = sampledLocal.command else { throw ClusterOwnerStateError.invalid("Sampled reserve lost") }
@@ -302,7 +302,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         // ranks bind it into the request (dropped, the decoding rank would wait
         // for a hand-off rank 0 never sends).
         let routed = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
-            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil, route: .decodingRankAlone))
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil, prefixCache: nil, route: .decodingRankAlone))
         let routedLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(routed, requestID: request, epoch: epoch,
             session: session, sequence: 5, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
         guard case .reserve(let t) = routedLocal.command else { throw ClusterOwnerStateError.invalid("Routed reserve lost") }
@@ -419,7 +419,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         var failed = false
         do { try request.start { _ in true } } catch { failed = true }
         _ = wait(seconds: 8) { request.isRetired || pair.readiness == nil }
@@ -449,7 +449,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: now() + 50_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: now() + 50_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         try request.start { _ in true }
         Thread.sleep(forTimeInterval: 0.5)
         try require(!request.isRetired && pair.readiness != nil, "The stalled request should still be in flight")

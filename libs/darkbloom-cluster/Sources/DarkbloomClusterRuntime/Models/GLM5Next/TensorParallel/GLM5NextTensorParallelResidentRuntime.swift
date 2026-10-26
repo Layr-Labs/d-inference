@@ -754,7 +754,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         let request = try QwenLayerStageGenerationRequest(profile: descriptor.profile, requestID: requestID,
             promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
-            stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
+            stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil, prefixCache: value.prefixCache)
         let media = try reservedMedia(value)
         // Charged at its own context (and its media): the live gate alone decides whether it fits.
         // A paged request's pages start at its prompt and a granule and grow on demand (`growPages`).
@@ -964,6 +964,19 @@ public final class GLM5NextTensorParallelResidentRuntime {
         /// A rank stopped (cancel or deadline) before the features were made:
         /// both ranks know, and the request ends without a prefill frame.
         let stopped: Bool
+        /// The scope its prompt prefix is kept under, the one its vote used
+        /// (`ClusterWorkerPrefixCache.scope`); nil when it keeps none: its
+        /// cache is off, or it carries media. `keepAt` stays the cache's
+        /// either way, so its frames and arithmetic are a cold request's.
+        let prefixScope: String?
+    }
+
+    /// The scope a request's prompt prefix is voted, restored and kept under:
+    /// its own partition of the load (`ClusterWorkerPrefixCache.scope`); nil
+    /// when it keeps none, its cache off on this rank or for the request, or
+    /// media in it.
+    static func prefixScope(load: String, request: QwenLayerStageGenerationRequest, cacheOn: Bool, media: Bool) -> String? {
+        cacheOn && !media ? ClusterWorkerPrefixCache.scope(load, request.prefixCache) : nil
     }
 
     /// Opens `request` (collective: a digest agreement and, with the prefix
@@ -995,7 +1008,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         if let media, try !media.open(rank: rank, tower: vision?.tower, sum: { [group] in group.allSum($0) }, stop: stop) {
             return OpenedRequest(cache: stage.newCache(), pages: nil, start: 0, speculation: nil,
                 chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, selectionKeepAt: 0, media: media,
-                stopped: true)
+                stopped: true, prefixScope: nil)
         }
         mark("digest")
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
@@ -1016,10 +1029,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 agree: { [group] in group.allSum($0) })
         }
         mark("speculation")
-        // Prompt prefix: the longest chunk boundary both ranks hold.
-        let scope = loadAgreement
+        // Prompt prefix: the longest chunk boundary both ranks hold, under the
+        // request's own partition. A request whose cache is off votes nothing
+        // on either rank (its partition is in the digest both checked above).
+        let scope = Self.prefixScope(load: loadAgreement, request: request, cacheOn: prefix.enabled, media: media != nil)
         var cache = stage.newCache(account: pages?.account), start = 0
-        if prefix.enabled, media == nil, prompt.count > chunk {
+        if let scope, prompt.count > chunk {
             let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
             let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
             mark("held")
@@ -1041,7 +1056,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled && media == nil),
             selectionKeepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk,
                 prefixEnabled: prefix.enabled && media == nil, onBulkGrid: false),
-            media: media, stopped: false)
+            media: media, stopped: false, prefixScope: scope)
     }
 
     /// One prefill frame `offset ..< end` of `prompt` (`prefillFrameEnd`): its
@@ -1066,10 +1081,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
             selectionKeepAt: opened.selectionKeepAt)
         let result = try GLM5NextTensorParallelPrefillPlan.run(frame, stage: stage, cache: opened.cache, prompt: prompt,
             speculation: opened.speculation, inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
-        if let kept = result.kept {
-            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
-        }
-        return (result.final, result.kept?.end)
+        guard let kept = result.kept, let scope = opened.prefixScope else { return (result.final, nil) }
+        prefix.store(scope: scope, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+        return (result.final, kept.end)
     }
 
     /// A media request's input embeddings by prompt positions
@@ -1102,19 +1116,18 @@ public final class GLM5NextTensorParallelResidentRuntime {
     }
 
     /// The last slice of a lane's frame: `runPrefillFrame`'s results.
-    func finishPrefillFrame(_ slices: GLM5NextTensorParallelPrefillPlan.Slices, prompt: [Int])
+    func finishPrefillFrame(_ slices: GLM5NextTensorParallelPrefillPlan.Slices, prompt: [Int], opened: OpenedRequest)
         throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
         let result = try slices.finish()
-        if let kept = result.kept {
-            let began = DispatchTime.now().uptimeNanoseconds
-            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
-            if GLM5NextTensorParallelPrefillPlan.frameTiming {
-                let ms = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
-                FileHandle.standardError.write(Data(String(format: "glm-prefill-store-v1 length=%d store_ms=%.1f active_gb=%.2f\n",
-                    kept.end, ms, Double(Memory.activeMemory) / 1e9).utf8))
-            }
+        guard let kept = result.kept, let scope = opened.prefixScope else { return (result.final, nil) }
+        let began = DispatchTime.now().uptimeNanoseconds
+        prefix.store(scope: scope, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+        if GLM5NextTensorParallelPrefillPlan.frameTiming {
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
+            FileHandle.standardError.write(Data(String(format: "glm-prefill-store-v1 length=%d store_ms=%.1f active_gb=%.2f\n",
+                kept.end, ms, Double(Memory.activeMemory) / 1e9).utf8))
         }
-        return (result.final, result.kept?.end)
+        return (result.final, kept.end)
     }
 
     /// One small sealed reduction per step: [token rank 0, token rank 1,

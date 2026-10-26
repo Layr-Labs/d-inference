@@ -40,7 +40,7 @@ struct ClusterSetupLocalModel { let modelID, artifactSHA256: String }
   func frame(_ profile: String, _ image: ClusterStillImages?) throws -> Data {
    try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: UUID(), sequence: 0, requestID: UUID(), command: .reserve(.init(
     profileID: profile, promptTokenIDs: [1,2,3], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-    deadlineUptimeNanoseconds: 1, capacityLimitBytes: 1024, sampling: nil, stillImages: image))))
+    deadlineUptimeNanoseconds: 1, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil, stillImages: image))))
   }
   try refuses("ordinary wire media") { _ = try frame(ClusterGLMImageCandidate.textProfileID, media) }
   let wire = try frame(ClusterGLMImageCandidate.profileID, media)

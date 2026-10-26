@@ -192,6 +192,25 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     /// Nil (and absent from the file) for the pair as placed;
     /// `decoding_rank_alone` routes it to the decoding rank alone (`ClusterWorkerRoute`).
     public var route: String?
+    /// Nil (and absent from the file) for a request whose prompt-prefix cache
+    /// is on without a tenant; `disabled`, or `tenant:` and a tenant digest
+    /// (`ClusterWorkerPrefixCache.tenantDigest`, never the salt), as both
+    /// ranks receive it (`prefixPartition`).
+    public var prefixCache: String?
+
+    /// `prefixCache` as the reservation carries it.
+    public var prefixPartition: ClusterWorkerPrefixCache? {
+        switch prefixCache {
+        case "disabled"?: return .disabled
+        case let value? where value.hasPrefix(Self.tenantPrefix): return .tenant(String(value.dropFirst(Self.tenantPrefix.count)))
+        default: return nil
+        }
+    }
+    public static let tenantPrefix = "tenant:"
+    /// `prefixCache` for the tenant of this salt: its digest, never the salt.
+    public static func prefixCache(tenantSalt salt: String) -> String {
+        tenantPrefix + ClusterWorkerPrefixCache.tenantDigest(salt: salt)
+    }
 
     public init(requestID: UUID, promptTokenIDs: [Int], chunkSize: Int, outputCount: Int,
                 stopTokenIDs: [Int], promptSource: QualificationPromptSource,
@@ -226,6 +245,11 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         try require(promptTokenIDsSHA256 == QualificationHash.tokenIDs(promptTokenIDs), "prompt hash differs from the prompt")
         try require(["chatText", "rawText", "synthetic", "tokenIDs"].contains(promptSource.kind), "unknown prompt source")
         try require(route == nil || route.flatMap(ClusterWorkerRoute.init(rawValue:)) != nil, "unknown route")
+        var digest: String?
+        if case .tenant(let value)? = prefixPartition { digest = value }
+        try require(prefixCache == nil || prefixCache == "disabled"
+            || digest.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } == true,
+            "prefix cache must be disabled, or tenant: and a 64-digit lowercase hexadecimal digest")
         if let sampling {
             let wire = sampling.wire
             try require([wire.temperature, wire.topP, wire.minP].allSatisfy(\.isFinite) && wire.isStochastic

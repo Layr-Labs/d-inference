@@ -424,7 +424,8 @@ public struct PairDriver: Sendable {
                     promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
                     outputCount: current.outputCount, chunkSize: current.chunkSize,
                     deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity,
-                    sampling: current.sampling?.wire, route: current.route.flatMap(ClusterWorkerRoute.init(rawValue:))))
+                    sampling: current.sampling?.wire, prefixCache: current.prefixPartition,
+                    route: current.route.flatMap(ClusterWorkerRoute.init(rawValue:))))
             } catch ClusterWorkerOwnerError.refused(let why) {
                 // This request alone: refused up front (longer than the
                 // serving context) or by a rank's live gate and given back by
@@ -677,8 +678,8 @@ public struct PairDriver: Sendable {
                         deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity,
                         // A batch request's own sampling, as the single request's
                         // (before the reservation's sampling was required, a
-                        // sampled batch request ran greedy here).
-                        sampling: request.sampling?.wire))
+                        // sampled batch request ran greedy here), and its own prefix partition.
+                        sampling: request.sampling?.wire, prefixCache: request.prefixPartition))
                 } catch {
                     var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
                 }

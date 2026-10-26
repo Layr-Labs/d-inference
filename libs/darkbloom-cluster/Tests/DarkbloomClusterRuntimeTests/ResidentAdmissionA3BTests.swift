@@ -229,7 +229,7 @@ struct ResidentAdmissionA3BTests {
         #expect(plans.count == Self.cuts.count)
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: Self.now).maximumTokens == 8320)
     }
 

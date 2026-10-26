@@ -212,6 +212,20 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
+    /// The local endpoint's requests are its operator's own: they reach the
+    /// pair's owner with the prefix cache on and no tenant salt, which the
+    /// owner sends as no partition, the ranks' caches as they were before
+    /// requests carried one (`DistributedPrefixPartitionTests`).
+    @Test func localRequestsReachThePairWithTheCacheOnAndNoSalt() async throws {
+        try await withCompletionFixture { fixture in
+            let client = Task { try await URLSession.shared.data(for: try fixture.request(stream: false)) }
+            fixture.completeTwoTokens(try await fixture.startedLease())
+            #expect((try await client.value.1 as? HTTPURLResponse)?.statusCode == 200)
+            let reserved = try #require(fixture.session.base.reservedRequests.last)
+            #expect(reserved.cacheSalt == nil && reserved.prefixCacheEnabled)
+        }
+    }
+
     /// An omitted `max_tokens` takes the product's default (here cut to the
     /// fixture profile's output limit), never a refusal.
     @Test func omittedMaxTokensIsTheDefaultNotARefusal() async throws {

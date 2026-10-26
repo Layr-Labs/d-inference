@@ -308,7 +308,7 @@ public enum GLM5NextCalibration {
         let request = ClusterWorkerReservation(profileID: plan.descriptor.profile.identifier,
             promptTokenIDs: a.promptTokenIDs, stopTokenIDs: [], outputCount: a.outputCount,
             chunkSize: a.chunkSize, deadlineUptimeNanoseconds: configuration.lease?.uptimeNanoseconds ?? configuration.deadlineUptimeNanoseconds,
-            capacityLimitBytes: plan.quote.requestCapacityBytes, sampling: nil)
+            capacityLimitBytes: plan.quote.requestCapacityBytes, sampling: nil, prefixCache: nil)
         _ = try runtime.reserve(requestID: a.requestID, request: request)
         let completion = try runtime.start(requestID: a.requestID) { _, _, _ in
             try sample("committed-token")

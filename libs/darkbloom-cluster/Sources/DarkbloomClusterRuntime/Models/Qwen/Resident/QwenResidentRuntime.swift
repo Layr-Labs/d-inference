@@ -411,15 +411,20 @@ public final class QwenResidentRuntime {
             // Only what this request's capture adds after the prefix this rank
             // holds for it (nothing on a repeat of the whole prompt), so kept
             // entries never give way for a capture that will not happen. The
-            // scope is the one its agreement will key the cache by; without
-            // it the whole plan is charged, as for a cold request.
-            var scope: String?
+            // scope is the one its agreement will key the cache by; when it
+            // cannot be derived the whole plan is charged, as for a cold
+            // request. A request whose cache is off (no scope) charges none.
             if prefixCache.enabled {
-                scope = try? QwenResidentRequestExecution.prefixScope(stage: stage, admission: admission, request: request)
+                do {
+                    reserved.prefixCaptureBytes = try QwenResidentRequestExecution.prefixScope(stage: stage,
+                        admission: admission, request: request).map {
+                        prefixCache.captureLimit(scope: $0, tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
+                    } ?? 0
+                } catch {
+                    reserved.prefixCaptureBytes = prefixCache.captureLimit(promptCount: request.promptCount,
+                        chunkSize: request.chunkSize)
+                }
             }
-            reserved.prefixCaptureBytes = scope.map {
-                prefixCache.captureLimit(scope: $0, tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
-            } ?? prefixCache.captureLimit(promptCount: request.promptCount, chunkSize: request.chunkSize)
             let total = try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
                 prefill?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
             if split != nil {

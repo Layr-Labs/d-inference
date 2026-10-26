@@ -190,10 +190,10 @@ extension QwenTensorParallelResidentRuntime {
                     try reserved.media?.releaseAfterCheckedDrain()
                 }
             }, prefix: batchPrefix, prefixBudget: batchBudget?.prefix,
-            prefixScope: { [self] reserved in loadAgreement + "|" + batchPrefixScope(reserved, kind: batchHost.kind) },
+            prefixScope: { [self] reserved in batchPrefixScope(reserved, kind: batchHost.kind).map { loadAgreement + "|" + $0 } },
             prefixDisk: prefixDisk,
-            prefixDiskScope: prefixDisk.map { disk -> (QwenTensorParallelOwnedBatchReservation) -> String in
-                { [self] reserved in disk.scope(batchPrefixScope(reserved, kind: batchHost.kind)) }
+            prefixDiskScope: prefixDisk.map { disk -> (QwenTensorParallelOwnedBatchReservation) -> String? in
+                { [self] reserved in batchPrefixScope(reserved, kind: batchHost.kind).map(disk.scope) }
             },
             allocationBound: QwenResidentResourceEnvironment.allocationBound,
             prefixObserved: { [self] event, tokens, bytes in
@@ -242,12 +242,18 @@ extension QwenTensorParallelResidentRuntime {
         }
     }
 
+    private func batchPrefixScope(_ reserved: QwenTensorParallelOwnedBatchReservation, kind: ClusterStageKVBackendKind) -> String? {
+        Self.batchPrefixScope(reserved.request, kind: kind, mediaIdentity: reserved.media?.state.prefixIdentity)
+    }
+
     /// A request's prefix scope after its load (the resident tier's load
     /// agreement, the SSD tier's persistent plan scope): its prompt grid, KV
-    /// backend and authenticated media identity.
-    private func batchPrefixScope(_ reserved: QwenTensorParallelOwnedBatchReservation, kind: ClusterStageKVBackendKind) -> String {
-        "chunk=\(reserved.request.chunkSize)|kv=\(kind.rawValue)"
-            + (reserved.media.map { "|media=" + $0.state.prefixIdentity } ?? "|text")
+    /// backend, authenticated media identity and its tenant (both tiers take
+    /// it from here); nil when the request's cache is off.
+    static func batchPrefixScope(_ request: QwenLayerStageGenerationRequest, kind: ClusterStageKVBackendKind,
+                                 mediaIdentity: String?) -> String? {
+        ClusterWorkerPrefixCache.scope("chunk=\(request.chunkSize)|kv=\(kind.rawValue)"
+            + (mediaIdentity.map { "|media=" + $0 } ?? "|text"), request.prefixCache)
     }
 
     private func prepareBatch(_ reserved: QwenTensorParallelOwnedBatchReservation, model: QwenTensorParallelModel,

@@ -85,7 +85,7 @@ struct MiMoClusterImageTests {
         func frame(profile: String,media:ClusterMiMoImages?) -> ClusterWorkerCommandFrame {
             .init(membershipEpoch:UUID(),sequence:0,requestID:UUID(),command:.reserve(.init(profileID:profile,
                 promptTokenIDs:f.tokens,stopTokenIDs:[],outputCount:4,chunkSize:8,deadlineUptimeNanoseconds:1000,
-                capacityLimitBytes:1<<30,sampling:nil,mimoImages:media)))
+                capacityLimitBytes:1<<30,sampling:nil,prefixCache:nil,mimoImages:media)))
         }
         let record = try ClusterWorkerCodec.encode(frame(profile:profile,media:f.media))
         #expect(record.count <= 512*1024)

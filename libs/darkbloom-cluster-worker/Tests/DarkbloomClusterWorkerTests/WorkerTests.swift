@@ -187,7 +187,7 @@ private final class Harness {
     func reservation(deadline: UInt64? = nil) -> ClusterWorkerReservation {
         .init(profileID: "test", promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2,
             chunkSize: 2, deadlineUptimeNanoseconds: deadline ?? (DispatchTime.now().uptimeNanoseconds + 3_000_000_000),
-            capacityLimitBytes: 4096, sampling: nil)
+            capacityLimitBytes: 4096, sampling: nil, prefixCache: nil)
     }
     func start(_ id: UUID, deadline: UInt64? = nil) throws {
         guard case .ready = try event().event else { throw WorkerFailure.invalid("Missing fake ready") }
@@ -662,7 +662,7 @@ final class WorkerTests: XCTestCase {
         try h.send(.reserve(.init(profileID: plain.profileID, promptTokenIDs: plain.promptTokenIDs, stopTokenIDs: [],
             outputCount: plain.outputCount, chunkSize: plain.chunkSize,
             deadlineUptimeNanoseconds: plain.deadlineUptimeNanoseconds, capacityLimitBytes: plain.capacityLimitBytes,
-            sampling: asks)), id: first)
+            sampling: asks, prefixCache: nil)), id: first)
         XCTAssertEqual(try h.event().event, .refused(.unsupported))
         try h.send(.reserve(h.reservation()), id: second)
         XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))

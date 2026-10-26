@@ -407,20 +407,21 @@ extension CoordinatorClient {
                             // domain). Taken beside — never instead of — the
                             // continuous deadline stamp (plan v2 P3).
                             let profileAnchor = SuspendingClock.now
-                            if let error {
-                                cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                                return
-                            }
                             // WS metadata for opcode inspection.
                             let wsMeta = context?.protocolMetadata(
                                 definition: NWProtocolWebSocket.definition
                             ) as? NWProtocolWebSocket.Metadata
-                            // Record a close frame's code here, on connectionQueue:
-                            // the transport state change that follows the frame can
-                            // end the session before this task reads the frame.
+                            // Record a close frame's code here, on connectionQueue,
+                            // also when the receive ends with an error: the transport
+                            // state change that follows the frame can end the session
+                            // before this task reads the frame.
                             if let wsMeta, wsMeta.opcode == .close,
                                let closeCode = wsMeta.closeCode.wireValue {
                                 session.recordCloseCode(closeCode)
+                            }
+                            if let error {
+                                cont.resume(throwing: CoordinatorError.connectionClosed(error))
+                                return
                             }
                             cont.resume(returning: (data, wsMeta, receivedAt, profileAnchor))
                         }

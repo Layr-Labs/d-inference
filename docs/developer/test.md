@@ -1,10 +1,19 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
+
+`ClusterAPIParityTests` runs real loopback standalone and distributed HTTP
+handlers over fabricated engines for seven model-family fixtures. It compares
+all stable JSON/SSE fields and translated engine requests, including scalar
+stops, `min_p`, logprob requests and reasoning usage. Only generated IDs and
+timestamps are normalized; no capability fields are removed. Run
+`swift test --package-path provider-swift --filter ClusterAPIParityTests` with
+the [provider build prerequisites](build.md). These CPU checks prove API wiring,
+not native model capabilities, numerical parity or hardware qualification.
 
 ## Prerequisites
 

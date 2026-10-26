@@ -1,11 +1,16 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
 lint, test and hosting configuration remain here; new console development belongs
 to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+
+The model-free local HTTP parity suite uses the normal ProviderCore test build:
+`swift test --package-path provider-swift --filter ClusterAPIParityTests`.
+It binds only loopback listeners and scripted engines, without model downloads
+or GPU execution. See [test coverage and limits](test.md).
 
 ## Prerequisites
 

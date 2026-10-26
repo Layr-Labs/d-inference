@@ -1,12 +1,20 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
 earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
 operators who want their own tools to call the models they already host.
 Requests never leave the machine and are never billed.
+
+Chat completions accept `stop` as a string or string array and pass explicit
+`min_p` to the engine. JSON and SSE responses include requested captured
+logprobs and reasoning-token usage when available, using the same HTTP wiring
+as a local cluster endpoint. Capture still depends on the selected native
+runtime; this shared wiring adds no capture to a runtime without it. Shared
+API tests do not establish native feature support.
+See [inference and logprob admission](../architecture/inference.md).
 
 ## Prerequisites
 

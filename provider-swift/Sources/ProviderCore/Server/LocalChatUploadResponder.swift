@@ -38,12 +38,12 @@ where Inner.Context == BasicRequestContext {
     /// entries on the channel this responder passes and splices.
     let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
         -> MLXOpenAIService?)?
-    /// The cluster's API: the service for a chat request that asks for
-    /// logprobs (OpenAI `logprobs`/`top_logprobs`, read from the raw body as
-    /// the coordinator path reads them); nil serves none, as single-Mac.
+    /// A request-owned service for OpenAI `logprobs`/`top_logprobs`, read from
+    /// the raw body as the coordinator path reads them. The selected engine
+    /// still decides whether capture is supported; nil disables this plumbing.
     let serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)?
-    /// The cluster's API: counts a model's tokens in returned reasoning text, for
-    /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none, as single-Mac.
+    /// Counts model tokens in returned reasoning for
+    /// `usage.completion_tokens_details.reasoning_tokens`; nil reports none.
     let reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)?
 
     init(
@@ -178,12 +178,11 @@ where Inner.Context == BasicRequestContext {
         switch decodeBody(LocalChatRequest.self, from: buffer) {
         case .success(let decoded): item = decoded
         case .failure(let badRequest):
-            // The cluster's API repairs what the coordinator path repairs (a
+            // Both local APIs normalize what the coordinator path normalizes (a
             // scalar `stop`, the `developer` role, content-less messages,
             // hosted tools) and retries, as `ProviderLoop.decodeOpenAIRequest`
             // does; the original error stands when that cannot help.
-            guard distributedResponses != nil,
-                  let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
+            guard let repaired = try? InboundChatNormalization.normalize(Data(buffer: buffer)),
                   case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
             else { return badRequest }
             item = decoded
@@ -194,12 +193,12 @@ where Inner.Context == BasicRequestContext {
         // Its owner splits its own reasoning channel and refuses a request
         // parser, so the inferred parser applies only to the generic service
         // (the coordinator path likewise sets none for a Super owner).
-        // Only a raw-body owner and the cluster's API (`serviceForLogprobs`,
-        // which never has a raw-body owner) return logprobs; the generic
-        // service ignores them.
+        // A raw-body owner returns logprobs on its own channel; any other
+        // request that asks for them gets the request-owned plumbing
+        // (`serviceForLogprobs`). The generic service ignores them.
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
-        var clusterLogprobs: EngineV2LogprobsPlumbing?
+        var requestLogprobs: EngineV2LogprobsPlumbing?
         let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
@@ -207,7 +206,7 @@ where Inner.Context == BasicRequestContext {
         } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: raw) {
             await resolveReasoningParser(&item)
             let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs, channel: EngineV2LogprobsChannel())
-            clusterLogprobs = plumbing
+            requestLogprobs = plumbing
             requestService = serviceForLogprobs(item.templateControls, plumbing)
             logprobs = nil
         } else {
@@ -240,19 +239,23 @@ where Inner.Context == BasicRequestContext {
                             request: item.request, frameGenerationErrors: true)
                     }
                     return DistributedHTTPEventStream.response(
-                        Self.decorating(frames, logprobs: clusterLogprobs, countTokens: countTokens), control: response)
+                        Self.decorating(frames, logprobs: requestLogprobs, countTokens: countTokens), control: response)
                 } catch {
                     response.disconnect(); response.finish(); throw error
                 }
             }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
-            return Self.sseResponse(logprobs.map { Self.splicingLogprobs(frames, from: $0) } ?? frames)
+            // A raw-body owner's entries are spliced as the coordinator relay
+            // splices them; every other response takes the request-owned
+            // decorations, as the collected path below does.
+            if let logprobs { return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs)) }
+            return Self.sseResponse(Self.decorating(frames, logprobs: requestLogprobs, countTokens: countTokens))
         }
         let response = try await requestService.createChatCompletion(request: item.request)
         if let logprobs { return try Self.jsonResponse(response, logprobs: logprobs.drain()) }
-        if clusterLogprobs != nil || countTokens != nil {
-            return try Self.jsonResponse(response, logprobs: clusterLogprobs, countTokens: countTokens)
+        if requestLogprobs != nil || countTokens != nil {
+            return try Self.jsonResponse(response, logprobs: requestLogprobs, countTokens: countTokens)
         }
         return try Self.jsonResponse(response)
     }
@@ -264,7 +267,7 @@ where Inner.Context == BasicRequestContext {
                             topLogprobs: Array($0.topLogprobs.prefix(max(0, top ?? 0)))) }
     }
 
-    /// The coordinator path's frame decorations on the cluster's own frames:
+    /// The coordinator path's frame decorations on either local API's frames:
     /// each token's logprobs spliced into the next content-bearing frame
     /// (`ProviderLoop.injectLogprobs`), and the usage frame's reasoning tokens
     /// (`ProviderLoop.injectReasoningTokens`).

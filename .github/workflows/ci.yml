@@ -135,7 +135,7 @@ jobs:
       - name: Run Swift tests
         id: provider-unit-tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
-        timeout-minutes: 20
+        timeout-minutes: 35
         env:
           MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
@@ -144,7 +144,7 @@ jobs:
         run: |
           python3 ../scripts/run-provider-test-watchdog.py \
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
-            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}

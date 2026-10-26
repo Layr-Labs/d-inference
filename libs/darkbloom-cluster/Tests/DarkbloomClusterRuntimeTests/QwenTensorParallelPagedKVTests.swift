@@ -162,7 +162,7 @@ struct QwenTensorParallelPagedKVTests {
                 let prompt = (0..<1_984).map { ($0 * 7919 + 13) % 4096 }
                 let pages = try #require(try Runtime.reservePages(model: model, tokens: prompt.count))
                 #expect(growing.capacityPages == 64)
-                let paged = model.newCache(account: pages.account), contiguous = model.newCache()
+                let paged = try model.newCache(account: pages.account), contiguous = try model.newCache()
                 #expect(paged.filter { $0 is PagedAttentionKVCache }.count == 2)
                 #expect(contiguous.filter { $0 is KVCacheSimple }.count == 2)
                 func bytes(_ a: MLXArray) -> Data { a.asData(access: .copy).data }

@@ -50,6 +50,7 @@ func httpDeliveryEventually(_ predicate: () -> Bool) async throws -> Bool {
 func httpDeliveryToolCallFrame() throws -> String {
     try ServerSentEventEncoder.encode(OpenAIChatCompletionChunk(id: "fixture", model: "fixture",
         choices: [.init(index: 0, delta: .init(role: nil, content: nil, reasoningContent: nil,
-            toolCalls: [.init(id: "call_fixture", function: .init(name: "lookup", arguments: "{}"), index: 0)]),
+            toolCalls: [.init(index: 0, id: "call_fixture", type: "function",
+                function: .init(name: "lookup", arguments: "{}"))]),
             finishReason: nil)], usage: nil, created: 1))
 }

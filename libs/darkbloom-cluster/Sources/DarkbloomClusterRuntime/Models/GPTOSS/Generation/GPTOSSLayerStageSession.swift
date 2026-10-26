@@ -60,7 +60,7 @@ final class GPTOSSLayerStageSession {
               request.maximumTokens <= spec.maximumPositions else {
             throw ProbeError("Generation profile differs from the actual loaded GPT-OSS stage geometry/dtype")
         }
-        let caches = stage.model.newCache(parameters: nil)
+        let caches = try stage.model.newCache(parameters: nil)
         guard caches.count == descriptor.layers.count,
               zip(caches, descriptor.layers).allSatisfy({ cache, layer in
                   cache.offset == 0 && (cache.maxSize == nil

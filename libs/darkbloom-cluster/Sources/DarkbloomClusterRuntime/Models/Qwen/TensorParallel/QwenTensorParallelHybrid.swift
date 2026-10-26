@@ -72,12 +72,12 @@ public enum QwenTensorParallelHybrid {
             throw ProbeError("Hybrid: the ranks disagree on the prompt, the prefill rank or the state layout")
         }
         let started = QwenTensorParallelModel.now()
-        let cache = shard.newCache()
+        let cache = try shard.newCache()
         var generationPrefill: Double?
         var bytes = 0
         let first: MLXArray
         if let full {
-            let fullCache = full.newCache()
+            let fullCache = try full.newCache()
             let logits = full.prefill(prompt, chunk: chunk, cache: fullCache)
             let token = full.select(logits)
             eval([token] + fullCache.flatMap { $0.innerState() })

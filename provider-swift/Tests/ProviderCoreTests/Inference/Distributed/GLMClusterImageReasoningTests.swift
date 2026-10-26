@@ -68,7 +68,7 @@ struct GLMClusterImageReasoningTests {
             case .content(let chunk): parsed += parser.parse(chunk)
             case .parsed(let value): parsed.append(value)
             case .info(let info): finish = info.stopReason
-            case .toolCall: Issue.record("Unexpected tool call")
+            case .toolCall, .toolCallDelta: Issue.record("Unexpected tool call")
             }
         }
         parsed += parser.finish()

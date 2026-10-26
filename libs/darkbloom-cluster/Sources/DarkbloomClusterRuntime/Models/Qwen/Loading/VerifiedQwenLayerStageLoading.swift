@@ -42,7 +42,7 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource,
     for entry in inventory.active {
         try autoreleasepool {
             let read = try payload.tensor(entry, beforeRead: beforeTensor)
-            let sanitized = model.sanitize(weights: [entry.localName: read.array])
+            let sanitized = try model.sanitize(weights: [entry.localName: read.array])
             guard sanitized.count == 1, var array = sanitized[entry.localName],
                   array.shape == entry.shape,
                   String(describing: array.dtype) == entry.sourceDType else {

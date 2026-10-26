@@ -150,7 +150,7 @@ public final class QwenTensorParallelModel {
 
         // Routed experts: the checkpoint's split switch_mlp gate/up become the
         // fused gate_up the SDK constructs (per rank, after the cut).
-        if plan.routedExperts { weights = model.sanitize(weights: weights) }
+        if plan.routedExperts { weights = try model.sanitize(weights: weights) }
         quantize(model: model) { path, _ in
             weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits, .affine) : nil
         }
@@ -263,7 +263,7 @@ public final class QwenTensorParallelModel {
             throw ProbeError("Tensor parallel census: only without a peer (full, simulated or shard-local)")
         }
         guard !prompt.isEmpty else { throw ProbeError("Tensor parallel census: empty prompt") }
-        let cache = model.newCache(parameters: nil)
+        let cache = try model.newCache(parameters: nil)
         let first = select(prefill(prompt, chunk: prompt.count, cache: cache))
         eval([first] + cache.flatMap { $0.innerState() })
         let next = select(model(first.reshaped(1, 1), cache: cache)[0..., -1, 0...])
@@ -327,7 +327,7 @@ public final class QwenTensorParallelModel {
         guard !prompt.isEmpty, outputCount >= 1, chunk >= 1 else { throw ProbeError("Tensor parallel generation: empty request") }
         if recordTop > 0, case .shard = role { throw ProbeError("Tensor parallel generation: a shard does not record logits") }
         guard recordTop <= 64 else { throw ProbeError("Tensor parallel generation: at most 64 logits per step") }
-        let cache = model.newCache(parameters: nil)
+        let cache = try model.newCache(parameters: nil)
         let started = Self.now()
         let logits = prefill(prompt, chunk: chunk, cache: cache)
         return decode(first: select(logits), firstLogits: logits, cache: cache, outputCount: outputCount,
@@ -352,7 +352,7 @@ public final class QwenTensorParallelModel {
         return logits!
     }
 
-    func newCache() -> [KVCache] { model.newCache(parameters: nil) }
+    func newCache() throws -> [KVCache] { try model.newCache(parameters: nil) }
 
     /// Paged attention keys and values (`QwenTensorParallelPagedKV.swift`):
     /// the request caches `newCache(account:)` makes keep every
@@ -382,8 +382,8 @@ public final class QwenTensorParallelModel {
     /// A request's caches: the Gated DeltaNet layers' state as always and,
     /// with `attentionPagePool`, every attention layer's keys and values in
     /// its pages, counted against `account`.
-    func newCache(account: GLM5NextDSAPageBook.Account?) -> [KVCache] {
-        let caches = model.newCache(parameters: nil)
+    func newCache(account: GLM5NextDSAPageBook.Account?) throws -> [KVCache] {
+        let caches = try model.newCache(parameters: nil)
         guard let pool = attentionPagePool else { return caches }
         return caches.map { $0 is KVCacheSimple ? PagedAttentionKVCache(pool: pool, account: account) : $0 }
     }

@@ -376,7 +376,7 @@ public final class QwenTensorParallelResidentRuntime {
             promptCount: prompt.count, maximumTokens: request.maximumTokens))
         defer { withExtendedLifetime(pages) {} }
         // Prompt prefix: the longest chunk boundary both ranks hold.
-        var cache = model.newCache(account: pages?.account)
+        var cache = try model.newCache(account: pages?.account)
         var start = 0
         let scope = loadAgreement + "|" + receipt
         if prefix.enabled, prompt.count > chunk {

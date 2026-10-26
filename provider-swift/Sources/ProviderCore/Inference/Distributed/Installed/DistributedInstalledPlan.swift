@@ -155,15 +155,17 @@ struct DistributedInstalledPlan: Sendable {
     }
 
     /// The local leader and link follower pass their own effective lane count,
-    /// optional typed synchronization choice and live KV precision switch to
-    /// the fixed owner child. No peer-supplied environment is used.
+    /// optional typed synchronization choice and live and checkpoint KV
+    /// precision switches to the fixed owner child. No peer-supplied
+    /// environment is used.
     func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
         throws -> ClusterLocalOwnerConfiguration {
         try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
             batchLanes: batchLanes(ownerEnvironment),
             fastSynchronization: fastSynchronization(ownerEnvironment),
             eagerFenceCommit: eagerFenceCommit(ownerEnvironment),
-            kvQuantization: DistributedInstalledKVQuantization.forwardedSwitch(ownerEnvironment))
+            kvQuantization: DistributedInstalledKVQuantization.forwardedSwitch(ownerEnvironment),
+            checkpointQuantization: DistributedInstalledKVQuantization.forwardedCheckpointSwitch(ownerEnvironment))
     }
 
     func nativeEnvironment(matrix: URL,
@@ -183,6 +185,14 @@ struct DistributedInstalledPlan: Sendable {
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
+        // How the tier's records store attention rows: main's checkpoint
+        // precision for this model (`DistributedInstalledKVQuantization`),
+        // which both ranks bind into their load agreement while they keep
+        // prefixes. Nothing without a resolver: the rank's default, balanced.
+        if !prefixCacheOff {
+            environment.merge(DistributedInstalledKVQuantization.recordsEnvironment(publicModelID: configuration.publicModelID,
+                ownerEnvironment: ownerEnvironment)) { current, _ in current }
+        }
         // Continuous batching (the pipeline's lane adapters, Qwen and GLM tensor
         // parallel): both owners must give their workers the same lane count
         // (the workers' load agreement refuses a mismatch). A setup in any

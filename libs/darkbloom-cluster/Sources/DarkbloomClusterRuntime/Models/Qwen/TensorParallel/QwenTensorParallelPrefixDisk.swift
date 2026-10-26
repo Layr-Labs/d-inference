@@ -6,7 +6,11 @@ import MLXLMCommon
 /// The SSD tier of a tensor-parallel rank's prompt-prefix cache. Each rank
 /// keeps only its own shard: its heads' attention rows and recurrent state,
 /// plus the replicated assistant's trusted history for a speculating owner,
-/// in the encrypted records of `QwenStagePrefixDiskTier`. The record scope
+/// in the encrypted records of `QwenStagePrefixDiskTier`. Attention rows are
+/// stored under the load's agreed encoding (`QwenStagePrefixDiskEncoding`,
+/// family `qwenAttention`: balanced by default, so a restored shard's older
+/// rows are approximate; native keeps them exact); a restored shard has the
+/// native shapes and dtypes either way, so adoption is unchanged. The record scope
 /// outlives the owner process (plan and shares, the verified artifact and
 /// this rank's storage commitment, both builds, the assistant policy), never
 /// a membership epoch, so a restarted pair finds what the last one kept.

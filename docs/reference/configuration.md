@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -761,10 +761,32 @@ Nemotron 3.5 stages and every Qwen tensor-parallel row's request-owned lanes, af
 same in-process kernel preflight (`PagedKernelSmokePlan`). Those hosts then keep
 no prompt prefixes (memory or SSD), as the single-Mac engine keeps no snapshot
 prefixes for packed rows. A phase-split hand-off and a family without a stage KV
-host (GPT-OSS, GLM) refuse a packed precision; MiMo stays native as on one Mac. The checkpoint precision
-(`engine_v2_kv_checkpoint_quantization`) is not applied to the pair's SSD
-prefix records, which stay exact native states. See
+host (GPT-OSS, GLM) refuse a packed precision; MiMo stays native as on one Mac. The separate checkpoint
+precision sets the pair's SSD prefix records (below). See
 [inference](../architecture/inference.md#cluster-stage-kv-precision).
+
+### Cluster SSD prefix record precision
+
+The pair's encrypted SSD prompt-prefix records store attention rows at the
+single-Mac checkpoint precision for the pair's public model: each Mac's owner
+resolves `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, then
+`[backend] engine_v2_kv_checkpoint_quantization_by_model`, then
+`engine_v2_kv_checkpoint_quantization` (default `balanced`), and starts its
+rank with the resolved name while the prefix cache is on. Older rows of a
+`balanced`, `k8v4` or `k8v8` record restore approximate; `native` restores them
+byte-exact.
+
+| Setting | Installed behavior | Source |
+|---|---|---|
+| `[backend] engine_v2_kv_checkpoint_quantization`, `engine_v2_kv_checkpoint_quantization_by_model` | Read once by `cluster worker-owner` from the saved provider configuration on each Mac; the same values select the single-Mac checkpoint encoding. Both ranks bind the resolved precision into their load agreement, so Macs that resolved different precisions refuse to load; there is no leader sync | `DistributedInstalledKVQuantization` (`installProduct`, `recordsEnvironment`) in `provider-swift/Sources/ProviderCore/Inference/Distributed/` |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | The provider forwards its own switch to the owner it starts (`ClusterLocalOwnerConfiguration`), where it takes precedence as on one Mac: empty selects `balanced`, a malformed value reaches the rank as `invalid` | `DistributedInstalledPlan.localOwnerConfiguration` |
+| `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` | The rank's switch: `balanced`, `k8v4`, `k8v8`, `native` or main's aliases; absent or empty is `balanced`; any other value refuses the load by name. In an owner's own environment it is a diagnosis override of the resolved name | `QwenStagePrefixDiskEncoding.fromEnvironment` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` |
+| `darkbloom-cluster-pair-check --prefix-ssd-quantization` | Qualification runs: gives both workers the same value | `PairConfiguration.prefixSSDQuantization` in `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift` |
+
+Only families whose records are qualified encoded use the precision (Qwen
+full-attention keys and values, GLM-5.3-Flash DSA latents); MiMo, Gemma 4 and
+Nemotron records stay native. See
+[cluster record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding).
 
 ### Private batch qualification diagnostics
 

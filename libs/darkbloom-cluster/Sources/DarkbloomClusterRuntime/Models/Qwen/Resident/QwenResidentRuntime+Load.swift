@@ -84,6 +84,11 @@ extension QwenResidentRuntime {
         guard admission.supportedGenerationModes.contains(mode) else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
+        // How the SSD tier's records store attention rows: the Qwen 3.5
+        // family's keys and values under main's checkpoint precision, as the
+        // owner resolved it; other rows of this runtime store native records.
+        let prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(launchEnvironment,
+            family: QwenStagePrefixDiskFamily.layerStage(runtimeModelID: admission.runtimeModelID))
         // Tensor parallel has its own resident owner (`QwenTensorParallelResidentRuntime`).
         guard !mode.usesTensorParallelDecode else {
             throw ProbeError("Generation mode \(mode.rawValue) runs on the tensor-parallel resident owner, not the stage runtime")
@@ -156,12 +161,15 @@ extension QwenResidentRuntime {
             // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`,
             // the sealed all-sum on a keyed plane), so the planner can choose tensor parallel for this pair next.
             let probesLink = transport != .localSocketTest
+            // Records exist only with the prefix cache on and native live rows (below).
+            let keepsPrefixes = kvQuantization == .native && QwenStagePrefixCache.fromEnvironment(launchEnvironment).enabled
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
                 + kvKind.loadAgreementFields + kvQuantization.loadAgreementFields
                 + batch.loadAgreementFields(runtimeModelID: admission.runtimeModelID)
                 + Gemma4BatchArithmeticAgreement.fields(runtimeModelID: admission.runtimeModelID, lanes: batch.lanes)
                 + (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
+                + (keepsPrefixes ? prefixRecords.loadAgreementFields : [])
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
             if let credential {
@@ -367,7 +375,7 @@ extension QwenResidentRuntime {
                         storageCommitmentSHA256: loadedStage.loaded.receipt.storageCommitmentSHA256,
                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
                         generationMode: mode.rawValue, prefillSchedule: configuration.prefillSchedule.rawValue),
-                    rank: collective.rank,
+                    rank: collective.rank, encoding: prefixRecords,
                     stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased(),
                     fault: fault?.prefixDisk)
             }

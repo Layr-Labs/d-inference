@@ -315,6 +315,23 @@ after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
 sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
 attention history once per prompt and its linear-attention state per frontier.
 
+The SSD tier stores older attention rows compactly at the same checkpoint
+precision as a single Mac (`balanced` by default; a Qwen 3.8 27B record's
+attention rows take about a third of their exact size), so a prefix restored
+from disk (and kept in memory after that restore) is close to, not identical
+with, computing it again; prefixes the pair computed and kept in memory are
+exact. For exact disk restores, set the same value on both Macs and restart
+the cluster:
+
+```toml
+[backend]
+engine_v2_kv_checkpoint_quantization = "native"
+```
+
+Both Macs must resolve the same precision; otherwise the pair refuses to load
+the model. The [record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding)
+lists what each model stores compactly.
+
 ## MiMo V2.6 Flash on the pair
 
 MiMo V2.6 Flash is granted by its qualification records (pipeline, run on an
@@ -395,7 +412,9 @@ The leader's cache choices (`darkbloom cache set`, the prefix cache switch, the
 daily write limit, the TTL and an explicit disk budget) reach the other Mac
 through its cluster service, which applies them to the ranks it starts. Each Mac
 keeps its own cache folder and, without an explicit budget, sizes the pair's
-cache from its own free space.
+cache from its own free space. The SSD records' precision
+(`engine_v2_kv_checkpoint_quantization`) is not synced: each Mac reads its own,
+and they must match.
 
 ## Not yet in this build
 

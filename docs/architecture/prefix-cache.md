@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -1027,6 +1027,13 @@ exchange confirms that both ranks restored. Otherwise both prefill from zero,
 and a rank that did read its record keeps it resident, so the next offer finds
 it in memory. An unreadable or unadoptable record is deleted. The load
 agreement carries `qwen-tensor-parallel-prefix-v2`.
+
+Attention rows are stored at the pair's checkpoint precision (`balanced` by
+default): a shard restored from its record has older rows approximate and the
+record's newest 128 rows exact, in the native shapes the adoption checks, and
+the request then differs from a cold one. The load agreement then also carries
+`cluster-prefix-ssd-records-v1`; see
+[cluster SSD prefix record encoding](inference.md#cluster-ssd-prefix-record-encoding).
 
 The tier logs `darkbloom-prefix-ssd-v1` lines (`open`, `persist`, `restore`,
 `restore-confirmed`, `restore-declined`, `close`); the

@@ -94,7 +94,7 @@ struct QwenTensorParallelShareProbeTests {
                 #expect(released(since: before) && Memory.cacheLimit == cacheLimit && !shard.reduction.local,
                     "rank \(rank): \(Memory.activeMemory - before) bytes and \(Memory.cacheMemory) cached left")
                 // Afterwards the shard reduces through its peer again.
-                let cache = shard.model.newCache()
+                let cache = try shard.model.newCache()
                 let logits = shard.model.forwardForRuntime(MLXArray([Int32(3), 5, 7]).reshaped(1, 3), cache: cache)
                 eval(logits)
                 #expect(shard.peer.crossings > 0)

@@ -184,7 +184,7 @@ struct QwenMoETensorParallelPackingTests {
         pair.wire.payloads = []
         let owners = pair.ranks.map { Owner($0) }
         let work = Work { owner in
-            let cache = owner.model.newCache()
+            let cache = try owner.model.newCache()
             var logits = owner.model.prefill(prompt, chunk: chunk, cache: cache)
             for step in 0...steps {
                 let token = owner.model.select(logits)

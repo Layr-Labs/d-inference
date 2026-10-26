@@ -121,7 +121,7 @@ enum GLMBench {
         // The runtime's decode policy; each flag defaults to the worker's environment switch.
         let environment = ProcessInfo.processInfo.environment
         options.mtpDepthPolicy = fields["--mtp-depth-policy"]
-            ?? environment["DARKBLOOM_GLM_TP_MTP_DEPTH_POLICY"] ?? "load"
+            ?? environment["DARKBLOOM_GLM_TP_MTP_DEPTH_POLICY"] ?? "fixed"
         guard let loadLanes = Int(fields["--mtp-load-lanes"] ?? environment["DARKBLOOM_GLM_TP_MTP_LOAD_LANES"] ?? "3"),
               (2...8).contains(loadLanes) else {
             throw Failure("glm: --mtp-load-lanes takes 2 through 8")

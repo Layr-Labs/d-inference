@@ -7,7 +7,9 @@ extension Status {
     /// coordinator cancel or a dropped connection, which the coordinator may
     /// not pay for, and free requests routed to the owner's own machine. The
     /// console's Earnings page is the record of paid work.
-    static func servedRequestLines(_ stats: DaemonState.Stats, uptime: String) -> [String] {
+    static func servedRequestLines(state: DaemonState, now: Double) -> [String] {
+        let stats = state.stats
+        let uptime = compactDuration(state.uptimeSeconds(now: now))
         var lines = [
             "Requests served since the daemon started (\(uptime) ago): \(stats.requestsServed)"
                 + "  |  output tokens: \(stats.tokensGenerated)",

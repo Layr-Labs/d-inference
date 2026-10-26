@@ -988,12 +988,16 @@ Output includes:
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - `Requests served since the daemon started (… ago)`: coordinator requests
-  this daemon process finished since its last start, with output tokens only.
-  The count restarts at zero with the daemon. It includes requests that ended
-  early on a coordinator cancel or a dropped connection (counted on the next
-  line; the coordinator may not pay for them) and free requests routed to your
-  own machine. Paid jobs are on the console's Earnings page; the console's
-  machine card adds these counters up across sessions
+  this daemon finished since it started, with output tokens only. The count
+  restarts at zero when the daemon restarts or a scheduled availability window
+  opens. It includes requests that ended early on a coordinator cancel or a
+  dropped connection after output had been delivered (the next line counts
+  them when there are any; the coordinator may not pay for them) and free
+  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
+  the console's Earnings page; the console's machine card adds these counters
+  up across restarts
+  ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
+  `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Serving outside the enabled

@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -369,21 +369,32 @@ daemon state publishes the same exclusions (`eviction_exclusions`) and the
 ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
 Selected-model recovery (`ProviderLoop+SelectedModelRecovery.swift`) retries
-the startup preload's candidates that the operator chose explicitly
-(`enabled_models`, `preload_models`, the pinned `model`, Autopilot's persisted
-selection) and that it skipped or that failed for memory, or that a slot cap
-left untried; before it, nothing retried them, and
-the coordinator cold-routes a model only to an idle machine. The capacity tick
+the models the operator chose explicitly (`enabled_models`, `preload_models`,
+the pinned `model`, Autopilot's persisted selection) that memory, not the
+operator, kept out: the startup preload's candidates it skipped or that failed
+for memory, or that a slot cap left untried, and the selected models an
+Autopilot operation unloaded to load another model, queued as each leaves
+residency, whether the operation then succeeds or fails
+(`noteSelectedModelUnloaded`; an unload-only operation queues nothing). Before
+it, nothing retried them, and the coordinator cold-routes a model only to an
+idle machine. The capacity tick
 checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
 minutes, at once after any unload, and sooner when what blocked it ends first
-(a hold's expiry plus the idle threshold, an idle threshold). A check plans on the same
+(a hold's expiry plus the idle threshold, an idle threshold, a minimum dwell or
+a per-model lease). A check plans on the same
 figures as the load gate (Super's LOAD-claim room against its narrowest
 configuration, otherwise usable load memory against weights plus headroom) and
 loads with `allowEviction: false`. Before the load it may unload only resident
-models outside the ordinary selection and the Autopilot pins that have no
-`evictionExclusions` entry, have been idle for two minutes when they still
-serve (`SelectedModelRecovery.victimMinimumIdle`), and whose weights make the
-room, least recently used first. It never evicts a selected model, so it cannot
+models whose weights make the room, least recently used first, that have no
+`evictionExclusions` entry and that `isProtectedFromRecoveryEviction` does not
+keep: never the ordinary selection, an Autopilot pin, or an advertised model a
+request could load straight back (`autopilotAllowsModel`), which would then
+evict the recovered model in turn. A candidate that still serves must also meet
+Autopilot's own victim rules (`selectedModelRecoveryVictimWait`): resident for
+`min_dwell_seconds`, no unexpired per-model lease, and idle, from its last
+request or its hold's expiry, for the longer of two minutes
+(`SelectedModelRecovery.victimMinimumIdle`) and `min_idle_seconds`. The attempt
+rechecks each victim against the plan's instant right before its unload. It never evicts a selected model, so it cannot
 churn against the operator's own models. It waits while a live Autopilot lease
 or a pause manages residency, and during any load, unload, operation, switch,
 startup preload or drain. A refusal for memory, a slot or a transient state

@@ -210,6 +210,7 @@ extension ProviderLoop {
                           await unloadModel(victim, forEviction: true, autopilotCommandId: command.commandId) else {
                         throw AutopilotFailure("victim_became_busy")
                     }
+                    noteSelectedModelUnloaded(victim, by: command)
                 }
             }
             // Cancellation is cooperative: an unload or a load past its slot
@@ -228,7 +229,6 @@ extension ProviderLoop {
                       advertisedModels[target] != nil else { throw AutopilotFailure("load_did_not_settle") }
                 autopilotLeaseUntil[target] = .now.advanced(by: .seconds(command.leaseSeconds))
                 recordAutopilotPlacement(command)
-                queueSelectedModelsDisplaced(by: command)
             }
             autopilotLastElapsedMs = (ContinuousClock.now - operationStart).autopilotMilliseconds
             finishModelAutopilot(command, status: .succeeded, send: send)

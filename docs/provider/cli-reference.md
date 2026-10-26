@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1003,7 +1003,9 @@ Output includes:
   running daemon's selection, or the live Autopilot lease. `Autopilot
   placements` lists adoptions and placement holds with each hold's UTC expiry
   and time left. `Retrying <model> when memory frees; next check in …
-  (waiting …)` names each selected model the daemon keeps trying to load
+  (waiting …)` names each selected model the daemon keeps trying to load: one
+  the startup preload left cold for memory or a slot, or one an Autopilot
+  operation unloaded to load another model
   ([selected-model recovery](../architecture/hardware-support.md#load-gate-modelloadadmission)),
   followed by `Last check:` and what kept it out. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the

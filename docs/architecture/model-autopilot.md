@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -174,24 +174,33 @@ served outside the saved `enabled_models`; `darkbloom autopilot status` prints
 `Adopted` and `Held` lines.
 
 Selected-model recovery ([load gate](hardware-support.md#load-gate-modelloadadmission))
-treats an adoption like any model outside the selection: it may unload an
-adopted slot that has no unexpired hold, no request in flight and two minutes
-of idleness (measured from the hold's expiry when one ended) to load a waiting
-selected model, which ends the adoption as any unload does. It never touches a
-held slot, and it waits while a live lease or a pause manages residency. A
-recovery attempt is busy as `preload`, so an operation is refused while it
-evicts or loads. The policy refresh also re-reads `enabled_models`, which the
-recovery uses only to stop retrying a model the saved filter dropped and to
-name a model that stays in the running daemon's selection until a restart.
+queues every selected model an operation that loads a target unloads, as it
+leaves residency (`noteSelectedModelUnloaded`): after the operation, whether it
+succeeded or failed, the model loads again once it fits. An unload-only
+operation queues nothing. Recovery treats an adoption like any model outside
+the selection that no request can load back: it may unload an adopted slot
+that has no unexpired hold or request in flight and that meets the victim
+rules an operation obeys (`selectedModelRecoveryVictimWait`): resident
+`min_dwell_seconds`, no unexpired per-model lease, and idle, measured from the
+hold's expiry when one ended, for the longer of two minutes and
+`min_idle_seconds`. That ends the adoption as any unload does, so the evicted
+model cannot reload over the selected one. It never evicts the ordinary
+selection, including a stale start selection, an Autopilot pin or an advertised
+model a request could load straight back (`isProtectedFromRecoveryEviction`),
+never touches a held slot, and waits while a live lease or a pause manages
+residency. A recovery attempt is busy as `preload`, so an operation is refused
+while it evicts or loads. The policy refresh also re-reads `enabled_models`,
+which the recovery uses only to stop retrying a model the saved filter dropped
+and to name a model that stays in the running daemon's selection until a
+restart.
 
 The operator's selection outranks a placement outside it once the placement's
 hold is over (policy pending owner review,
-`ProviderLoop+SelectedModelPlacementPolicy.swift`). A succeeded operation whose
-target is outside the ordinary selection queues the selected models it unloaded
-for recovery (`queueSelectedModelsDisplaced`). When such a target, adopted and
-unheld, keeps a waiting selected model out only because it serves requests,
+`ProviderLoop+SelectedModelPlacementPolicy.swift`). When an adopted, unheld
+target keeps a waiting selected model out only because it serves requests,
 recovery releases the adoption ten minutes after the hold expired, or after the
-selected model began waiting when there was no hold
+selected model began waiting when there was no hold, and never before the
+target's `min_dwell_seconds` or per-model lease ends
 (`adoptionReleaseTime`, `adoptionReleaseDelay`), and only if evicting it would
 make the room. The released model is withdrawn and refuses new requests as
 `model_not_selected`; its requests in flight finish, and the next check evicts
@@ -261,6 +270,10 @@ stops the driver at its next candidate, and the current step finishes normally.
 9. Without saved consent, or with downloads turned off, there is no download, no
    `inventory_downloads` capability and no `download_storage`
    (`autopilotDownloadsEnabled`, `handlePrefetchModelRequest`).
+10. Selected-model recovery never evicts a selected, pinned, held or busy model
+    or one a request could load straight back, and evicts a model that still
+    serves only within an operation's victim rules
+    (`isProtectedFromRecoveryEviction`, `selectedModelRecoveryVictimWait`).
 
 ## Failure modes
 

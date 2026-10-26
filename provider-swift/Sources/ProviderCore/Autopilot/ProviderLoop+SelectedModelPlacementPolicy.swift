@@ -2,23 +2,19 @@ import Foundation
 
 /// The operator's selection outranks an Autopilot placement outside it once
 /// the placement's hold is over. A policy change for owner review, kept apart
-/// from the recovery mechanism (`ProviderLoop+SelectedModelRecovery`).
+/// from the recovery mechanism (`ProviderLoop+SelectedModelRecovery`), which
+/// already queues an operation's selected victims and evicts an idle adoption
+/// within Autopilot's victim rules.
 ///
-/// - An operation that unloads selected models to place a model outside the
-///   selection queues them for recovery (`queueSelectedModelsDisplaced`).
-/// - An adopted model outside the selection that keeps a waiting selected
-///   model out only because it serves requests, with no unexpired hold, is
-///   released `adoptionReleaseDelay` after its hold expired (or after the
-///   selected model began waiting, without a hold): it takes no new requests,
-///   finishes those in flight, and the next check evicts it. A hold is always
-///   honoured, and a selected or pinned model is never released.
+/// An adopted model outside the selection that keeps a waiting selected model
+/// out only because it serves requests, with no unexpired hold, is released
+/// `adoptionReleaseDelay` after its hold expired (or after the selected model
+/// began waiting, without a hold), and never before its minimum dwell or its
+/// per-model lease ends: it takes no new requests, finishes those in flight,
+/// and the next check evicts it. A hold is always honoured, and a selected or
+/// pinned model is never released.
 extension ProviderLoop {
     static let adoptionReleaseDelay: Duration = .seconds(600)
-
-    func queueSelectedModelsDisplaced(by command: ModelAutopilotCommand) {
-        guard let target = command.loadModelId, !isProtectedFromRecoveryEviction(target) else { return }
-        enqueueSelectedModelRecovery(command.unloadModelIds.filter { ordinaryServingModelIDs.contains($0) })
-    }
 
     /// When `id` may be released for a model waiting since `since`: adopted
     /// outside the selection, unheld, and excluded from eviction only by the
@@ -30,7 +26,11 @@ extension ProviderLoop {
               !autopilotHoldsModel(id, now: now), !reasons.isEmpty, reasons.allSatisfy(\.isServing)
         else { return nil }
         let anchor = autopilotHolds[id].map { max(since, $0.until) } ?? since
-        return anchor.advanced(by: Self.adoptionReleaseDelay)
+        var release = anchor.advanced(by: Self.adoptionReleaseDelay)
+        let dwell = Duration.seconds(autopilotSettings.effectiveMinDwellSeconds)
+        release = max(release, (autopilotResidentSince[id] ?? now).advanced(by: dwell))
+        if let lease = autopilotLeaseUntil[id] { release = max(release, lease) }
+        return release
     }
 
     /// Ends `id`'s adoption: it is withdrawn and refuses new requests as not

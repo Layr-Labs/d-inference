@@ -2,20 +2,23 @@ import Foundation
 
 /// ProviderLoop -- selected models recover their residency.
 ///
-/// A selected model the startup preload skipped for memory or a slot stayed
-/// cold until a request loaded it, and the coordinator cold-routes a model
-/// only to an idle machine, so behind a busy model outside the selection it
-/// never loaded: nothing retried it. Each such model now waits in
-/// `selectedModelRecovery`, and the capacity tick checks it when due (backoff
-/// from 30 s to 10 min; an unload makes it due at once). A check loads it
-/// without evicting: before the load it may unload only models outside the
-/// selection that serve no request, hold no placement or pin, have been idle
-/// for `victimMinimumIdle`, and whose memory makes the room. It never evicts a
-/// selected model, so a recovered model is never displaced by another
-/// recovery. While a live Autopilot lease manages residency, recovery waits.
+/// A selected model the startup preload skipped for memory or a slot, or that
+/// an Autopilot operation unloaded to load another model, stayed cold until a
+/// request loaded it, and the coordinator cold-routes a model only to an idle
+/// machine, so behind a busy model outside the selection it never loaded:
+/// nothing retried it. Each such model now waits in `selectedModelRecovery`,
+/// and the capacity tick checks it when due (backoff from 30 s to 10 min; an
+/// unload makes it due at once). A check loads it without evicting: before
+/// the load it may unload only models outside the selection that no request
+/// could load back, that serve no request and hold no placement or pin, that
+/// meet Autopilot's own victim rules (`selectedModelRecoveryVictimWait`), and
+/// whose memory makes the room. It never evicts a selected model, so a
+/// recovered model is never displaced by another recovery. While a live
+/// Autopilot lease manages residency, recovery waits.
 extension ProviderLoop {
     /// The startup preload's candidates it left cold for memory or a slot
-    /// join the recovery (`finishStartupPreload`).
+    /// join the recovery (`finishStartupPreload`), as do the selected victims
+    /// of an Autopilot operation (`noteSelectedModelUnloaded`).
     func enqueueSelectedModelRecovery(_ ids: [String]) {
         let now = ContinuousClock.now
         let nowEpoch = Date().timeIntervalSince1970
@@ -58,10 +61,65 @@ extension ProviderLoop {
         }
     }
 
-    /// Selected models a recovery never evicts: the ordinary selection and
-    /// Autopilot pins.
+    /// An operation's victim waits for memory from the moment it leaves
+    /// residency, whether the operation then succeeds or fails, and whatever
+    /// its target. An unload-only operation removes models on purpose: it
+    /// queues nothing. Only models the recovery applies to join.
+    func noteSelectedModelUnloaded(_ id: String, by command: ModelAutopilotCommand) {
+        guard command.loadModelId != nil else { return }
+        enqueueSelectedModelRecovery([id])
+    }
+
+    /// Models a recovery never evicts: the ordinary selection, Autopilot
+    /// pins, and any advertised model a request could load straight back
+    /// (`autopilotAllowsModel`, such as inventory published under a live
+    /// lease), which would then evict the recovered model in turn. An
+    /// adoption ends with its residency, so an adopted model is no exception.
     func isProtectedFromRecoveryEviction(_ id: String) -> Bool {
         ordinaryServingModelIDs.contains(id) || autopilotPinnedModels.contains(id)
+            || (advertisedModels[id] != nil && autopilotAllowsModel(id))
+    }
+
+    /// Autopilot's own victim rules (`ModelAutopilotPolicy`) for a model that
+    /// still serves: resident `min_dwell_seconds`, no unexpired per-model
+    /// lease, and idle, from its last request or its hold's expiry
+    /// (`autopilotIdleSince`), for the longer of `victimMinimumIdle` and
+    /// `min_idle_seconds`. Returns what is unmet and when all of it will be;
+    /// nil when the rules let recovery evict it now.
+    func selectedModelRecoveryVictimWait(_ id: String, slot: ModelSlot, now: ContinuousClock.Instant)
+        -> (reasons: [String], until: ContinuousClock.Instant)? {
+        let settings = autopilotSettings
+        var reasons: [String] = []
+        var until = now
+        let dwell = Duration.seconds(settings.effectiveMinDwellSeconds)
+        let residentSince = autopilotResidentSince[id] ?? now
+        if now - residentSince < dwell {
+            reasons.append("resident \(Self.recoverySeconds(now - residentSince)) of Autopilot's "
+                + "\(Self.recoverySeconds(dwell)) minimum dwell")
+            until = max(until, residentSince.advanced(by: dwell))
+        }
+        if let lease = autopilotLeaseUntil[id], now < lease {
+            reasons.append("Autopilot lease for another \(Self.recoverySeconds(now.duration(to: lease)))")
+            until = max(until, lease)
+        }
+        let minimumIdle = max(SelectedModelRecovery.victimMinimumIdle, .seconds(settings.effectiveMinIdleSeconds))
+        let idleSince = autopilotIdleSince(id, lastInferenceAt: slot.lastInferenceAt)
+        if now - idleSince < minimumIdle {
+            reasons.append("idle \(Self.recoverySeconds(now - idleSince)) of the "
+                + "\(Self.recoverySeconds(minimumIdle)) recovery waits for")
+            until = max(until, idleSince.advanced(by: minimumIdle))
+        }
+        return reasons.isEmpty ? nil : (reasons, until)
+    }
+
+    /// The plan's verdict on one victim, rechecked right before its unload
+    /// against the plan's own instant: residency control or the victim's
+    /// state may have changed in between (a lease can begin, a request can
+    /// come and go).
+    private func selectedModelRecoveryMayStillEvict(_ id: String, plannedAt: ContinuousClock.Instant) -> Bool {
+        guard let slot = modelSlots[id], !isProtectedFromRecoveryEviction(id),
+              evictionExclusions(now: plannedAt)[id] == nil else { return false }
+        return !autopilotServesModel(id) || selectedModelRecoveryVictimWait(id, slot: slot, now: plannedAt) == nil
     }
 
     /// Run on every capacity tick: starts one attempt when an entry is due.
@@ -80,7 +138,7 @@ extension ProviderLoop {
             // The sample above suspended: recheck before taking ownership.
             guard selectedModelRecovery.attempt == nil, selectedModelRecoveryPauseReason() == nil,
                   selectedModelRecovery.entries[target] != nil else { return }
-            let task = Task { await self.attemptSelectedModelRecovery(target, evicting: victims) }
+            let task = Task { await self.attemptSelectedModelRecovery(target, evicting: victims, plannedAt: now) }
             selectedModelRecovery.attempt = (target, task)
         case .releaseAdoption(let id):
             guard selectedModelRecovery.attempt == nil, selectedModelRecoveryPauseReason() == nil else { return }
@@ -136,11 +194,11 @@ extension ProviderLoop {
                 }
                 continue
             }
-            let idleSince = autopilotIdleSince(id, lastInferenceAt: slot.lastInferenceAt)
-            if autopilotServesModel(id), now - idleSince < SelectedModelRecovery.victimMinimumIdle {
-                waits.append("\(id) (idle \(Self.recoverySeconds(now - idleSince)) of the "
-                    + "\(Self.recoverySeconds(SelectedModelRecovery.victimMinimumIdle)) recovery waits for)")
-                retryAt = Self.earlier(retryAt, idleSince.advanced(by: SelectedModelRecovery.victimMinimumIdle))
+            // A model nothing serves any more takes no new request: it waits
+            // for none of the victim rules.
+            if autopilotServesModel(id), let wait = selectedModelRecoveryVictimWait(id, slot: slot, now: now) {
+                waits.append("\(id) (\(wait.reasons.joined(separator: "; ")))")
+                retryAt = Self.earlier(retryAt, wait.until)
                 continue
             }
             victims.append((id, UInt64(max(0, slot.sizing.weightsBytes))))
@@ -196,11 +254,14 @@ extension ProviderLoop {
         return .init(usableBytes: Self.recoveryBytes(available), requiredBytes: Self.recoveryBytes(required))
     }
 
-    /// Evicts the planned victims, each rechecked by the eviction gate, then
-    /// loads the target without eviction. A refusal for memory, a slot or a
+    /// Evicts the planned victims, each rechecked against the plan's rules
+    /// and then by the eviction gate, and loads the target without eviction.
+    /// A victim that no longer qualifies ends the attempt before any further
+    /// unload; the next check plans again. A refusal for memory, a slot or a
     /// transient state keeps the target waiting; any other failure ends its
     /// recovery (the request path still loads it on demand).
-    private func attemptSelectedModelRecovery(_ target: String, evicting victims: [String]) async {
+    private func attemptSelectedModelRecovery(_ target: String, evicting victims: [String],
+                                              plannedAt: ContinuousClock.Instant) async {
         defer {
             selectedModelRecovery.attempt = nil
             writeDaemonState()
@@ -208,6 +269,14 @@ extension ProviderLoop {
         writeDaemonState()
         for victim in victims {
             guard !Task.isCancelled, !isShuttingDown else { return }
+            if let reason = selectedModelRecoveryPauseReason() {
+                selectedModelRecovery.pause(target, blocker: reason, now: .now)
+                return
+            }
+            guard selectedModelRecoveryMayStillEvict(victim, plannedAt: plannedAt) else {
+                selectedModelRecovery.pause(target, blocker: "\(victim) changed before it could be evicted", now: .now)
+                return
+            }
             logger.info("Selected-model recovery: evicting idle \(victim) (outside the selection) to load \(target)")
             guard await unloadModel(victim, forEviction: true) else {
                 selectedModelRecovery.deferCheck(target, blocker: "\(victim) became busy before it could be evicted",

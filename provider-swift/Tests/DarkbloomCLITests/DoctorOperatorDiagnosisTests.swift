@@ -92,6 +92,50 @@ struct DoctorOperatorDiagnosisTests {
         }
     }
 
+    /// A connected daemon the coordinator does not authorize looks healthy in
+    /// every other check; `coordinator traffic` fails with the cause and fix.
+    @Test("coordinator traffic fails for a connected but unauthorized daemon and passes when authorized")
+    func coordinatorTraffic() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            try sandbox.makeModel("acme/Warm-4bit")
+            ModelScanner.configureCacheDirectory(sandbox.cache.path)
+            CoordinatorStub.install([
+                "/v1/releases/latest": .init(
+                    status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
+            ])
+            func diagnose(_ authorization: ProviderAuthorizationStatus) async throws -> Diagnostic {
+                let now = Date().timeIntervalSince1970
+                var state = try CLICommandSandbox.runningState(
+                    now: now,
+                    trust: .init(trustLevel: "self_signed", status: "online",
+                                 reason: "Provider authorization updated", receivedAt: now - 30,
+                                 authorization: authorization),
+                    currentModel: "acme/Warm-4bit", warmModels: ["acme/Warm-4bit"],
+                    advertisedModels: ["acme/Warm-4bit"])
+                state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+                sandbox.writeState(state)
+                let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
+                    snapshot: try sandbox.snapshot(hardware: CLICommandSandbox.hardware),
+                    coordinatorURL: CLICommandSandbox.coordinatorURL)
+                return try #require(diagnosis.first { $0.name == "coordinator traffic" })
+            }
+
+            let blocked = try await diagnose(ProviderAuthorizationStatus(
+                appAttestAvailable: true, path: "none", reason: "app_attest_keychain_error",
+                sessionID: "session", machineID: ""))
+            #expect(blocked.section == .traffic)
+            #expect(blocked.level == .fail)
+            #expect(blocked.message.hasPrefix("NOT receiving coordinator work: the coordinator is not routing work here: the login keychain"))
+            #expect(blocked.fix?.hasPrefix("log in at this Mac's console to unlock the login keychain") == true)
+
+            let eligible = try await diagnose(CLICommandSandbox.appAttestAuthorization(now: Date().timeIntervalSince1970))
+            #expect(eligible.level == .pass)
+            #expect(eligible.message.hasPrefix("eligible for coordinator work (App Attest authorized until "))
+        }
+    }
+
     @Test("a fresh self-signed daemon explains its trust level and an up-to-date version")
     func freshSelfSignedDaemon() async {
         await #expect(processExitsWith: .success) {

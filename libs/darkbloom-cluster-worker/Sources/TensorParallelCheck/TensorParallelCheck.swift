@@ -258,7 +258,7 @@ enum RunCommand {
         let environment = ProcessInfo.processInfo.environment
         let recorded = ["MLX_METAL_FAST_SYNCH", "MLX_ENABLE_TF32", "DARKBLOOM_BF16_WEIGHTS",
                         "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "MLX_QUANTIZED_CONSTANT_CACHE", "DARKBLOOM_TP_DIAG_COPY_WEIGHTS",
-                        "DARKBLOOM_QWEN35_FUSE_ELEMENTWISE"]
+                        "DARKBLOOM_QWEN35_FUSE_ELEMENTWISE", ClusterQuantizedRowRouting.variable]
         let snapshot = Dictionary(uniqueKeysWithValues: recorded.compactMap { key in environment[key].map { (key, $0) } })
 
         var group: QwenTensorParallelGroup?
@@ -474,6 +474,8 @@ enum CompareCommand {
 @main enum TensorParallelCheck {
     static func main() {
         do {
+            // Before anything native: the workers' row routing (`ClusterQuantizedRowRouting`).
+            FileHandle.standardError.write(Data((ClusterQuantizedRowRouting.apply(source: "tp-check") + "\n").utf8))
             if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "glm" {
                 try GLMBench.run(Array(CommandLine.arguments.dropFirst(2)))
                 return

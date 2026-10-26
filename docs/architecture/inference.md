@@ -2839,6 +2839,18 @@ cohort's width. Now each window position equals that plain step byte for byte
 (logits, captured hidden row and settled history, on both ranks), and each row
 equals itself alone.
 
+Products that still go through MLX's own quantized kernels keep a row's bits
+at every row count through the cluster core's `MLX_QMV_BATCH_INVARIANT=1`, which
+every cluster process (worker, single-Mac reference, tensor-parallel check) sets
+before anything native unless its launcher chose a value
+(`ClusterQuantizedRowRouting`, logged as `darkbloom-qmv-batch-invariant-v1`):
+the core then runs 2 to (vector limit - 1) rows on qmv_wide, instead of the
+routes MLX main added for those counts (upstream #4712: NVFP4, MXFP4 and MXFP8
+at 6-16 rows; #4682: affine split-K from 8 rows), whose bits change with the
+row count. One row still takes qmv, whose bits differ from qmv_wide's, so a path
+that must equal a single row keeps it in a launch of single rows, as before.
+Single-Mac serving leaves the switch off and keeps MLX main's kernels.
+
 The arithmetic is one per process, resolved at start from the GPU family and the
 weight's packing only, never from timing: its form (MLX qmv's scaled inputs, or
 dequantized weights, each weight `s * q + b` rounded once and then one fused

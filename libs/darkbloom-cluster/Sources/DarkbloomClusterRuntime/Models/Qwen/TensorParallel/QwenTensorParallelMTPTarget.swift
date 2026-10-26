@@ -106,13 +106,18 @@ final class QwenTensorParallelTargetWindow {
             ?? (packed || !submitsByLayer ? 0 : QwenTensorParallelBatchSession.decodeLayerStride)
     }
 
-    /// Diagnostic only: `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=0` evaluates
-    /// every window whole, as before layer-by-layer submission, for an A/B on
-    /// the pair. An installed owner never forwards it to a rank; both ranks
-    /// bind the choice into their load agreement (`agreementFields`), so a
-    /// pair never mixes them. Evaluation order only: the same values.
+    /// Verify windows are evaluated whole by default. On two M5 Ultra 256 GB
+    /// serving the 27B pair with the main-merged MLX core, layer-by-layer
+    /// submission (an `asyncEval` after every decoder layer) made a solo
+    /// request 15 % slower (51 against 60 tok/s) and four concurrent requests
+    /// 5 % slower (90 against 95 tok/s aggregate), with identical outputs.
+    /// Diagnostic only: `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=1` submits
+    /// windows by layer again, for an A/B on the pair. An installed owner never
+    /// forwards it to a rank; both ranks bind the choice into their load
+    /// agreement (`agreementFields`), so a pair never mixes them. Evaluation
+    /// order only: the same values.
     static let submitsByLayer =
-        ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION"] != "0"
+        ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION"] == "1"
 
     /// Bound into the tensor-parallel load agreement.
     static var agreementFields: [String] {

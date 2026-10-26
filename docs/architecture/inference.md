@@ -4736,7 +4736,13 @@ decodes under `Qwen35LayerSubmission` with a stride of one layer
 built (`asyncEval`), so that layer's kernels and collectives run while the host
 builds the next. The driver plans a step only after the previous step's tokens
 are known, so the request-owned path cannot build one step ahead as the retired
-single-lane loop did; submitting by layer hides the graph build instead. The
+single-lane loop did; submitting by layer hides the graph build instead.
+Speculative verify windows are evaluated whole instead
+(`QwenTensorParallelTargetWindow.submitsByLayer` off): with the main-merged MLX
+core, an `asyncEval` after every layer of a window cost a solo 27B request on two
+M5 Ultras 15 % (51 against 60 tok/s) and four concurrent requests 5 %, with
+identical outputs; `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=1` restores it for
+an A/B. The
 native executor encodes decode steps, assistant rounds and their selection into
 command buffers of up to 100 operations
 (`QwenTensorParallelBatchSession.decodeCommandBuffers`, as GLM's TP decode does)

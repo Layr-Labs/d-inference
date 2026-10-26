@@ -7,16 +7,16 @@ import MLXNN
 import Testing
 @testable import DarkbloomClusterRuntime
 
-/// A verify window is submitted layer by layer by default
+/// A verify window is evaluated whole by default
 /// (`QwenTensorParallelTargetWindow.layerStride`), and
-/// `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=0` evaluates it whole for a
-/// diagnosis: evaluation order only, so a window has the same logits, hidden
+/// `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=1` submits it layer by layer for
+/// a diagnosis: evaluation order only, so a window has the same logits, hidden
 /// rows and settled history either way, on both ranks; the choice is bound
 /// into the load agreement. GPU checks run with `QWEN_TP_MTP_GPU=1`.
 @Suite(.serialized)
 struct QwenTensorParallelWindowSubmissionTests {
-    @Test func windowsAreSubmittedByLayerUnlessTheDiagnosisSaysWhole() {
-        let whole = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION"] == "0"
+    @Test func windowsAreEvaluatedWholeUnlessTheDiagnosisSaysByLayer() {
+        let whole = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION"] != "1"
         #expect(QwenTensorParallelTargetWindow.submitsByLayer == !whole)
         #expect(QwenTensorParallelTargetWindow.layerStride(packed: false)
             == (whole ? 0 : QwenTensorParallelBatchSession.decodeLayerStride))

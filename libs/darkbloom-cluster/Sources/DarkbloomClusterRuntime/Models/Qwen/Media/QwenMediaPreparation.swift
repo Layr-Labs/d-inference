@@ -47,6 +47,8 @@ final class QwenMediaPreparation: @unchecked Sendable {
         if cancelled { return .cancelled }
         return values == nil ? .failed : .prepared
     } }
+    /// The ended task's own error, unconsumed, when it failed.
+    var error: Error? { lock.withLock { done && !cancelled ? failure : nil } }
     func cancel() { lock.withLock { cancelled = true; task?.cancel() } }
     func take() throws -> [[Float]] {
         try lock.withLock {

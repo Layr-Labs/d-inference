@@ -570,6 +570,10 @@ final class WorkerCoordinator: @unchecked Sendable {
             do {
                 let bytes = try runtime.reserveLane(command.requestID!, value)
                 try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
+            } catch let refusal as ClusterResidentRequestRefusal where runtime.readiness != nil {
+                // This request alone, for the reason the runtime named (its own
+                // log line says why); the lanes that run go on.
+                try publish(.refused(refusal.reason), requestID: command.requestID)
             } catch {
                 let available = runtime.readiness != nil
                 try publish(.refused(available ? .capacity : .unavailable), requestID: command.requestID)

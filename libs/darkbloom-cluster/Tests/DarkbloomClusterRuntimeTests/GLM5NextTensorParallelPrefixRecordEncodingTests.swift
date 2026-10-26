@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -187,6 +188,39 @@ struct GLM5NextTensorParallelPrefixRecordEncodingTests {
             let exact = try #require(native.read(boundary: frontier, prompt: prompt, scope: native.scope(chunk: Self.chunk),
                 stop: { false }))
             #expect(Self.bytes(exact.histories[3]![0]) == record.keys[3]!)
+        }
+    }
+
+    /// A tenant's encoded records are its own (`GLM5NextTensorParallelResidentRuntime.prefixDiskScope`
+    /// keys a request's records by its partition): found, offered and read only under that tenant.
+    @Test func aTenantsEncodedRecordsAreItsOwn() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("glm-tp-tenant-\(UUID().uuidString)",
+                isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let frontier = 192, prompt = (0 ..< frontier + 3).map { 9 + ($0 * 5) % 31 }
+            let a = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-a"))
+            let b = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-b"))
+            let disk = try Self.open(root, records: Self.balanced)
+            defer { disk.tier.close() }
+            let plain = disk.scope(chunk: Self.chunk)
+            let scopeA = try #require(ClusterWorkerPrefixCache.scope(plain, a))
+            let scopeB = try #require(ClusterWorkerPrefixCache.scope(plain, b))
+            #expect(ClusterWorkerPrefixCache.scope(plain, nil) == plain)
+            #expect(ClusterWorkerPrefixCache.scope(plain, .disabled) == nil)
+            #expect(Set([scopeA, scopeB, plain]).count == 3)
+            let record = Self.synthetic(frontier: frontier)
+            disk.tier.persist(scope: scopeA, tokens: prompt, states: [record.state], blockTokens: Self.chunk,
+                attentionRows: record.rows)
+            #expect(disk.tier.drain(timeoutSeconds: 60) && disk.tier.recordCount == 1)
+            let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: Self.chunk)
+            #expect(disk.boundaries(scope: scopeA, prompt: prompt, candidates: candidates) == [frontier])
+            #expect(disk.boundaries(scope: scopeB, prompt: prompt, candidates: candidates).isEmpty)
+            #expect(disk.boundaries(scope: plain, prompt: prompt, candidates: candidates).isEmpty)
+            #expect(disk.read(boundary: frontier, prompt: prompt, scope: scopeB, stop: { false }) == nil)
+            let restored = try #require(disk.read(boundary: frontier, prompt: prompt, scope: scopeA, stop: { false }))
+            #expect(restored.frontier == frontier && Self.bytes(restored.nextN![0]) == record.keys[8]!)
         }
     }
 }

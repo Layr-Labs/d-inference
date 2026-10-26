@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1394,6 +1394,38 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 
 Environment variables are named here, never defaulted; defaults live in
 [`../reference/configuration.md`](../reference/configuration.md).
+
+### Gemma 4 native dispatch
+
+The pinned SDK reduces Gemma 4 dispatch overhead in the shared text tower.
+`Gemma4MLP` uses the existing compiled GeGLU product for matching GPU
+FP16/BF16/FP32 inputs; CPU execution, mixed dtypes and disabled compiled decode
+retain the prior expression. The intermediate dtype and model parameter names,
+quantization, loaders and adapter paths are preserved. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`
+(`gemma4GeluProduct`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift`
+(`compiledGeGLU`).
+
+For the production Gemma 4 MoE geometry with global affine4/group64
+quantization, `Gemma4DecodeCommandBuffers` supplies the existing CBv2 scoped
+command-buffer policy. It changes submission boundaries while preserving kernel
+arithmetic, data dependencies and synchronization correctness. Existing step-width,
+admission and memory-pressure checks remain in effect; paged attention, prefix
+caching and SSD write policy are unchanged. See the
+[hardware and memory qualification](hardware-support.md#gemma-4-dispatch-qualification)
+for the thresholds and their resource-lifetime limits. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`.
+
+An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/a7cf16a1720ed063bde806edcc1f56039950d80a/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
+`gemma-4-26b-qat-4bit` on one M5 Max measured a 3.45% and 3.90% improvement in
+the two paired orderings of the HTTP decode proxy: approximately 99.2–99.6 to
+103.0–103.1 tok/s. Each leg used two fixed single-request prompts with 8,192
+cached tokens and 256 completion tokens, with exact MTP acceptance in both arms.
+Outputs and completion usage matched; the same candidate passed 12 endpoint
+capability smokes. The measurement combines both changes and establishes no
+prefill, broader-concurrency or sustained-load gain. The shared tower serves
+text and VLM callers; downstream clustering users receive the implementation
+when they adopt this SDK revision. Clustering and non-M5 performance are unmeasured.
 
 ### Prompt geometry
 

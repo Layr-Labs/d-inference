@@ -204,8 +204,6 @@ struct GLM5NextTensorParallelPrefixDiskTests {
         #expect((attributes[.posixPermissions] as? Int) == 0o700)
     }
 
-    /// Records are found only under their own scope and prompt: another
-    /// grid, history storage, plan or prompt finds nothing.
     /// A request's records live in its own partition (`prefixDiskScope`): a
     /// tenant's scope differs from the plain one and from another tenant's,
     /// so none of them is offered, read or written for another; a request
@@ -234,6 +232,8 @@ struct GLM5NextTensorParallelPrefixDiskTests {
         #expect(Runtime.prefixDiskScope(nil, chunk: Self.chunk, request: try request(a), resident: "load") == nil)
     }
 
+    /// Records are found only under their own scope and prompt: another
+    /// grid, history storage, plan or prompt finds nothing.
     @Test func aRecordIsFoundOnlyUnderItsScopeAndPrompt() throws {
         try Device.withDefaultDevice(.cpu) {
             let root = try glmRoot()

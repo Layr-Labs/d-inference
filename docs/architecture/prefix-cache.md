@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-24
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -114,7 +114,10 @@ production-key restart checks remain subject to the
 [acceptance criteria](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
-`gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b`, the exact MiMo identities below and the
+managed `nvidia-nemotron-3.5-super` slot, whose complete checkpoints replace
+its resident bank unless the operator selects the bank (see
+[`inference.md`](inference.md#managed-nemotron-super-slot)).
 GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
 eligible native contiguous fallback uses a distinct complete layout rather than
 reinterpreting the paged file. Gemma automatic MTP resolves its catalog
@@ -137,10 +140,19 @@ proof of paged execution
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
 
-The prototype full-state codec adds the distinct
-`native-paged-glm5next-full-state-v1` layout, preserving the asymmetric payload
+The full-state codec adds the distinct
+`native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
 and exact convolution/recurrence state
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+Roles that only widen an activation dtype are stored at that dtype and widened
+back exactly on restore; the
+[SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
+the roles, their wire dtypes and the retired v1 layout. Under the default
+`balanced` checkpoint precision the protected tuple binds the distinct
+`native-paged-glm5next-affine-checkpoint-full-state-v1` store instead: older
+latent rows are coded and restore approximately, while the index/gate/validity
+rows, KDA state and MTP history restore exactly
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)).
 Its existence does not add a qualified provider cache capability. Complete reuse
 still requires one accepted frontier across sparse pages, convolution/recurrence
 and trained MTP, charged import/export ownership, the protected native binding,
@@ -311,7 +323,10 @@ replay error cannot persist into full-attention state
 
 Both tiers require `DARKBLOOM_PREFIX_CACHE_MEMORY=1` and the global cache
 switch to remain enabled (`PrefixCachePolicy.isMemoryEnabled`). They retain
-no reusable payloads by default. The measurements in this section describe the
+no reusable payloads by default. GLM-5.3-Flash's protected engine hosts
+neither tier: with the opt-in set, its slot logs that it ignores it and keeps
+its complete SSD checkpoints instead of refusing the load
+(`EngineV2SlotFactory.makeProductionBundle`). The measurements in this section describe the
 previous resident implementation, not SSD performance.
 
 | Tier | Lookup and ownership | Gate |
@@ -407,7 +422,11 @@ reservations described above.
 Only the recurrent bank currently publishes resident-ready routing evidence.
 It requires verified weight and prompt-contract identities to advertise
 `prefix_cache_memory_models`; local reuse can operate without the attested
-weight hash because entries never cross loaded model instances. Paged resident
+weight hash because entries never cross loaded model instances. The managed
+Nemotron Super owner supplies them from its own load
+(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see
+[`inference.md`](inference.md)), and binds its default complete SSD
+checkpoints to the same identity. Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
 [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
@@ -644,6 +663,37 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 (`canScheduleDemandedShortCheckpoint`) and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
+
+GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
+no solo stripe and its prefill chunk shares one 2,048-token step budget with
+the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).
+Beside a decoding request every range is 2,044–2,047 tokens and none ends on
+the 256-token grid, so such a donor captured nothing, with no disarm or counter
+(one of six donors in a concurrent burst). The protected GLM engine with its
+GLM store therefore sets `CBv2SchedulerConfig.demandedCaptureBoundaryMinimumTokens`
+to the store floor (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`). A
+request the store would write (a hint at or above the floor, or no hint) ends a
+range at its hinted fork target and at the deepest aligned boundary below its
+prompt end, whatever chunk its company left it. A range that would stop less
+than one 128-token query block short of such a boundary ends on the query grid
+instead, so the range that reaches the boundary keeps the ordinary prefill
+kernels. A hint below the floor marks a fleet-novel prompt and keeps the
+ordinary geometry. The same cut lowers GLM's reuse granularity from 2,048 to
+256 tokens (a 32,682-token prompt publishes 32,512 instead of 30,720). GLM
+adopters resume under ordinary chunking: a forced donor-sized chunk waited
+whenever decode rows shortened the budget and cold-restarted the hit after
+three waits
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
+`completeCheckpointLookup`). GLM's cold prefill depends
+on its partition (the KDA four-token groups, the attention history/current
+split and MoE routing), so as for the MoE Qwen a checkpoint is exactly the
+state its own donor computed. On an M5 Ultra, solo donors of one prompt wrote
+bit-identical checkpoints; a donor beside decoding requests differed from its
+first partial KDA group on (relative L2 about 0.1 in the deepest layers), and
+first-token logprobs of three partitions spread over 0.1 nat while each
+partition repeated exactly. The partition is `demandedCaptureBoundaryRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+it shares `demandedCheckpointRange` with the first-token projection.
 
 The benchmark SPI can explicitly select
 `EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure

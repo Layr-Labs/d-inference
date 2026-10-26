@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-25
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -51,11 +51,12 @@ cold-load routing, which compare it and the 3 GiB load headroom with
 GiB available on 128 GB until the platform adopts a Super-specific rule. The
 footprint holds no media, and an image request is
 charged its whole reservation (`NemotronSuperServingPolicy.mediaChargeBytes`,
-3.62 GiB for one image: a 64 Mi-pixel decode workspace, the encoded body
-copies, a 13,312-patch image's tokens and its tower and projector bound; a
-video's largest, `videoMediaChargeBytes`, is 3.49 GiB). On 128 GB the default
-owner's claim and activation reserve leave 13.9 GiB of the cap, so a 16-image
-request (24.5 GiB of media) does not fit beside it. A resident slot's media
+4.67 GiB for one image: the ingress quote of a 40 MiB body, a 64 Mi-pixel
+decode workspace, the encoded body copies, a 13,312-patch image's tokens and
+its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
+4.54 GiB). On 128 GB the default owner's claim and activation reserve leave
+13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
+beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
@@ -223,6 +224,15 @@ GLM publication or clean retirement until restart. Pending operations are joined
 before settlement; no timeout or cancellation is restoration proof
 (`GLM5NextWiredResidency`, `GLM5NextNativeOperationOwner`).
 
+GLM's KV grant fills the cap, so at full KV its GPU use is the whole cap, about
+247 GB on a 256 GB M5 Ultra. The macOS default GPU wired-memory limit there is
+smaller, and Metal command buffers past it fail with "Insufficient Memory".
+The provider neither lowers the cap nor changes admission for this; `doctor`,
+`start` and failure logs give the operator the
+[sysctl values](../provider/hardware-requirements.md) instead
+(`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
+`GLM5NextWiredLimit`).
+
 `GLM5NextConstructionOwner` retains actual partial-load roots before evaluation.
 `GLM5NextArtifactLoadRoots` retires individual expert sources only after the
 packed bank's checked evaluation, then retains completed modules instead of a
@@ -244,6 +254,13 @@ the actual managed-load reservation and post-load guards.
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
     -- defaultActivationReserveBytes + minimumLoadKVBytes by default;
     -- measuredActivationFloorsBytes["gpt-oss-20b"] + minimumLoadKVBytes for a gpt-oss-20b-only serving set
+
+systemAvailable (SystemMemory.availableBytes, default `reclaimable` policy; pages × page size)
+    = max(free_count + inactive_count,
+          (free_count − speculative_count) + external_page_count + purgeable_count)
+    -- never below free + inactive; the second measure counts page cache (speculative
+    -- read-ahead once) and volatile purgeable pages, never anonymous or compressor
+    -- pages; `free-only` = free_count
 
 freeForLoadGb(total, systemAvailable, gpuActive, gpuCache, reserve, outstanding)
     mlxUsed   = gpuActive + gpuCache
@@ -330,6 +347,26 @@ load would have evicted, and that load then fails this gate after acceptance.
 The gate, pending-load claims and eviction still decide every load. Native MiMo
 keeps the serial FIFO, and `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores it for
 every model.
+
+An unexpired Autopilot placement hold removes its slot from every eviction
+snapshot (`ProviderLoop.evictableModelSlots`), and `free_for_load_gb` gives the
+held weights no reclaim credit (`ProviderLoop.autopilotHeldWeightBytes`). A load
+that fits only by evicting a held slot fails with the ordinary slot or
+insufficient-memory refusal; see [Autopilot placements](model-autopilot.md#placements-after-an-operation).
+`ProviderLoop.evictionExclusions` is the one definition of what an eviction
+snapshot skips: an Autopilot pin while Autopilot protects pins, an unexpired
+hold, requests in flight, a local request or self-test, an unloading slot and a
+retained MTP upgrade target. When a load that may evict (not startup preload, an
+Autopilot operation's target or a revision update, which pass
+`allowEviction: false`) is refused at the slot cap or by the eviction gate
+(`ProviderLoop.evictUntilAvailable`, `evictUntilNemotronSuperFits`) while any
+resident model is excluded, the refusal ends with `Not evictable:` and, for each
+excluded model, its resident GB and every reason (with the hold's UTC expiry,
+and whether Autopilot adopted it outside the selected models). A refusal that
+found no candidate says `all loaded models are actively serving` only when each
+of them is serving work, and `no loaded model can be evicted` otherwise. The
+daemon state publishes the same exclusions (`eviction_exclusions`) and the
+ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
@@ -676,7 +713,7 @@ and recurrent checkpoints keep the stock kernel's bits. No chip list decides
 this: in each process, the first eligible window of each kernel instantiation
 runs the candidates and the stock kernel on a fixed 32-position window on that
 GPU and keeps the first exact candidate, or else the stock kernel
-(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift`,
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`,
 `GatedDeltaPrefill.probe`). The probe does not compare speed; where a kept
 kernel is slower, `DARKBLOOM_TTFT_GDN_BLOCKED`
 ([configuration](../reference/configuration.md#engine-and-scheduler)) restores
@@ -740,7 +777,7 @@ grant or reported capacity field changes, so
 | Concern | File / symbol |
 |---|---|
 | Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`; Nemotron Super: `provider-swift/Sources/ProviderCore/NemotronSuper/ProviderLoop+NemotronSuperAdmission.swift`; eviction exclusions and `Not evictable:` reasons: `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` (`evictionExclusions`) |
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |

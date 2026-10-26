@@ -176,6 +176,42 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
     }
 
+    /// A complete response carries its stream's logprob entries: each token's
+    /// entry waits for a chunk that shows reasoning or content. A reply that
+    /// ends with its call carries none for the call, `</think>` before it or the
+    /// stop token; text after the call carries them, as in the stream.
+    func testCompleteLogprobsCarryTheStreamsEntries() throws {
+        let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",
+                    "\n</parameter>", "\n</function>", "\n</tool_call>"]
+        // Each chunk's entry is produced before the chunk, as the bridge does;
+        // the stop token produces an entry and no chunk.
+        func carried(_ extra: String, _ chunks: [String], stop: Bool = true) throws -> [String] {
+            let channel = EngineV2LogprobsChannel()
+            var logprobs = try NemotronSuperCompleteLogprobs(plan: plan(extra), carried: channel)
+            for chunk in chunks {
+                logprobs.produced.append([.init(token: chunk, logprob: -1, bytes: nil, topLogprobs: [])])
+                logprobs.accept(chunk)
+            }
+            if stop { logprobs.produced.append([.init(token: "<|im_end|>", logprob: -1, bytes: nil, topLogprobs: [])]) }
+            logprobs.finish()
+            return channel.drain().map(\.token)
+        }
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>"] + call), ["Use tool."])
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>", "Checking."] + call),
+                       ["Use tool.", "</think>", "Checking."])
+        XCTAssertEqual(try carried(Self.weather, ["Use tool.", "</think>"] + call + ["\n"]),
+                       ["Use tool.", "</think>"] + call + ["\n"])
+        XCTAssertEqual(try carried("", ["Plan", "</think>", "Hi"]), ["Plan", "</think>", "Hi"])
+        XCTAssertEqual(try carried("", ["Plan", " it."], stop: false), ["Plan", " it."])
+        // A held JSON answer shows at the end, with every entry before it.
+        XCTAssertEqual(try carried(#""response_format":{"type":"json_object"}"#, ["</think>", "{\"a\"", ": 1}"]),
+                       ["</think>", "{\"a\"", ": 1}", "<|im_end|>"])
+        // Once the split refuses the output (the complete response fails the
+        // same check), nothing more is carried.
+        XCTAssertEqual(try carried(Self.weather + #","tool_choice":"required""#, ["Plan", "</think>", "Sure."]),
+                       ["Plan"])
+    }
+
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
         var schema = try output(Self.weather)
@@ -237,11 +273,18 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
     }
 
     func testPlanRefusesUnsupportedControlsAndFormatsOnce() throws {
-        for extra in [#""logprobs":true"#, #""top_logprobs":2"#, #""prompt_cache_key":"k""#, #""n":2"#,
-                      #""min_p":0.1"#, #""tool_call_parser":"json""#, #""reasoning_parser":"qwen3""#,
-                      #""response_format":{"type":"json_object"},"# + Self.weather] {
+        for extra in [#""top_logprobs":21"#, #""top_logprobs":-1"#, #""prompt_cache_key":"k""#, #""n":2"#,
+                      #""min_p":0.1"#, #""tool_call_parser":"json""#, #""reasoning_parser":"qwen3""#] {
             XCTAssertThrowsError(try plan(extra), extra)
         }
+        // Logprobs are served: OpenAI's `logprobs: true` with 0...20 alternatives.
+        XCTAssertEqual(try plan(#""logprobs":true,"top_logprobs":20"#).topLogprobs, 20)
+        XCTAssertEqual(try plan(#""logprobs":true,"top_logprobs":0"#).topLogprobs, 1)
+        XCTAssertEqual(try plan(#""logprobs":true"#).topLogprobs, 1)
+        XCTAssertEqual(try plan(#""top_logprobs":3"#).topLogprobs, 0)
+        XCTAssertEqual(try plan(#""logprobs":false"#).topLogprobs, 0)
+        // A JSON response format with tools is served: calls, or a validated JSON answer.
+        XCTAssertNoThrow(try plan(#""response_format":{"type":"json_object"},"# + Self.weather))
         let body = Data(("{\"model\":\"" + NemotronSuperLocalBinding.modelID
             + #"","messages":[{"role":"user","content":"q"}],"response_format":{"type":"json_object"}}"#).utf8)
         let direct = try NemotronSuperRequestPlan(body: body)
@@ -263,7 +306,7 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         }
         let marked = body(#"{"type":"string","x-darkbloom-original-boolean-schema":true}"#)
         let forged = MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "tool schema contains reserved internal metadata")
+            "tool schema contains reserved internal metadata", refusal: .reservedToolSchemaMetadata)
         XCTAssertThrowsError(try NemotronSuperRequestPlan(body: marked)) {
             XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, forged)
         }

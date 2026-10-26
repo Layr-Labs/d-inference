@@ -155,13 +155,6 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            // This refusal's fixed text names the accepted controls; the closed
-            // failure-code message alone would not tell the caller what to send.
-            if case .reasoningExclusionUnsupported? = error as? MultiModelBatchSchedulerEngineError {
-                return Self.openAIErrorResponse(
-                    status: status, message: GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage,
-                    code: "unsupported_value")
-            }
             return Self.openAIErrorResponse(status: status, message: failure.message)
         }
     }

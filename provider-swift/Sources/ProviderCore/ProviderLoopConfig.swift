@@ -10,6 +10,9 @@ public struct ProviderLoopConfig: Sendable {
     public let models: [ModelInfo]
     /// Verified cached candidates, separate from ordinary serving permission.
     public let autopilotInventory: [ModelInfo]
+    /// Cached catalog builds to verify in the background before they join the
+    /// Autopilot set; nil without saved consent.
+    public let autopilotPendingCandidates: AutopilotStartInventory.Pending?
     public let config: ProviderConfig
     /// The running CLI's resolved config; nil for embedded/test instances.
     public let configPath: URL?
@@ -39,12 +42,14 @@ public struct ProviderLoopConfig: Sendable {
         modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil,
         configPath: URL? = nil,
-        autopilotInventory: [ModelInfo] = []
+        autopilotInventory: [ModelInfo] = [],
+        autopilotPendingCandidates: AutopilotStartInventory.Pending? = nil
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
         self.models = models
         self.autopilotInventory = autopilotInventory
+        self.autopilotPendingCandidates = autopilotPendingCandidates
         self.config = config
         self.configPath = configPath
         self.authToken = authToken

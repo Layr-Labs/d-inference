@@ -27,6 +27,15 @@ class HistoricalSourceLinkTests(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
+            # No detached auto-maintenance or auto-gc in the fixture
+            # repositories: a background Git process that is still writing
+            # into .git when the temporary directory is removed fails the
+            # cleanup with "Directory not empty: '.git'".
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "maintenance.auto",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "gc.auto",
+            "GIT_CONFIG_VALUE_1": "0",
         })
         self.git("init", "-q")
         self.git("config", "user.name", "Docs fixture")

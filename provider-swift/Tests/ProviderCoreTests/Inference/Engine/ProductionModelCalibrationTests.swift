@@ -42,7 +42,7 @@ struct ProductionModelCalibrationTests {
                 $0.phase == "prefill" && $0.promptTokenBucket == 1_024 && $0.contention == "isolated"
             })
             #expect(await bridge.productionCalibrationWorkCounters() == [0, 0, 0, 0])
-            #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+            try await requireEngineIdle(engine, budget: budget)
             #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
             await bridge.shutdown()
             #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
@@ -65,10 +65,10 @@ struct ProductionModelCalibrationTests {
         #expect(measurements.decode?.sampleCount == 2)
         #expect(measurements.workloadBuckets.allSatisfy { $0.promptTokenBucket == 1_024 })
         #expect(await bridge.productionCalibrationWorkCounters() == [0, 0, 0, 0])
+        try await requireEngineIdle(engine, budget: budget)
         // Calibration alone decodes 7 + 31 + 31 rows; the solo (16) and width-2
         // (2 x 12) warmup cells add 15 + 22 more.
         #expect(engine.capacity().decodeRowsTotal >= 69 + 30, "\(engine.capacity().decodeRowsTotal)")
-        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         #expect(!(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false)))
         await bridge.shutdown()
     }
@@ -115,10 +115,10 @@ struct ProductionModelCalibrationTests {
         #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
         await bridge.awaitProductionCalibration()
         #expect(await bridge.shapeWarmupCompletedTest())
+        try await requireEngineIdle(engine, budget: budget)
         // The width-2 cell decodes 2 x 11 rows; rerunning the solo cell adds 15.
         let rows = engine.capacity().decodeRowsTotal - before
         #expect(rows > 0 && rows < 22 + 15, "\(rows)")
-        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
 
@@ -143,11 +143,11 @@ struct ProductionModelCalibrationTests {
         #expect(await bridge.shapeWarmupCompletedTest())
         let probes = await bridge.shaderCacheProbeTest()
         #expect(probes.cold == false && probes.runs == 2, "\(probes)")
+        try await requireEngineIdle(engine, budget: budget)
         // Each greedy 2-token probe decodes one row; no shape cell ran.
         #expect(engine.capacity().decodeRowsTotal == 2, "\(engine.capacity().decodeRowsTotal)")
         #expect(await bridge.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
         #expect(await bridge.productionCalibrationWorkCounters() == [0, 0, 0, 0])
-        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
 
@@ -216,7 +216,7 @@ struct ProductionModelCalibrationTests {
         let tries = ModelCalibrationPolicy.shapeWarmupCellTries
         #expect(await bridge._testCounters().admits - admits == 3 * tries)
         #expect(await bridge.backendSlotCapacity().performanceMeasurements?.isolatedPrefill == nil)
-        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        try await requireEngineIdle(engine, budget: budget)
         await bridge.shutdown()
     }
 
@@ -250,9 +250,11 @@ struct ProductionModelCalibrationTests {
         #expect(await bridge.effectiveServingConcurrency == 2)
         #expect(await bridge.shapeWarmupDue)
         admits = await bridge._testCounters().admits
+        try await requireEngineIdle(engine, budget: budget)
         let rows = engine.capacity().decodeRowsTotal
         #expect(await bridge.startShapeWarmupIfNeeded(requireNominalPosture: false))
         await bridge.awaitProductionCalibration()
+        try await requireEngineIdle(engine, budget: budget)
         #expect(await bridge.shapeWarmupWidthTest() == 2)
         #expect(await bridge._testCounters().admits - admits == 2, "the solo cell does not rerun")
         // The width-2 cell decodes 2 x 11 rows; a solo rerun would add 15.
@@ -298,6 +300,21 @@ struct ProductionModelCalibrationTests {
         }
         await server.removeShapeWarmupSlots()
         #expect(budget.serviceBudget.count == 0 && !budget.serviceBudget.idleCalibration.hasSession)
+    }
+
+    /// The engine republishes the capacity gauges at its next step boundary,
+    /// after the terminal the bridge retires on, so a finished warmup or
+    /// calibration request can still count as active for a moment.
+    private func requireEngineIdle(_ engine: EngineV2, budget: GlobalKVCacheBudget) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while true {
+            let active = engine.capacity().activeRequests
+            let charges = budget.serviceBudget.count
+            if active == 0 && charges == 0 { return }
+            try #require(ContinuousClock.now < deadline,
+                "the engine never retired its requests: active=\(active), service charges=\(charges)")
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     private func makeQwenBridge(modelID: String, backend: String,

@@ -2,6 +2,7 @@
 
 import Foundation
 import MLXLLM
+@testable import MLXLMCommon
 import MLXVLM
 import Testing
 @testable import ProviderCoreFoundation
@@ -53,27 +54,27 @@ struct NemotronSuperServingPolicyTests {
         let plan = NemotronSuperServingPolicy.loadPlan(
             base: [NemotronSuperLocalMTP.enabledKey: "0", NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "3"],
             mode: .auto, configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
-        #expect(plan.speculates && plan.requests == 8 && plan.prefixBankBytes == 16 << 30)
+        // Exact prefix reuse is complete SSD checkpoints, which take no grant.
+        #expect(plan.speculates && plan.requests == 8 && plan.prefixBankBytes == 0)
         #expect(plan.environment[NemotronSuperLocalMTP.enabledKey] == "1")
         #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
         #expect(plan.environment[NemotronSuperLocalBridgeBuilder.maxConcurrentKey] == "8")
-        #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1")
+        #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
         // The builder resolves exactly this configuration from the plan.
         #expect(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment)
             == .init(depth: 3, verification: .rectangularExact, adaptive: false,
                      depthByRequests: [3, 2, 2, 2, 1]))
         #expect(try NemotronSuperLocalBridgeBuilder.concurrentRequests(
             environment: plan.environment, speculates: true) == 8)
-        // Every request's fixed bytes, the owner's round work once at the
-        // served 262,144-token context and the prefix bank this 100 GiB grant
-        // sizes on a 256 GiB machine (16 GiB). Beside the round and the bank,
-        // the KV floor is above the 5,622,055,519-byte minimum grant measured
-        // for depth 3 x 8 without a bank (6,695,797,343 with a 1 GiB bank).
+        // Every request's fixed bytes and the owner's round work once at the
+        // served 262,144-token context. Beside the round, the KV floor is
+        // above the 5,622,055,519-byte minimum grant measured for depth 3 x 8
+        // without a bank (6,695,797,343 with a 1 GiB bank).
         #expect(plan.admissionKVBytes
-            == NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true) + (16 << 30))
+            == NemotronSuperServingPolicy.admissionKVBytes(requests: 8, speculates: true))
         let round = NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8,
             environment: plan.environment)
-        #expect(plan.admissionKVBytes - plan.prefixBankBytes - round > 5_622_055_519)
+        #expect(plan.admissionKVBytes - round > 5_622_055_519)
     }
 
     /// The speculating owner's round work is held once, sized by the engine's
@@ -132,6 +133,51 @@ struct NemotronSuperServingPolicyTests {
         #expect(grant > 25_926_570_879)
     }
 
+    /// The M5 Ultra drafts only while few requests decode: its measured table
+    /// ends target-only, and the owner's round reservation shrinks with it.
+    @Test func m5DefaultDepthTableDecodesTargetOnlyFromFiveRequests() throws {
+        #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5) == [3, 2, 1, 1, 0])
+        for family in [ChipFamily.m1, .m2, .m3, .m4, .m6, .unknown] {
+            #expect(NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: family) == [3, 2, 2, 2, 1])
+        }
+        let m5 = NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: .m5)
+        let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 << 30, physicalBytes: Self.machine, depthByRequests: m5)
+        #expect(plan.environment[NemotronSuperLocalMTP.depthKey] == "3,2,1,1,0")
+        let setting = try #require(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment))
+        #expect(setting == .init(depth: 3, verification: .rectangularExact, adaptive: false,
+                                 depthByRequests: [3, 2, 1, 1, 0]))
+        let config = NemotronSuperLocalMTP.config(setting, requests: 8)
+        #expect(config.fixedDraftTokens == 3 && config.fixedDraftTokensByDecodeRows == [3, 2, 1, 1, 0])
+        #expect(NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8, environment: plan.environment)
+            <= NemotronSuperServingPolicy.speculativeOwnerBoundBytes(requests: 8))
+        // An operator's table still wins over the chip default.
+        let pinned = NemotronSuperServingPolicy.loadPlan(
+            base: [NemotronSuperLocalMTP.depthKey: "3,2,2,2,1"], mode: .auto, configuredConcurrency: nil,
+            kvBytesCapacity: 100 << 30, physicalBytes: Self.machine, depthByRequests: m5)
+        #expect(pinned.environment[NemotronSuperLocalMTP.depthKey] == "3,2,2,2,1")
+    }
+
+    /// Each chip's default table through the engine's own per-step depth
+    /// selection, built from the planned config as the round driver builds
+    /// it, at every width the owner serves: an M5 decodes target-only from
+    /// five requests, an M3 drafts at depth 1 from five.
+    @Test func chipDefaultTableFixesTheDepthAtEveryDecodingWidth() throws {
+        for (family, depths) in [(ChipFamily.m5, [3, 2, 1, 1, 0, 0, 0, 0]), (.m3, [3, 2, 2, 2, 1, 1, 1, 1])] {
+            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+                kvBytesCapacity: 100 << 30, physicalBytes: Self.machine,
+                depthByRequests: NemotronSuperServingPolicy.defaultDepthByRequests(chipFamily: family))
+            let setting = try #require(try NemotronSuperLocalMTP.Setting.resolve(environment: plan.environment))
+            let config = NemotronSuperLocalMTP.config(setting, requests: plan.requests)
+            let controller = CBv2MTPDepthController(maxDepth: config.maxDraftTokens,
+                fixedDepth: config.fixedDraftTokens, fixedDepthByDecodeRows: config.fixedDraftTokensByDecodeRows)
+            #expect(plan.requests == depths.count, "\(family)")
+            #expect((1 ... plan.requests).map {
+                controller.select(plannedDecodeRows: $0, canSpeculate: true).depth
+            } == depths, "\(family)")
+        }
+    }
+
     /// The depth key takes one depth, `auto` or a width table; malformed or
     /// out-of-range tables fail the load.
     @Test func depthTablesResolveOrRefuse() throws {
@@ -142,7 +188,8 @@ struct NemotronSuperServingPolicyTests {
         }
         #expect(try resolve(" 3, 2 ,1") == .init(depth: 3, depthByRequests: [3, 2, 1]))
         #expect(try resolve("1,2") == .init(depth: 2, depthByRequests: [1, 2]))
-        for bad in ["3,0", "3,,1", "4,1", "3,x", "1,1,1,1,1,1,1,1,1"] {
+        #expect(try resolve("3,2,1,1,0") == .init(depth: 3, depthByRequests: [3, 2, 1, 1, 0]))
+        for bad in ["0,0", "3,,1", "4,1", "3,x", "3,-1", "1,1,1,1,1,1,1,1,1"] {
             #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve(bad) }
         }
         #expect(throws: NemotronSuperLocalMTP.Failure.invalidDepth) { try resolve("2,1", "serial") }
@@ -156,9 +203,9 @@ struct NemotronSuperServingPolicyTests {
         // The operator's depth-1 table sizes the round, not the default.
         #expect(narrow.admissionKVBytes
             == NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true,
-                environment: narrow.environment) + (16 << 30))
+                environment: narrow.environment))
         #expect(narrow.admissionKVBytes
-            < NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true) + (16 << 30))
+            < NemotronSuperServingPolicy.admissionKVBytes(requests: 2, speculates: true))
         let wide = NemotronSuperServingPolicy.loadPlan(base: [:], mode: .auto,
             configuredConcurrency: 16, kvBytesCapacity: 100 << 30)
         #expect(wide.requests == 8, "one captured verify window bounds speculation")
@@ -204,8 +251,10 @@ struct NemotronSuperServingPolicyTests {
         }
     }
 
-    @Test func plainOwnerReusesExactTextPrefixesWhenTheGrantHoldsTheBank() {
-        let plan = NemotronSuperServingPolicy.loadPlan(base: [NemotronSuperLocalMTP.enabledKey: "1"],
+    /// The plain owner holds the resident bank the operator selects.
+    @Test func plainOwnerHoldsTheOperatorsBank() {
+        let plan = NemotronSuperServingPolicy.loadPlan(
+            base: Self.residentBank.merging([NemotronSuperLocalMTP.enabledKey: "1"]) { $1 },
             mode: .off, configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(!plan.speculates && plan.requests == 8)
         #expect(plan.environment[NemotronSuperLocalMTP.enabledKey] == nil)
@@ -215,7 +264,8 @@ struct NemotronSuperServingPolicyTests {
         // 5,477,654,231-byte plain minimum for eight requests.
         #expect(plan.admissionKVBytes == 8 * (1 << 29) + (2 << 30) + (16 << 30))
         #expect(plan.admissionKVBytes - plan.prefixBankBytes > 5_477_654_231)
-        let killSwitch = NemotronSuperServingPolicy.loadPlan(base: ["DARKBLOOM_CBV2_MTP": "0"],
+        let killSwitch = NemotronSuperServingPolicy.loadPlan(
+            base: Self.residentBank.merging(["DARKBLOOM_CBV2_MTP": "0"]) { $1 },
             mode: .on, configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
         #expect(!killSwitch.speculates && killSwitch.prefixBankBytes == 16 << 30)
     }
@@ -234,8 +284,8 @@ struct NemotronSuperServingPolicyTests {
         #expect(tight.prefixBankBytes == 0 && tight.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil)
     }
 
-    /// The plan serves paged KV, the builder's only storage, with the default
-    /// bank; an operator's storage key passes through unchanged, so the load
+    /// The plan serves paged KV, the builder's only storage, without a bank;
+    /// an operator's storage key passes through unchanged, so the load
     /// refuses `contiguous` rather than ignoring it.
     @Test func planServesPagedStorageAndPassesTheStorageKeyThrough() throws {
         typealias Storage = NemotronSuperLocalKVBackend
@@ -244,8 +294,8 @@ struct NemotronSuperServingPolicyTests {
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
             #expect(plan.environment[Storage.key] == nil, "\(mode)")
             #expect(try Storage.resolve(environment: plan.environment) == .paged, "\(mode)")
-            #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == "1", "\(mode)")
-            #expect(plan.prefixBankBytes == 16 << 30, "\(mode)")
+            #expect(plan.environment[PrefixCachePolicy.memoryEnvironmentFlag] == nil, "\(mode)")
+            #expect(plan.prefixBankBytes == 0, "\(mode)")
             let contiguous = NemotronSuperServingPolicy.loadPlan(base: [Storage.key: "contiguous"], mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: 100 << 30, physicalBytes: Self.machine)
             #expect(contiguous.environment[Storage.key] == "contiguous", "\(mode)")
@@ -294,15 +344,15 @@ struct NemotronSuperServingPolicyTests {
         // The production default (eight speculating requests at 576 MiB and
         // the owner's 9.87 GB round at the served 262,144 tokens, 15.69 GiB of
         // admission) on a 256 GiB machine: half of what the grant leaves
-        // beside the admission, the 8.5 GiB lane and an image (3 GiB at
-        // 34 GiB, 8.5 GiB at 45), then a quarter of the grant (15 GiB at 60),
+        // beside the admission, the 8.5 GiB lane and an image (2.5 GiB at
+        // 34 GiB, 8 GiB at 45), then a quarter of the grant (15 GiB at 60),
         // the 16 GiB cap from 64 GiB.
         let sizes = [34, 45, 60, 100, 155].map { (grantGiB: Int) -> Int in
             let grant: Int = grantGiB * gib
             return Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [:], physicalBytes: Self.machine)
         }
-        let expected: [Int] = [12 << 28, 34 << 28, 15 << 30, 16 << 30, 16 << 30]
+        let expected: [Int] = [10 << 28, 32 << 28, 15 << 30, 16 << 30, 16 << 30]
         #expect(sizes == expected, "\(sizes)")
     }
 
@@ -321,7 +371,7 @@ struct NemotronSuperServingPolicyTests {
             environment: [:], physicalBytes: Self.machine)
         let wide = Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
             environment: [chunk: "4096"], physicalBytes: Self.machine)
-        #expect(narrowChunk == 22 << 29 && wide == 29 << 28, "\(narrowChunk) \(wide)")
+        #expect(narrowChunk == 21 << 29 && wide == 27 << 28, "\(narrowChunk) \(wide)")
         for invalid in ["0", "-1", "abc", "262145"] {
             #expect(Policy.defaultPrefixBankBytes(kvBytesCapacity: grant, requests: 8, speculates: true,
                 environment: [chunk: invalid], physicalBytes: Self.machine) == 0, "\(invalid)")
@@ -353,14 +403,14 @@ struct NemotronSuperServingPolicyTests {
             requests: 8, speculates: true, physicalBytes: Self.machine) == nil)
     }
 
-    /// The plan and the builder size one bank: the builder resolves the same
-    /// requests and keys from the plan's environment.
+    /// The plan and the builder size one operator-selected bank: the builder
+    /// resolves the same requests and keys from the plan's environment.
     @Test func planAndBuilderSizeTheSameBank() throws {
         let gib: Int = 1 << 30
         let cases: [(MTPMode, Int)] = [(.auto, 60), (.auto, 100), (.auto, 155), (.off, 30), (.off, 100)]
         for (mode, grantGiB) in cases {
             let grant: Int = grantGiB * gib
-            let plan = NemotronSuperServingPolicy.loadPlan(base: [:], mode: mode,
+            let plan = NemotronSuperServingPolicy.loadPlan(base: Self.residentBank, mode: mode,
                 configuredConcurrency: nil, kvBytesCapacity: grant, physicalBytes: Self.machine)
             let requests = try NemotronSuperLocalBridgeBuilder.concurrentRequests(
                 environment: plan.environment, speculates: plan.speculates)
@@ -374,10 +424,11 @@ struct NemotronSuperServingPolicyTests {
         }
     }
 
-    /// The plan sizes the bank from the builder's own inputs: the installed
-    /// checkpoint's pinned-ness and the loader's machine memory. Pinned and
-    /// generic (fixture) owners agree on a 64 and a 256 GiB machine; a plan
-    /// that sized a generic owner's bank as the pinned one's would not.
+    /// The plan sizes the operator's bank from the builder's own inputs: the
+    /// installed checkpoint's pinned-ness and the loader's machine memory.
+    /// Pinned and generic (fixture) owners agree on a 64 and a 256 GiB
+    /// machine; a plan that sized a generic owner's bank as the pinned one's
+    /// would not.
     @Test(arguments: [64, 256] as [UInt64])
     func plannedBankIsTheBuiltBankForPinnedAndGenericOwners(physicalGiB: UInt64) throws {
         typealias Policy = NemotronSuperServingPolicy
@@ -387,7 +438,7 @@ struct NemotronSuperServingPolicyTests {
             for mode in [MTPMode.auto, .off] {
                 for grantGiB in [8, 40, 48, 60, 100, 155] {
                     let grant: Int = grantGiB * gib
-                    let plan = Policy.loadPlan(base: [:], mode: mode, configuredConcurrency: nil,
+                    let plan = Policy.loadPlan(base: Self.residentBank, mode: mode, configuredConcurrency: nil,
                         kvBytesCapacity: grant, pinned: pinned, physicalBytes: physical)
                     let requests = try NemotronSuperLocalBridgeBuilder.concurrentRequests(
                         environment: plan.environment, speculates: plan.speculates)
@@ -403,9 +454,9 @@ struct NemotronSuperServingPolicyTests {
                 }
             }
         }
-        let pinned = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+        let pinned = Policy.loadPlan(base: Self.residentBank, mode: .auto, configuredConcurrency: nil,
             kvBytesCapacity: 100 * gib, pinned: true, physicalBytes: physical)
-        let generic = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+        let generic = Policy.loadPlan(base: Self.residentBank, mode: .auto, configuredConcurrency: nil,
             kvBytesCapacity: 100 * gib, pinned: false, physicalBytes: physical)
         #expect(generic.prefixBankBytes == 1 << 30)
         #expect(pinned.prefixBankBytes == (physicalGiB == 256 ? 16 << 30 : 0), "\(physicalGiB) GiB")
@@ -413,15 +464,18 @@ struct NemotronSuperServingPolicyTests {
 
     /// The measured machine (256 GiB of unified memory).
     static let machine: UInt64 = 256 << 30
+    /// The operator's switch to the resident bank.
+    static let residentBank = [PrefixCachePolicy.memoryEnvironmentFlag: "1"]
 
     /// A lone Super slot's grant is the fleet KV budget: the cap less the
     /// shard bytes, the activation reserve and the operator's 4 GiB reserve.
-    /// On 192, 256 and 512 GiB both owners get the 16 GiB default bank, and
+    /// On 192, 256 and 512 GiB both owners get the 16 GiB default size of the
+    /// bank the operator selects, and
     /// the single LOAD claim of the speculating owner (installation, head,
     /// lane, eight requests' fixed bytes, the round and the bank, 110.0 GiB)
     /// fits under the cap with room left for other memory: 60.8 GiB on 192 GiB.
     @Test(arguments: [192, 256, 512])
-    func defaultBankOnTheSupportedMachines(physicalGiB: Int) throws {
+    func operatorBankOnTheSupportedMachines(physicalGiB: Int) throws {
         typealias Policy = NemotronSuperServingPolicy
         let physical = UInt64(physicalGiB) << 30
         let activation = UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [Policy.modelID])
@@ -429,9 +483,9 @@ struct NemotronSuperServingPolicyTests {
             residentWeightBytes: 75_010_188_240, activationReserveBytes: activation,
             configReserveBytes: 4 << 30)
         let grant = Int(budget)
-        let auto = Policy.loadPlan(base: [:], mode: .auto, configuredConcurrency: nil,
+        let auto = Policy.loadPlan(base: Self.residentBank, mode: .auto, configuredConcurrency: nil,
             kvBytesCapacity: grant, physicalBytes: physical)
-        let off = Policy.loadPlan(base: [:], mode: .off, configuredConcurrency: nil,
+        let off = Policy.loadPlan(base: Self.residentBank, mode: .off, configuredConcurrency: nil,
             kvBytesCapacity: grant, physicalBytes: physical)
         #expect(auto.speculates && auto.requests == 8)
         #expect(auto.prefixBankBytes == 16 << 30 && off.prefixBankBytes == 16 << 30)

@@ -107,6 +107,31 @@ public enum LaunchAgent: Sendable {
         try loadService()
     }
 
+    /// The local-only selection is owned by the installed CLI arguments.
+    public static func installedLocalModels() -> [String]? {
+        guard let data = try? Data(contentsOf: plistPath()),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String], arguments.contains("--local") else { return nil }
+        return arguments.indices.compactMap { index in
+            arguments[index] == "--model" && index + 1 < arguments.count ? arguments[index + 1] : nil
+        }
+    }
+
+    /// Desktop local mode uses the same canonical launchd owner as network serving.
+    /// The caller must complete the normal drain and hold the lifecycle lock.
+    public static func installLocalAndStart(models: [String], configPath: URL?) throws {
+        guard !isLoaded() else { throw LaunchAgentError.bootstrapFailed("Existing provider must be drained first") }
+        var arguments = [currentExecutablePath(), "start", "--local"]
+        for model in models { arguments += ["--model", model] }
+        if let configPath { arguments += ["--config", configPath.path] }
+        let contents = makeServicePlist(label: label, programArguments: arguments,
+            logPath: logPath().path, environment: ProcessInfo.processInfo.environment)
+        try FileManager.default.createDirectory(at: plistPath().deletingLastPathComponent(), withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0)
+            .write(to: plistPath(), options: .atomic)
+        try loadService()
+    }
+
     // MARK: - Stop
 
     /// Stop the provider: unload the launchd agent AND persistently disable it.
@@ -232,6 +257,28 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    // MARK: - Other CLI-owned agents
+
+    /// Shared launchctl plumbing for the CLI's other user agents (the desktop
+    /// control API), so they reuse this file's enable/bootstrap/kickstart/bootout
+    /// handling instead of spawning ad-hoc `launchctl` processes.
+    public static func isLoaded(agentLabel: String) -> Bool { isLoaded(label: agentLabel) }
+
+    /// Enable, bootstrap (an already-loaded job is benign) and kickstart `plist`.
+    public static func bootstrap(agentLabel: String, plist: URL) throws {
+        try loadService(label: agentLabel, path: plist)
+    }
+
+    /// Unload the job; a job that is not loaded is not an error.
+    public static func bootout(agentLabel: String) throws { try unloadService(label: agentLabel) }
+
+    /// `launchctl kickstart -k`: kill and relaunch a loaded job from its loaded
+    /// plist. For a job that is not loaded it may throw or return without effect
+    /// (launchctl's wording varies), so callers check `isLoaded(agentLabel:)`.
+    public static func kickstart(agentLabel: String) throws {
+        try kickstartInPlace(label: agentLabel, reloadIfMissing: false)
+    }
+
     // MARK: - Private
 
     /// Env vars passed through from the installing shell into the launchd plist's
@@ -285,7 +332,7 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
-    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLLM`.
+    /// because its reader (`GatedDeltaPrefill.mode`) is internal to `MLXLMCommon`.
     /// `MiMoV26DecodeDefaults.environmentKeys`: the MiMo short-forward decode
     /// kernels (fused norms, distinct-expert MXFP4, FP32 router GEMV) are on by
     /// default in the SDK; their per-kernel rollbacks use the same values.
@@ -302,6 +349,10 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
+    /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
+    /// Super owner run decode-only steps between prompt chunks by default; `0`
+    /// is each rollback.
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
@@ -327,6 +378,8 @@ public enum LaunchAgent: Sendable {
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        EngineV2Factory.glm5NextDecodeStepsKey,
+        NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys

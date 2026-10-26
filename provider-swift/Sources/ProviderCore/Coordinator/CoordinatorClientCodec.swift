@@ -56,7 +56,9 @@ public enum CoordinatorClientCodec {
             if let overrides = modelWeightHashOverrides, overrides[model.id] != model.weightHash { current.weightHash = nil }
             return current
         }.filter { $0.weightHash?.isEmpty == false }
-        let candidateIDs = Set(config.autopilotInventory.map(\.id)).subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
+        // Inventory added at runtime stays out of `models` like start inventory.
+        let candidateIDs = Set((config.autopilotInventory + (autopilotInventory ?? [])).map(\.id))
+            .subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
         let servingModels = effectiveModels.filter { !candidateIDs.contains($0.id) }
         let constrainedModels = toolConstraintModelIDs(servingModels + inventory)
         return .register(ProviderMessage.Register(

@@ -12,6 +12,8 @@ enum ToolChoicePromptPolicy {
         let allowedToolNames: Set<String>
         /// Exact-Flint JSON content contract. When present, no call is allowed.
         var responseFormat: FlintResponseFormat? = nil
+        /// GLM JSON content contract: the answer is withheld and validated.
+        var glmResponseFormat: GLM5NextResponseFormat? = nil
 
         var requiresToolCall: Bool {
             switch mode {
@@ -27,8 +29,9 @@ enum ToolChoicePromptPolicy {
         allowInternalSchemaMetadata: Bool = true
     ) throws -> Prepared {
         let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
-        let choice = try prepareToolChoice(
+        var choice = try prepareToolChoice(
             request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        choice.glmResponseFormat = try GLM5NextResponseFormat.resolve(request, modelType: modelType)
         guard let responseFormat else { return choice }
         // Recursive's Flint contract: tools plus a response format get only the
         // response format, whatever tool_choice asked for. The prompt renders
@@ -90,7 +93,7 @@ enum ToolChoicePromptPolicy {
         case .mode(.required):
             guard let tools = request.tools, !tools.isEmpty else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice 'required' needs at least one declared tool")
+                    "tool_choice 'required' needs at least one declared tool", refusal: .invalidToolChoice)
             }
             let instruction: String
             if tools.count == 1, let name = tools.first?.function.name {
@@ -135,7 +138,7 @@ enum ToolChoicePromptPolicy {
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice names an undeclared function")
+                    "tool_choice names an undeclared function", refusal: .invalidToolChoice)
             }
             let instruction: String
             if allowsParallelCalls {
@@ -179,11 +182,11 @@ enum ToolChoicePromptPolicy {
         for tool in tools ?? [] {
             guard isValidFunctionName(tool.function.name) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$", refusal: .invalidToolDeclaration)
             }
             guard names.insert(tool.function.name).inserted else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must be unique")
+                    "tool function names must be unique", refusal: .invalidToolDeclaration)
             }
         }
     }
@@ -208,7 +211,7 @@ enum ToolChoicePromptPolicy {
             return try ToolConstraintSchemaCompiler.compile(tools: tools, mode: mode)
         } catch let error as ToolConstraintSchemaError {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                error.localizedDescription)
+                error.localizedDescription, refusal: .unsupportedForcedToolChoice)
         }
     }
 

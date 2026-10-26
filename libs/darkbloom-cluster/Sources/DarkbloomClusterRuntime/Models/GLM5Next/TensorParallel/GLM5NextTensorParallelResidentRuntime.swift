@@ -1001,7 +1001,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         /// The same partition's scope on this rank's SSD tier
         /// (`prefixDiskScope(_:chunk:request:resident:)`); nil without the
         /// tier or when `prefixScope` is nil.
-        var prefixDiskScope: String? = nil
+        let prefixDiskScope: String?
     }
 
     /// The SSD tier's scope for a request kept under `resident`: the tier's
@@ -1054,7 +1054,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         if let media, try !media.open(rank: rank, tower: vision?.tower, sum: { [group] in group.allSum($0) }, stop: stop) {
             return OpenedRequest(cache: stage.newCache(), pages: nil, start: 0, speculation: nil,
                 chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, selectionKeepAt: 0, media: media,
-                stopped: true, prefixScope: nil)
+                stopped: true, prefixScope: nil, prefixDiskScope: nil)
         }
         mark("digest")
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
@@ -1085,8 +1085,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
         if let scope, prompt.count > chunk {
             let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
             let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
-            let onDisk = zip(prefixDisk.map { [$0] } ?? [], diskScope.map { [$0] } ?? []).flatMap { disk, diskScope in
-                disk.boundaries(scope: diskScope, prompt: prompt, candidates: candidates)
+            var onDisk: Set<Int> = []
+            if let disk = prefixDisk, let diskScope {
+                onDisk = disk.boundaries(scope: diskScope, prompt: prompt, candidates: candidates)
             }
             mark("held")
             let vote = try QwenTensorParallelPrefixCache.agree(offers: zip(candidates, held).map {
@@ -1095,8 +1096,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             mark("vote")
             if let agreed = vote, agreed.ssd {
                 if let restored = try restoreAgreedFromEitherTier(agreed.boundary, prompt: prompt, scope: scope,
-                        diskScope: diskScope,
-                        stage: stage, pages: pages, speculation: speculation, stop: stop) {
+                        diskScope: diskScope, stage: stage, pages: pages, speculation: speculation, stop: stop) {
                     cache = restored; start = agreed.boundary
                 }
             } else if let agreed = vote {

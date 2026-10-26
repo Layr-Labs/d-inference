@@ -301,6 +301,8 @@ extension GLM5NextTensorParallelResidentRuntime {
     /// pages of the request's account, which the memory tier then keeps too,
     /// so the next offer finds the boundary in memory. Otherwise (either rank
     /// could not) both prefill from zero. Returns the restored cache, or nil.
+    /// `scope` and `diskScope`: the request's partition of each tier
+    /// (`OpenedRequest.prefixScope`, `prefixDiskScope`).
     func restoreAgreedFromEitherTier(_ boundary: Int, prompt: [Int], scope: String, diskScope: String?,
                                      stage: GLM5NextTextStage, pages: GLM5NextPageReservation?,
                                      speculation: GLM5NextTensorParallelSpeculation?,
@@ -335,19 +337,20 @@ extension GLM5NextTensorParallelResidentRuntime {
     }
 
     /// After a request retired cleanly: its kept boundary, as the memory tier
-    /// holds it, goes to this rank's SSD tier behind serving (read from the
-    /// entry's pages on the writer; an existing record is only touched).
-    /// Nothing when the tier is off or the memory tier no longer holds it.
+    /// holds it, goes to this rank's SSD tier behind serving, in the request's
+    /// partition (`OpenedRequest.prefixDiskScope`; read from the entry's pages
+    /// on the writer; an existing record is only touched). Nothing when the
+    /// tier is off, the request keeps no prefix or the memory tier no longer
+    /// holds it.
     func persistPrefix(_ prompt: [Int], opened: OpenedRequest, boundary: Int) {
         guard let disk = prefixDisk, let scope = opened.prefixScope, let diskScope = opened.prefixDiskScope,
               let entry = prefix.entry(scope: scope, prompt: prompt, length: boundary) else {
             return
         }
-        let chunk = opened.chunk
         do {
             let record = try GLM5NextTensorParallelPrefixRecord.capture(cache: entry.cache, history: entry.mtp,
                 layout: disk.layout, frontier: boundary)
-            disk.tier.persist(scope: diskScope, tokens: prompt, states: [record.state], blockTokens: chunk,
+            disk.tier.persist(scope: diskScope, tokens: prompt, states: [record.state], blockTokens: opened.chunk,
                 attentionRows: record.rows)
         } catch {
             log("darkbloom-prefix-ssd-v1 rank=\(collective.rank) event=persist-dropped reason=unstorable prompt=\(boundary)"

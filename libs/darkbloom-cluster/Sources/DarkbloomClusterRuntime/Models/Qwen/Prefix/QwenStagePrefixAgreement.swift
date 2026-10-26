@@ -161,18 +161,22 @@ func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], scope:
 /// both ranks already proved equal.
 func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> String? {
     let d = agreement.descriptor
-    return ClusterWorkerPrefixCache.scope([d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256,
-            d.sourceConfigurationSHA256, d.numericalPolicySHA256, d.profileFingerprint,
-            "chunk=\(agreement.request.chunkSize)"].joined(separator: "|")
-        + (agreement.request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? ""), agreement.request.prefixCache)
+    return qwenStagePrefixScope(load: [d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256,
+        d.sourceConfigurationSHA256, d.numericalPolicySHA256, d.profileFingerprint], request: agreement.request)
 }
 
 /// The same scope before the agreement exists (at reservation), from the
 /// fields the agreement takes it from.
 func qwenStagePrefixScope(source: QwenLayerStageWireSourceIdentity, numericalPolicySHA256: String,
                           request: QwenLayerStageGenerationRequest) -> String? {
-    ClusterWorkerPrefixCache.scope([source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
-        source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint,
-        "chunk=\(request.chunkSize)"].joined(separator: "|")
+    qwenStagePrefixScope(load: [source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
+        source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint], request: request)
+}
+
+/// The scope of `request` after the load's identity fields `load`: its grid
+/// and MiMo images, in its partition. Both forms compose it here, so the
+/// scope a reservation charges captures under is the one its agreement keys.
+private func qwenStagePrefixScope(load: [String], request: QwenLayerStageGenerationRequest) -> String? {
+    ClusterWorkerPrefixCache.scope((load + ["chunk=\(request.chunkSize)"]).joined(separator: "|")
         + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? ""), request.prefixCache)
 }

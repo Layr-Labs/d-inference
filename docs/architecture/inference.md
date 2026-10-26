@@ -1429,6 +1429,49 @@ shared-layer change with its stage-specific projection policies and separately
 qualifying command-buffer integration; updating its SDK pin alone is insufficient.
 Clustering and non-M5 performance are unmeasured.
 
+### Gemma 4 compiled feed-forward dispatch
+
+The pinned SDK also reuses a shape-specialized graph for the existing Gemma 4
+feed-forward expression. Eligible stock evaluation-mode MoE layers pass their
+live parameter arrays as explicit compiled state, preserving the original input
+geometry, routing, arithmetic order and output dtype. Child-module identity
+changes invalidate the old trace; direct parameter updates and checkpoint
+materialization remain visible without a second parameter tree. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`
+(`feedforward`, `feedforwardCompilationState`),
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
+(`Gemma4CompiledFeedforwardCache`).
+
+The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
+`B * S * topK < 64`. Expert banks must be affine4/group64; dense and router
+projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
+training, adapters or custom children, fused expert layouts, unsupported formats
+and active component diagnostics retain the eager expression. The default follows
+the existing compiled-decode setting; `MLX_COMPILED_DECODE=0` or
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` disables this holder. Attention, PLE,
+layer scalars, MTP acceptance/depth, admission, paged KV, prefix caching and SSD
+writes remain outside the change.
+
+An [incremental endpoint A/B/B/A comparison](https://github.com/Layr-Labs/mlx-swift-lm/blob/221304cd52fdd701b41edeae4ed0e4070855983e/docs/benchmarks/gemma4-compiled-feedforward-2026-10-26/README.md)
+of `gemma-4-26b-qat-4bit` on one M5 Max measured 2.5–3.2% faster HTTP decode
+proxy over the prior dispatch change: 102.19 to 105.43 tok/s in one ordering and
+102.94 to 105.48 in the reverse pairing. Each leg used the same two single-request
+prompts, 8,192 cached tokens and 256 completion tokens, with natural adaptive MTP
+and exact acceptance. Outputs and usage matched in both paired orderings and
+same-arm controls. The separate C4 comparison was rejected because 7 of 8
+same-arm outputs differed in both A/A and B/B; it establishes no concurrency gain.
+An initial capability run had one reasoning-output variant; three immediate
+repeats and a later full 12-case run matched the baseline. Those initial and
+repeat results are retained, with no established attribution for the variation.
+
+The SDK report records 11 focused tests in each feature mode and 690 exact
+within-shape comparisons using original checkpoint tensors across all 30 layers.
+These do not prove every complete-model trajectory. See the
+[resource-lifetime qualification](hardware-support.md#gemma-4-compiled-feed-forward-qualification)
+for memory scope. Cold prefill, other chips and clustering remain unmeasured.
+Clustering adoption also requires merging its separate projection policies and
+qualifying trace identity and evaluation modes; changing its SDK pin is insufficient.
+
 ### Prompt geometry
 
 With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is

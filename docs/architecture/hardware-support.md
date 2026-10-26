@@ -222,6 +222,24 @@ comparison, and the endpoint did not expose MLX allocator peak. These results
 do not qualify lower reserves, higher admission limits, other chipsets or
 clustered execution.
 
+### Gemma 4 compiled feed-forward qualification
+
+The [compiled feed-forward path](inference.md#gemma-4-compiled-feed-forward-dispatch)
+retains live parameter arrays and child-module identities for eligible traces.
+Its weak owner reference avoids retaining the decoder; replaced or unsupported
+children retire an old trace, and trace destruction occurs outside the holder
+lock to preserve MLX evaluation-lock ordering. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
+(`Gemma4CompiledFeedforwardCache`).
+
+The linked incremental endpoint comparison measured first-leg process lifetime
+physical-footprint maxima of about 20.05 GiB for the prior dispatch path and
+20.07 GiB with compiled feed-forward; later warmed legs measured 17.53 and
+17.56 GiB respectively. These include loading and prewarm, are not isolated
+feed-forward or MLX allocator peaks, and establish no memory reduction. Provider
+reserves, activation floors, LOAD quotations, KV grants and admission limits
+remain unchanged; the bounded decode result does not qualify increasing them.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage

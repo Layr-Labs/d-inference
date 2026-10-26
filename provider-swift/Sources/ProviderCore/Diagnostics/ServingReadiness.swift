@@ -138,9 +138,11 @@ public enum ServingReadiness {
         case .isSupportedFalse?:
             return unsupported(macOSMajorVersion: max(macOSMajorVersion, 27))
         case let reason?:
+            // `update` leaves a current version in place; this is the
+            // reinstall doctor's `app signing` check gives.
             return DiagnosticAdvice(
                 message: "the coordinator is not routing work here: this provider installation cannot use App Attest (\(reason.rawValue))",
-                fix: "reinstall the official app with `\(cli) update`, then `\(cli) restart`")
+                fix: "reinstall the signed release: `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, then `\(cli) restart`")
         case nil:
             return nil
         }

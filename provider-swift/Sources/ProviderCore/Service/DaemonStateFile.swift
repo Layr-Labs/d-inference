@@ -321,7 +321,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
 
     public struct CoordinatorConnection: Codable, Sendable, Equatable {
         public var connected: Bool
-        /// Epoch seconds of the last connect or disconnect.
+        /// Epoch seconds when the connection last came up or went down;
+        /// failed reconnect attempts while it is down keep it.
         public var since: Double
         /// Registrations this process has completed, including the first.
         public var connections: Int

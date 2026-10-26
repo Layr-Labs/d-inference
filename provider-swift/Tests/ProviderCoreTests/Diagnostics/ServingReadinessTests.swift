@@ -118,6 +118,12 @@ import Testing
             state(trust: trust(path: "none", reason: "app_attest_unsupported"), appAttest: osTooOld), now: now,
             macOSMajorVersion: 26)))
         #expect(old.fix?.contains("upgrade to macOS 27") == true)
+        // `update` leaves a current version in place, so the fix reinstalls.
+        let unsigned = AppAttestLocalStatus(observedAt: now, launchSession: .unknown, availabilityReason: .notAppBundle)
+        let reinstall = try #require(blocked(ServingReadiness.verdict(
+            state(trust: trust(path: "none", reason: "app_attest_unsupported"), appAttest: unsigned), now: now)))
+        #expect(reinstall.message.hasSuffix("cannot use App Attest (not_app_bundle)"))
+        #expect(reinstall.fix?.contains("/install.sh | bash`, then `") == true)
     }
 
     @Test func untrustedIsNotReceiving() throws {
@@ -145,7 +151,7 @@ import Testing
         let now = 100_000.0
         func due(since: Double?, last: Double? = nil, attempts: Int = 0, busy: Bool = false, jitter: Double = 0) -> Bool {
             Policy.shouldReconnect(unauthorizedSince: since, lastReconnectAt: last, attempts: attempts,
-                                   workInProgress: busy, jitter: jitter, now: now)
+                                   busy: busy, jitter: jitter, now: now)
         }
         #expect(!due(since: nil))
         #expect(!due(since: now - Policy.unauthorizedThreshold + 1))

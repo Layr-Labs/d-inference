@@ -998,7 +998,8 @@ Output includes:
 - `Traffic:` whether the coordinator can route work to this connection. `eligible
   for coordinator work` names the App Attest lease or legacy verification;
   `NOT receiving coordinator work:` names the cause with a `→ fix:` line
-  (disconnected, no coordinator verdict 90 seconds after connecting, an expired
+  (disconnected, with how long the connection has been down across failed
+  reconnect attempts, no coordinator verdict 90 seconds after connecting, an expired
   lease, or the coordinator's reason, such as a locked login keychain, a stalled
   Apple call, App Attest unavailable on macOS 26 or outside a logged-in GUI
   session, or a connection without a linked account). Omitted while a drain line

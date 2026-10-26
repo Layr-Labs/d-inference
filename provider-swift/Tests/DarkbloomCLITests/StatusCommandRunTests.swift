@@ -95,6 +95,29 @@ struct StatusCommandRunTests {
         #expect(!authorized.contains("\nNot serving: "))
     }
 
+    /// An interrupted or timed-out `darkbloom restart` leaves the old process
+    /// alive but refusing work, so the coordinator shows it offline. Status
+    /// must say so on the line right after "Daemon: running".
+    @Test("status reports a live provider whose drain did not finish as not serving")
+    func unfinishedDrainIsNotServing() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            var state = try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970)
+            state.lifecycle = ProviderDrainStatus(
+                requestID: "restart-1", outcome: .timedOut, remaining: 0, coordinatorAcknowledged: true)
+            sandbox.writeState(state)
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let lines = decodedText(result.standardOutputContent).components(separatedBy: "\n")
+
+        let daemon = try #require(lines.firstIndex { $0.hasPrefix("Daemon: running (pid ") })
+        #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
+            ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
+    }
+
     /// A connected provider the coordinator does not route to looked healthy
     /// in `status` ("Trust: awaiting coordinator status", or a stale trust
     /// line) while earning nothing. The Traffic line says why.
@@ -153,28 +176,5 @@ struct StatusCommandRunTests {
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
         #expect(authorized.contains("\nTraffic: eligible for coordinator work (App Attest authorized until "))
         #expect(!authorized.contains("NOT receiving"))
-    }
-
-    /// An interrupted or timed-out `darkbloom restart` leaves the old process
-    /// alive but refusing work, so the coordinator shows it offline. Status
-    /// must say so on the line right after "Daemon: running".
-    @Test("status reports a live provider whose drain did not finish as not serving")
-    func unfinishedDrainIsNotServing() async throws {
-        let result = try await #require(
-            processExitsWith: .success, observing: [\.standardOutputContent]
-        ) {
-            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
-            defer { sandbox.remove() }
-            var state = try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970)
-            state.lifecycle = ProviderDrainStatus(
-                requestID: "restart-1", outcome: .timedOut, remaining: 0, coordinatorAcknowledged: true)
-            sandbox.writeState(state)
-            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
-        }
-        let lines = decodedText(result.standardOutputContent).components(separatedBy: "\n")
-
-        let daemon = try #require(lines.firstIndex { $0.hasPrefix("Daemon: running (pid ") })
-        #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
-            ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
     }
 }

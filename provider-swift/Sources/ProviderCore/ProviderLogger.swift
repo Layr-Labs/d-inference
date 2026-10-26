@@ -146,7 +146,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case coordinatorChunkSendFailed = "Coordinator chunk send failed"
     case coordinatorNotRoutingConnection = "Coordinator is not routing work to this connection. Run {cli} status for the reason."
     case coordinatorRoutingConnection = "Coordinator authorizes this connection for work"
-    case unauthorizedConnectionReregistering = "Coordinator has not authorized this connection for 15 min; re-registering it"
+    case unauthorizedConnectionReregistering = "Coordinator has not authorized this connection for at least 15 min; re-registering it"
 
     // Attestation and integrity lifecycle.
     case attestationChallengeReceived = "Attestation challenge received"

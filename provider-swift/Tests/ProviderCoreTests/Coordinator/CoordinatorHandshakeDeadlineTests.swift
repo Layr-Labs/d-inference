@@ -9,21 +9,22 @@ import Testing
 /// never registered again until its process restarted.
 @Suite("Coordinator handshake deadline", .serialized)
 struct CoordinatorHandshakeDeadlineTests {
-    @Test(.timeLimit(.minutes(1)))
-    func stalledHandshakeTimesOutAndCancelsTheConnection() async throws {
+    /// The silent peer stalls the WebSocket upgrade for `ws` and the TLS
+    /// handshake for `wss`.
+    @Test(.timeLimit(.minutes(1)), arguments: ["ws", "wss"])
+    func stalledHandshakeTimesOutAndCancelsTheConnection(scheme: String) async throws {
         let peer = try SilentPeer()
         let port = try await peer.start()
         defer { peer.stop() }
-        let connection = NWConnection(
-            to: .url(try #require(URL(string: "ws://127.0.0.1:\(port)/ws/provider"))),
-            using: webSocketParameters())
+        let url = try #require(URL(string: "\(scheme)://127.0.0.1:\(port)/ws/provider"))
+        let connection = NWConnection(to: .url(url), using: CoordinatorClient.connectionParameters(for: url))
         defer { connection.cancel() }
 
         let error = await #expect(throws: CoordinatorError.self) {
             try await CoordinatorConnectionHandshake.start(
                 connection, on: DispatchQueue(label: "handshake-deadline-test"), timeout: 0.3
             ) {
-                Issue.record("a peer that never upgrades cannot become ready")
+                Issue.record("a peer that never answers cannot complete the handshake")
             }
         }
         guard case .handshakeTimeout? = error else {
@@ -39,14 +40,14 @@ struct CoordinatorHandshakeDeadlineTests {
         #expect(connection.state == .cancelled)
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func clientRetriesAfterAStalledHandshake() async throws {
+    @Test(.timeLimit(.minutes(1)), arguments: ["ws", "wss"])
+    func clientRetriesAfterAStalledHandshake(scheme: String) async throws {
         let peer = try SilentPeer()
         let port = try await peer.start()
         defer { peer.stop() }
         let client = CoordinatorClient(
             config: CoordinatorClientConfig(
-                url: "ws://127.0.0.1:\(port)/ws/provider",
+                url: "\(scheme)://127.0.0.1:\(port)/ws/provider",
                 hardware: handshakeTestHardware(),
                 models: [],
                 backendName: "mlx-swift",
@@ -64,7 +65,7 @@ struct CoordinatorHandshakeDeadlineTests {
         for await event in events {
             switch event {
             case .connected:
-                Issue.record("a peer that never upgrades cannot register a session")
+                Issue.record("a peer that never answers cannot register a session")
             case .disconnected:
                 disconnects += 1
             default:
@@ -78,8 +79,8 @@ struct CoordinatorHandshakeDeadlineTests {
     }
 }
 
-/// Accepts TCP connections on loopback and reads the upgrade request without
-/// ever answering it.
+/// Accepts TCP connections on loopback and reads the TLS ClientHello or the
+/// upgrade request without ever answering it.
 private final class SilentPeer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "silent-coordinator-peer")
@@ -130,13 +131,6 @@ private final class SilentPeer: @unchecked Sendable {
         listener.cancel()
         for connection in lock.withLock({ connections }) { connection.cancel() }
     }
-}
-
-/// The client's transport stack: plain TCP for a `ws://` URL plus WebSocket.
-private func webSocketParameters() -> NWParameters {
-    let parameters = NWParameters.tcp
-    parameters.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
-    return parameters
 }
 
 private func handshakeTestHardware() -> HardwareInfo {

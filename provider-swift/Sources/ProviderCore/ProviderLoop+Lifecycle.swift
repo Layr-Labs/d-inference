@@ -101,9 +101,9 @@ extension ProviderLoop {
         // a disconnect already cancelled accepted work and outbound messages
         // are never carried to a later connection. Waiting would leave a
         // provider whose reconnect keeps failing unable to stop gracefully.
-        var coordinatorSession = coordinatorClient != nil
-        if !acknowledged, !Task.isCancelled, let client = coordinatorClient {
-            coordinatorSession = await client.hasRegisteredConnection()
+        var coordinatorSettled = acknowledged || coordinatorClient == nil
+        if !coordinatorSettled, !Task.isCancelled, let client = coordinatorClient {
+            coordinatorSettled = await !client.hasRegisteredConnection()
         }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
@@ -113,7 +113,7 @@ extension ProviderLoop {
         } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || !coordinatorSession) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0, coordinatorSettled {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {

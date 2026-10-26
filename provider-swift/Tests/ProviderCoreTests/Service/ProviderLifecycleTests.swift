@@ -246,6 +246,25 @@ struct ProviderLifecycleTests {
         #expect(await loop.servingDrain.phase == .drained)
     }
 
+    /// Losing the session waives only the acknowledgement: accepted work still
+    /// keeps the drain open, and a timeout leaves it in place.
+    @Test func drainWithoutARegisteredSessionStillWaitsForAcceptedWork() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setCoordinatorClientForTesting(
+            lifecycleClient(url: "ws://127.0.0.1:0/unused", state: await loop.state))
+        await loop.holdLifecycleRequests(["accepted"])
+        let identity = try #require(ProcessIdentity.current())
+        let result = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 0))
+        #expect(result.outcome == .timedOut)
+        #expect(result.remaining == 1)
+        #expect(await loop.servingDrain.refusing)
+        await loop.completeLifecycleRequest("accepted")
+        let retried = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 1))
+        #expect(retried.outcome == .drained)
+        #expect(!retried.coordinatorAcknowledged)
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func drainWithARegisteredSessionStillRequiresTheAcknowledgement() async throws {
         let mock = MockCoordinator(acknowledgeDrains: false)

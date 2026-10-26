@@ -50,11 +50,9 @@ extension CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun() async throws {
-        guard let url = URL(string: config.url) else {
-            throw CoordinatorError.invalidURL(config.url)
-        }
-
+    /// Transport stack for one coordinator connection: TCP, TLS for a
+    /// `wss`/`https` URL, and the WebSocket protocol on top.
+    static func connectionParameters(for url: URL) -> NWParameters {
         // ws:// (integration tests) vs wss:// (production). The transport security
         // MUST match the URL scheme: pairing `.tcp` params with a wss URL makes the
         // WebSocket server-response validation fail.
@@ -87,12 +85,19 @@ extension CoordinatorClient {
         // headers), so there are none to forward via
         // `wsOptions.setAdditionalHeaders(...)` here.
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
+    private func connectAndRun() async throws {
+        guard let url = URL(string: config.url) else {
+            throw CoordinatorError.invalidURL(config.url)
+        }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
         // AND the request path (e.g. /v1/providers/ws) from it. A `.hostPort`
         // endpoint drops the path, so the handshake would issue `GET / HTTP/1.1`
         // and the coordinator's WS route would reject it.
-        let connection = NWConnection(to: .url(url), using: params)
+        let connection = NWConnection(to: .url(url), using: Self.connectionParameters(for: url))
         self.nwConnection = connection
         self.appAttestResumeNonce = appAttestResumeResponder == nil ? nil
             : Data(Sodium().randomBytes.buf(length: 32)!).base64EncodedString()
@@ -137,15 +142,8 @@ extension CoordinatorClient {
             connection, on: connectionQueue, timeout: config.handshakeTimeout
         ) {
             connection.stateUpdateHandler = { laterState in
-                switch laterState {
-                case .failed(let error):
-                    failureCont.yield(CoordinatorError.connectionClosed(error))
-                case .waiting(let error):
-                    failureCont.yield(CoordinatorError.connectionClosed(error))
-                case .cancelled:
-                    failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                default:
-                    break
+                if let error = CoordinatorError(terminalState: laterState) {
+                    failureCont.yield(error)
                 }
             }
         }

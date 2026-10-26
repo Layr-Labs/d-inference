@@ -14,9 +14,9 @@ enum CoordinatorConnectionHandshake {
     static let defaultTimeout: TimeInterval = 30
 
     /// Starts `connection` on `queue` and returns once it is `.ready`. A
-    /// failure, a cancellation or the deadline throws, and the deadline also
-    /// cancels the connection. `onReady` runs on `queue` before this returns,
-    /// so the caller can install its post-handshake state handler with no gap.
+    /// terminal state or the deadline throws, and the deadline also cancels
+    /// the connection. `onReady` runs on `queue` before this returns, so the
+    /// caller can install its post-handshake state handler with no gap.
     static func start(
         _ connection: NWConnection,
         on queue: DispatchQueue,
@@ -26,26 +26,15 @@ enum CoordinatorConnectionHandshake {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let pending = PendingHandshake(continuation)
             connection.stateUpdateHandler = { state in
-                let result: Result<Void, Error>
-                switch state {
-                case .ready:
-                    result = .success(())
-                case .failed(let error), .waiting(let error):
-                    // `.waiting` (DNS failure, refused, no route) is surfaced
-                    // so the client's own backoff owns the retry.
-                    result = .failure(CoordinatorError.connectionClosed(error))
-                case .cancelled:
-                    result = .failure(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                default:
-                    return
-                }
-                guard let continuation = pending.take() else { return }
-                if case .success = result {
+                if case .ready = state {
+                    guard let continuation = pending.take() else { return }
                     onReady()
-                } else {
+                    continuation.resume()
+                } else if let error = CoordinatorError(terminalState: state) {
+                    guard let continuation = pending.take() else { return }
                     connection.stateUpdateHandler = nil
+                    continuation.resume(throwing: error)
                 }
-                continuation.resume(with: result)
             }
             connection.start(queue: queue)
             queue.asyncAfter(deadline: .now() + timeout) { [weak connection] in
@@ -54,6 +43,23 @@ enum CoordinatorConnectionHandshake {
                 connection?.cancel()
                 continuation.resume(throwing: CoordinatorError.handshakeTimeout(seconds: timeout))
             }
+        }
+    }
+}
+
+extension CoordinatorError {
+    /// The error a terminal state ends the handshake or the session with; nil
+    /// while the connection is still preparing or is ready. `.waiting` (DNS
+    /// failure, refused, no route) counts as terminal so the client's own
+    /// backoff owns the retry, not Network.framework's internal wait.
+    init?(terminalState state: NWConnection.State) {
+        switch state {
+        case .failed(let error), .waiting(let error):
+            self = .connectionClosed(error)
+        case .cancelled:
+            self = .connectionClosed(NWError.posix(.ECANCELED))
+        default:
+            return nil
         }
     }
 }

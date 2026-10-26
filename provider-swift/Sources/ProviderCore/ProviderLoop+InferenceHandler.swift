@@ -512,6 +512,7 @@ extension ProviderLoop {
         acceptedLifecycleRequests.insert(requestId)
         send.send(.inferenceAccepted(requestId: requestId))
         profile.mark(.acceptedSent)
+        gpuKeepWarm?.requestAccepted()
 
         // 6. Mark the request before loading so concurrent preloads cannot
         // evict the model this accepted request is waiting for.

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1347,6 +1347,32 @@ correlates checkpoint callbacks to that receipt so delayed donor callbacks
 cannot advertise a successor's prompt. Ready anchors describe actual input
 checkpoints, and billing retains the engine's actual matched/saved token counts
 (`EngineV2Bridge+PrefixCache.swift`, `ResidentPrefixCacheEvidence.swift`).
+
+### GPU keep-warm
+
+An idle Apple GPU powers down, and the first command buffer afterwards waits
+for it to wake. `GPUKeepWarm`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/GPUKeepWarm.swift`) has
+two opt-in modes, both off by default
+([configuration](../reference/configuration.md#engine-and-scheduler)):
+
+| Mode | Opt-in | Submits |
+|---|---|---|
+| Wake-on-accept | `DARKBLOOM_TTFT_GPU_WAKE_ON_ACCEPT=1` | Once, right after `inference_accepted` (`ProviderLoop.handleInferenceRequest`), when no request charge or device activity holds the Mac; at most once per `wakeSpacing`. The wake overlaps prompt rendering, tokenization and bridge admission |
+| Idle heartbeat | `DARKBLOOM_TTFT_GPU_IDLE_HEARTBEAT=1` | Every `heartbeatInterval` while a model is loaded (`ProviderState.warmModels`) and the Mac has been idle for `heartbeatIdleThreshold`; stops `heartbeatMaxIdle` after the last accepted request until the next one |
+
+Both read idleness from the shared `WholeMacServiceBudget` (`isIdle`,
+`isIdle(for:)`): no request charge, so no request in prefill or decode, and no
+device activity. The command is a 4-byte blit fill on a dedicated Metal queue
+(`MetalGPUWakeSubmitter`). It references no model memory, never touches MLX
+streams, and reports no device activity, so idle calibration and the idle cache
+sweep see unchanged idleness. At most one keep-warm command buffer is in flight.
+The heartbeat runs in a background-priority task that session shutdown cancels
+(`ProviderLoop.stopGPUKeepWarm`). Metal exposes no public queue priority.
+Because the command binds no model memory, it prepays only the GPU's own wake.
+It does not keep warm the MLX buffer pool or the GPU's view of model buffers,
+which a later command must rebuild after the buffers have gone unused for
+about a second [INFERENCE: M3 Ultra microbenchmark, about 20 ms per GiB bound].
 
 ### `CBv2RequestTiming`
 

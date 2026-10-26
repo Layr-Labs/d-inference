@@ -814,6 +814,10 @@ public actor ProviderLoop {
     /// output tokens and the periodic monitor. The heartbeat throttle bounds sends.
     internal var performanceRefreshTask: Task<Void, Never>?
 
+    /// Opt-in GPU keep-warm (`GPUKeepWarm`); nil while both modes are off.
+    internal var gpuKeepWarm: GPUKeepWarm?
+    internal var gpuKeepWarmTask: Task<Void, Never>?
+
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
     /// before `run()` starts it.

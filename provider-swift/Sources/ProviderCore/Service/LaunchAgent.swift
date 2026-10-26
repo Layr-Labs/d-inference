@@ -356,6 +356,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_TTFT_GPU_WAKE_ON_ACCEPT` / `DARKBLOOM_TTFT_GPU_IDLE_HEARTBEAT`:
+    /// the GPU keep-warm modes are off by default; each opt-in must reach the
+    /// provider job to take effect.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -382,6 +385,8 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
+        GPUKeepWarm.Policy.wakeOnAcceptEnvironmentKey,
+        GPUKeepWarm.Policy.idleHeartbeatEnvironmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

@@ -285,6 +285,7 @@ extension ProviderLoop {
         // timer.
         startIdleMonitor()
         startCapacityRefreshMonitor()
+        startGPUKeepWarm()
         startAutoUpdateMonitor()
         startAutopilotCandidateVerification()
 
@@ -448,6 +449,7 @@ extension ProviderLoop {
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        stopGPUKeepWarm()
         await stopServiceAllowanceRefreshMonitor()
         await stopPerformanceRefreshMonitor()
         trailingHeartbeatTask?.cancel()

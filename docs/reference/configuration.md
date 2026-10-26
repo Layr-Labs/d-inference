@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -212,6 +212,24 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Gemma 4 row-mapped NAX
+
+This SDK route defaults on within its eligibility guards. Its setting uses exact
+values, not the general boolean convention above; no `provider.toml` key is added.
+
+| Variable | Values / default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | Enabled when unset or exactly `1`; exact `0` restores the original graph. Other explicit values, including empty, also disable it. Read once by the SDK's static selection | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); eligible stock Gemma expert prefill reads original token rows through the sorted assignment map. Hardware, shape, dtype, module and tracing guards still apply. |
+
+`LaunchAgent.inferencePassthroughEnvKeys` and `passthroughEnvironment` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` forward this
+override verbatim, including empty, when creating the background provider job.
+Foreground/local processes read it directly. Restarting an existing job reuses
+its saved environment; stop and start with `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` to
+persist the rollback, or without the override to restore the default. See the
+[mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
+and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
 
 ### Scheduler-prefill benchmark prompts
 

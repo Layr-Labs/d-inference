@@ -1472,6 +1472,74 @@ for memory scope. Cold prefill, other chips and clustering remain unmeasured.
 Clustering adoption also requires merging its separate projection policies and
 qualifying trace identity and evaluation modes; changing its SDK pin is insufficient.
 
+### Gemma 4 row-mapped NAX prefill
+
+The pinned SDK enables a guarded route for the sorted Gemma 4 expert gate/up
+products. Each NAX product reads the original token row through the existing
+sorted assignment map, avoiding the expanded activation gather. Gate and up
+remain separate outputs with the same K16 MMA sequence, FP32 accumulation and
+BF16 dequantization/stores; GeGLU, down projection and weighted reduction retain
+their original expressions. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift`
+(`callAndWeightedReduce`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
+(`tryPair`, `supportsDownProjection`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).
+
+The route requires stock evaluation-mode Gemma GeGLU, H2816/F704/E128/topK8,
+BF16 activations, affine4/group64 expert banks and 64–2048 production-prefill
+tokens. NAX must be available on the default GPU stream and every participating
+array must be ordinary and untraced. Unsupported shapes, custom children or
+adapters, training, transformations, CPU and custom-stream execution retain the
+complete original graph. Parameters remain live inputs; no parameter or row-map
+cache is introduced. One-token tails and decode remain outside this route.
+
+The route is enabled by default within those guards. Exact
+`DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` restores the original graph; unset or exact `1`
+enables the guarded route, while other explicit values leave it disabled.
+The provider forwards this override when creating its LaunchAgent environment.
+See the [process setting and rollback](../reference/configuration.md#gemma-4-row-mapped-nax).
+No new CLI command or `provider.toml` setting is added.
+
+[Same-artifact endpoint comparisons](https://github.com/Layr-Labs/mlx-swift-lm/blob/0cada65a3ff7eb338ef9d827ce551a49d6c08831/docs/benchmarks/gemma4-row-mapped-nax-2026-10-26/README.md) on one M5 Max with 128GB memory
+measured about 6–7% lower cold HTTP time to first generated frame for
+`gemma-4-26b-qat-4bit`, at concurrency 1 with 4K/8K prompts and 32 completion
+tokens. Four independent prompts per context in each execution order produced
+16 exact paired outputs/usage, all with zero reported cached tokens. Both
+orders, first-use rows and full response tails are retained. TTFT includes
+request processing and scheduling; it is not an isolated engine-prefill timer.
+The longer 8K/256-token ABBA control passed all A/B and same-arm exact comparisons;
+its roughly 114 tok/s HTTP decode proxies differed by only 0.3–0.4%, treated as
+neutral rather than an attributed decode gain. These figures are not additive
+to the earlier dispatch or feed-forward measurements.
+
+The SDK report preserves 24 native tests across eight fresh processes, including
+four fixed-shape full-model runs with 1,915 native tensor/frontier records each,
+and the original-checkpoint bank checks. The four HTTP capability suites passed
+12 functional cases each. Their initial disabled reasoning-output variant is
+retained; later OFF/ON suites matched the original output, with no established
+cause for the variation. These bounded checks do not prove universal numerical
+equivalence. Native plans used the retained serving TF32 posture; the separate
+CI policy and local opt-in test requirements remain explicit in the report.
+
+This SDK pin also includes the shared plain-greedy metadata shortcut from
+[the preceding SDK change](https://github.com/Layr-Labs/mlx-swift-lm/blob/57ead88e24b93c230cb062e4b5ad1998cc9b422d/docs/benchmarks/gemma4-greedy-metadata-2026-10-26/README.md). Rows without bias, penalties or requested
+logprobs avoid unused parameter/history arrays; an all-greedy batch omits its
+unused mask. Hard constraints, request identity, RNG state and nonidentity
+sampling paths retain their existing behavior. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LogitsPipelineV2.swift`
+(`setRows`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`
+(`setRows`). Its separate measured result is not a new incremental gain for
+this provider pin.
+
+See [resource qualification](hardware-support.md#gemma-4-row-mapped-nax-qualification)
+for allocation and admission scope. Other chips, concurrency and clustering
+remain unmeasured. Clustering requires merging its separate SDK projection
+changes and qualifying the stock-module, evaluation, stream and explicit-prefill
+contracts; changing its SDK pin alone is insufficient. Paged attention, prefix
+caching, SSD writes, MTP depth/acceptance and admission policies are unchanged.
+
 ### Prompt geometry
 
 With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is

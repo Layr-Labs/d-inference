@@ -551,7 +551,9 @@ Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 `localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
-otherwise. Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
+the leader and ends (exit 0) like `darkbloom cluster`
+(`ClusterOnboardingDriver.joinedLocalLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
 
 `darkbloom cluster status` prints `MTP: on (decode verifies drafts of the

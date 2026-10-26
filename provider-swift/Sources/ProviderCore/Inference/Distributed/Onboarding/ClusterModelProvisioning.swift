@@ -418,11 +418,13 @@ public enum ClusterModelProvisioning {
     static func stepLines(_ plan: ClusterModelProvisioningPlan) -> [String] {
         plan.steps.compactMap { step in
             let eta = step.seconds.map { ", " + duration($0) } ?? ""
+            // The Mac starts the line ("The other Mac (…): copy from this Mac …").
+            let mac = step.mac.prefix(1).uppercased() + step.mac.dropFirst()
             let line: String
             switch step.source {
             case .present: return nil
-            case .copy(let from): line = "\(step.mac): copy from \(from) over the Thunderbolt cable (\(gigabytes(step.bytes))\(eta))"
-            case .download: line = "\(step.mac): download from Darkbloom's catalog (\(gigabytes(step.bytes))\(eta))"
+            case .copy(let from): line = "\(mac): copy from \(from) over the Thunderbolt cable (\(gigabytes(step.bytes))\(eta))"
+            case .download: line = "\(mac): download from Darkbloom's catalog (\(gigabytes(step.bytes))\(eta))"
             }
             return step.blocker.map { line + " — cannot start: " + $0 } ?? line
         }

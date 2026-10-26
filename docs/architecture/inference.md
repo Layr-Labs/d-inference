@@ -181,6 +181,22 @@ member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
 [guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
 
+Lines name the two Macs for the screen that shows them
+(`ClusterOnboardingMacName`): "this Mac" and "the other Mac (<hardware name>)",
+because two Macs of one kind share the hardware name. The leader words an
+answer to a command the other Mac forwarded for that Mac's screen
+(`OnboardingLive.answeringForwarded`, `here`, `there`), and the cluster
+service names members the same way in its control lines and refusals
+(`ClusterOnboardingMacName.names`). A deployment line recorded for both Macs
+keeps hardware names; lines shown now carry the screen's words
+(`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
+onboarding once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`). The model list keeps one line per
+artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
+served is left out when another offers the same digests under the same name,
+and an artifact this build serves is never called unsupported for a copy the
+worker does not take (`ClusterSetupPlanning.copyNotTaken`).
+
 ## Context
 
 The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super

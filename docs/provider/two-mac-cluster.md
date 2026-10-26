@@ -76,16 +76,22 @@ cluster plan` says how many records it left out).
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
-| 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
-| 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
+| 3 | — | The other Mac says **"Paired with the other Mac (<its hardware>). Continue on the other Mac."** Its cluster service now runs; nothing else is ever asked there, also when it was started with `darkbloom cluster local` (it then says to run that on the Mac that leads). macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
+| 4 | the leader | It shows both Macs' hardware, tagged "(this Mac)" and "(the other Mac)", and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
 | 5 | — | Choosing is starting: "Starting <model> on both Macs in 3 s; press n to stop here." The leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request. | nothing |
 
 When it serves, the screen says how in one line, for example:
 
 ```
-Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24 layers.
-API at http://localhost:8000 on Apple M3 Ultra, 256 GB.
+Serving Qwen3.8-27B across both Macs: pipeline, the other Mac 40 layers / this Mac 24 layers.
+API at http://localhost:8000 on the other Mac (Apple M3 Ultra, 256 GB).
 ```
+
+Every screen names the Macs from where it is shown: "this Mac" is the Mac the
+screen is on and "the other Mac (Apple M3 Ultra, 256 GB)" the other one, by the
+hardware name pairing showed (never a host or computer name). Two Macs of one
+kind share that name, so it never stands alone. A Mac that does not lead shows
+the leader's answers in the same words for its own screen.
 
 When the coordinator in your provider configuration cannot take a cluster
 member yet (it is unreachable, or it has no cluster support), the pair still
@@ -131,7 +137,9 @@ no network beyond the cable.
    Not paired yet, it pairs first as in [the steps](#the-steps-once). Name a
    model to skip the list: `darkbloom cluster local Qwen3.5-9B` (its id or the
    name the list shows). On a cluster that already serves, it switches the
-   cluster to local only and waits until it serves again.
+   cluster to local only and waits until it serves again. On the Mac that joins
+   a waiting leader, it pairs and stops there like `darkbloom cluster`, and says
+   to run it on the leader.
 2. Read the API's place from the ready screen:
 
    ```
@@ -383,10 +391,13 @@ cluster setup after a Darkbloom update.").
   run `darkbloom cluster` again.
 - **A model is not offered**: the reason is shown beside it, for example "Not
   yet qualified on this pair of Macs" (a pair serves a model only where its
-  cross-cable check passed).
+  cross-cable check passed). A copy the cluster worker does not take, of a
+  model a pair serves, says so ("supported on a cluster, but this Mac's cluster
+  worker does not take this copy of it"); the model is listed once when another
+  copy can be served.
 - **A model does not fit now**: it is listed after the ones that fit, with what
-  frees the memory ("Quit apps on <Mac> first"); the fit is checked again right
-  before the start.
+  frees the memory ("Quit apps on the other Mac (…) first"); the fit is checked
+  again right before the start.
 - **The start does not finish**: the screen shows each Mac's last error and
   offers `d` to save a diagnostics file in your home folder (no keys, addresses or
   names in it; nothing is written if any would remain).

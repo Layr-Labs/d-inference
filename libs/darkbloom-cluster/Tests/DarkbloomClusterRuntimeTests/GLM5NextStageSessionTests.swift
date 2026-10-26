@@ -8,6 +8,14 @@ import Testing
 struct GLM5NextStageSessionTests {
     private enum Failure: Error { case acknowledgement }
 
+    /// Whether MLX computes float32 matrix products in full float32 here. It
+    /// uses TF32 on a GPU with neural accelerators (M5) unless the process is
+    /// started with `MLX_ENABLE_TF32=0`, the SDK's setting for float32
+    /// tolerances (`libs/mlx-swift-lm/CONTRIBUTING.md`).
+    static var fullFloat32Products: Bool {
+        ProcessInfo.processInfo.environment["MLX_ENABLE_TF32"] == "0" || !GPU.gemma4ExpertQMMDiagnostics().naxAvailable
+    }
+
     /// Real local files let sessions exercise the same verified load/binding as
     /// production while retaining the tiny deterministic tensor values.
     final class Artifact {
@@ -285,7 +293,11 @@ struct GLM5NextStageSessionTests {
         try fixture.last.close(check: {})
     }
 
-    @Test func receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward() throws {
+    /// The two stages' logits against one full cached forward, within 1e-4 in
+    /// float32: with TF32 products the two graphs differ by about 2e-4.
+    @Test(.enabled(if: Self.fullFloat32Products,
+                   "float32 within 1e-4 needs full float32 products: on an M5 GPU run with MLX_ENABLE_TF32=0"))
+    func receiverCommitPrecedesProducerPublicationAndMatchesFullCachedForward() throws {
         let fixture = try Fixture(), cache = fixture.full.newTextCache()
         defer { try? fixture.first.close(check: {}); try? fixture.last.close(check: {}) }
         for (sequence, tokens) in [[4, 5], [6, 7], [9]].enumerated() {

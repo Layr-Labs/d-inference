@@ -441,7 +441,7 @@ struct ResidentAdmission27BTests {
         func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
             ClusterWorkerReservation(profileID: large.profile.identifier,
                 promptTokenIDs: Array(repeating: 1000, count: prompt), stopTokenIDs: [], outputCount: output, chunkSize: 512,
-                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         }
         #expect(try large.request(reservation(prompt: 65_537, output: 128), id: UUID(), now: Self.now).maximumTokens == 65_665)
         #expect(try large.request(reservation(prompt: 229_376, output: 32_768), id: UUID(), now: Self.now).maximumTokens
@@ -451,6 +451,6 @@ struct ResidentAdmission27BTests {
         #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 16, output: 32_769), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { _ = try small.request(.init(profileID: small.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 32_769), stopTokenIDs: [], outputCount: 1, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: Self.now) }
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: Self.now) }
     }
 }

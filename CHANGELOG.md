@@ -18,6 +18,7 @@ Prepared on 2026-10-26; tagging and publication are separate steps.
 - MLX compiles that kernel at runtime on these GPUs. The upstream MLX merge in 0.10.2 passed it a value head-dim argument it does not take, so the compile always failed and MLX's error stopped the provider.
 - `libs/mlx-swift` moves from `eedca444` to `4926d3d9`, and `libs/mlx` and the nested `mlx` move from `ff4bb35b` to `31f550af`: 0.10.2's MLX with the kernel's arguments corrected. `libs/mlx-swift-lm` stays at `aee6ebb6`, and nothing else changes from 0.10.2.
 - A provider that keeps crashing installs 0.10.3 when its watchdog next restarts it, about five minutes after a crash, if automatic updates are on. Otherwise run `darkbloom update`.
+- The crash loop can trip the KV-backend guard: `darkbloom status` shows `KV-backend guard: ACTIVE`, tripped on v0.10.2, and the provider uses the contiguous backend and refuses packed `balanced`, `k8v4` and `k8v8` KV. The guard binds only the version that tripped it, so it clears when 0.10.3 starts. Clearing it on 0.10.2 does not help, because the crash is not in the KV backend.
 
 ## v0.10.2
 

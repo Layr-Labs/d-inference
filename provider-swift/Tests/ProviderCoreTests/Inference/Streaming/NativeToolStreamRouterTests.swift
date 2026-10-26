@@ -415,7 +415,10 @@ struct NativeToolStreamRouterTests {
         #expect(throws: (any Error).self) { try forced.process("No, I won't call it.") }
         var legacy = NativeToolStreamRouter(handler: nil, requiresToolCall: false, nativePrefix: nil)
         #expect(try legacy.process("legacy text") == [.content("legacy text")])
+        // Legacy Qwen text separates parallel calls with newlines: framing
+        // whitespace is dropped on every forced path, and prose still fails.
         var legacyForced = NativeToolStreamRouter(handler: nil, requiresToolCall: true, nativePrefix: nil)
-        #expect(throws: (any Error).self) { try legacyForced.process(" \n") }
+        #expect(try legacyForced.process(" \n").isEmpty)
+        #expect(throws: (any Error).self) { try legacyForced.process("legacy prose") }
     }
 }

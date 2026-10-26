@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2014,9 +2014,28 @@ Resolution happens before submit so a bad parser name never orphans a request.
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
-inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
-including the embedded-MTP one, advertise forced tools
-(`ToolChoiceEnforcementPolicy.swift`).
+inferred `.qwen35` parser or `.xmlFunction`. The coordinator routes those
+requests only to builds listed in `tool_constraint_models`, which
+`ToolChoiceEnforcementPolicy.advertisesCapability` fills per exact build
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
+Both concrete Qwen3.8-27B builds, including the embedded-MTP one, are listed.
+So are the `structuredForcedToolModelTypes` catalog builds, each only with
+its own `model_type`:
+
+| Build | `model_type` | Parser |
+|---|---|---|
+| `Qwen3.5-9B` | `qwen3_5` | `.qwen35` |
+| `qwen3.5-35b-a3b` | `qwen3_5_moe` | `.qwen35` |
+| `qwen3.6-35b-a3b-vl-mtp-mxfp8` | `qwen3_5_moe` | `.qwen35` |
+| `mimo-v2.6-flash-mopd` | `mimo_v2` | `.mimoV2` |
+
+These calls are prompt-forced, withheld and schema-validated
+(`ToolChoiceEnforcementPolicy.forcedStrategy` `.structuredPostValidation`).
+GPT-OSS (`gpt_oss`, `.harmony`) has no forced strategy and is not listed. In
+forced mode `NativeToolStreamRouter` drops framing whitespace
+(`ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and between call
+frames on every path, including legacy Qwen text without native channels; any
+other visible text is a `tool_choice` violation (422).
 
 ### Streamed auto tool calls
 

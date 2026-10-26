@@ -182,7 +182,9 @@ struct NativeToolStreamRouter {
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
             if requiresToolCall {
-                if usesNativeChannels && ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
+                // Newlines around and between call frames are not an answer on
+                // any path, including legacy Qwen text without native channels.
+                if ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                     "forced tool_choice produced visible text before a validated call")
             }

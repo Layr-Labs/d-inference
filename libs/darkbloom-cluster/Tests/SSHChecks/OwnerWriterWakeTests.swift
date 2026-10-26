@@ -93,7 +93,7 @@ func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(val
             let id = UUID(), deadline = now() + 8_000_000_000
             var sent = now()
             try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-                outputCount: 4, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil)), requestID: id, deadline: deadline)
+                outputCount: 4, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil)), requestID: id, deadline: deadline)
             guard case .admitted = try event(e) else { throw OwnerWire.invalid("Expected admission") }
             request.append(now() - sent)
             sent = now()

@@ -208,10 +208,7 @@ struct OwnerWire: Sendable {
         let end = now.addingReportingOverflow(remaining)
         guard !end.overflow else { throw Self.invalid("Owner duration overflow") }
         return .init(membershipEpoch: frame.membershipEpoch, sequence: frame.sequence, requestID: frame.requestID,
-            command: .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
-                outputCount: r.outputCount, chunkSize: r.chunkSize,
-                deadlineUptimeNanoseconds: end.partialValue, capacityLimitBytes: r.capacityLimitBytes,
-                sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages, glmMedia: r.glmMedia, qwenMedia: r.qwenMedia)))
+            command: .reserve(r.withDeadline(end.partialValue)))
     }
     static func invalid(_ reason: String) -> ClusterOwnerStateError { .invalid(reason) }
 }

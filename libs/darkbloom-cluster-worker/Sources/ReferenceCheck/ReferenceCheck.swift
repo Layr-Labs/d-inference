@@ -19,6 +19,8 @@ import Foundation
 @main enum ReferenceCheck {
     static func main() async {
         do {
+            // Before anything native: the workers' row routing (`ClusterQuantizedRowRouting`).
+            FileHandle.standardError.write(Data((ClusterQuantizedRowRouting.apply(source: "reference") + "\n").utf8))
             var fields: [String: String] = [:]
             let arguments = Array(CommandLine.arguments.dropFirst())
             let names = ["--model-dir", "--request", "--stage-cut", "--report", "--deadline-seconds",

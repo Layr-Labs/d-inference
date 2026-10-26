@@ -8,7 +8,8 @@ import Foundation
 //   run `darkbloom cluster`." -> waits (q cancels).
 //   Mac 2: `darkbloom cluster` -> its own checks -> finds the waiting leader
 //   on the cable by itself -> the same code on both screens, y on each ->
-//   "Paired with <leader>. Continue on <leader>." -> its cluster service runs.
+//   "Paired with the other Mac (<leader>). Continue on the other Mac." -> its
+//   cluster service runs, and nothing else is asked there.
 //   Mac 1 (the leader, where onboarding started): both Macs' hardware, the
 //   model choice, the planner's placement (which Mac decodes is derived, not
 //   the leader), the setup synced to the member over the link control
@@ -138,7 +139,7 @@ public struct ClusterOnboardingRequest: Sendable, Equatable {
 /// What `darkbloom cluster` finds on this Mac when it starts.
 public struct ClusterOnboardingResume: Sendable, Equatable {
     public var role: ClusterOnboardingRole?
-    /// The leader's name on a member; the member's name on the leader.
+    /// The other Mac's hardware name as pairing showed it (the leader's on a member, the member's on the leader).
     public var peerName: String?
     /// The leader asked the cluster to serve (kept across restarts).
     public var serving: Bool
@@ -161,6 +162,35 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
     }
 }
 
+/// How the screens name the two Macs of a pair: "this Mac" for the Mac the screen is on and "the other Mac" for the
+/// other one, which the lines that identify it also call by its hardware name ("the other Mac (Apple M5 Ultra,
+/// 256 GB)"). Two Macs of one kind share that name, so the name alone never says which Mac is meant (2026-10-25: both
+/// Macs were "Apple M5 Ultra, 256 GB" and the API landed on the Mac the screen was not on). The hardware name is what
+/// pairing shows: never a host or computer name.
+public enum ClusterOnboardingMacName {
+    public static let this = "this Mac"
+    public static let other = "the other Mac"
+
+    /// "the other Mac (Apple M5 Ultra, 256 GB)"; plain "the other Mac" when the name is unknown, not plain text, or
+    /// itself a fallback such as "the other Mac".
+    public static func other(named name: String?) -> String {
+        guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty, name.count <= 96,
+              ClusterOnboardingDeployment.shownPlainly(name), !name.hasPrefix("the ") else { return other }
+        return "\(other) (\(name))"
+    }
+
+    /// The text at the start of a sentence: "This Mac", "The other Mac (…)".
+    public static func sentence(_ text: String) -> String { text.prefix(1).uppercased() + text.dropFirst() }
+
+    /// Member names as the Mac `viewerID` names them on its screen or log: itself "this Mac", the one other member of
+    /// a pair "the other Mac (<its name>)". With more than one other member the hardware names stay (no member is
+    /// "the other").
+    public static func names(_ hardware: [String: String], viewerID: String) -> [String: String] {
+        guard hardware.keys.filter({ $0 != viewerID }).count == 1 else { return hardware }
+        return Dictionary(uniqueKeysWithValues: hardware.map { id, name in (id, id == viewerID ? this : other(named: name)) })
+    }
+}
+
 /// One Mac as the leader shows it before the model is chosen.
 public struct ClusterOnboardingMachine: Codable, Sendable, Equatable {
     public var name: String
@@ -178,10 +208,12 @@ public struct ClusterOnboardingMachine: Codable, Sendable, Equatable {
         self.memberID = memberID; self.here = here ?? leads
     }
 
-    public var line: String {
+    /// The machine's line, tagged "(this Mac)" on the screen's own Mac and, in a pair (`inPair`), "(the other Mac)"
+    /// on the other one: two Macs of one kind share the hardware name.
+    public func line(inPair: Bool) -> String {
         let gpu = gpuCores.map { " · \($0)-core GPU" } ?? ""
-        let what = leads && here ? "leads (this Mac)" : leads ? "leads" : here ? "member (this Mac)" : "member"
-        return "  \(name) · \(memoryGB) GB\(gpu) · \(models) model\(models == 1 ? "" : "s") · \(what)"
+        let mac = here ? " (\(ClusterOnboardingMacName.this))" : inPair ? " (\(ClusterOnboardingMacName.other))" : ""
+        return "  \(name) · \(memoryGB) GB\(gpu) · \(models) model\(models == 1 ? "" : "s") · \(leads ? "leads" : "member")\(mac)"
     }
 }
 
@@ -245,7 +277,12 @@ public enum ClusterOnboardingDeployment {
         public var layers: Int?
         /// Weight bytes this Mac holds (tensor parallel shares are given as a percentage of these).
         public var weightsBytes: Int?
-        public init(name: String, layers: Int?, weightsBytes: Int? = nil) { self.name = name; self.layers = layers; self.weightsBytes = weightsBytes }
+        /// How the screen that shows the line names this Mac ("this Mac", "the other Mac"); nil in a line recorded for
+        /// both Macs (the start carries it), which names each Mac by its hardware.
+        public var label: String?
+        public init(name: String, layers: Int?, weightsBytes: Int? = nil, label: String? = nil) {
+            self.name = name; self.layers = layers; self.weightsBytes = weightsBytes; self.label = label
+        }
     }
 
     /// "Apple M5 Ultra, 256 GB" -> "M5 Ultra".
@@ -266,11 +303,14 @@ public enum ClusterOnboardingDeployment {
         return "split across the Macs"
     }
 
-    /// "M3 Ultra 40 layers / M5 Ultra 24 layers" (pipeline) or "M3 Ultra 60% / M5 Ultra 40%" (tensor parallel).
+    /// "M3 Ultra 40 layers / M5 Ultra 24 layers" (pipeline) or "M3 Ultra 60% / M5 Ultra 40%" (tensor parallel); on a
+    /// screen that knows which Mac is which, "this Mac 50% / the other Mac 50%".
     public static func sharesWords(mode: String, shares: [Share]) -> String {
         let names = shares.map { shortName($0.name) }
-        // Two Macs of one kind: say which is which by the full name.
-        let labels = Set(names).count == names.count ? names : shares.map(\.name)
+        let screen = shares.compactMap(\.label)
+        // The screen's own words when every share has one; else the chips, and for two Macs of one kind the full names
+        // (which still match when the Macs are identical: only the screen's words tell them apart).
+        let labels = screen.count == shares.count ? screen : Set(names).count == names.count ? names : shares.map(\.name)
         if modeWords(mode).contains("tensor parallel") {
             let total = shares.compactMap(\.weightsBytes).reduce(0, +)
             guard total > 0, shares.allSatisfy({ $0.weightsBytes != nil }) else { return labels.joined(separator: " / ") }
@@ -416,7 +456,8 @@ public struct ClusterOnboardingLinkResult: Sendable, Equatable {
 }
 
 public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
-    /// "this Mac" or the other Mac's name: where the serving API listens.
+    /// Where the serving API listens, as the screen that shows it names the Mac: "this Mac" or "the other Mac (<its
+    /// hardware name>)" (`ClusterOnboardingMacName`).
     public var servedBy: String
     public var port: Int
     /// The plan's deployment in one line (`ClusterOnboardingDeployment.line`); nil when it is not known here.
@@ -436,16 +477,18 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         let base = "API at http://localhost:\(port) on \(servedBy)"
         guard network == true else { return base }
         // Local only, the API on the other Mac: this Mac's own port passes to it (`ClusterLocalRelay`).
-        return base + ", and at port \(port) of \(servedBy == "this Mac" ? "its" : "that Mac's") LAN or tailnet address"
-            + (servedBy == "this Mac" ? "" : "; this Mac answers too (`darkbloom local` shows its address)")
+        return base + ", and at port \(port) of \(servesHere ? "its" : "that Mac's") LAN or tailnet address"
+            + (servesHere ? "" : "; this Mac answers too (`darkbloom local` shows its address)")
     }
+
+    private var servesHere: Bool { servedBy == ClusterOnboardingMacName.this }
 
     /// The local-serving line as this screen shows it. The part that serves words it for its own Mac ("this Mac's
     /// API"); on the screen of the other Mac (a member's status, or a leader whose API moved) it is that Mac's API,
     /// which `apiLine` names just above.
     public var noticeLine: String? {
         guard let notice else { return nil }
-        return servedBy == "this Mac" ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
+        return servesHere ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
     }
 
     /// The deployment line, then where the API is, then (serving locally only) the plain local-serving line.
@@ -632,9 +675,10 @@ public struct ClusterOnboardingPairing: Sendable, Equatable {
         switch result {
         case .paired(let role, let peerName):
             self.role = role
+            let other = ClusterOnboardingMacName.other(named: peerName)
             switch role {
-            case .member: return ["", "Paired with \(peerName). Continue on \(peerName)."]
-            case .leader: return ["", "Paired with \(peerName). This Mac leads the cluster."]
+            case .member: return ["", "Paired with \(other). Continue on \(ClusterOnboardingMacName.other)."]
+            case .leader: return ["", "Paired with \(other). This Mac leads the cluster."]
             }
         case .failed(let lines):
             return ["Not paired."] + lines + ["Run `darkbloom cluster` again to try again."]
@@ -707,6 +751,14 @@ public enum ClusterOnboardingDriver {
 
     /// macOS asks once, the first time Darkbloom's service talks over the cable. Said before it can appear.
     public static let localNetworkLine = "macOS may ask once to allow Darkbloom on the local network. Allow it."
+
+    /// The Mac that joined ends its onboarding once paired; the last thing it says.
+    public static let joinedLine = "Nothing else to do on this Mac: the other Mac chooses the model and starts this Mac's part."
+
+    /// Said on the Mac that joined when it was asked for `darkbloom cluster local` (a model too, perhaps): nothing of it
+    /// runs here, because the Mac that leads chooses how the cluster serves and its model.
+    public static let joinedLocalLine = "`darkbloom cluster local` takes effect on the Mac that leads, not on this one: "
+        + "run it on the other Mac to serve locally only or to name the model."
 
     /// Runs the cable checks with each line shown as it is made (the approval line comes before the macOS prompt).
     static func checkLink(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ClusterOnboardingLinkResult {
@@ -791,10 +843,11 @@ public enum ClusterOnboardingDriver {
                 return 1
             }
             console.say(localNetworkLine)
-            // `darkbloom cluster local` on the Mac that joined carries on here: the choice and the start run on the
-            // leader over the cable, as every command typed on a member does.
-            if request.scope != nil { return menu(operations.resume(), operations, console, request: request) }
-            console.say("Nothing else to do on this Mac: \(peerName) chooses the model and starts this Mac's part.")
+            // Nothing else is asked on the Mac that joined (step 3), `darkbloom cluster local` included: the Mac that
+            // leads is on its own model list by now (2026-10-25: both Macs showed the list, and the one that joined
+            // would have chosen through the other's).
+            if request.scope != nil || request.model != nil { console.say(joinedLocalLine) }
+            console.say(joinedLine)
             return 0
         case .leader:
             return leader(.init(role: .leader, peerName: peerName), operations, console, justPaired: true, request: request)
@@ -805,7 +858,8 @@ public enum ClusterOnboardingDriver {
     /// the link control channel, and its answer is shown here.
     static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                        request: ClusterOnboardingRequest = .init()) -> Int32 {
-        let leader = resume.leaderName ?? resume.peerName ?? "the leading Mac"
+        // A member of a pair is led by the other Mac.
+        let leader = ClusterOnboardingMacName.other(named: resume.leaderName ?? resume.peerName)
         console.say("This Mac is a member of the cluster led by \(leader).")
         switch operations.ensureService() {
         case .success(let line): console.say(line)
@@ -813,7 +867,7 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say(line) }
             return 1
         }
-        console.say("Commands typed here run on \(leader) over the cable.")
+        console.say("Commands typed here run on \(ClusterOnboardingMacName.other) over the cable.")
         return menu(resume, operations, console, request: request)
     }
 
@@ -845,7 +899,8 @@ public enum ClusterOnboardingDriver {
                      request: ClusterOnboardingRequest = .init()) -> Int32 {
         if let wanted = request.scope {
             if request.model != nil || !resume.serving {
-                return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model)
+                return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model,
+                                      leads: resume.role != .member)
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, operations, console) }
         }
@@ -896,7 +951,7 @@ public enum ClusterOnboardingDriver {
                     for line in failure.lines { console.say(line) }
                     return 1
                 }
-            case "m", "M": return chooseAndServe(operations, console, scope: resume.scope)
+            case "m", "M": return chooseAndServe(operations, console, scope: resume.scope, leads: resume.role != .member)
             case "f" where resume.unsetCablePort != nil, "F" where resume.unsetCablePort != nil:
                 let result = checkLink(operations, console)
                 console.say(result.ready ? "The cable's port is set up; the cluster re-forms by itself in a moment."
@@ -937,9 +992,11 @@ public enum ClusterOnboardingDriver {
     }
 
     /// The choice, then the start. `scope` is how it will serve (what the screen says); `saveScope` saves it on the
-    /// control leader first (`darkbloom cluster local`); `model` names the choice so the list is not asked.
+    /// control leader first (`darkbloom cluster local`); `model` names the choice so the list is not asked. `leads`:
+    /// this Mac leads; on a member every step runs on the other Mac, which sends this Mac its setup.
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
-                               scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil) -> Int32 {
+                               scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
+                               leads: Bool = true) -> Int32 {
         console.heading("3 / 5  Choose a model")
         console.say("Reading both Macs over the cable…")
         let notes = ClusterOnboardingMailbox<String>()
@@ -954,7 +1011,7 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         console.say("The cluster:")
-        for machine in machines { console.say(machine.line) }
+        for machine in machines { console.say(machine.line(inPair: machines.count == 2)) }
         console.say("")
         console.say("Working out the fastest way to split each model across both Macs…")
         if let notice = operations.developerNotice() { console.say(notice) }
@@ -1078,7 +1135,8 @@ public enum ClusterOnboardingDriver {
             console.say("Nothing was changed. Run `darkbloom cluster` here again after that.")
             return 1
         }
-        console.say("Saving the setup and sending it to the other Mac over the cable…")
+        console.say(leads ? "Saving the setup and sending it to the other Mac over the cable…"
+                          : "Saving the setup on the other Mac, which sends it to this Mac over the cable…")
         switch operations.adopt(chosen!) {
         case .success(let lines): for line in lines { console.say("  " + line) }
         case .failure(let failure):

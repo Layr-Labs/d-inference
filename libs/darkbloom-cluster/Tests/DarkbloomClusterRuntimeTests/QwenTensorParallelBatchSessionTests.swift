@@ -682,6 +682,121 @@ struct QwenTensorParallelBatchSessionTests {
     func ssdHybridPrefixesRestoreConvSSMAfterTheTiersReopen() throws {
         try verifySSDPrefixes(hybrid: true)
     }
+    /// A request's prefix partition on both tiers, through the owner's own
+    /// scope rule (`QwenTensorParallelResidentRuntime.batchPrefixScope`): a
+    /// tenant's prompt is restored by that tenant alone, from the resident
+    /// tier and, once that is gone, from the SSD, never by another tenant or
+    /// a request without one, though each holds the same prompt; a request
+    /// whose cache is off votes nothing, keeps nothing and writes nothing.
+    /// Every request selects the cold pair's first token.
+    @Test func partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing() throws {
+        try Device.withDefaultDevice(device) {
+            let (configuration, tensors, profile) = try warmFixture(hybrid: false)
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwen-tp-tenant-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let key = Data((0..<32).map { UInt8(($0 * 29 + 5) % 256) })
+            var settings = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+            settings.minimumTokens = 1
+            settings.minimumFreeBytes = 1 << 20
+            let planScope = "qwen-tp-tenant-tiny|shares=1:1", load = UUID().uuidString
+            let disks = try (0..<2).map { rank in
+                QwenTensorParallelPrefixDisk(tier: try QwenStagePrefixDiskTier(configuration: settings, root: root, key: key,
+                    planScope: planScope, rank: rank), planScope: planScope)
+            }
+            defer { for disk in disks { disk.tier.close() } }
+            let caches = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            func pair(warm: Bool) throws -> [Owned] {
+                let wire = Rendezvous()
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owner = try Owned(model, lanes: 1), kind = owner.host.kind
+                    func suffix(_ reservation: SelectionReservation) -> String? {
+                        QwenTensorParallelResidentRuntime.batchPrefixScope(reservation.request, kind: kind, mediaIdentity: nil)
+                    }
+                    owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
+                        group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
+                        releaseResources: { _ in }, prefix: warm ? caches[rank] : nil,
+                        prefixBudget: warm ? .init(maximumTokens: 128, captureBytes: 8 << 20, residentBytes: 64 << 20) : nil,
+                        prefixScope: warm ? { reservation in suffix(reservation).map { load + "|" + $0 } } : nil,
+                        prefixDisk: warm ? disks[rank] : nil,
+                        prefixDiskScope: warm ? { reservation in suffix(reservation).map(disks[rank].scope) } : nil,
+                        allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
+                    return owner
+                }
+            }
+            let prompt = [10] + (1..<72).map { ($0 * 17) % 256 }, frontier = (prompt.count - 1) / 5 * 5
+            /// Opens, prefills and cleanly retires one request: what each rank
+            /// restored at open, what it stored, and the first selected token.
+            func serve(_ owners: [Owned], _ partition: ClusterWorkerPrefixCache?) throws
+                -> (restored: [Int], stored: [[Int]], token: Int) {
+                let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                    promptTokenIDs: prompt, chunkSize: 5, outputCount: 12, stopTokenIDs: [], prefixCache: partition)
+                try parallel(owners) { $0.nativeLanes = [try $0.executor!.open(.init(request: request), check: {})] }
+                let restored = owners.map { $0.nativeLanes[0].committedTokens }
+                while owners[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                    try parallel(owners) { owner in
+                        let lane = owner.nativeLanes[0]
+                        if let token = try owner.executor!.prefill(lane, frame: lane.nextFrame!, check: {}) { owner.selected = [token] }
+                    }
+                }
+                for owner in owners {
+                    try owner.executor!.retire(owner.nativeLanes[0], reason: .clientStop, selected: 1, last: owner.selected[0])
+                }
+                for owner in owners { try owner.executor!.confirmedRetirement(owner.nativeLanes[0], clean: true) }
+                #expect(owners[0].selected == owners[1].selected && owners.allSatisfy { $0.host.isDrained })
+                return (restored, owners.map { $0.nativeLanes[0].storedPrefixFrontiers }, owners[0].selected[0])
+            }
+            func drained() -> [Int] {
+                disks.map { disk in
+                    #expect(disk.tier.drain(timeoutSeconds: 60))
+                    return disk.tier.recordCount
+                }
+            }
+            let tenantA = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-a"))
+            let tenantB = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-b"))
+            let tenantC = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-c"))
+            let expected = try serve(pair(warm: false), nil).token
+            let warm = try pair(warm: true)
+            // Tenant A's capture is kept on both tiers.
+            let first = try serve(warm, tenantA)
+            #expect(first.restored == [0, 0] && first.stored == [[frontier], [frontier]] && first.token == expected)
+            #expect(drained() == [1, 1])
+            // Another tenant, and a request without one, find nothing of it; each keeps its own.
+            for (partition, records) in [(tenantB, [2, 2]), (nil, [3, 3])] as [(ClusterWorkerPrefixCache?, [Int])] {
+                let other = try serve(warm, partition)
+                #expect(other.restored == [0, 0] && other.stored == [[frontier], [frontier]] && other.token == expected)
+                #expect(drained() == records)
+            }
+            // A request whose cache is off restores, keeps and writes nothing.
+            let resident = caches.map(\.bytesInUse), persisted = disks.map(\.tier.stats.persisted)
+            let off = try serve(warm, .disabled)
+            #expect(off.restored == [0, 0] && off.stored == [[], []] && off.token == expected)
+            #expect(caches.map(\.bytesInUse) == resident && drained() == [3, 3] && disks.map(\.tier.stats.persisted) == persisted)
+            // The same tenant still hits, resident.
+            let again = try serve(warm, tenantA)
+            #expect(again.restored == [frontier, frontier] && again.token == expected)
+            // Without the resident tier: a new tenant finds none of the three
+            // records of its prompt; tenant A restores its own from the SSD;
+            // a request whose cache is off reads nothing.
+            for cache in caches { cache.sweep() }
+            let restores = disks.map(\.tier.stats.restores)
+            let stranger = try serve(warm, tenantC)
+            #expect(stranger.restored == [0, 0] && stranger.token == expected)
+            #expect(disks.map(\.tier.stats.restores) == restores)
+            for cache in caches { cache.sweep() }
+            let quiet = try serve(warm, .disabled)
+            #expect(quiet.restored == [0, 0] && quiet.stored == [[], []] && disks.map(\.tier.stats.restores) == restores)
+            let fromDisk = try serve(warm, tenantA)
+            #expect(fromDisk.restored == [frontier, frontier] && fromDisk.token == expected)
+            #expect(zip(disks.map(\.tier.stats.restores), restores).allSatisfy { $0 == $1 + 1 })
+        }
+    }
+
     /// The SSD tier across a restart: records written behind a cleanly
     /// retired pair are offered by reopened tiers to a new pair with empty
     /// resident tiers, restored on both ranks bit-exactly against a cold

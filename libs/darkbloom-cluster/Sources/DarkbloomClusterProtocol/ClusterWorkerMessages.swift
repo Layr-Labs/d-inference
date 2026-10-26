@@ -208,12 +208,12 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
     public var encryptedAndVerified: Bool { protection == Self.encrypted && peerVerified }
 }
 
-/// What a tensor-parallel worker measured of its link to the peer at load,
-/// the way the sharded modes use it (`keyed`: over the keyed data plane, the
-/// all-sums sealed): one-way point-to-point records, small and large, and the
-/// all-sum at a decode step's width and at a prefill chunk's. Medians, in
-/// microseconds. The pair's owner keeps the pair's recent ones; a placement
-/// planner derives the link's costs from their median.
+/// What a worker measured of its link to the peer at load, pipeline or tensor
+/// parallel, the way the sharded modes use it (`keyed`: over the keyed data
+/// plane, the all-sums sealed): one-way point-to-point records, small and
+/// large, and the all-sum at a decode step's width and at a prefill chunk's.
+/// Medians, in microseconds. The pair's owner keeps the pair's recent ones; a
+/// placement planner derives the link's costs from their median.
 public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     public static let transports: Set<String> = ["jaccl"]
     public let transport: String
@@ -296,7 +296,9 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// A rank re-derives it while idle and reports it on every keep-warm
     /// answer (`ClusterWorkerEvent.keptWarm`).
     public let servingContextTokens: Int?
-    /// The link as a tensor-parallel load measured it; nil from other modes.
+    /// The link as this load measured it before reading a weight (every load
+    /// over the cable, pipeline or tensor parallel); nil from a load that
+    /// measured none.
     public let linkProbe: ClusterWorkerLinkProbe?
     /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
     /// text only, and then the record's bytes are those of a worker without it.
@@ -327,7 +329,7 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let outputCount: Int
     public let chunkSize: Int
     /// Same-Mac DispatchTime uptime deadline. Never forward this to another Mac.
-    public let deadlineUptimeNanoseconds: UInt64
+    public private(set) var deadlineUptimeNanoseconds: UInt64
     /// Additional owner ceiling, not a native resource grant.
     public let capacityLimitBytes: Int
     /// How the decoding rank selects tokens; nil is greedy text, and then the
@@ -336,6 +338,13 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// from another (a hop, a codec, a local copy) that forgot it would
     /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
+    /// How both ranks' prompt-prefix caches treat the request: its cache off,
+    /// or its tenant's digest; nil is the cache on without a tenant, and then
+    /// the reservation's bytes are exactly those of a worker without it.
+    /// Required at every construction, with no default, for the reason
+    /// `sampling` is: a hop or copy that forgot it would let one tenant's
+    /// request reuse another's prompt prefixes.
+    public let prefixCache: ClusterWorkerPrefixCache?
     public let mimoImages: ClusterMiMoImages?
     public let stillImages: ClusterStillImages?
     /// GLM image and video input on the tensor-parallel pair; nil is text, and
@@ -349,13 +358,25 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+                sampling: ClusterWorkerSampling?, prefixCache: ClusterWorkerPrefixCache?,
+                route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
                 glmMedia: ClusterGLMMedia? = nil, qwenMedia: ClusterQwenMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
-        self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
+        self.sampling = sampling; self.prefixCache = prefixCache
+        self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
         self.glmMedia = glmMedia; self.qwenMedia = qwenMedia
+    }
+
+    /// This reservation on another clock, every other field kept: how a hop
+    /// (a link, an owner, a remote worker's launch clock) re-times one. A copy
+    /// rebuilt through `init` drops any media or route it forgets, since those
+    /// default to nil there; this copies the value and cannot.
+    public func withDeadline(_ deadlineUptimeNanoseconds: UInt64) -> Self {
+        var copy = self
+        copy.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+        return copy
     }
 }
 

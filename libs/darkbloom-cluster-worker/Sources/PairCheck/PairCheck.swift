@@ -24,6 +24,9 @@ import Foundation
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
               [--stop-token-ids A,B] [--request-id UUID] [--model-id REGISTERED_MODEL_ID (default: the tokenizer's model)]
               [--route decoding_rank_alone (the phase split's decoding rank serves it alone; the planner's per-request route)]
+              [--request-prefix-cache off|tenant:SALT (the request's own prompt-prefix partition, as a product request's
+               cache switch and cacheSalt: off reuses and keeps nothing; tenant: keys both ranks' caches by the salt's
+               digest, which alone the request file and the ranks see)]
               [--temperature F [--top-p F] [--top-k N] [--min-p F] --sampling-seed N [--sampling-stream N]
                (a sampled request: the decoding rank draws with the product's sampler, keyed on seed, stream and index)]
           darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
@@ -127,7 +130,8 @@ import Foundation
         let fields = try parse(arguments, allowed: ["--output", "--chunk-size", "--output-count", "--model-dir",
             "--user-text-file", "--raw-text-file", "--prompt-tokens", "--synthetic-tokens", "--seed",
             "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id",
-            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream", "--route"])
+            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream", "--route",
+            "--request-prefix-cache"])
         guard let output = fields["--output"]?.first, let chunk = try integer(fields, "--chunk-size"),
               let count = try integer(fields, "--output-count") else { throw Failure(usage) }
         let stops = try (fields["--stop-token-ids"]?.first ?? "").split(separator: ",").map { text -> Int in
@@ -208,6 +212,17 @@ import Foundation
             outputCount: count, stopTokenIDs: stops, promptSource: source, modelID: modelID, sampling: sampling)
         if let route = fields["--route"]?.first {
             value.route = route
+            try value.validate()
+        }
+        if let partition = fields["--request-prefix-cache"]?.first {
+            if partition == "off" {
+                value.prefixCache = "disabled"
+            } else if partition.hasPrefix(QualificationRequest.tenantPrefix) {
+                value.prefixCache = QualificationRequest.prefixCache(
+                    tenantSalt: String(partition.dropFirst(QualificationRequest.tenantPrefix.count)))
+            } else {
+                throw Failure("--request-prefix-cache must be off or tenant:SALT")
+            }
             try value.validate()
         }
         try QualificationFiles.writeNew(value.encoded(), to: URL(fileURLWithPath: output))

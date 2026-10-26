@@ -174,6 +174,13 @@ only when it sets one of them; an installed owner never does.
 `DARKBLOOM_CLUSTER_GENERATION_MODE`, the name a launcher used before the
 argument existed, is refused always.
 
+The worker, `darkbloom-cluster-reference` and `darkbloom-cluster-tp-check` set
+`MLX_QMV_BATCH_INVARIANT=1` before anything native unless their launcher set
+it, and log `darkbloom-qmv-batch-invariant-v1 enabled=... source=...`: the
+cluster's MLX core then keeps quantized products of 2 to (vector limit - 1)
+rows on its per-vector kernels, so a request's bytes do not depend on how many
+rows share its launch ([batch-invariant projections](../../docs/architecture/inference.md#batch-invariant-tensor-parallel-decode-projections)).
+
 ## Per-Mac stage check
 
 Run on each Mac, for each rank it may serve, before any two-Mac attempt. The

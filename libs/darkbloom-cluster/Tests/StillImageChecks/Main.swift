@@ -54,7 +54,7 @@ import DarkbloomClusterProtocol
                    route: ClusterWorkerRoute? = nil) -> ClusterWorkerCommandFrame {
             .init(membershipEpoch: epoch, sequence: 0, requestID: id, command: .reserve(.init(
                 profileID: profile, promptTokenIDs: prompt, stopTokenIDs: [2], outputCount: 1, chunkSize: 4,
-                deadlineUptimeNanoseconds: 100, capacityLimitBytes: 1024, sampling: nil,
+                deadlineUptimeNanoseconds: 100, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil,
                 route: route, stillImages: images)))
         }
         let wire = try ClusterWorkerCodec.encode(frame(media()))

@@ -49,9 +49,11 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
     private let releaseResources: (Reservation) throws -> Void
     private let prefix: QwenTensorParallelBatchPrefixCache?
     private let prefixBudget: QwenTensorParallelBatchPrefixBudget?
-    private let prefixScope: ((Reservation) -> String)?
+    /// A request's resident and SSD scopes; nil for a request whose cache is
+    /// off, which then votes nothing, captures nothing and stores nothing.
+    private let prefixScope: ((Reservation) -> String?)?
     private let prefixDisk: QwenTensorParallelPrefixDisk?
-    private let prefixDiskScope: ((Reservation) -> String)?
+    private let prefixDiskScope: ((Reservation) -> String?)?
     private let allocationBound: ((Int) throws -> Int)?
     private let prefixObserved: (String, Int, Int) -> Void
     private let assistant: QwenTensorParallelBatchAssistant?
@@ -73,9 +75,9 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
          releaseResources: @escaping (Reservation) throws -> Void,
          prefix: QwenTensorParallelBatchPrefixCache? = nil,
          prefixBudget: QwenTensorParallelBatchPrefixBudget? = nil,
-         prefixScope: ((Reservation) -> String)? = nil,
+         prefixScope: ((Reservation) -> String?)? = nil,
          prefixDisk: QwenTensorParallelPrefixDisk? = nil,
-         prefixDiskScope: ((Reservation) -> String)? = nil,
+         prefixDiskScope: ((Reservation) -> String?)? = nil,
          allocationBound: ((Int) throws -> Int)? = nil,
          prefixObserved: @escaping (String, Int, Int) -> Void = { _, _, _ in },
          assistant: QwenTensorParallelBatchAssistant? = nil,
@@ -149,7 +151,7 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
             let candidates = QwenTensorParallelMTPPrefixCache.candidates(promptCount: request.promptCount,
                 chunkSize: request.chunkSize, maximumTokens: assistant.prefixBudget.maximumTokens).filter { $0 > 1 }
             let keys = QwenTensorParallelMTPPrefixCache.keys(scope: scope + "|assistant-prefix", tokens: request.promptTokenIDs, frontiers: candidates)
-            diskScope = prefixDisk == nil ? nil : prefixDiskScope.map { $0(reservation) + "|assistant-prefix" }
+            diskScope = prefixDisk == nil ? nil : (prefixDiskScope?(reservation)).map { $0 + "|assistant-prefix" }
             if !candidates.isEmpty {
                 let prompt = request.promptTokenIDs
                 let agreed = try agreePrefix(cache: prefix, candidates: candidates, keys: keys, diskScope: diskScope,

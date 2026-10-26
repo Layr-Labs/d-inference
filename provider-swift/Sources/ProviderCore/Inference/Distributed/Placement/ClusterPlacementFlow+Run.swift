@@ -65,9 +65,11 @@ extension ClusterPlacementFlow {
             throw ClusterConfigurationError.invalid("\(toolName) is not installed beside this Mac's worker (\(tool.path)). "
                 + "It is built and released with the worker; install the two together.")
         }
-        // With its speed index: two Macs' indices relate their speeds when no speed was measured for the model.
-        let localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
-            arguments: ["device", "--json", "--index"], deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+        // With its speed index: two Macs' indices relate their speeds when no speed was measured for the model
+        // (measured now only while no model is loaded here, `ClusterLocalDeviceProfile`).
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let localProfile = try ClusterLocalDeviceProfile.read(tool: tool, deadline: deadline, homeDirectory: home,
+            modelLoaded: inputs.modelLoaded)
         let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"]
                 + ClusterMiMoPrivateImagePolicy.profileArguments(capability), deadline: deadline,
@@ -117,7 +119,6 @@ extension ClusterPlacementFlow {
         // The profiles this plan read are kept for the serving leader's per-request route,
         // and the speed records of requests this pair served join the measurements (only
         // those the pair description's worker builds served: `decide` keeps them).
-        let home = FileManager.default.homeDirectoryForCurrentUser
         if let peer = description.members.first(where: { $0.id != inputs.localMemberID }) {
             ClusterMemberProfiles.record([inputs.localMemberID: localProfile, peer.id: peerProfile], homeDirectory: home)
         }

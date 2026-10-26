@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -65,25 +65,35 @@ position, as the verify window computes it; the window's arithmetic differs in
 its last bits from one-token decode, so, as with the pipeline itself, output
 matches a single Mac's up to near ties. Your pair's own measured speed-up
 replaces the records' figure in the choice once the pair has served the same
-placement both with and without the rounds. Speeds the pair served count only
-for the Darkbloom build that served them: after an update, speeds an earlier
-build served no longer steer the plan (`darkbloom cluster plan` says how many
-records it left out).
+placement both with and without the rounds. GLM-5.3-Flash in tensor parallel
+always decodes with its own NextN (MTP) head, at depth 2; `darkbloom cluster
+status` and the pair's `/metrics` report MTP on from the start. Speeds the
+pair served count only for the Darkbloom build that served them: after an
+update, speeds an earlier build served no longer steer the plan (`darkbloom
+cluster plan` says how many records it left out). A request that answers fewer
+than 64 tokens (the setup's test answer, a quick "Say hi") is not counted as a
+speed and does not shape the plan.
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
 | 1 | the first Mac | Run `darkbloom cluster`. It checks the Thunderbolt cable ("Cable found.", "Cable ready."). Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). With two cables it asks which one to use. | one macOS administrator approval when the selected port needs configuration ("Darkbloom needs network access for the cluster cable") |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
-| 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
-| 4 | the leader | It shows both Macs' hardware and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share and the expected speed. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
+| 3 | — | The other Mac says **"Paired with the other Mac (<its hardware>). Continue on the other Mac."** Its cluster service now runs; nothing else is ever asked there, also when it was started with `darkbloom cluster local` (it then says to run that on the Mac that leads). macOS may ask once to allow Darkbloom on the local network: allow it. | the Local Network prompt, once |
+| 4 | the leader | It shows both Macs' hardware, tagged "(this Mac)" and "(the other Mac)", and every model the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each: size, how it is split, each Mac's share ("this Mac 50% / the other Mac 50%") and the expected speed. A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. A model that has tensor parallel but is split otherwise says why on a short second line (for example "tensor parallel: slower here" or "tensor parallel: link unmeasured"). Models that fit in the Macs' free memory now come first. Choose the model (enter takes the first). A model the other Mac lacks says how it gets there ("copy ... over the Thunderbolt cable (6.1 GB)"). | enter to copy (a copy predicted under 30 s at the speed measured on these Macs starts by itself, `n` within 3 s stops it) |
 | 5 | — | Choosing is starting: "Starting <model> on both Macs in 3 s; press n to stop here." The leader saves the setup, sends it to the other Mac over the cable, starts both Macs, waits until both are loaded and answers one test request. | nothing |
 
 When it serves, the screen says how in one line, for example:
 
 ```
-Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24 layers.
-API at http://localhost:8000 on Apple M3 Ultra, 256 GB.
+Serving Qwen3.8-27B across both Macs: pipeline, the other Mac 40 layers / this Mac 24 layers.
+API at http://localhost:8000 on the other Mac (Apple M3 Ultra, 256 GB).
 ```
+
+Every screen names the Macs from where it is shown: "this Mac" is the Mac the
+screen is on and "the other Mac (Apple M3 Ultra, 256 GB)" the other one, by the
+hardware name pairing showed (never a host or computer name). Two Macs of one
+kind share that name, so it never stands alone. A Mac that does not lead shows
+the leader's answers in the same words for its own screen.
 
 When the coordinator in your provider configuration cannot take a cluster
 member yet (it is unreachable, or it has no cluster support), the pair still
@@ -131,7 +141,9 @@ no network beyond the cable.
    Not paired yet, it pairs first as in [the steps](#the-steps-once). Name a
    model to skip the list: `darkbloom cluster local Qwen3.5-9B` (its id or the
    name the list shows). On a cluster that already serves, it switches the
-   cluster to local only and waits until it serves again.
+   cluster to local only and waits until it serves again. On the Mac that joins
+   a waiting leader, it pairs and stops there like `darkbloom cluster`, and says
+   to run it on the leader.
 2. Read the API's place from the ready screen:
 
    ```
@@ -198,13 +210,18 @@ Check the printed mode and reason before starting. TP eligibility comes from
 the model's tensor layout, the runtime's advertised modes and supported rank
 counts; this check reads metadata and does not load the weights. TP does not
 require a pipeline layer cut. An unsupported model or rank count falls back
-to pipeline when eligible and fitting, without requesting a link measurement. For a compatible TP
-runtime, automatic selection still requires measured encrypted-link costs,
-memory fit and a predicted advantage over pipeline. A new pair without those
-link measurements uses an eligible fitting pipeline; a supported worker's first load records
-the measurements for later planning, and each later load adds one. Plans use the median of the
-pair's last eight measurements from the last 30 days, so one fast or slow load does not switch
-the mode. GLM currently has a pipeline adapter only.
+to pipeline when eligible and fitting, without requesting a link measurement.
+Where tensor parallel fits both Macs' memory as they are now, it is chosen,
+also on a new pair whose link no load has measured yet. A pipeline is chosen
+when only a pipeline fits now, and stays until the pair is planned again (`m`
+in `darkbloom cluster`, or after a Darkbloom update). Every load records the
+encrypted link's cost for later predictions; plans use the median of the
+pair's last eight measurements from the last 30 days. GLM-5.3-Flash on two M5
+Ultra 256 GB runs tensor parallel on equal shares with eight concurrent
+requests; the plan counts its NextN (MTP) layer on both Macs and its
+speculative decoding ([GLM tensor parallel](../architecture/inference.md#exact-quote-placement)).
+GLM-5.3-Flash has both a pipeline and a tensor-parallel adapter; its private
+image candidate is pipeline-only.
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 
@@ -256,6 +273,19 @@ and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that
 full memory budget even when recent chat requests are short. Request history
 still guides the speed estimate and choice of split.
+
+### Images and video
+
+A pair takes image and video input only where its placed mode serves it:
+GLM-5.3-Flash and Qwen3.8 27B in tensor parallel. In every other mode (any
+pipeline, other models) it registers with the coordinator as text only, so no
+media request is routed to it, and a pair registered for media serves only
+while both Macs' parts report media. GLM-5.3-Flash answers its output
+controls as one Mac does: hidden reasoning is withheld, with or without media,
+and with images or video a `response_format` JSON answer or a required or
+named tool call is refused. Content parts of an unknown type are refused,
+never answered from the remaining text
+([refused request shapes](direct-mode.md#refused-request-shapes)).
 
 ### GLM candidate setup
 
@@ -314,8 +344,20 @@ memory holds its share.
 Both Macs keep the prompt prefixes of every model family, in memory and in the
 encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
-sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
-attention history once per prompt and its linear-attention state per frontier.
+sliding-window layer's window at every kept frontier; GLM-5.3-Flash in pipeline
+keeps its attention history once per prompt and its linear-attention state per
+frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
+last whole 4,096-token chunk before its final token: each Mac writes its own
+share of it to the SSD once the request has finished, and a later prompt is
+restored from it only when both Macs hold it, with the same tokens as a request
+that prefilled the whole prompt ([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+
+Prefixes are kept per tenant, as on one Mac: a request served through Darkbloom
+reuses only prefixes that requests with its own cache scope left, on both Macs.
+A request without a cache scope from Darkbloom, a request with its prefix cache
+off and a GLM or Qwen request with images or video reuse and keep nothing.
+Requests to the local endpoint share prefixes with one another only. How the caches are
+partitioned: [encryption and privacy](../architecture/security/encryption.md#two-mac-cluster-experimental).
 
 ## MiMo V2.6 Flash on the pair
 
@@ -345,7 +387,10 @@ After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that
 happens by itself; `darkbloom cluster` says which applies to each Mac. After a
 Darkbloom update, the cluster sets itself up again by itself ("Updating the
-cluster setup after a Darkbloom update.").
+cluster setup after a Darkbloom update."). The leader checks for an update
+every minute; while a Mac serves, those checks and any plan made then use the
+speed it measured while idle and never run a GPU benchmark beside the model
+([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
 
 ## When something is in the way
 
@@ -372,10 +417,13 @@ cluster setup after a Darkbloom update.").
   run `darkbloom cluster` again.
 - **A model is not offered**: the reason is shown beside it, for example "Not
   yet qualified on this pair of Macs" (a pair serves a model only where its
-  cross-cable check passed).
+  cross-cable check passed). A copy the cluster worker does not take, of a
+  model a pair serves, says so ("supported on a cluster, but this Mac's cluster
+  worker does not take this copy of it"); the model is listed once when another
+  copy can be served.
 - **A model does not fit now**: it is listed after the ones that fit, with what
-  frees the memory ("Quit apps on <Mac> first"); the fit is checked again right
-  before the start.
+  frees the memory ("Quit apps on the other Mac (…) first"); the fit is checked
+  again right before the start.
 - **The start does not finish**: the screen shows each Mac's last error and
   offers `d` to save a diagnostics file in your home folder (no keys, addresses or
   names in it; nothing is written if any would remain).

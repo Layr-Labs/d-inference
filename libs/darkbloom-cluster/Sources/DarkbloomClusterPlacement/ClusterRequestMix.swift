@@ -7,14 +7,15 @@ import Foundation
 /// requests the pair served, within the model's planned request. A pair that
 /// serves short prompts and long answers is planned decode-heavy, one that
 /// serves long prompts prompt-heavy. Nil before `minimumSamples` requests: the
-/// model's planned request stands. The answer is at least
-/// `minimumOutputTokens`: a pair probed with short readiness requests
-/// (16-token answers, 2026-10-22) had a 10-token median answer, and at that
+/// model's planned request stands. Probe-sized requests are no samples at all
+/// (`ClusterServedSpeedRule`: a pair probed with short readiness requests,
+/// 16-token answers on 2026-10-22, had a 10-token median answer, and at that
 /// length the first token decided the served race, so a pipeline decoding
-/// 39.6 tok/s was kept over tensor parallel decoding 114.8. Lengths are what
-/// clients sent, not a speed: the planner reads them from every worker build's
-/// records of the pair, while the speeds it takes are the current build's only
-/// (`ClusterServedSpeedRecords.servedBy`).
+/// 39.6 tok/s was kept over tensor parallel decoding 114.8); the answer is
+/// still at least `minimumOutputTokens`, for samples a plan is given directly.
+/// Lengths are what clients sent, not a speed: the planner reads them from
+/// every worker build's records of the pair, while the speeds it takes are the
+/// current build's only (`ClusterServedSpeedRecords.servedBy`).
 public enum ClusterRequestMix {
     public static let minimumSamples = 3
     /// The shortest answer the reference request has.

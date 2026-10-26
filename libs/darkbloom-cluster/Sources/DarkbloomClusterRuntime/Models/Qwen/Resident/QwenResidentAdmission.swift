@@ -155,7 +155,7 @@ struct QwenResidentAdmission {
         }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling, route: value.route, qwenMedia: value.qwenMedia)
+            sampling: value.sampling, route: value.route, qwenMedia: value.qwenMedia, prefixCache: value.prefixCache)
     }
 
     /// Rank, local path and local uptime are intentionally absent. The explicit

@@ -91,7 +91,7 @@ struct FlintResponseFormatOutput {
         switch event {
         case .content(let text): content += text
         case .parsed(let parsed): content += parsed.content
-        case .toolCall, .toolCallDelta, .info: break
+        case .toolCall, .toolCallDelta, .logprobs, .info: break
         }
     }
 

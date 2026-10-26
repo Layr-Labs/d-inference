@@ -157,12 +157,15 @@ extension DistributedLocalServer {
     }
 
     /// The pair's `/metrics` lines (`EngineV2Bridge.pairMetricsSample`): its
-    /// MTP counts, the requests it runs and the ones waiting for a lane.
+    /// MTP posture as the placed mode decodes (the session's speculation,
+    /// `DistributedInstalledSpeculation`) and its counts, the requests it runs
+    /// and the ones waiting for a lane.
     func metricsSamples() async -> [MTPSlotMetricsSample] {
         guard phase == .serving, let bridge = entry?.engineV2Bridge else { return [] }
         let waitingRequests = waiting.count
+        let decodesWithHead = session.httpDiagnosticObservation?.mtpEnabled ?? false
         guard let sample = await bridge.pairMetricsSample(model: binding.publicModelID,
-            waitingRequests: waitingRequests) else { return [] }
+            waitingRequests: waitingRequests, placementDecodesWithHead: decodesWithHead) else { return [] }
         return [sample]
     }
 

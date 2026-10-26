@@ -63,9 +63,9 @@ enum QwenResidentRequestExecution {
 
     /// The prefix cache's scope of a request on this loaded stage, as its
     /// generation agreement will key it (`qwenStagePrefixScope`), before the
-    /// agreement exists: at reservation.
+    /// agreement exists: at reservation. Nil when the request's cache is off.
     static func prefixScope(stage: any LayerStageResidentStage, admission: any LayerStageResidentAdmission,
-                            request: QwenLayerStageGenerationRequest) throws -> String {
+                            request: QwenLayerStageGenerationRequest) throws -> String? {
         qwenStagePrefixScope(source: try sourceIdentity(stage: stage, admission: admission),
             numericalPolicySHA256: admission.arithmeticSHA256, request: request)
     }

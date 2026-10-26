@@ -65,7 +65,7 @@ struct GPTOSSResidentAdmission {
         guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling)
+            sampling: value.sampling, prefixCache: value.prefixCache)
     }
 
     /// Rank, local path and local uptime are intentionally absent. Everything

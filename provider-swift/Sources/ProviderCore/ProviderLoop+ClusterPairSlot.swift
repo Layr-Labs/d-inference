@@ -171,6 +171,16 @@ extension ProviderLoop {
               ready.profileID == specification.profile.id, ready.requestCapacityBytes > 0 else {
             throw ClusterPairSlotError.ownerUnavailable
         }
+        // The coordinator routes media by what this member registered: a pair
+        // registered for images and video is served only while both ranks
+        // serve them, so no media request reaches ranks that cannot.
+        do {
+            try ClusterMemberPreparation.requireRegisteredMedia(
+                loopConfig.models.first { $0.id == specification.publicModelID }, ready: ready)
+        } catch {
+            logger.warning("Cluster pair slot not published: \(error)")
+            throw ClusterPairSlotError.ownerUnavailable
+        }
         let owner = ClusterPairSlotOwner(inner)
         let entry: MultiModelBatchSchedulerEngine.ModelRegistryEntry
         do {

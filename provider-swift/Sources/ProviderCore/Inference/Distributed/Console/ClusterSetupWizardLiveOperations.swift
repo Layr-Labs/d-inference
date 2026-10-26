@@ -447,10 +447,12 @@ final class LiveContext: @unchecked Sendable {
         case .failure(let error):
             savedSetup = .init(state: .unreadable, error: ClusterConsoleText.bounded(error), configurationSHA256: nil, pairing: nil, model: nil, installed: nil)
         }
+        // A serving Mac answers the other Mac's update check every minute: no GPU benchmark beside its model.
         return ClusterSetupLocalReader.report(link: link, doctor: doctor.checks.map(ClusterSetupCheck.init), version: settings.version,
             saved: savedSetup, savedConfiguration: saved.configuration, inbox: inbox, description: input.description,
             localMemberID: input.pair?.memberID, overrides: overrides, journal: doctor.deviceJournal,
-            fallbackModelStore: modelsDirectory().map { URL(fileURLWithPath: $0) }).cleaned(clean)
+            fallbackModelStore: modelsDirectory().map { URL(fileURLWithPath: $0) },
+            modelLoaded: ClusterService.modelLoaded()).cleaned(clean)
     }
 
     /// The pinned route to the other Mac and where its installation is.
@@ -531,8 +533,8 @@ final class LiveContext: @unchecked Sendable {
         let deadline = { DispatchTime.now().uptimeNanoseconds + 15_000_000_000 }
         let localProfile: ClusterDeviceProfile
         do {
-            localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json", "--index"],
-                deadline: deadline(), maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+            localProfile = try ClusterLocalDeviceProfile.read(tool: tool, deadline: deadline(), homeDirectory: paths.homeDirectory,
+                modelLoaded: ClusterService.modelLoaded())
         } catch {
             return .failed("this Mac's plan tool did not answer: \(clean(ClusterConsoleText.bounded(error)))")
         }
@@ -673,7 +675,10 @@ final class LiveContext: @unchecked Sendable {
 
     // MARK: - Adopting a plan
 
-    func adopt(folder: String, planKey: String, peer: ClusterSetupReport) -> ClusterConsoleActionResult {
+    /// `here` and `there` name this Mac and the other one in the guided flow's lines, for the screen that shows them
+    /// (the other Mac's, when it forwarded the choice).
+    func adopt(folder: String, planKey: String, peer: ClusterSetupReport,
+               here: String = ClusterOnboardingMacName.this, there: String = ClusterOnboardingMacName.other) -> ClusterConsoleActionResult {
         guard let decision = lock.withLock({ decisions[folder] }), let plan = decision.option.plan,
               ClusterSetupState.planKey(decision.option.model, plan) == planKey,
               let setup = decision.setup, let capability = decision.capability else {
@@ -703,7 +708,7 @@ final class LiveContext: @unchecked Sendable {
             let localRank = plan.ranks.first { $0.local }?.rank ?? 0
             let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
             // The onboarding shows the deployment in one plain line once it serves; the six-step wizard keeps its detail.
-            var lines = settings.derivedPlacement ? ["Saved this Mac's setup for \(decision.option.model.modelID)."]
+            var lines = settings.derivedPlacement ? ["Saved \(here)'s setup for \(decision.option.model.modelID)."]
                 : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
@@ -713,14 +718,14 @@ final class LiveContext: @unchecked Sendable {
                 var digest: String?
                 var lastFailure: ClusterSetupFailure?
                 for attempt in 0..<3 where digest == nil {
-                    if attempt > 0 { lines.append("Could not send the setup to the other Mac. Retrying."); sleep(3) }
+                    if attempt > 0 { lines.append("Could not send the setup to \(there). Retrying."); sleep(3) }
                     do {
                         digest = try ClusterSetupLinkExchange.deliver(pairing: pairing, selection: try linkSelection(),
                             peerAddress: lock.withLock { linkPeer?.address }, delivery: delivery, seconds: ClusterSetupOperations.peerSeconds)
                     } catch let failure as ClusterSetupFailure { lastFailure = failure }
                 }
                 guard let delivered = digest else {
-                    lines.append("Could not send the setup to the other Mac (\(lastFailure?.text ?? "no answer")). Make sure it is on, then run `darkbloom cluster` again.")
+                    lines.append("Could not send the setup to \(there) (\(lastFailure?.text ?? "no answer")). Make sure it is on, then run `darkbloom cluster` again.")
                     return .init(succeeded: false, lines: lines)
                 }
                 try store.updateRecord {
@@ -728,7 +733,7 @@ final class LiveContext: @unchecked Sendable {
                         configurationSHA256: ClusterConfigurationSyntax.hash(delivered) ? delivered : "", at: ClusterConsoleText.timestamp()))
                 }
                 lines.append(settings.derivedPlacement
-                    ? "Sent the setup to the other Mac over the cable; its cluster service applied it."
+                    ? "Sent the setup to \(there) over the cable; its cluster service applied it."
                     : "Sent the other Mac its setup over the paired link: on that Mac, press a, then y, in `darkbloom cluster`.")
                 return .init(succeeded: true, lines: lines)
             }

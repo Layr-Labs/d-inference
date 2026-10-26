@@ -15,7 +15,9 @@ import MLXLLM
 /// its length; restore is both-or-neither (`QwenTensorParallelPrefixCache.agree`,
 /// one sealed vote), and entries give way (`yieldingMemory`) before a
 /// reservation or a running request is refused, and while idle under host
-/// memory pressure (`sweep`). No SSD tier yet.
+/// memory pressure (`sweep`). The SSD tier (`GLM5NextTensorParallelPrefixDisk`)
+/// keeps what this tier held at a cleanly retired request's boundary, so a
+/// restarted pair restores it; the vote counts both tiers.
 ///
 /// Bytes: an entry counts the buffers it keeps alive, not its logical
 /// arrays. The DSA histories grow with geometric spare columns and a copy
@@ -68,12 +70,21 @@ final class GLM5NextTensorParallelPrefixCache {
         }
     }
 
+    /// The entry at `length` itself, for a reader that changes nothing (the
+    /// SSD tier's writer); its recency is unchanged.
+    func entry(scope: String, prompt: [Int], length: Int)
+        -> (cache: GLM5NextTextStageCache, mtp: GLM5NextMTPCheckpoint?)? {
+        let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)
+        return lock.withLock { entries[key].map { ($0.cache, $0.mtp) } }
+    }
+
     /// Keeps a copy of `cache` (evaluated, its DSA histories exact) and the
     /// NextN history `mtp` at `length`, evicting the oldest entries beyond the
-    /// budget; nothing when it alone exceeds the budget.
+    /// budget; nothing when it alone exceeds the budget. True when kept.
+    @discardableResult
     func store(scope: String, prompt: [Int], length: Int, cache: GLM5NextTextStageCache,
-               mtp: GLM5NextMTPCheckpoint? = nil) {
-        guard enabled else { return }
+               mtp: GLM5NextMTPCheckpoint? = nil) -> Bool {
+        guard enabled else { return false }
         // An entry above the budget is never kept: skip it before its compact
         // copy exists (a long prompt's would be tens of GB beside the request,
         // outside its charge). The logical bytes are a lower bound of the
@@ -82,7 +93,7 @@ final class GLM5NextTensorParallelPrefixCache {
         let logical = cache.heldPages > 0 ? cache.pagedBytes : cache.layers.reduce(0) { total, layer in
             total + ((layer as? GLM5NextDSACache)?.state.reduce(0) { $0 + $1.nbytes } ?? 0)
         }
-        guard logical <= budgetBytes else { return }
+        guard logical <= budgetBytes else { return false }
         let kept = cache.copy()
         let paged = kept.heldPages > 0
         if !paged { for case let history as GLM5NextDSACache in kept.layers { Self.compact(history) } }
@@ -90,8 +101,8 @@ final class GLM5NextTensorParallelPrefixCache {
         eval(arrays)
         // Paged: the histories' roots are their page launches' fences; their pages count instead.
         let bytes = Self.bufferBytes(arrays) + (paged ? kept.pagedBytes + (mtp?.pagedBytes ?? 0) : 0)
-        guard bytes <= budgetBytes else { return }
-        lock.withLock {
+        guard bytes <= budgetBytes else { return false }
+        return lock.withLock {
             let key = QwenTensorParallelPrefixCache.key(scope: scope, prompt: prompt, length: length)
             if let old = entries[key] { bytesInUse -= old.bytes }
             clock += 1
@@ -100,6 +111,7 @@ final class GLM5NextTensorParallelPrefixCache {
             while bytesInUse > budgetBytes, let oldest = entries.values.min(by: { $0.used < $1.used }) {
                 entries[oldest.key] = nil; bytesInUse -= oldest.bytes
             }
+            return entries[key] != nil
         }
     }
 

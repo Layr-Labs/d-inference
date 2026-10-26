@@ -374,6 +374,15 @@ extension ProviderLoop {
             return
         }
 
+        // A content part type no engine serves is refused before acceptance,
+        // as the shared request preparation refuses it on the local API
+        // (`OpenAIRequestValidationError.unsupportedContentPart`), on one Mac
+        // and on a pair alike: never answered from the text that is left.
+        if chatRequest.unsupportedContentPartType != nil {
+            rejectInvalidRequest(.invalidMessages)
+            return
+        }
+
         // Reject unknown/non-native audio before acceptance or cold loading.
         // Only provider-owned architecture metadata selects MiMo dispatch;
         // actual loaded slot/profile validation remains mandatory below.

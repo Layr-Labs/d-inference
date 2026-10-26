@@ -173,6 +173,18 @@ policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompl
 A failed required tool call is still a failure; no argument repair or fabricated
 call is performed.
 
+### Refused request shapes
+
+The chat routes and Responses input answer these shapes with an OpenAI error
+envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
+
+| Request | Answer | Source |
+|---|---|---|
+| A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
+| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
+| GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
+| An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
+
 ## Responses continuation and retention
 
 Send a stored response's string `id` as `previous_response_id` on the next

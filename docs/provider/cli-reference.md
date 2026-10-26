@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -582,8 +582,16 @@ Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 `localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
-otherwise. Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
+the leader and ends (exit 0) like `darkbloom cluster`
+(`ClusterOnboardingDriver.joinedLocalLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
+
+`darkbloom cluster status` prints `MTP: on (decode verifies drafts of the
+model's own speculative head)` when the saved setup decodes with a head (the
+speculative pipeline, Qwen3.8 27B's resident assistant, GLM-5.3-Flash in
+tensor parallel), otherwise `MTP off: <reason>`
+(`provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit
@@ -1679,7 +1687,7 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (undecryptable request)` | The body does not decrypt with this provider's key | same |
 | `Inference failure: invalid request (reserved tool schema metadata)` | Tools carry coordinator-only schema metadata without its authenticated protocol, or GLM-5.3-Flash tools carry it at all | same; `GLM5NextPromptPolicy.RawControls` |
 | `Inference failure: invalid request (malformed body)` | The body is not a JSON chat request object | `InferenceRefusalReason.init(chatDecodeFailure:)` |
-| `Inference failure: invalid request (invalid messages)` | A message does not decode, such as a content part without its URL | same |
+| `Inference failure: invalid request (invalid messages)` | A message does not decode, such as a content part without its URL, or a content part has a type no engine serves (`input_file`, `input_video`, `refusal`, ...) | same; `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift` (`unsupportedContentPartType`) |
 | `Inference failure: invalid request (unsupported message role)` | A role other than `system`, `user`, `assistant` or `tool` and their aliases `developer` and `function` | same; `InboundChatNormalization` |
 | `Inference failure: invalid request (invalid tool history)` | A history tool call or result does not decode, such as a call without `type` or a non-object legacy `function_call` | same |
 | `Inference failure: invalid request (invalid tool arguments)` | A history call's `arguments` is not a string | same |

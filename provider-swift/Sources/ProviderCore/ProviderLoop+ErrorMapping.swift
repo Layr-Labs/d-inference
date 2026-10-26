@@ -248,9 +248,14 @@ extension ProviderLoop {
         if error is PreContentDeadlineFailure {
             return 503
         }
+        // Request shape the shared preparation refuses before any engine work
+        // (a negative output limit, a content part type no engine serves).
+        if error is OpenAIRequestValidationError {
+            return 400
+        }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {
-            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
+            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed, .responseFormatCutOffByMaxTokens:
                 return 422
             case .embeddingsNotConfigured:
                 return 501
@@ -295,9 +300,11 @@ extension ProviderLoop {
                 // v2 engine rejected the media submission at submit time
                 // (bad spans / embedding mismatch / block over the per-step
                 // budget / non-multimodal model or backend), or the routing
-                // engine's deterministic no-consumable-media shape (every
-                // media part on a non-user role). Deterministic for this
-                // request/engine pairing — 400, never a retry signal.
+                // engine's deterministic media faults (every media part on a
+                // non-user role, a shape the family rejects, media the
+                // processor cannot resize or decode —
+                // `EngineV2VisionPrefill.clientFault(for:)`). Deterministic
+                // for this request/engine pairing — 400, never a retry signal.
                 // (Other provider-side construction failures refuse loudly
                 // as `.requestRejected` → 503 so the coordinator reroutes;
                 // the pre-release legacy fallback is gone.)

@@ -80,7 +80,7 @@ final class RetirementOwnerConnection {
     func reserve() throws {
         try command(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2],
             stopTokenIDs: [], outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline,
-            capacityLimitBytes: 1024, sampling: nil)), requestID: request)
+            capacityLimitBytes: 1024, sampling: nil, prefixCache: nil)), requestID: request)
         _ = try receive()
         try retirementRequire(nativeEvents.last?.event == .admitted(reservedBytes: 800), "Missing actual admission")
     }

@@ -274,11 +274,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if case .reserve(let r) = command {
             guard r.deadlineUptimeNanoseconds > now else { throw ClusterWorkerOwnerError.deadline }
             wire.remainingNanoseconds = min(r.deadlineUptimeNanoseconds - now, ClusterWorkerLimits.deadlineNanoseconds)
-            sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
-                outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
-                // The sampling and the route cross with the reservation: both ranks get them.
-                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
-                glmMedia: r.glmMedia, qwenMedia: r.qwenMedia))
+            // The sampling, the prefix partition, the route and the media cross with the reservation: both ranks get them.
+            sent = .reserve(r.withDeadline(1))
         }
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: sent)
         wire.worker = try ClusterWorkerCodec.encode(frame)
@@ -322,10 +319,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         }
         let deadline = now.addingReportingOverflow(remaining)
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
-        return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
-            outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
-            glmMedia: r.glmMedia, qwenMedia: r.qwenMedia)), frame.requestID, end.partialValue)
+        return (.reserve(r.withDeadline(deadline.partialValue)), frame.requestID, end.partialValue)
     }
 }
 

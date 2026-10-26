@@ -77,7 +77,7 @@ struct GLM5NextServingMetadataTests {
             func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
                 .init(profileID: descriptor.profile.identifier, promptTokenIDs: Array(repeating: 1, count: prompt),
                     stopTokenIDs: [], outputCount: output, chunkSize: 2048,
-                    deadlineUptimeNanoseconds: now + 1000, capacityLimitBytes: expanded.reservedBytes, sampling: nil)
+                    deadlineUptimeNanoseconds: now + 1000, capacityLimitBytes: expanded.reservedBytes, sampling: nil, prefixCache: nil)
             }
             let request = try admission.request(reservation(prompt: 32_768, output: 32_768), id: UUID(), now: now)
             #expect(request.maximumTokens == 65_536 && request.outputCount == 32_768)

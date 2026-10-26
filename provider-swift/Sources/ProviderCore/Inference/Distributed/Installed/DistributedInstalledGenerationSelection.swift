@@ -61,14 +61,24 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
     }
 
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
-        if configuration.tensorAssistant != nil, configuration.selectedGenerationMode == .tensorParallel,
-           ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID) {
-            self.init(enabled: true, offReason: Self.enabledReason)
-            return
-        }
-        self.init(mode: configuration.selectedGenerationMode,
+        self.init(mode: configuration.selectedGenerationMode, runtimeModelID: capability.runtimeModelID,
+            tensorAssistant: configuration.tensorAssistant != nil,
             everyMemberAdvertisesHead: configuration.peers.allSatisfy {
                 ClusterGenerationSelection.supportedModes(for: $0, capability: capability).contains(.phaseSplitMTP)
             })
+    }
+
+    /// Two tensor-parallel placements decode with a head that no generation
+    /// mode names: Qwen27's resident assistant (`tensorAssistant`, saved with
+    /// the setup) and GLM-5.3-Flash's NextN head, which its runtime loads on
+    /// every tensor-parallel load (`ClusterGLMTensorParallel`).
+    init(mode: ClusterGenerationMode, runtimeModelID: String, tensorAssistant: Bool, everyMemberAdvertisesHead: Bool) {
+        let assisted = tensorAssistant && mode == .tensorParallel
+            && ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(runtimeModelID)
+        if assisted || ClusterGLMTensorParallel.decodesWithHead(runtimeModelID: runtimeModelID, mode: mode) {
+            self.init(enabled: true, offReason: Self.enabledReason)
+            return
+        }
+        self.init(mode: mode, everyMemberAdvertisesHead: everyMemberAdvertisesHead)
     }
 }

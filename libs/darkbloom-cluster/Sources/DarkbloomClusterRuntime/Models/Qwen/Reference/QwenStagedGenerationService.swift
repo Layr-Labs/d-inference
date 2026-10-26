@@ -144,7 +144,7 @@ extension QwenStagedGenerationReference {
                     let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                             promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                             outputCount: value.outputCount, chunkSize: value.chunkSize,
-                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
+                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil, prefixCache: nil),
                         id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
                     // Each rank's named request allowance, checked live as the worker does.
                     let allowances = try (0...1).map {

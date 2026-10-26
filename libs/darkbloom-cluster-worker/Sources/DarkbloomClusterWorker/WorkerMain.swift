@@ -50,6 +50,10 @@ import Foundation
                                                   environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
+            // Before anything native: every mode keeps a few quantized rows on the
+            // per-vector kernels, so a request's bytes do not depend on how many
+            // rows share its launch (read once too).
+            FileHandle.standardError.write(Data((ClusterQuantizedRowRouting.apply(source: "worker") + "\n").utf8))
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment

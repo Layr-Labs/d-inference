@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import Testing
@@ -175,6 +176,53 @@ struct PrefixDiskTierTests {
         #expect(names.count == 1 && !names[0].contains(QwenStagePrefixCache.key(scope: scope, tokens: tokens[0..<39]).prefix(16)))
         let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent(names[0]).path)
         #expect((attributes[.posixPermissions] as? Int) == 0o600)
+    }
+
+    /// A tenant's records (`ClusterWorkerPrefixCache.scope`) are offered and
+    /// restored only under that tenant, across a restart: another tenant, and a
+    /// request without one, see neither frontiers nor records, and both
+    /// tenants keep their own records of the same prompt. The scope sealed in
+    /// a record is the tenant's, which holds the digest, never a salt.
+    @Test func aTenantsRecordsAreFoundOnlyUnderThatTenant() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(300..<340), load = "plan|chunk=8"
+        let a = try #require(ClusterWorkerPrefixCache.scope(load,
+            .tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-a"))))
+        let b = try #require(ClusterWorkerPrefixCache.scope(load,
+            .tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-b"))))
+        #expect(ClusterWorkerPrefixCache.scope(load, .disabled) == nil)
+        let capturedA = states(committed: 39, frontiers: [16, 32], seed: 11)
+        do {
+            let tier = try openTier(configuration(root))
+            tier.persist(scope: a, tokens: tokens, states: capturedA, blockTokens: block)
+            #expect(tier.drain(timeoutSeconds: 20))
+            #expect(tier.recordCount == 1 && tier.frontiers(scope: a, tokens: tokens, maximumFrontier: 39) == [39, 32, 16])
+            for other in [b, load] {
+                #expect(tier.frontiers(scope: other, tokens: tokens, maximumFrontier: 39).isEmpty)
+                #expect(try tier.restore(scope: other, tokens: tokens, frontier: 39, check: {}) == nil)
+            }
+            // Tenant B's record of the same prompt is its own; it replaces nothing of A's.
+            tier.persist(scope: b, tokens: tokens, states: states(committed: 39, frontiers: [16], seed: 12), blockTokens: block)
+            #expect(tier.drain(timeoutSeconds: 20))
+            #expect(tier.recordCount == 2 && tier.stats.persisted == 2)
+            #expect(tier.frontiers(scope: b, tokens: tokens, maximumFrontier: 39) == [39, 16])
+            tier.close()
+        }
+        let tier = try openTier(configuration(root))
+        #expect(tier.stats.loadedRecords == 2)
+        #expect(tier.frontiers(scope: a, tokens: tokens, maximumFrontier: 38) == [32, 16])
+        #expect(tier.frontiers(scope: load, tokens: tokens, maximumFrontier: 39).isEmpty)
+        for frontier in [39, 32, 16] {
+            let restored = try #require(try tier.restore(scope: a, tokens: tokens, frontier: frontier, check: {}))
+            #expect(same(restored, capturedA.first { $0.committedTokens == frontier }!))
+        }
+        #expect(try tier.restore(scope: b, tokens: tokens, frontier: 32, check: {}) == nil)
+        for name in try FileManager.default.contentsOfDirectory(atPath: tier.directory.path) where name.hasSuffix(".dbpx") {
+            let opened = try QwenStagePrefixDiskIO.open(url: tier.directory.appendingPathComponent(name), keys: tier.keys)
+            #expect([a, b].contains(opened.header.scope) && !opened.header.scope.contains("tenant-a")
+                && !opened.header.scope.contains("tenant-b"))
+        }
     }
 
     @Test func offersCarryTierBitsAndTheChoiceIgnoresThem() {

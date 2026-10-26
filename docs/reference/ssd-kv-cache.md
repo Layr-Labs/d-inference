@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -555,6 +555,20 @@ accounting and publication behavior are unchanged.
 | Bounded GLM cluster still image | No restore or capture; cold prompt on both ranks | `agreeGLM5NextStagePrefixPlan` in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Prefix/GLM5NextStagePrefix.swift` |
 
 See [image prefix isolation](../architecture/prefix-cache.md#glm-cluster-image-prefix-isolation).
+
+## Cluster prefix tenant partitions
+
+Each pair rank's SSD records carry the request's partition in their sealed
+record scope; directories, file names (keyed tags of the record key) and the
+record format are unchanged.
+
+| Request (`ClusterWorkerReservation.prefixCache`) | SSD record behavior | Enforcement |
+|---|---|---|
+| None (cache on, no salt) | The plan's earlier scope; read and written as before | `ClusterWorkerPrefixCache.scope` in `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift` |
+| `tenant` | Scope ends in `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope` and `QwenTensorParallelResidentRuntime.batchPrefixScope` |
+| `disabled` | Nothing offered, restored or written | the same helper (no scope) |
+
+See [cluster prefix tenant partitions](../architecture/prefix-cache.md#cluster-prefix-tenant-partitions).
 
 ## Cluster resident sliding restore
 

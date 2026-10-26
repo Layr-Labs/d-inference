@@ -113,10 +113,11 @@ extension ClusterLinkCosts {
     /// The link costs a pair's recent loads give together
     /// (`ClusterLinkProbeHistory`): each figure `init(probe:)` derives (the
     /// reduction's fixed part and per-byte slope, a pipeline decode step's
-    /// records, a prefill chunk's hop, the hand-off slope) is the median of
-    /// what each load's probe gives, over the keyed probes when there are any
-    /// (only those can choose tensor parallel), else over the plaintext ones.
-    /// One probe gives exactly what `init(probe:)` gives.
+    /// records, a record's fixed part and per-byte slope, which price a prefill
+    /// chunk's hop and a hand-off) is the median of what each load's probe
+    /// gives, over the keyed probes when there are any (only those can choose
+    /// tensor parallel), else over the plaintext ones. One probe gives exactly
+    /// what `init(probe:)` gives.
     ///
     /// The median, not the latest: one pair's sealed all-sum cost 43 to 109 us
     /// per reduction from one load to the next (2026-10-23), around the 70 us
@@ -146,16 +147,19 @@ extension ClusterLinkCosts {
         let fixed = median(fixedEach), slope = median(each.map { $0.reduction?.secondsPerByte ?? 0 })
         let step = median(each.map { $0.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0 })
         let chunk = median(each.map(\.perChunkSeconds)), handoff = median(each.map(\.handoffSecondsPerByte))
+        let record = median(each.map { $0.recordFixedSeconds ?? 0 })
         let provenance = "the median of \(used.count) loads' probes over \(latest.probe.transport) "
             + "(\(keyed.isEmpty ? "plaintext" : "keyed, sealed all-sums")), measured \(utc(oldest)) to \(utc(latest)): "
             + String(format: "a reduction %.0f us fixed (%.0f to %.0f us across the loads) + %.3f ns a byte; "
-                + "a pipeline decode step's records %.0f us; a prefill chunk's hop %.0f us",
-                fixed * 1e6, (fixedEach.min() ?? 0) * 1e6, (fixedEach.max() ?? 0) * 1e6, slope * 1e9, step * 1e6, chunk * 1e6)
+                + "a pipeline decode step's records %.0f us; a record (a prefill chunk's hop) %.0f us + %.3f ns a byte",
+                fixed * 1e6, (fixedEach.min() ?? 0) * 1e6, (fixedEach.max() ?? 0) * 1e6, slope * 1e9, step * 1e6,
+                record * 1e6, handoff * 1e9)
         self = ClusterLinkCosts(measured: true, perChunkSeconds: chunk,
             perDecodeStepSeconds: Dictionary(uniqueKeysWithValues: ClusterGenerationMode.allCases
                 .filter { !$0.usesTensorParallelPrefill }.map { ($0.rawValue, step) }),
             handoffSecondsPerByte: handoff, provenance: String(provenance.prefix(1024)),
             reduction: .init(fixedSeconds: fixed, secondsPerByte: slope, keyed: !keyed.isEmpty,
-                provenance: String(provenance.prefix(1024))))
+                provenance: String(provenance.prefix(1024))),
+            recordFixedSeconds: record)
     }
 }

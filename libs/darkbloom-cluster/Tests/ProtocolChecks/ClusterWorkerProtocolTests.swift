@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import DarkbloomClusterProtocol
 
@@ -22,7 +23,7 @@ private let ready = ClusterWorkerReady(identity: identity, rank: 0, profile: pro
     executionPlanSHA256: String(repeating: "e", count: 64), requestCapacityBytes: 1024)
 private func reservation(output: Int = 2, stops: [Int] = [], deadline: UInt64 = 1000) -> ClusterWorkerReservation {
     .init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
-        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: nil)
+        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
 }
 private struct Conversation {
     var session: ClusterWorkerSession
@@ -60,7 +61,130 @@ struct ClusterWorkerProtocolTests {
         try nativeContext()
         try mtpTelemetry()
         try tensorAssistantReadiness()
-        print("{\"passed\":true,\"groups\":18,\"modelExecution\":false,\"localPipeIO\":true}")
+        try prefixCache()
+        try retiming()
+        print("{\"passed\":true,\"groups\":20,\"modelExecution\":false,\"localPipeIO\":true}")
+    }
+
+    /// The request's prefix partition: the product request's cache switch and
+    /// salt as a fixed-length digest, never the salt; the default (on, no
+    /// tenant) has no field, so its bytes are a worker's without it; canonical
+    /// forms only; the helper every prefix path takes its scope from.
+    static func prefixCache() throws {
+        let salt = "coordinator-scope:account-17|model-x"
+        let digest = ClusterWorkerPrefixCache.tenantDigest(salt: salt)
+        let expected = SHA256.hash(data: Data(("darkbloom-cluster-prefix-tenant-v1|" + salt).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        try check(digest == expected && digest.utf8.count == 64, "The digest is SHA-256 of the domain and the salt, lowercase hex")
+        try check(ClusterWorkerPrefixCache.tenantDigest(salt: salt + "x") != digest
+            && ClusterWorkerPrefixCache.tenantDigest(salt: "") != digest, "Each salt has its own digest")
+        // The product request's fields: on without a salt is the absent field.
+        try check(ClusterWorkerPrefixCache.partition(prefixCacheEnabled: true, cacheSalt: nil) == nil, "On, no salt: no field")
+        try check(ClusterWorkerPrefixCache.partition(prefixCacheEnabled: false, cacheSalt: nil) == .disabled
+            && ClusterWorkerPrefixCache.partition(prefixCacheEnabled: false, cacheSalt: salt) == .disabled, "Off: disabled")
+        try check(ClusterWorkerPrefixCache.partition(prefixCacheEnabled: true, cacheSalt: salt) == .tenant(digest), "A salt: its tenant")
+        try check(ClusterWorkerPrefixCache.partition(prefixCacheEnabled: true, cacheSalt: "")
+            == .tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "")), "A salt partitions whatever its text, as cacheSalt does")
+        // The one scope helper.
+        let load = "load-agreement|chunk=512|kv=paged|text"
+        try check(ClusterWorkerPrefixCache.scope(load, nil) == load, "No partition: the load's scope, unchanged")
+        try check(ClusterWorkerPrefixCache.scope(load, .disabled) == nil, "Cache off: no scope")
+        let other = ClusterWorkerPrefixCache.tenantDigest(salt: "another tenant")
+        try check(ClusterWorkerPrefixCache.scope(load, .tenant(digest)) == load + "|tenant=" + digest
+            && ClusterWorkerPrefixCache.scope(load, .tenant(other)) != ClusterWorkerPrefixCache.scope(load, .tenant(digest)),
+            "A tenant's scope is the load's and its digest; two tenants never share one")
+        // Round trips, both wire forms, and the absent default.
+        func reserved(_ cache: ClusterWorkerPrefixCache?) -> ClusterWorkerCommandFrame {
+            .init(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id,
+                promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000,
+                capacityLimitBytes: 900, sampling: nil, prefixCache: cache)))
+        }
+        for cache in [nil, ClusterWorkerPrefixCache.disabled, .tenant(digest)] {
+            let frame = reserved(cache)
+            try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "Prefix partition round trip")
+            for rank in 0...1 {
+                var c = try Conversation(rank: rank)
+                guard case .reserve(let value) = frame.command else { throw TestFailure(message: "Not a reservation") }
+                try c.start(value)
+            }
+        }
+        let plain = String(decoding: try ClusterWorkerCodec.encode(reserved(nil)), as: UTF8.self)
+        let off = String(decoding: try ClusterWorkerCodec.encode(reserved(.disabled)), as: UTF8.self)
+        let tenant = String(decoding: try ClusterWorkerCodec.encode(reserved(.tenant(digest))), as: UTF8.self)
+        try check(!plain.contains("prefixCache") && plain == String(decoding: try ClusterWorkerCodec.encode(.init(
+            membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(reservation()))), as: UTF8.self),
+            "Cache on without a tenant: no field, the bytes of a worker without it")
+        try check(off.contains("\"prefixCache\":{\"enabled\":false}")
+            && tenant.contains("\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest)\"}"), "Both wire forms")
+        try check(!tenant.contains(salt) && !off.contains(salt), "The salt never crosses")
+        // A record without the field (an earlier leader's) reads as the default.
+        try check(try ClusterWorkerCodec.decodeCommand(Data(tenant.replacingOccurrences(of:
+            ",\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest)\"}", with: "").utf8)) == reserved(nil),
+            "A reservation without the field is the cache on without a tenant")
+        // Canonical forms only: the default has no wire form, a disabled
+        // request no tenant, a digest exactly 64 lowercase hex digits.
+        let field = "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest)\"}"
+        for replacement in ["\"prefixCache\":{\"enabled\":true}", "\"prefixCache\":{\"enabled\":false,\"tenantSHA256\":\"\(digest)\"}",
+                            "\"prefixCache\":{\"enabled\":1,\"tenantSHA256\":\"\(digest)\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest.uppercased())\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest.dropLast())\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest)0\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(salt)\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"tenantSHA256\":\"\(digest)\",\"salt\":\"x\"}",
+                            "\"prefixCache\":{\"enabled\":true,\"enabled\":true,\"tenantSHA256\":\"\(digest)\"}",
+                            "\"prefixCache\":{}", "\"prefixCache\":null", "\"prefixCache\":\"disabled\"", "\"prefixCache\":false"] {
+            let bad = tenant.replacingOccurrences(of: field, with: replacement)
+            try check(bad != tenant, "Prefix partition mutation applies")
+            try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(bad.utf8)) }
+        }
+        for bad in [digest.uppercased(), String(digest.dropLast()), digest + "0", salt, ""] {
+            try refuses { _ = try ClusterWorkerCodec.encode(reserved(.tenant(bad))) }
+        }
+        // The largest command still fits with a tenant beside every other field.
+        let native = ClusterWorkerReservation(profileID: "native-context",
+            promptTokenIDs: Array(repeating: 262_143, count: 1_048_575), stopTokenIDs: Array(261_888..<262_144),
+            outputCount: 1, chunkSize: 2048, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
+            sampling: .init(temperature: 0.7, topP: 0.9, topK: 20, minP: 0.05, repetitionPenalty: 1.1,
+                repetitionContextSize: 64, frequencyPenalty: 0.5, presencePenalty: 0.5, seed: .max, stream: .max,
+                logitBias: (0..<ClusterWorkerSampling.maximumLogitBiasEntries).map { .init(tokenID: 262_143 - $0, bias: -100) }
+                    .sorted { $0.tokenID < $1.tokenID }, topLogprobs: 20),
+            prefixCache: .tenant(digest), route: .decodingRankAlone)
+        let largest = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(Int64.max) - 1,
+            requestID: requestID, command: .reserve(native))
+        let bytes = try ClusterWorkerCodec.encode(largest)
+        try check(bytes.count <= ClusterWorkerLimits.commandBytes && (try ClusterWorkerCodec.decodeCommand(bytes)) == largest,
+            "The largest reservation with a tenant fits one command and round-trips")
+        // Descriptions name no digest: a logged reservation links no tenant.
+        guard case .reserve(let carried) = reserved(.tenant(digest)).command else { throw TestFailure(message: "Not a reservation") }
+        for text in [String(describing: ClusterWorkerPrefixCache.tenant(digest)), String(reflecting: ClusterWorkerPrefixCache.tenant(digest)),
+                     String(describing: carried), String(reflecting: carried), "\(reserved(.tenant(digest)))"] {
+            try check(!text.contains(digest) && !text.contains(salt), "A description redacts the tenant")
+        }
+    }
+
+    /// Re-timing a reservation for another clock changes its deadline alone:
+    /// every optional field is set here at once (a struct check, not a wire
+    /// shape), and the result equals the same reservation built field by field.
+    static func retiming() throws {
+        let hash = String(repeating: "a", count: 64), png = Data([137, 80, 78, 71, 13, 10, 26, 10])
+        let sampling = ClusterWorkerSampling(temperature: 0.7, topP: 0.9, topK: 20, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [])
+        let mimo = ClusterMiMoImages(images: [.init(png: png, width: 1, height: 1, tokenOffset: 1, tokenCount: 1)])
+        let still = ClusterStillImages(configurationSHA256: hash,
+            images: [.init(png: png, width: 1, height: 1, tokenOffset: 1, tokenCount: 1)])
+        let glm = ClusterGLMMedia(configurationSHA256: hash, processor: .init(patchSize: 14, imageMinimumTokens: 1,
+            imageMaximumTokens: 16, videoMinimumTokens: 1, videoMaximumTokens: 16), items: [])
+        let qwen = ClusterQwenMedia(artifactSHA256: hash, configurationSHA256: hash, processorSHA256: hash,
+            processorPolicy: .qwen35, promptLength: 3, promptSHA256: hash, positionIDsSHA256: hash,
+            decodeDeltas: [-1], items: [])
+        func full(_ deadline: UInt64) -> ClusterWorkerReservation {
+            .init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [4], outputCount: 2, chunkSize: 2,
+                deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: sampling,
+                prefixCache: .tenant(String(repeating: "b", count: 64)), route: .decodingRankAlone, mimoImages: mimo, stillImages: still, glmMedia: glm, qwenMedia: qwen)
+        }
+        let original = full(1000)
+        try check(original.withDeadline(5) == full(5), "Re-timing keeps every other field")
+        try check(original == full(1000), "Re-timing leaves the original unchanged")
     }
 
     static func tensorAssistantReadiness() throws {
@@ -121,7 +245,7 @@ struct ClusterWorkerProtocolTests {
             let reservation = ClusterWorkerReservation(profileID: p.id,
                 promptTokenIDs: Array(repeating: 511, count: 32_768), stopTokenIDs: [],
                 outputCount: 32_768, chunkSize: 2048, deadlineUptimeNanoseconds: 1000,
-                capacityLimitBytes: 900, sampling: nil)
+                capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
             let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
                 requestID: requestID, command: .reserve(reservation))
             let decoded = try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame))
@@ -131,7 +255,7 @@ struct ClusterWorkerProtocolTests {
         for output in [0, ClusterWorkerLimits.wireOutputTokens + 1] {
             let invalid = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: [1],
                 stopTokenIDs: [], outputCount: output, chunkSize: 1,
-                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
             try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(
                 membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(invalid))) }
         }
@@ -149,7 +273,7 @@ struct ClusterWorkerProtocolTests {
         let prompt = Array(repeating: 262_143, count: 1_048_575)
         let reservation = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: prompt,
             stopTokenIDs: Array(261_888..<262_144), outputCount: 1, chunkSize: 2048,
-            deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+            deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(Int64.max) - 1,
             requestID: requestID, command: .reserve(reservation))
         let bytes = try ClusterWorkerCodec.encode(frame)
@@ -186,7 +310,7 @@ struct ClusterWorkerProtocolTests {
                 executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024)))) }
         let long = ClusterWorkerReservation(profileID: p.id, promptTokenIDs: Array(repeating: 1, count: 1_048_577),
             stopTokenIDs: [], outputCount: 1, chunkSize: 2048, deadlineUptimeNanoseconds: 1000,
-            capacityLimitBytes: 900, sampling: nil)
+            capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
         try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
             requestID: requestID, command: .reserve(long))) }
     }
@@ -316,14 +440,14 @@ struct ClusterWorkerProtocolTests {
             try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Event round trip")
         }
         let boundary = ClusterWorkerReservation(profileID: "large", promptTokenIDs: Array(repeating: 262143, count: 32767),
-            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1, sampling: nil)
+            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(boundary))
         try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "Bounded maximum token input")
         // A routed request: the route survives the codec; the pair as placed has no field at all.
         let base = reservation()
         let routed = ClusterWorkerReservation(profileID: base.profileID, promptTokenIDs: base.promptTokenIDs,
             stopTokenIDs: base.stopTokenIDs, outputCount: base.outputCount, chunkSize: base.chunkSize,
-            deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes, sampling: base.sampling,
+            deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes, sampling: base.sampling, prefixCache: base.prefixCache,
             route: .decodingRankAlone)
         let routedFrame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(routed))
         let routedBytes = try ClusterWorkerCodec.encode(routedFrame)
@@ -344,7 +468,7 @@ struct ClusterWorkerProtocolTests {
         let long = (0 ..< 31_563).map { ($0 * 7919 + 13) % ClusterWorkerLimits.vocabularySize }
         for prompt in [edge, long, [7]] {
             let value = ClusterWorkerReservation(profileID: "large", promptTokenIDs: prompt, stopTokenIDs: [],
-                outputCount: 1, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+                outputCount: 1, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
             let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 3, requestID: requestID, command: .reserve(value))
             let bytes = try ClusterWorkerCodec.encode(frame)
             try check(try ClusterWorkerCodec.decodeCommand(bytes) == frame, "Packed prompt round trip (\(prompt.count) tokens)")
@@ -466,7 +590,7 @@ struct ClusterWorkerProtocolTests {
             seed: UInt64.max, stream: (1 << 63) | 12345,
             logitBias: [.init(tokenID: 3, bias: -100), .init(tokenID: 500, bias: 2.5)])
         let sampled = ClusterWorkerReservation(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: value)
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: value, prefixCache: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(sampled))
         let decoded = try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame))
         try check(decoded == frame, "Sampling round trip")
@@ -486,7 +610,7 @@ struct ClusterWorkerProtocolTests {
         func with(_ s: ClusterWorkerSampling) -> ClusterWorkerCommandFrame {
             .init(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id,
                 promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000,
-                capacityLimitBytes: 900, sampling: s)))
+                capacityLimitBytes: 900, sampling: s, prefixCache: nil)))
         }
         func variant(temperature: Float = 0.7, topK: Int = 20, context: Int = 64,
                      bias: [ClusterWorkerSampling.LogitBias] = []) -> ClusterWorkerSampling {
@@ -515,7 +639,7 @@ struct ClusterWorkerProtocolTests {
         var c = try Conversation()
         try c.command(.reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
             outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
-            sampling: variant(bias: [.init(tokenID: 512, bias: 1)]))))
+            sampling: variant(bias: [.init(tokenID: 512, bias: 1)]), prefixCache: nil)))
         try refuses { try c.event(.admitted(reservedBytes: 800)) }
         var ok = try Conversation(); try ok.start(sampled)
     }
@@ -530,7 +654,7 @@ struct ClusterWorkerProtocolTests {
         try check(!asks.isGreedyNoOp && !asks.isStochastic && !asks.admitsSpeculativeVerification
             && asks.capturedLogprobs == 2, "Logprob flags")
         let value = ClusterWorkerReservation(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: asks)
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: asks, prefixCache: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(value))
         try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "topLogprobs round trip")
         // A request without logprobs keeps its exact bytes.
@@ -539,7 +663,7 @@ struct ClusterWorkerProtocolTests {
         let plainBytes = String(decoding: try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch,
             sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3],
             stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
-            sampling: plain)))), as: UTF8.self)
+            sampling: plain, prefixCache: nil)))), as: UTF8.self)
         try check(!plainBytes.contains("topLogprobs"), "No logprob field without logprobs")
         for bad in [21, -1] {
             let s = ClusterWorkerSampling(temperature: 0.7, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
@@ -548,7 +672,7 @@ struct ClusterWorkerProtocolTests {
             try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
                 requestID: requestID, command: .reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3],
                 stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
-                sampling: s)))) }
+                sampling: s, prefixCache: nil)))) }
         }
         let two = ClusterWorkerTokenLogprobs(logprob: -0.125, top: [.init(tokenID: 9, logprob: -0.125),
                                                                      .init(tokenID: 40, logprob: -.infinity)])

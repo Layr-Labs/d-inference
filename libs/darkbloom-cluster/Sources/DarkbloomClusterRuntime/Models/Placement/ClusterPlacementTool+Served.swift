@@ -48,8 +48,10 @@ extension ClusterPlacementTool {
 
     /// Served samples from `files`, each with its setup (with each rank's
     /// worker build when the record names it). Telemetry records count only
-    /// when completed and cold (nothing restored from a prefix cache: a
-    /// restored prompt's first token is not its prefill).
+    /// as the leader keeps speed records: completed and cold (nothing restored
+    /// from a prefix cache: a restored prompt's first token is not its
+    /// prefill), alone on the pair, and not probe-sized
+    /// (`ClusterServedSpeedRule`, which `ClusterServedSample.fromTelemetry` applies).
     static func servedEntries(_ files: [String], ranks: [String]?) throws -> [ClusterServedSpeedRecords.Entry] {
         var result: [ClusterServedSpeedRecords.Entry] = []
         for file in files {
@@ -67,18 +69,14 @@ extension ClusterPlacementTool {
             guard ["darkbloom_pair_telemetry_v1", "darkbloom_served_speed_v1"].contains(telemetry.schema) else { throw ProbeError("\(file) is neither served records nor pair telemetry") }
             for record in telemetry.records {
                 // A request that shared the pair with others is no measurement of the pair (`isSpeedRecord`).
-                guard record.cachedTokens == 0, record.outcome == "stop" || record.outcome == "length",
-                      (record.concurrentRequests ?? 0) == 0, let first = record.firstTokenMilliseconds else { continue }
-                let route = record.route ?? "pair"
-                let member = route.hasPrefix("alone:") ? String(route.dropFirst(6)) : nil
-                let sample = ClusterServedSample(route: member == nil ? .pair : .alone, member: member,
-                    promptTokens: record.promptTokens, outputTokens: record.completionTokens,
-                    firstTokenSeconds: first / 1_000, decodeTokensPerSecond: record.decodeTokensPerSecond, finishedAt: record.finishedAt)
-                if sample.valid {
-                    result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks,
-                                                     rankBuildSHA256: record.rankBuildSHA256),
-                                       sample: sample))
-                }
+                guard (record.concurrentRequests ?? 0) == 0,
+                      let sample = ClusterServedSample.fromTelemetry(route: record.route, promptTokens: record.promptTokens,
+                          cachedTokens: record.cachedTokens, completionTokens: record.completionTokens,
+                          firstTokenMilliseconds: record.firstTokenMilliseconds, decodeTokensPerSecond: record.decodeTokensPerSecond,
+                          outcome: record.outcome, finishedAt: record.finishedAt) else { continue }
+                result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks,
+                                                 rankBuildSHA256: record.rankBuildSHA256),
+                                   sample: sample))
             }
         }
         return result

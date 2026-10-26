@@ -124,7 +124,7 @@ struct GPTOSSResidentAdmissionTests {
         let admission = try Self.admit(identity: try Self.identity())
         func reservation(prompt: [Int], output: Int = 8, chunk: Int = 512, profile: String? = nil) -> ClusterWorkerReservation {
             .init(profileID: profile ?? admission.profile.identifier, promptTokenIDs: prompt, stopTokenIDs: [200_002],
-                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         }
         let request = try admission.request(reservation(prompt: Array(repeating: 1, count: 1200)), id: UUID(), now: Self.now)
         #expect(request.prefillFrameCount == 3 && request.forwardCount == 3 + 8 - 1 && request.maximumTokens == 1208)

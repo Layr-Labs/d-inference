@@ -514,10 +514,9 @@ public final class MiMoResidentRuntime {
             var reserved = Reservation(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds, hostBytes: hostBytes)
             // Only what this request's capture adds after the prefix this rank
             // holds for it (nothing on a repeat of the whole prompt), under the
-            // scope its agreement will key the cache by.
-            if prefixCache.enabled {
-                let scope = qwenStagePrefixScope(source: try Self.sourceIdentity(stage: stage, admission: admission),
-                    numericalPolicySHA256: admission.arithmeticSHA256, request: request)
+            // scope its agreement will key the cache by; none when its cache is off.
+            if prefixCache.enabled, let scope = qwenStagePrefixScope(source: try Self.sourceIdentity(stage: stage,
+                    admission: admission), numericalPolicySHA256: admission.arithmeticSHA256, request: request) {
                 reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: scope, tokens: request.promptTokenIDs,
                     chunkSize: request.chunkSize)
             }

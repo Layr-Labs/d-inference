@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -234,6 +234,24 @@ across the Thunderbolt cable:
   Secure Enclave-rooted KEK (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterPrefixSSDKeyMaterial.swift`),
   passed to ranks on an input pipe (never in an environment), scoped to model,
   plan, rank and Mac.
+- **Cluster prompt cache partitions.** Both ranks keep and look up every
+  prompt prefix, in memory and in their SSD tiers, only under the request's own
+  partition, as one Mac does with the request's cache scope: a coordinator
+  request's authenticated cache scope reaches the ranks only as a SHA-256 digest
+  (`ClusterWorkerPrefixCache.tenantDigest`, domain
+  `darkbloom-cluster-prefix-tenant-v1|`), which ends every key and record
+  scope, so one scope's requests never restore or probe another's prefixes. A
+  request whose cache is off (a remote request without an authenticated scope,
+  or one with GLM or Qwen media) restores and keeps nothing on either rank. The
+  scope itself never leaves the leader's provider process; the digest stays out
+  of descriptions and logs (`ClusterWorkerPrefixCache.description`), though it
+  links one scope's requests within the cache as the scope does. Both ranks bind
+  the partition into the request fingerprint they compare first, so ranks given
+  different partitions fail the request rather than share state. Requests from
+  the local endpoint carry no partition and share only one another's prefixes
+  (`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`;
+  [mechanism](../prefix-cache.md#cluster-prefix-tenant-partitions)).
 - **Helpers.** The cluster worker and placement tool ship in
   `Darkbloom.app/Contents/Helpers`, Developer ID signed with hardened runtime
   and network client/server entitlements only
@@ -248,6 +266,8 @@ across the Thunderbolt cable:
   inference may recompute, but must not redirect payloads to another disk.
 - Keep cache keys and persistent write accounting on the Mac. Changing the
   payload volume does not reset accounting or erase old ciphertext.
+- A cluster rank receives a request's cache scope only as its digest, and
+  offers, restores and keeps prompt prefixes only within the request's partition.
 - Do not claim guaranteed buffer zeroization, forward secrecy against recipient
   key compromise, peripheral attestation or correct computation from these controls.
 

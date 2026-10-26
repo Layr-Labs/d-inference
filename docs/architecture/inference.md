@@ -125,10 +125,24 @@ admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
 automatic policy. Explicit diagnostic mode or lane settings retain their choice.
 
-Automatic replacement reads the installed plan helper's device index and the
+Automatic replacement reads the installed plan helper's device profile and the
 current pair's recorded keyed-link costs and served-request history. It uses
 the same measurement readers as initial placement, so a supported TP batch
 candidate can compete on measured costs instead of being dropped as unmeasured.
+Every reader of this Mac's profile (`ClusterLocalDeviceProfile`: the setup's own
+report, which answers the other Mac's update check and plans, a plan made here,
+and this replacement) reads memory now but measures the model-free speed index
+(`darkbloom-cluster-plan device --json --index`, about a second of GPU work)
+only while no model is loaded on the Mac: no cluster worker runs there, and the
+cluster service runs neither its part nor its solo server
+(`ClusterService.modelLoaded`). Otherwise the index the Mac last measured stands
+in, for the chip and OS build it was measured on (`ClusterDeviceIndexRecord`,
+owner-only `~/.darkbloom/cluster/device-index.json`), or none. The control
+leader's update check reached a serving member every 60 s
+(`ClusterService.checkForUpdate`), and that member's report ran the benchmark on
+its GPU each time, beside its model; a replacement is always previewed while the
+running owner serves. The re-plan after an update stops both parts first, so its
+profiles measure the index again.
 Absent, stale, malformed or non-private link history keeps the existing
 unmeasured fallback. Link records bind the unordered member pair, keyed probe
 and existing 30-day freshness limit; the pair's last eight are kept and planned
@@ -213,6 +227,22 @@ succeed; a failed response retains the saved setup for a later retry.
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
 [guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
+
+Lines name the two Macs for the screen that shows them
+(`ClusterOnboardingMacName`): "this Mac" and "the other Mac (<hardware name>)",
+because two Macs of one kind share the hardware name. The leader words an
+answer to a command the other Mac forwarded for that Mac's screen
+(`OnboardingLive.answeringForwarded`, `here`, `there`), and the cluster
+service names members the same way in its control lines and refusals
+(`ClusterOnboardingMacName.names`). A deployment line recorded for both Macs
+keeps hardware names; lines shown now carry the screen's words
+(`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
+onboarding once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`). The model list keeps one line per
+artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
+served is left out when another offers the same digests under the same name,
+and an artifact this build serves is never called unsupported for a copy the
+worker does not take (`ClusterSetupPlanning.copyNotTaken`).
 
 ## Context
 
@@ -2712,6 +2742,9 @@ stage's KV pool (`CBv2StageKVHost`, at the single-Mac live precision, see
 only for one-request hosts) on the paged chain of
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift`
 (pinned to the paged-engine branch; the mirror refuses quantized KV layers).
+Both ranks keep and look up prompt prefixes only under the request's own
+partition, its cache switch and tenant, which its reservation carries from the
+leader ([tenant partitions](prefix-cache.md#cluster-prefix-tenant-partitions)).
 Placement is derived at run time from both Macs' device profiles, measured
 speed records and the model's own configuration
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/`); a pair serves a
@@ -3336,9 +3369,19 @@ the last 30 days. Schema `darkbloom_cluster_link_probes_v1` is unchanged:
 an earlier build reads the latest probe of a new file. Every plan of the pair,
 initial setup and automatic batch replacement alike, prices the link with
 `ClusterLinkCosts(measurements:)`: each figure (the reduction's fixed part and
-per-byte slope, a pipeline step's records, a chunk's hop, the hand-off slope) is
-the median over the keyed probes, or over the plaintext ones when no keyed probe
-exists. The latest probe alone flipped the choice between loads: one pair's
+per-byte slope, a pipeline step's records, a record's fixed part and per-byte
+slope) is the median over the keyed probes, or over the plaintext ones when no
+keyed probe exists. A pipeline's prefill pays one hop per chunk and cut, priced
+as the bytes that cross (the chunk's rows of the residual,
+`ClusterModelLayout.boundaryBytesPerToken` each) at the records' per-byte slope
+plus a record's fixed part, both from the probe's 64 B and 4 MiB records
+(`ClusterLinkCosts.chunkHopSeconds`). A GLM chunk carries 2,048 x 32,768 B =
+64 MiB, and pricing every hop as the probe's one 4 MiB record undercounted it:
+on the pair's measured probe a 32K-token prompt's 16 hops cost about 0.6 s, not
+0.04 s. The saved probes give the fixed part whichever build recorded them, since
+the file keeps each probe itself; link costs an earlier build encoded (the plan
+tool's `--link` file) have none (`recordFixedSeconds` absent) and still price
+every hop as their large record. The latest probe alone flipped the choice between loads: one pair's
 sealed all-sum varied from 43 to 109 µs per reduction, and its 9B breaks even
 near 70 µs. A new load moves the median by at most one place, and one odd load
 does not move it. An upper quantile was rejected because it would bias every pair
@@ -3357,7 +3400,17 @@ layer of every token.") unless tensor parallel is also predicted faster, when it
 says the gain. Predictions are still made and reported. A first placement, before
 any load measured the link, plans tensor parallel on the keyed reduction a forced
 plan assumes (`tensorParallelAssumesUnmeasuredLink`, labelled as assumed), so a new
-pair's first setup is tensor parallel too. An automatic batch replacement
+pair's first setup is tensor parallel too: every plan made by `ClusterPlacementFlow.decide`
+(the onboarding, `m`, the re-plan after a Darkbloom update or after two load
+refusals) is a first placement in this sense. Since tensor parallel's place no
+longer depends on the link's speed, the first load's keyed probe changes no
+choice, and nothing has to re-plan a pair after it. A pair still serves a
+pipeline when its plan had no tensor-parallel candidate that loads as the Macs
+were then (a hardware group that loads now goes first), when the model or the
+policy leaves tensor parallel out (its features, a private image profile, a
+quote for another mode, a cross-cable check that diverged at the shape), or
+under a developer's forced mode; a pipeline chosen for memory stays until the
+next plan of the pair, which nothing starts when memory frees. An automatic batch replacement
 (`DistributedAutomaticBatchPlanner`) never assumes a rate: it prices only the
 pair's own fresh, keyed, owner-only link record, and without one it keeps the
 running setup. The planner's own default, and the plan tool without
@@ -3453,6 +3506,18 @@ cohort's width. Now each window position equals that plain step byte for byte
 (logits, captured hidden row and settled history, on both ranks), and each row
 equals itself alone.
 
+Products that still go through MLX's own quantized kernels keep a row's bits
+at every row count through the cluster core's `MLX_QMV_BATCH_INVARIANT=1`, which
+every cluster process (worker, single-Mac reference, tensor-parallel check) sets
+before anything native unless its launcher chose a value
+(`ClusterQuantizedRowRouting`, logged as `darkbloom-qmv-batch-invariant-v1`):
+the core then runs 2 to (vector limit - 1) rows on qmv_wide, instead of the
+routes MLX main added for those counts (upstream #4712: NVFP4, MXFP4 and MXFP8
+at 6-16 rows; #4682: affine split-K from 8 rows), whose bits change with the
+row count. One row still takes qmv, whose bits differ from qmv_wide's, so a path
+that must equal a single row keeps it in a launch of single rows, as before.
+Single-Mac serving leaves the switch off and keeps MLX main's kernels.
+
 The arithmetic is one per process, resolved at start from the GPU family and the
 weight's packing only, never from timing: its form (MLX qmv's scaled inputs, or
 dequantized weights, each weight `s * q + b` rounded once and then one fused
@@ -3547,7 +3612,8 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorPa
 ## Served speed records and worker builds
 
 The serving leader keeps a speed record of every request that computed its
-whole prompt, completed, and had the pair to itself, in owner-only
+whole prompt, completed, had the pair to itself and answered at least 64 tokens
+(`ClusterServedSpeedRule.minimumCompletionTokens`), in owner-only
 `~/.darkbloom/cluster/served-speed.json` (`ClusterServedSpeedFile`, schema
 `darkbloom_served_speed_v1`, records `ClusterPairRequestTelemetry`): per setup
 (model, mode, cut with any tensor-parallel shares, members in rank order) and
@@ -3555,7 +3621,21 @@ route, at most 32 per route and 512 in all, oldest out first. Each record names
 the worker build each rank served with (`rankBuildSHA256`, rank order: the
 SHA-256 of that rank's worker binary as the pair's admission identity names it,
 the value share probes and the prefix SSD scope use); a record written before
-builds were recorded has none and still reads.
+builds were recorded has none and still reads. A shorter answer is
+probe-sized: mostly its first token, its decode rate a handful of steps. Every
+request Darkbloom sends to check a pair asks for fewer tokens (the warm-up
+canary `ProviderLoop.clusterWarmupMaxTokens`, the setup's check
+`ClusterSetupState.checkTokens`, the onboarding's test answer
+`ClusterService.testAnswerTokens`), and readiness probes and short chats answer
+fewer; such requests once set the request a plan was made for and decided the
+served race between modes (2026-10-22: a pipeline decoding 39.6 tok/s was kept
+over tensor parallel decoding 114.8). They stay in the telemetry, and the first
+cold request a session serves on a route still warms that route whatever its
+length. Every reader applies the rule again (`ClusterServedSample.fromTelemetry`,
+`ClusterServedSpeedHistory.entries`, the plan tool's `--served`), so records an
+earlier build kept read the same way; the request mix's 64-token floor on the
+answer (`ClusterRequestMix.minimumOutputTokens`) stays for samples a plan is
+given directly.
 
 Every plan of the pair (`ClusterPlacementFlow.decide`: the plan command, the
 setup screen with the other Mac's shared records, and automatic batch
@@ -3589,11 +3669,12 @@ only for a build it is told: `darkbloom-cluster-plan plan --served FILE
 says so. The checks replay the pair's own leader file (member and request IDs
 relabeled) for the 27B with c41's share probes (`ServedBuildScopeChecks`;
 through `ClusterPlacementFlow.decide` in
-`PlacementSetupCheck.servedBuildRegression`): as they are, the 218 records of
-the pair give no speed and the plan is the one made without them, 1:1 at a
-predicted 55.7 tok/s for the pair's own request (96 prompt and 91 answer
-tokens); taken as this build's, as every plan before the fix took them, they
-rescale every share point and cut the prediction to 23.2 tok/s. The split itself
+`PlacementSetupCheck.servedBuildRegression`): as they are, the pair's 131 speed
+records of the model (87 of its 218 records answered fewer than 64 tokens) give
+no speed and the plan is the one made without them, 1:1 at a predicted 55.7
+tok/s for the pair's own request (96 prompt and 128 answer tokens); taken as
+this build's, as every plan before the fix took them, they rescale every share
+point and cut the prediction to 23.2 tok/s. The split itself
 stays 1:1 there, since served tensor-parallel requests scale both Macs' share
 points by one factor; the 1:3 toward the M5 Max appears instead whenever the
 plan is made for the layout's largest request (8192 prompt tokens), where
@@ -3706,11 +3787,11 @@ See [focused cluster tests](../developer/test.md#focused-qwen35-moe-tensor-paral
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.
 
-GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no rank (the runtime still loads NextN whole on both ranks beside the stage for speculative decode, and the vision tower whole on rank 0 for media, and charges them at load; see below). The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone and a keyed link measurement, the planner chooses tensor parallel. Before the keyed link has been measured, it chooses a pipeline (`GLMTensorParallelChecks`).
+GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves it with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
 
-A chosen GLM tensor-parallel placement is served by `GLM5NextTensorParallelResidentRuntime` (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/`). Each rank verifies the whole artifact, loads every layer's share through `GLM5NextTensorShard`, and sums each layer's attention and feed-forward partials (bfloat16, added in float32) over the sealed all-sum (AES-256-GCM on the keyed JACCL data plane; a peer piece that does not open fails the request). On the JACCL mesh the sum is streamed in one CPU-stream task: each 256 KiB sealed piece carries its own tag, crosses as soon as it is sealed and is opened and added as soon as it lands, so only the first and last pieces wait for crypto (`SealedAllSum`, `sealed_stream.h`); other groups seal and gather the whole frame. Prefill runs 4,096-token chunks on both ranks (`prefillChunkTokens`: the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4 matmuls against ~62 at 2,048; charged as a second request workspace), each chunk as two micro-batches whose sums are issued as soon as their partials exist, so one computes while the other's sum crosses the link (`GLM5NextTextStage.tensorParallelMicroBatches`; 2,532 against 1,767 tok/s whole); sampled decode runs one token per step, and the ranks' tokens must agree at every step. A tensor-parallel worker lifts MLX's per-command-buffer input-size bound before anything native starts (`WorkerCommandBufferBudget`, `MLX_MAX_MB_PER_BUFFER`; a launcher value is kept): every MoE launch takes a whole expert bank as input, so decode committed ~88 buffers a step instead of ~22 (measured 19.0 -> 16.8 ms a step; the 50-operation bound stays). Decode steps, MTP rounds and lane rounds encode with at most 100 operations a buffer on the thread that encodes them (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`), above the owner's 16-operation rank guard, which prefill keeps: each further buffer is a GPU gap of about 10 µs (13.24 -> 12.56 ms a step, tokens identical). An MTP round submits its NextN priming and proposals as soon as they are built, so the GPU runs them while the host builds the verification forward (`GLM5NextTensorParallelSpeculation.EarlySubmission.proposals`; before, the whole round's graph, about 1.8 ms of host work, was built with the GPU idle): a depth-2 round 23.06 -> 21.64 ms (95.9 -> 102.7 tok/s), two lanes 115.2 -> 121.6 tok/s, tokens and top logits identical. A greedy round reads out half the head's vocabulary rows on each rank and agrees on every window token through the round's existing agreement sum: each rank's slot carries its half's maximum and argmax, and the larger maximum wins, rank 0's lower index on a tie, which is the whole head's argmax (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, `GLM5NextTextStageReadout.allTokensVocabularyPart`): 21.32 -> 21.05 ms a depth-2 round, tokens identical; sampled rounds keep the whole head. A GLM tensor-parallel worker lets the hyper-connection site that reads a sum wait for it itself (`WorkerFenceFusion`: `MLX_METAL_FENCED_INPUTS`; a launcher value is kept), one dependent dispatch fewer on each of a step's 90 sums. The core's fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a launcher's choice: above 32 KB a partial's update is split over several threadgroups and that path never signals the CPU, so two batched lanes (six verification rows) stalled every round about 0.7 s. The load gate charges the shard, the NextN layer, both pipeline ranks' request budgets plus speculative decode's request state, and a 4 GiB freed-buffer cache (the load runs with MLX's cache at zero; serving with it at zero halves prefill and decode). READY names the installed partition's plan hash, as a pipeline rank does. Prompt prefixes are reused as under Qwen tensor parallel: each rank keeps its own stage cache (its heads' KDA state and the replicated DSA latents) at a prompt's last whole chunk boundary in memory (`GLM5NextTensorParallelPrefixCache`, at most 8 GiB), and a request restores the longest boundary both ranks hold after one sealed vote, or neither does; entries give way first under memory pressure and every failure drops them. No SSD tier yet. The link probe that prices the reduction (`QwenTensorParallelLinkProbe`, recorded by both pipeline and tensor-parallel loads) times the sealed all-sum after one unmeasured pass with the same bounded cache, so the planner prices what a ready rank pays (a cold probe read 16.9 ms per 32 MiB against 5.8 ms ready).
+A chosen GLM tensor-parallel placement is served by `GLM5NextTensorParallelResidentRuntime` (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/`). Each rank verifies the whole artifact, loads every layer's share through `GLM5NextTensorShard`, and sums each layer's attention and feed-forward partials (bfloat16, added in float32) over the sealed all-sum (AES-256-GCM on the keyed JACCL data plane; a peer piece that does not open fails the request). On the JACCL mesh the sum is streamed in one CPU-stream task: each 256 KiB sealed piece carries its own tag, crosses as soon as it is sealed and is opened and added as soon as it lands, so only the first and last pieces wait for crypto (`SealedAllSum`, `sealed_stream.h`); other groups seal and gather the whole frame. Prefill runs 4,096-token chunks on both ranks (`prefillChunkTokens`: the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4 matmuls against ~62 at 2,048; charged as a second request workspace), each chunk as two micro-batches whose sums are issued as soon as their partials exist, so one computes while the other's sum crosses the link (`GLM5NextTextStage.tensorParallelMicroBatches`; 2,532 against 1,767 tok/s whole); sampled decode runs one token per step, and the ranks' tokens must agree at every step. A tensor-parallel worker lifts MLX's per-command-buffer input-size bound before anything native starts (`WorkerCommandBufferBudget`, `MLX_MAX_MB_PER_BUFFER`; a launcher value is kept): every MoE launch takes a whole expert bank as input, so decode committed ~88 buffers a step instead of ~22 (measured 19.0 -> 16.8 ms a step; the 50-operation bound stays). Decode steps, MTP rounds and lane rounds encode with at most 100 operations a buffer on the thread that encodes them (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`), above the owner's 16-operation rank guard, which prefill keeps: each further buffer is a GPU gap of about 10 µs (13.24 -> 12.56 ms a step, tokens identical). An MTP round submits its NextN priming and proposals as soon as they are built, so the GPU runs them while the host builds the verification forward (`GLM5NextTensorParallelSpeculation.EarlySubmission.proposals`; before, the whole round's graph, about 1.8 ms of host work, was built with the GPU idle): a depth-2 round 23.06 -> 21.64 ms (95.9 -> 102.7 tok/s), two lanes 115.2 -> 121.6 tok/s, tokens and top logits identical. A greedy round reads out half the head's vocabulary rows on each rank and agrees on every window token through the round's existing agreement sum: each rank's slot carries its half's maximum and argmax, and the larger maximum wins, rank 0's lower index on a tie, which is the whole head's argmax (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, `GLM5NextTextStageReadout.allTokensVocabularyPart`): 21.32 -> 21.05 ms a depth-2 round, tokens identical; sampled rounds keep the whole head. A GLM tensor-parallel worker lets the hyper-connection site that reads a sum wait for it itself (`WorkerFenceFusion`: `MLX_METAL_FENCED_INPUTS`; a launcher value is kept), one dependent dispatch fewer on each of a step's 90 sums. The core's fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a launcher's choice: above 32 KB a partial's update is split over several threadgroups and that path never signals the CPU, so two batched lanes (six verification rows) stalled every round about 0.7 s. The load gate charges the shard, the NextN layer, both pipeline ranks' request budgets plus speculative decode's request state, and a 4 GiB freed-buffer cache (the load runs with MLX's cache at zero; serving with it at zero halves prefill and decode). READY names the installed partition's plan hash, as a pipeline rank does. Prompt prefixes are reused as under Qwen tensor parallel: each rank keeps its own stage cache (its heads' KDA state and the replicated DSA latents) at a prompt's last whole chunk boundary in memory (`GLM5NextTensorParallelPrefixCache`, at most 8 GiB), and a request restores the longest boundary both ranks hold after one sealed vote, or neither does; entries give way first under memory pressure and every failure drops them. Each request's entries are its own partition's (`GLM5NextTensorParallelResidentRuntime.prefixScope`, see [tenant partitions](prefix-cache.md#cluster-prefix-tenant-partitions)): a tenant's boundaries are voted, restored and kept for that tenant alone, and a request whose cache is off votes and keeps none, on a cache-on request's frames. Each rank also keeps a cleanly retired request's boundary in the encrypted SSD tier, read from the memory entry's pages behind serving; the vote counts those records, and a boundary taken from one is restored into the request's own pages only after a second sealed exchange confirms both ranks have it, in the same partition (`prefixDiskScope`), so a restarted pair restores what the last one kept ([GLM TP prefix SSD tier](prefix-cache.md#glm-tp-prefix-ssd-tier)). The link probe that prices the reduction (`QwenTensorParallelLinkProbe`, recorded by both pipeline and tensor-parallel loads) times the sealed all-sum after one unmeasured pass with the same bounded cache, so the planner prices what a ready rank pays (a cold probe read 16.9 ms per 32 MiB against 5.8 ms ready).
 
-Greedy requests under GLM tensor parallel decode speculatively with the model's own NextN (MTP) layer (`GLM5NextTensorParallelResidentRuntime.mtpDepth`, depth 2; `GLM5NextTensorParallelSpeculation`). Every rank loads the layer whole beside its shard (about 4.2 GB; it shares the replicated embedding and head and needs no sums), so both ranks propose the same tokens from the same inputs. A round proposes up to `mtpDepth` tokens (step 0, then index-shared continuations for depth 2 and 3), verifies the last committed token and the proposals in one stage forward (`GLM5NextTextStage.prepareVerification`: a `[1, 1 + depth]` window through the same 91 sums), and keeps the longest prefix of proposals equal to the target's greedy tokens, plus the target's next token. Each KDA layer adopts the state it captured after the last kept token and each DSA history drops the rest (`GLM5NextTextStageCandidate.commit(afterEvaluating:keeping:)`), so a rejected proposal costs no replay forward. The round's one sealed reduction carries each rank's target tokens, proposals and stop flag: tokens or proposals that differ end the request, and a stop flag on either rank ends both after the same round. Rounds are not pipelined; each reads its agreement before the next is built, but a round's tokens are committed while the next round runs (`GLM5NextTensorParallelSpeculation.round`, `whileRunning`), unless they end the request. The NextN history is primed from the prompt's hidden rows (history only: no attention, MoE or readout) and afterwards only from verified pairs, and prompt-prefix entries keep it at their boundary. Tokens leave one at a time through the same stop and length rules. The output is the target's greedy tokens, computed in windows of up to `1 + depth` rows instead of one-row steps. MLX runs a one-row quantized projection (and the head) as `qmv` and a multi-row one as `qmv_wide`, which reduces K in a different order, so every window rounds differently from a one-token step and the KDA and DSA histories carry that forward: a long speculative decode drifts from one-token greedy decode and can choose a different token after tens to hundreds of tokens, not only at near-ties (measured on the 3,931-token prompt: first difference at output 104 for depths 1 and 2, and at 89 for depth 3; `qmv_wide` rounds a row the same in two- and three-row windows). The ranks never differ, and a one-token window is bitwise an ordinary step (`darkbloom-cluster-tp-check glm --mtp-check one-token`; `keep-first` decodes one token per round through full windows to separate this arithmetic from acceptance and rollback). On the pair (sealed, 256 tokens) decode measured 62.6 tok/s one token per step, 68.7 at depth 1, 76.0 at depth 2 (2.24 tokens a round) and 71.8 at depth 3. Sampled requests keep one token per step (rank 0 draws). The load agreement binds the depth (`glm5-next-tp-mtp-v1`). The planner does not price speculative decode yet: it assumes one token per step and no NextN bytes, so the load gate can refuse a pair the plan admitted.
+Greedy requests under GLM tensor parallel decode speculatively with the model's own NextN (MTP) layer (`GLM5NextTensorParallelResidentRuntime.mtpDepth`, depth 2; `GLM5NextTensorParallelSpeculation`). Every rank loads the layer whole beside its shard (about 4.2 GB; it shares the replicated embedding and head and needs no sums), so both ranks propose the same tokens from the same inputs. A round proposes up to `mtpDepth` tokens (step 0, then index-shared continuations for depth 2 and 3), verifies the last committed token and the proposals in one stage forward (`GLM5NextTextStage.prepareVerification`: a `[1, 1 + depth]` window through the same 91 sums), and keeps the longest prefix of proposals equal to the target's greedy tokens, plus the target's next token. Each KDA layer adopts the state it captured after the last kept token and each DSA history drops the rest (`GLM5NextTextStageCandidate.commit(afterEvaluating:keeping:)`), so a rejected proposal costs no replay forward. The round's one sealed reduction carries each rank's target tokens, proposals and stop flag: tokens or proposals that differ end the request, and a stop flag on either rank ends both after the same round. Rounds are not pipelined; each reads its agreement before the next is built, but a round's tokens are committed while the next round runs (`GLM5NextTensorParallelSpeculation.round`, `whileRunning`), unless they end the request. The NextN history is primed from the prompt's hidden rows (history only: no attention, MoE or readout) and afterwards only from verified pairs, and prompt-prefix entries keep it at their boundary. Tokens leave one at a time through the same stop and length rules. The output is the target's greedy tokens, computed in windows of up to `1 + depth` rows instead of one-row steps. MLX runs a one-row quantized projection (and the head) as `qmv` and a multi-row one as `qmv_wide`, which reduces K in a different order, so every window rounds differently from a one-token step and the KDA and DSA histories carry that forward: a long speculative decode drifts from one-token greedy decode and can choose a different token after tens to hundreds of tokens, not only at near-ties (measured on the 3,931-token prompt: first difference at output 104 for depths 1 and 2, and at 89 for depth 3; `qmv_wide` rounds a row the same in two- and three-row windows). The ranks never differ, and a one-token window is bitwise an ordinary step (`darkbloom-cluster-tp-check glm --mtp-check one-token`; `keep-first` decodes one token per round through full windows to separate this arithmetic from acceptance and rollback). On the pair (sealed, 256 tokens) decode measured 62.6 tok/s one token per step, 68.7 at depth 1, 76.0 at depth 2 (2.24 tokens a round) and 71.8 at depth 3. Sampled requests decode in rounds too: each proposal is drawn with the request's own sampler and the keyed noise of the output index it is for (coupled drafting, `GLM5NextTensorParallelResidentRuntime.coupledDraftSharpness`), and every committed token is the target's draw from its window logits; the sampler moves only acceptance. The load agreement binds the depth (`glm5-next-tp-mtp-v1`). The planner prices the rounds and the NextN layer as described above (`ClusterTensorParallelSpeculativeHead`).
 
 GLM image and video input under tensor parallel (`ClusterGLMMedia`, contract `glm53_tp_media_v1`) is the single-Mac product's media path split across the leader and rank 0. The leader runs the product's code up to the vision tower (`DistributedGLMMediaIngress`): `EngineV2VisionPrefill.glm5NextUserInput` (the bounded `MediaIngest` decode and every product cap) and `GLM5NextProcessor.prepareDetailed` with the artifact's processor budgets and the thinking-off tokenizer, on the CPU device, so the expanded prompt, its spans and its patches are the product's; it checks them as `buildGLM5NextSubmission` does and describes each part: its encoded bytes' digest, grid, per-pair token offsets, the product's tower limits for one frame (`VisionTowerBudget.glm5FrameLimits`) and a SHA-256 of its prepared patches. Rank 0's reservation carries the encoded bytes as well (at most 32 MiB, the one worker command above the 8 MiB command bound: `ClusterWorkerLimits.mediaCommandBytes`); rank 1's carries the digests only, and both bind the envelope's fingerprint into the request digest. Rank 0 holds the vision tower (1.13 GB of bfloat16 weights, charged at load). From the reservation on, off the executor and without MLX, rank 0 rebuilds the ingest's media values, prepares them with the SDK's `GLM5NextProcessor.prepareMediaValues` (the media half of `prepareDetailed`, as host values) and requires every grid and patch digest to equal the leader's; the reservation itself returns at once. When the request opens, after the digest agreement, both ranks exchange small sealed sums carrying that preparation's status and each rank's stop until it ended (a stop ends the request on both ranks before anything is made; a failed or different preparation is an agreement failure on both). Rank 0 then runs the tower once per temporal pair with the leader's limits on the default GPU stream, as the product does, and one sealed all-sum per frame carries the features to rank 1, which adds negative zero (the additive identity for every value, signed zeros included, rounded once); rank 0 checks each result bit for bit and a last small sum carries its verdict, so both ranks end together on a difference. Every one of these sums is evaluated alone. With batch lanes a media lane runs the same open, frames and rounds: rank 0 joins it only once its preparation ended (`GLM5NextTensorParallelLaneReservation.joinable`), so the running lanes never wait for a decode, and its media charge is held with its lane state. A prefill frame that holds media positions replaces their embedding rows with the features by concatenation (the product's `spliceEmbeddings`) and runs from those embeddings through the same chunks and micro-batches (`GLM5NextTextStage.prepareForward(embeddings:cache:segments:readout:snapshotAfter:)`), so a frame merging several chunks stays bitwise for media rows as for text; every other row and frame is the text path's, on tensor parallel's own chunk grid. Unlike the single-Mac product, which decodes media requests target-only, a media request here decodes speculatively as text does: the NextN history is primed with the same input rows, so a media position's next input is its feature row (`GLM5NextMTP.primeHistory(shiftedEmbeddings:)`, as a multimodal target's drafter is fed). It neither restores nor stores prompt prefixes. Workers advertise the contract at READY (`ClusterWorkerReady.media`) with a request capacity that covers one media request (`GLM5NextTensorParallelMedia.capacityBytes`); a text request is still charged only its own context. The leader binds media only when both ranks advertise it, and the pipeline's private image profile is unchanged.
 
@@ -4425,7 +4506,10 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Med
 
 Qwen media reservations retain the encoded source only in the request owner and
 rank 0; rank 1 receives the same authenticated metadata without encoded bytes.
-Owner and peer deadline translation preserve the entire media envelope. The
+Every hop that moves a reservation to another clock (the owner wire, the peer
+link and the qualification driver's `PairWorkerEndpoint`) re-times it with
+`ClusterWorkerReservation.withDeadline`, a copy that changes the deadline
+alone, so sampling, route and every media envelope cross unchanged. The
 request owner drops its encoded alias only after definitive retirement and
 resource release, preserving immutable metadata for accounting. This transport
 prerequisite does not advertise media support or activate a native model path.
@@ -4440,7 +4524,8 @@ the shared driver, `QwenTensorParallelSingletonHost`). The former single-lane
 owner (request-local caches on its own page pool and the
 `DARKBLOOM_CLUSTER_QWEN_TP_PAGED_KV` switch, with its own prefix cache) is
 retired: a lane's KV is paged and its prefixes are the batch owner's memory and
-SSD tiers. Only an authenticated sealed pair serves a TP row; an unkeyed load is
+SSD tiers, keyed by each request's own partition
+([tenant partitions](prefix-cache.md#cluster-prefix-tenant-partitions)). Only an authenticated sealed pair serves a TP row; an unkeyed load is
 refused. `QwenTensorParallelBatchSettings` binds capacity, KV backend and
 arithmetic policy into the sealed load agreement before model reads. Each lane
 owns its attention, conv/SSM, prompt grid, sampler and optional media
@@ -4560,7 +4645,8 @@ owners drop their encoded aliases before publishing retirement; HTTP completion
 alone releases neither fence. Cleanup failure retains the outstanding charge.
 
 The bridge rejects foreign media identities and combinations with another media
-carrier. It disables prefix reuse for this ingress path. Nondefault image/video
+carrier. It disables prefix reuse for this ingress path, on both ranks as well:
+the reservation carries the request's cache off (`ClusterWorkerPrefixCache.disabled`). Nondefault image/video
 processing controls and forced media tool choices fail explicitly, matching the
 standalone Qwen HTTP media path. Media `response_format` uses the same shared
 JSON/schema prompt preparation as standalone serving. Nonstream responses use
@@ -4581,6 +4667,63 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
+
+## Cluster pair capability honesty
+
+A pair advertises what its placed mode serves, not what the artifact's
+configuration declares, and answers each request shape as one Mac does.
+
+1. Media registration follows the placed mode. Registration happens before
+   any rank is ready, so a member predicts the media contract its ranks bind at
+   LOAD (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash
+   `ClusterGLMMedia.contract` and Qwen3.8 27B `ClusterQwenMedia.contract` in
+   tensor parallel, nil for every other placement) and registers `is_vision`
+   and `native_media_tools` only with one (`ClusterMemberPreparation.registeredModel`).
+   The coordinator routes media by `is_vision`; a pipeline (GLM's included)
+   registers text only. The prediction is checked against READY: a slot whose
+   member registered media is not published unless both ranks report a media
+   contract (`ClusterMemberPreparation.requireRegisteredMedia` in
+   `ProviderLoop.publishClusterPairSlot`).
+2. Speculative decode status follows the placed mode. GLM tensor parallel
+   loads its NextN head and decodes with it at
+   `ClusterGLMTensorParallel.speculativeDepth` (2, shared with
+   `GLM5NextTensorParallelResidentRuntime.mtpDepth`) on every load, under a
+   mode that names no head. The saved setup's speculation
+   (`DistributedInstalledSpeculation.init(mode:runtimeModelID:tensorAssistant:everyMemberAdvertisesHead:)`)
+   and so the live status report it as on; the pair's `/metrics` sets
+   `mtp_enabled` from the session before any request
+   (`ProviderMTPStatusSnapshot.init(pair:placementDecodesWithHead:)`). Its
+   pipeline runs no head.
+3. Request shapes are refused alike. A content part type no engine serves is
+   refused before acquisition by the shared request preparation
+   (`OpenAIRequestValidationError.unsupportedContentPart`) and before
+   acceptance on the coordinator path, never served from the remaining text.
+   GLM's output controls follow one rule on every slot: hidden reasoning is
+   withheld on the text and media paths (`GLM5NextPromptPolicy.withholdsReasoning`;
+   the pair's media paths seed the native reasoning channel from the rendered
+   prompt as the single-Mac media path does), a JSON answer or forced call is
+   withheld and validated on the text path, and with images or video either is
+   refused with 400 before any media decode, ahead of the pair's media routing
+   (`GLM5NextPromptPolicy.withholdsOutput` in `prepareCompletion`). A
+   `response_format` answer the service validates that stopped at
+   `max_tokens` before it was complete is
+   `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
+   internal failure; GLM's withheld JSON keeps its own typed 422
+   (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
+   each of these GLM requests on a single-Mac slot and on a pair slot and
+   compares what the local API returns. Media the model's processor refuses is
+   the request's own fault on every provider:
+   `EngineV2VisionPrefill.clientFault(for:)` turns the
+   deterministic preparation shapes and the processor's `VLMError` media cases
+   (geometry it cannot resize, such as Qwen's side below
+   `patch_size × merge_size` or aspect ratio above 200:1; a video without a
+   decodable track; a media count it does not take) into the
+   `multimodalRejected` 400 in the single-Mac preparation and in both pairs'
+   media ingress (`prepareClusterGLMMedia`, `prepareClusterQwenMedia`). Only
+   construction faults (processor configuration, MLX, tower budget, span
+   agreement) remain the retriable 503 refusal. Wire and HTTP details:
+   [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
+   [direct mode](../provider/direct-mode.md#refused-request-shapes).
 
 ### Cross-stream fence ordering
 

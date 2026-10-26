@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -963,6 +963,54 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
 (`submitTokenized`).
 
+## Cluster prefix tenant partitions
+
+A two-Mac pair's ranks keep prompt prefixes in their own resident caches and
+SSD tiers, outside the leader's CBv2 engine, so the request's two cache fields
+reach both ranks in its reservation: `ClusterWorkerReservation.prefixCache`
+(`ClusterWorkerPrefixCache`), which the pair's owner derives from
+`CBv2Request.prefixCacheEnabled` and `CBv2Request.cacheSalt`
+(`DistributedPipeExecutionOwner.reserve`). The privacy statement is in
+[encryption](security/encryption.md#two-mac-cluster-experimental).
+
+| Request | Reservation field | Both ranks |
+|---|---|---|
+| Cache on, no salt: the local endpoint and the qualification tools | absent; the reservation's bytes are a worker's without it | the earlier scopes, which only such requests use |
+| Cache on, a salt: a coordinator request with its authenticated cache scope | `{"enabled":true,"tenantSHA256":<digest>}` | every key and SSD record scope ends in `\|tenant=<digest>`; only requests with the same salt find them |
+| Cache off: a remote request without an authenticated scope, or one with GLM or Qwen media (`EngineV2Bridge.submitTokenized` turns the cache off for those) | `{"enabled":false}` | no offer, vote, restore, capture or SSD record |
+
+- The digest is the SHA-256 of `darkbloom-cluster-prefix-tenant-v1|` and the
+  salt (`ClusterWorkerPrefixCache.tenantDigest`); the salt never leaves the
+  leader's provider process. Any salt partitions, as `CBv2Request.cacheSalt`
+  does on one Mac.
+- Every prefix path takes its scope from `ClusterWorkerPrefixCache.scope`: the
+  stage families through `qwenStagePrefixScope` (resident cache, SSD tier,
+  speculative history), GLM tensor parallel through
+  `GLM5NextTensorParallelResidentRuntime.prefixScope` (vote, restore and kept
+  boundary), and the Qwen tensor-parallel batch owner through
+  `QwenTensorParallelResidentRuntime.batchPrefixScope` (both tiers and the
+  assistant's donors).
+- A request whose cache is off keeps the frame plan a cache-on request has (the
+  stage final-token split, GLM's kept boundary) and only offers and keeps
+  nothing, so it computes exactly what a cold request computes; the batch it
+  runs in is unchanged.
+- Both ranks bind the partition into the request fingerprint
+  (`QwenLayerStageGenerationRequest.fingerprint`, field `prefix-cache=`), which
+  they compare before any prefix exchange: ranks told different partitions fail
+  the request. A reservation without one keeps the earlier fingerprint, so
+  requests without a partition and their arithmetic are unchanged.
+- A worker without the field refuses a reservation that carries it (the codec
+  refuses unknown fields), so a mixed pair fails closed instead of sharing.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`
+(`ClusterWorkerPrefixCache`) and its codec in `ClusterWorkerCodec.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`
+(`reserve`). Tests: `PrefixTenantScopeTests`, `PrefixDiskTierTests`
+(`aTenantsRecordsAreFoundOnlyUnderThatTenant`), `QwenTensorParallelBatchSessionTests`
+(`partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing`),
+`GLM5NextPipelineGenerationTests`, `GLM5NextTensorParallelPrefixCacheTests` and
+the provider's `DistributedPrefixPartitionTests`.
+
 ## Cluster sliding prefix adoption
 
 `CBv2OwnedRequestState.adopt` allocates fresh request rows for an agreed
@@ -1021,7 +1069,9 @@ authenticated source/processor/position metadata, in addition to the existing
 text request identity. Request-owned positions and feature roots are not model
 globals. Native retirement releases them only after preparation completion and
 checked drain. This preserves identity separation; it is not a full-artifact
-media-prefix performance qualification. Source:
+media-prefix performance qualification. The provider's media ingress sends
+every such request with its prefix cache off, so both ranks neither restore nor
+keep it ([tenant partitions](#cluster-prefix-tenant-partitions)). Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
 
 The exact27 multi-lane TP owner retains one compact snapshot per completed
@@ -1088,3 +1138,52 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Tensor
 `QwenTensorParallelResidentRuntime.swift` (load and shutdown) in the same directory.
 Tests: `QwenTensorParallelBatchSessionTests` (`ssd…AfterTheTiersReopen`) and
 `QwenTensorParallelMTPSessionTests` (the SSD round trip onto a newly loaded head).
+
+### GLM TP prefix SSD tier
+
+Both ranks of GLM-5.3-Flash tensor parallel keep their prompt prefixes in the
+same encrypted SSD tier (`QwenStagePrefixDiskTier`) beside the memory tier
+(`GLM5NextTensorParallelPrefixCache`), so a repeated long prompt restores its
+prefix after both Macs restart. The memory tier keeps one boundary per
+request, the last whole 4,096-token chunk before the final token; a rank's
+record holds its state there: its heads' KDA convolution and recurrent state,
+its copy of every DSA layer's latents, index keys and pool gates, and the
+NextN history, which a restored request needs to propose as a prefilled one
+does (`GLM5NextTensorParallelPrefixRecord`). The record shape is the GLM
+pipeline's (`GLM5NextStagePrefixSnapshot`): DSA latents as attention `keys`
+`[1, 1, T, kvLoraRank]`, index keys and pool gates side by side as `values`,
+the NextN history the same way under the NextN layer's own index
+(`hiddenLayers`), KDA state as the `recurrent` pair; validity is not stored.
+
+| Step | What happens |
+|---|---|
+| Persist | After a request retired cleanly (a lane that left with a finish; a solo request that this rank did not stop), its boundary goes to the writer queue only if the memory tier still holds it. The job holds that entry's pages (`GLM5NextDSAHistoryRows`, shared as a copy holds them) and its KDA arrays; the writer reads each 4,096-row unit from the page slabs on the host. Nothing is gathered or copied on the serving thread, and the queue's bounds (`maximumQueuedJobs`, `maximumQueuedBytes`) count the held pages. |
+| Scope | `GLM5NextTensorParallelPrefixDisk.planScope`: the plan name and shares, the partials transport, the verified artifact and inventory, both builds and the NextN depth; a request adds its prefill chunk and whether its histories are paged (`scope(chunk:)`). Never the membership epoch, and never the installed cut, which tensor parallel does not compute with. |
+| Vote | Each rank offers 1 for a boundary in memory and 3 for one held only as a complete record (`QwenTensorParallelPrefixCache.offer`); one sealed sum chooses the deepest boundary both offer (2, 4 or 6). Without records the words and the decision are the memory-only vote's, and a memory agreement restores as before. |
+| SSD restore | When either rank takes the agreed boundary from SSD, each rank takes it from memory when it holds it there, else reads its record and checks every layer's shape and element type before anything is written (`Restorable`). A second sealed exchange (`QwenTensorParallelPrefixCache.confirm`) shows both ranks have it; only then are the record's rows written into fresh pages of the request's page account and the NextN history into its MTP state, and the memory tier keeps the result. Otherwise both prefill from zero. An unreadable record is deleted by the tier, one that does not adopt by the rank, and a request that stops while its record is read declines without deleting it. |
+
+A restored state holds the bits the memory entry held, so a request restored
+from SSD produces the tokens and logits of the same request prefilled from
+zero. The load agreement carries `glm5-next-tensor-parallel-prefix-v2`. The
+configuration, budgets, TTL, daily write cap, free-space floor and per-rank
+owner-only directories are the Qwen TP tier's (`QwenStagePrefixDiskConfiguration`),
+with the key the owner sends on the worker's input. Media requests neither
+restore nor keep prefixes.
+
+Logs: the tier's `darkbloom-prefix-ssd-v1` lines (`open`, `persist`,
+`persist-dropped`, `restore`, `restore-failed`, `close`), the rank's
+`restore-confirmed` (with `kept=`), `restore-declined` (`tier=`, `local=`) and
+`restore-rejected`, and at load `darkbloom-prefix-v1 … family=glm mode=tensor_parallel … ssd=`.
+Shutdown closes the tier (queued writes finish, bounded) before the model is
+released.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelPrefixDisk.swift`
+(`GLM5NextTensorParallelPrefixDisk`, `GLM5NextTensorParallelPrefixRecord`,
+`restoreAgreedFromEitherTier`, `persistPrefix`),
+`GLM5NextTensorParallelResidentRuntime.swift` (`openRequest`, load and shutdown) in
+the same directory, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextPagedDSA.swift`
+(`GLM5NextDSAHistoryRows`). Tests: `GLM5NextTensorParallelPrefixDiskTests`
+(records across a restart, scopes, budgets and expiry, the vote and its
+confirmation across two ranks) and `GLM5NextTensorParallelPrefixRestoreTests`
+(paged and contiguous rank states restored and continued bit for bit;
+`GLM53_PREFIX_SSD=1` on the serving-width synthetic stage).

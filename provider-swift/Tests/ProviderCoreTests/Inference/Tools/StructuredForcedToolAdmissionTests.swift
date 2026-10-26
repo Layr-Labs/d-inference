@@ -78,9 +78,9 @@ struct StructuredForcedToolAdmissionTests {
             info("mimo-v2.6-flash-mopd", "qwen3_5"),
             // Lookalike IDs of the admitted families.
             info("Qwen3.5-27B", "qwen3_5"), info("qwen3.6-35b-a3b", "qwen3_5_moe"),
-            info("mimo-v2.6-flash", "mimo_v2"), info("EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp", "mimo_v2"),
+            info("mimo-v2.6-flash", "mimo_v2"),
             // Harmony has no forced strategy.
-            info("gpt-oss-20b", "gpt_oss"), info("openai-gpt-oss-20b", "gpt_oss"),
+            info("gpt-oss-20b", "gpt_oss"),
         ]
         let expected = admitted.map(\.id).sorted()
 

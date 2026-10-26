@@ -8,9 +8,20 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.2 — candidate (unpublished)
+## v0.10.3 — candidate (unpublished)
 
-Prepared on 2026-10-25; tagging and publication are separate steps.
+Prepared on 2026-10-26; tagging and publication are separate steps.
+
+### M5 providers no longer crash on long Gemma 4 and Qwen prompts
+
+- Provider 0.10.2 exits with `Trace/BPT trap: 5` on Macs with an M5 or newer GPU when one attention call covers at least 1,024 prompt tokens on a model with 256- or 512-wide attention heads: Gemma 4 26B, Qwen3.5-9B, Qwen3.5-35B, Qwen3.6-35B and Qwen3.8-27B. Its log shows `Unable to build metal library from source`, naming the `attention_nax_dsplit` kernel. Other Macs and other models are not affected.
+- MLX compiles that kernel at runtime on these GPUs. The upstream MLX merge in 0.10.2 passed it a value head-dim argument it does not take, so the compile always failed and MLX's error stopped the provider.
+- `libs/mlx-swift` moves from `eedca444` to `4926d3d9`, and `libs/mlx` and the nested `mlx` move from `ff4bb35b` to `31f550af`: 0.10.2's MLX with the kernel's arguments corrected. `libs/mlx-swift-lm` stays at `aee6ebb6`, and nothing else changes from 0.10.2.
+- A provider that keeps crashing installs 0.10.3 when its watchdog next restarts it, about five minutes after a crash, if automatic updates are on. Otherwise run `darkbloom update`.
+
+## v0.10.2
+
+Published 2026-10-26 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)).
 
 ### Upgrade and rollout notes
 

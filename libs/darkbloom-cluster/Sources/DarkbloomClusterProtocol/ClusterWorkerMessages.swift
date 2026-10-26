@@ -327,7 +327,7 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let outputCount: Int
     public let chunkSize: Int
     /// Same-Mac DispatchTime uptime deadline. Never forward this to another Mac.
-    public let deadlineUptimeNanoseconds: UInt64
+    public private(set) var deadlineUptimeNanoseconds: UInt64
     /// Additional owner ceiling, not a native resource grant.
     public let capacityLimitBytes: Int
     /// How the decoding rank selects tokens; nil is greedy text, and then the
@@ -356,6 +356,16 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
         self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
         self.glmMedia = glmMedia; self.qwenMedia = qwenMedia
+    }
+
+    /// This reservation on another clock, every other field kept: how a hop
+    /// (a link, an owner, a remote worker's launch clock) re-times one. A copy
+    /// rebuilt through `init` drops any media or route it forgets, since those
+    /// default to nil there; this copies the value and cannot.
+    public func withDeadline(_ deadlineUptimeNanoseconds: UInt64) -> Self {
+        var copy = self
+        copy.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+        return copy
     }
 }
 

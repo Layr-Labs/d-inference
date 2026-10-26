@@ -1733,7 +1733,16 @@ media concurrency. Those require separate paired hardware evidence.
 
 Qwen media forwarding is covered by `ClusterQwenMediaForwardingTests`, which
 round-trips both encoded and metadata-only envelopes through owner and peer-link
-clock translation. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+clock translation. `ClusterReservationRelayTests` (run by
+`bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) sends one reservation
+per media carrier (still images, MiMo images, GLM media, Qwen media), each with
+sampling, and a routed text reservation through both hops and requires each to
+arrive unchanged but for its deadline. `PairWorkerEndpointReservationTests` (run
+by `bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh`) sends
+the same set through the pair-check driver's `PairWorkerEndpoint` into a
+`/bin/sh` stand-in that records its input, and the protocol checks' `retiming`
+group compares `ClusterWorkerReservation.withDeadline` with a field-by-field
+construction. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 --owner-only` runs the actual child/owner checks, including rank-specific media
 bytes, cancellation before start, early-release refusal and idempotent release
 after retirement. It runs no model or MLX code; it does not replace the full

@@ -370,11 +370,8 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
         var translated = command
         if case .reserve(let value) = command {
-            translated = .reserve(.init(profileID: value.profileID, promptTokenIDs: value.promptTokenIDs,
-                stopTokenIDs: value.stopTokenIDs, outputCount: value.outputCount, chunkSize: value.chunkSize,
-                deadlineUptimeNanoseconds: try workerDeadline(forLocal: value.deadlineUptimeNanoseconds),
-                capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route,mimoImages:value.mimoImages,
-                glmMedia: value.glmMedia))
+            // Only the deadline moves to the worker's clock; sampling, route and media cross as they are.
+            translated = .reserve(value.withDeadline(try workerDeadline(forLocal: value.deadlineUptimeNanoseconds)))
         }
         try lock.withLock {
             guard launchedAt != nil, terminationValue == nil, fault == nil, !inputClosed else { throw ClusterWorkerOwnerError.closed }

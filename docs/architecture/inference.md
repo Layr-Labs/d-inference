@@ -3730,7 +3730,10 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Med
 
 Qwen media reservations retain the encoded source only in the request owner and
 rank 0; rank 1 receives the same authenticated metadata without encoded bytes.
-Owner and peer deadline translation preserve the entire media envelope. The
+Every hop that moves a reservation to another clock (the owner wire, the peer
+link and the qualification driver's `PairWorkerEndpoint`) re-times it with
+`ClusterWorkerReservation.withDeadline`, a copy that changes the deadline
+alone, so sampling, route and every media envelope cross unchanged. The
 request owner drops its encoded alias only after definitive retirement and
 resource release, preserving immutable metadata for accounting. This transport
 prerequisite does not advertise media support or activate a native model path.

@@ -1142,13 +1142,29 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: host.tokens,
                 decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
             ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
+            let withheld = pairWithheldReasoningPrefix(controls: templateControls, modelType: acquired.modelType,
+                promptTokens: host.tokens, tokenizer: acquired.tokenizer.inner)
             return try await makeDeadlineCheckedEventStream(
                 upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
                 toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
-                reasoningPrefix: reasoningPrefix,
+                reasoningPrefix: reasoningPrefix, nativeReasoningPrefix: withheld,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                    .init(modelId: request.model, modelType: acquired.modelType)))
+                    .init(modelId: request.model, modelType: acquired.modelType)),
+                withholdReasoning: withheld != nil)
         } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
+    /// Reasoning a pair media request excludes is withheld as the single-Mac
+    /// media path withholds it: classified on the native channel from the
+    /// rendered prompt's think state and dropped there (still counted). Nil
+    /// when the request keeps its reasoning, so the parser seed alone applies.
+    private func pairWithheldReasoningPrefix(controls: ChatTemplateControls, modelType: String?,
+        promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer
+    ) -> String? {
+        guard GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType) else { return nil }
+        return ReasoningPromptProbe.streamingPrefix(forPromptTail: tokenizer.decode(
+            tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)), skipSpecialTokens: false))
+            ?? "<think></think>"
     }
 
     /// GLM-5.3-Flash images and video on the tensor-parallel pair, served as
@@ -1231,12 +1247,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: host.tokens,
                 decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
             ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            let withheld = pairWithheldReasoningPrefix(controls: templateControls, modelType: modelType,
+                promptTokens: host.tokens, tokenizer: acquired.tokenizer.inner)
             return try await makeDeadlineCheckedEventStream(
                 upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
                 toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
-                reasoningPrefix: reasoningPrefix,
+                reasoningPrefix: reasoningPrefix, nativeReasoningPrefix: withheld,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                    .init(modelId: request.model, modelType: modelType)))
+                    .init(modelId: request.model, modelType: modelType)),
+                withholdReasoning: withheld != nil)
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 

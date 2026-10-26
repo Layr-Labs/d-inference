@@ -1,6 +1,6 @@
 # Release The macOS Desktop App
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 Build, sign, notarize and publish the Darkbloom desktop app (`desktop-app/`) as a
 GitHub Release. The workflow is `.github/workflows/release-desktop.yml`. It signs
@@ -54,7 +54,8 @@ Before anything is published:
   name) with the hardened runtime, has bundle ID `io.darkbloom.desktop` and the
   package version, and is notarized and stapled. `spctl` reports
   `Notarized Developer ID`.
-- The DMG is notarized, stapled and passes `hdiutil verify`.
+- The DMG is signed by the same team, notarized and stapled, `spctl` reports
+  `Notarized Developer ID` for it, and it passes `hdiutil verify`.
 - The bundled CLI installer (`Contents/Resources/bootstrap/install-runtime.sh`)
   is present and parses.
 

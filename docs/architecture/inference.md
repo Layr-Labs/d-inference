@@ -1416,7 +1416,7 @@ caching and SSD write policy are unchanged. See the
 for the thresholds and their resource-lifetime limits. Source:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`.
 
-An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/a7cf16a1720ed063bde806edcc1f56039950d80a/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
+An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/df1347852b8db09207232040668202fd3df856ed/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
 `gemma-4-26b-qat-4bit` on one M5 Max measured a 3.45% and 3.90% improvement in
 the two paired orderings of the HTTP decode proxy: approximately 99.2–99.6 to
 103.0–103.1 tok/s. Each leg used two fixed single-request prompts with 8,192
@@ -1424,8 +1424,10 @@ cached tokens and 256 completion tokens, with exact MTP acceptance in both arms.
 Outputs and completion usage matched; the same candidate passed 12 endpoint
 capability smokes. The measurement combines both changes and establishes no
 prefill, broader-concurrency or sustained-load gain. The shared tower serves
-text and VLM callers; downstream clustering users receive the implementation
-when they adopt this SDK revision. Clustering and non-M5 performance are unmeasured.
+text and VLM callers. Downstream clustering integration requires merging the
+shared-layer change with its stage-specific projection policies and separately
+qualifying command-buffer integration; updating its SDK pin alone is insufficient.
+Clustering and non-M5 performance are unmeasured.
 
 ### Prompt geometry
 

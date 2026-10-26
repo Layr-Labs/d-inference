@@ -479,7 +479,7 @@ record format are unchanged.
 | Request (`ClusterWorkerReservation.prefixCache`) | SSD record behavior | Enforcement |
 |---|---|---|
 | None (cache on, no salt) | The plan's earlier scope; read and written as before | `ClusterWorkerPrefixCache.scope` in `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift` |
-| `tenant` | Scope ends in `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope` and `QwenTensorParallelResidentRuntime.batchPrefixScope` |
+| `tenant` | Scope carries `\|tenant=` and the salt's SHA-256 digest; offered, restored and written only for that tenant | the same helper, through `qwenStagePrefixScope`, `QwenTensorParallelResidentRuntime.batchPrefixScope` and `GLM5NextTensorParallelResidentRuntime.prefixDiskScope` |
 | `disabled` | Nothing offered, restored or written | the same helper (no scope) |
 
 See [cluster prefix tenant partitions](../architecture/prefix-cache.md#cluster-prefix-tenant-partitions).

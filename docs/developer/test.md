@@ -1674,6 +1674,7 @@ at every layer it crosses:
 | Stage SSD records | `PrefixDiskTierTests.aTenantsRecordsAreFoundOnlyUnderThatTenant` |
 | Qwen TP batch owner, both tiers | `QwenTensorParallelBatchSessionTests.partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing` (CPU; with `QWEN_TP_BATCH_GPU=1` on Metal) |
 | GLM pipeline and GLM TP caches | `GLM5NextPipelineGenerationTests.promptPrefixesArePartitionedByTenantAndKeptNoneWhenOff`, `GLM5NextTensorParallelPrefixCacheTests.entriesAreHeldOnlyForTheirTenant` (synthetic artifact, Metal) |
+| GLM TP SSD record scopes | `GLM5NextTensorParallelPrefixDiskTests.aRequestsRecordsAreItsOwnPartitions` (CPU) |
 | Qualification request files | `QualificationRequestPrefixCacheTests` in the worker package |
 | Provider owner and bridge | `DistributedPrefixPartitionTests`, `GLMPairForcedOutputTests.thePrefixCacheFieldsReachThePairReservation`, `DistributedHTTPCompletionTests.localRequestsReachThePairWithTheCacheOnAndNoSalt` |
 

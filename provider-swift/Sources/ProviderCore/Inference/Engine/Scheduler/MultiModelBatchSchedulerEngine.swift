@@ -348,7 +348,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // evidence marks `reasoning.exclude` invalid for its own rules, so
             // a GLM request carrying it reaches this check too.
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType,
-                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType))
+                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType),
+                withMedia: MediaIngest.hasMedia(request))
         }
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure
@@ -502,7 +503,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
-                glm5PairPostValidation: glm5PairPostValidation)
+                glm5PairPostValidation: glm5PairPostValidation, withMedia: MediaIngest.hasMedia(request))
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
             request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)

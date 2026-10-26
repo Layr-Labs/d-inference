@@ -372,6 +372,15 @@ extension ProviderLoop {
             return
         }
 
+        // A content part type no engine serves is refused before acceptance,
+        // as the shared request preparation refuses it on the local API
+        // (`OpenAIRequestValidationError.unsupportedContentPart`), on one Mac
+        // and on a pair alike: never answered from the text that is left.
+        if chatRequest.unsupportedContentPartType != nil {
+            rejectInvalidRequest()
+            return
+        }
+
         // Reject unknown/non-native audio before acceptance or cold loading.
         // Only provider-owned architecture metadata selects MiMo dispatch;
         // actual loaded slot/profile validation remains mandatory below.
@@ -441,7 +450,7 @@ extension ProviderLoop {
         do {
             try ProviderPromptContractPipeline.validateNativeControls(templateControls,
                 modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType,
-                glm5PairPostValidation: pairSlot)
+                glm5PairPostValidation: pairSlot, withMedia: MediaIngest.hasMedia(chatRequest))
         } catch {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
@@ -649,7 +658,7 @@ extension ProviderLoop {
         let servesPair = await slot.engineV2.servesDistributedPair
         do {
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
-                glm5PairPostValidation: servesPair)
+                glm5PairPostValidation: servesPair, withMedia: MediaIngest.hasMedia(chatRequest))
         } catch {
             await finishAcceptedRequestWithoutTask(requestId: requestId)
             rejectInvalidRequest()

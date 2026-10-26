@@ -64,6 +64,36 @@ struct ClusterStatusSpeculationTests {
         #expect(throws: (any Error).self) { _ = try decode(status(assisted, mtp: true, reason: "none"), expecting: plain) }
     }
 
+    /// GLM-5.3-Flash's tensor-parallel runtime decodes with its NextN head on
+    /// every load (`ClusterGLMTensorParallel`), under a mode that names no head:
+    /// the setup's speculation says so (2026-10-25: `darkbloom cluster status`
+    /// said "MTP off: generationModeRunsNoHead" while the pair ran depth 2). Its
+    /// pipeline runs no head, and other models keep their own answer.
+    @Test func glmTensorParallelDecodesWithItsHeadAndItsPipelineDoesNot() throws {
+        let glm = ClusterGLMImageCandidate.runtimeModelID
+        #expect(ClusterGLMTensorParallel.speculativeDepth == 2)
+        let tensor = DistributedInstalledSpeculation(mode: .tensorParallel, runtimeModelID: glm, tensorAssistant: false,
+                                                     everyMemberAdvertisesHead: false)
+        #expect(tensor == .init(enabled: true, offReason: DistributedInstalledSpeculation.enabledReason))
+        let pipeline = DistributedInstalledSpeculation(mode: .pipeline, runtimeModelID: glm, tensorAssistant: false,
+                                                       everyMemberAdvertisesHead: false)
+        #expect(pipeline == .init(enabled: false, offReason: "runtimeCapabilityDisablesSpeculation"))
+        let other = DistributedInstalledSpeculation(mode: .tensorParallel, runtimeModelID: "registered_qwen35_9b",
+                                                    tensorAssistant: false, everyMemberAdvertisesHead: true)
+        #expect(other == .init(enabled: false, offReason: "generationModeRunsNoHead"))
+        // Qwen27's resident assistant is still on only with the saved assistant.
+        let qwen = try #require(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.first)
+        #expect(DistributedInstalledSpeculation(mode: .tensorParallel, runtimeModelID: qwen, tensorAssistant: true,
+                                                everyMemberAdvertisesHead: true).enabled)
+        #expect(!DistributedInstalledSpeculation(mode: .tensorParallel, runtimeModelID: qwen, tensorAssistant: false,
+                                                 everyMemberAdvertisesHead: true).enabled)
+        #expect(!DistributedInstalledSpeculation(mode: .pipeline, runtimeModelID: qwen, tensorAssistant: true,
+                                                 everyMemberAdvertisesHead: false).enabled)
+        // A GLM tensor-parallel session that reports its head reads as ready.
+        let bound = try binding(mode: .tensorParallel, enabled: true, reason: DistributedInstalledSpeculation.enabledReason)
+        #expect(try decode(status(bound, mtp: true, reason: "none"), expecting: bound).session.mtpEnabled)
+    }
+
     @Test func anUnknownOffReasonIsRefused() throws {
         let odd = try binding(mode: .tensorParallel, enabled: false, reason: "invented")
         #expect(throws: (any Error).self) { _ = try decode(status(odd, mtp: false, reason: "invented"), expecting: odd) }

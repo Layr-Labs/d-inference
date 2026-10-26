@@ -61,8 +61,8 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .mediaUnsupportedByModel,
-            .multimodalRejected, .advertisedContextExceeded:
+            .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .mediaReasoningExclusionUnsupported,
+            .mediaJSONOutputUnsupported, .mediaUnsupportedByModel, .multimodalRejected, .advertisedContextExceeded:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -160,7 +160,8 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .advertisedContextExceeded:
+                .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .mediaReasoningExclusionUnsupported,
+                .mediaJSONOutputUnsupported, .advertisedContextExceeded:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -240,9 +241,14 @@ extension ProviderLoop {
         if error is PreContentDeadlineFailure {
             return 503
         }
+        // Request shape the shared preparation refuses before any engine work
+        // (a negative output limit, a content part type no engine serves).
+        if error is OpenAIRequestValidationError {
+            return 400
+        }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {
-            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
+            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed, .responseFormatCutOffByMaxTokens:
                 return 422
             case .embeddingsNotConfigured:
                 return 501
@@ -260,7 +266,8 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported,
+                .mediaReasoningExclusionUnsupported, .mediaJSONOutputUnsupported:
                 return 400
             case .advertisedContextExceeded:
                 return 400

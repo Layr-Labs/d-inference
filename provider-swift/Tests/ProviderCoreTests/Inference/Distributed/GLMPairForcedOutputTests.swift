@@ -294,6 +294,12 @@ extension GLMPairForcedOutputTests {
         #expect(idle.contains(#"mtp_enabled{model="fixture/glm-pair"} 0"#))
         #expect(idle.contains(#"mtp_rounds_total{model="fixture/glm-pair"} 0"#))
         #expect(idle.contains(#"kv_active_requests{model="fixture/glm-pair"} 0"#))
+        // A placement that decodes with its head (GLM tensor parallel) says so before any request ran.
+        let placed = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 0,
+                                                                      placementDecodesWithHead: true))
+        let configured = MTPPrometheusRenderer.render([placed])
+        #expect(configured.contains(#"mtp_enabled{model="fixture/glm-pair"} 1"#))
+        #expect(configured.contains(#"mtp_active{model="fixture/glm-pair"} 0"#))
         _ = try await pair.complete(pair.request(), tokens: [10, 11, 14], telemetry: .init(handoffMilliseconds: nil,
             handoffBytes: nil, mtpDrafted: 6, mtpAccepted: 4, mtpRounds: 3))
         let sample = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 2))

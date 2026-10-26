@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3842,6 +3842,45 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
+
+## Cluster pair capability honesty
+
+A pair advertises what its placed mode serves, not what the artifact's
+configuration declares, and answers each request shape as one Mac does.
+
+1. Media registration follows the placed mode. Registration happens before
+   any rank is ready, so a member predicts the media contract its ranks bind at
+   LOAD (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash
+   `ClusterGLMMedia.contract` and Qwen3.8 27B `ClusterQwenMedia.contract` in
+   tensor parallel, nil for every other placement) and registers `is_vision`
+   and `native_media_tools` only with one (`ClusterMemberPreparation.registeredModel`).
+   The coordinator routes media by `is_vision`; a pipeline (GLM's included)
+   registers text only. The prediction is checked against READY: a slot whose
+   member registered media is not published unless both ranks report a media
+   contract (`ClusterMemberPreparation.requireRegisteredMedia` in
+   `ProviderLoop.publishClusterPairSlot`).
+2. Speculative decode status follows the placed mode. GLM tensor parallel
+   loads its NextN head and decodes with it at
+   `ClusterGLMTensorParallel.speculativeDepth` (2, shared with
+   `GLM5NextTensorParallelResidentRuntime.mtpDepth`) on every load, under a
+   mode that names no head. The saved setup's speculation
+   (`DistributedInstalledSpeculation.init(mode:runtimeModelID:tensorAssistant:everyMemberAdvertisesHead:)`)
+   and so the live status report it as on; the pair's `/metrics` sets
+   `mtp_enabled` from the session before any request
+   (`ProviderMTPStatusSnapshot.init(pair:placementDecodesWithHead:)`). Its
+   pipeline runs no head.
+3. Request shapes are refused alike. A content part type no engine serves is
+   refused before acquisition by the shared request preparation
+   (`OpenAIRequestValidationError.unsupportedContentPart`) and before
+   acceptance on the coordinator path, never served from the remaining text.
+   With images or video, GLM's hidden reasoning and JSON output are refused on
+   every slot before any media decode (`GLM5NextPromptPolicy.requireMediaOutputControls`),
+   although a pair serves both for text. A `response_format` answer stopped
+   by `max_tokens` before it was complete is
+   `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
+   internal failure. Wire and HTTP details:
+   [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
+   [direct mode](../provider/direct-mode.md#refused-request-shapes).
 
 ### Cross-stream fence ordering
 

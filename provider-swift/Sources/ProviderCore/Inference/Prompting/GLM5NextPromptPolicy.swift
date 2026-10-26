@@ -23,6 +23,18 @@ enum GLM5NextPromptPolicy {
     static let reasoningExclusionUnsupportedMessage =
         "GLM-5.3-Flash returns the reasoning it generates; reasoning.exclude true and include_reasoning false are unsupported. To turn thinking off, send reasoning.enabled false, enable_thinking false or reasoning_effort none."
 
+    /// The same refusal for a request with images or video. A cluster pair hides
+    /// the reasoning of a text request (`ToolChoicePromptPolicy.Prepared.glm5PairExcludesReasoning`),
+    /// one Mac never does; with media neither does, and both say so in these words.
+    static let mediaReasoningExclusionUnsupportedMessage =
+        "GLM-5.3-Flash returns the reasoning it generates for images and video; reasoning.exclude true and include_reasoning false are unsupported with media. To turn thinking off, send reasoning.enabled false, enable_thinking false or reasoning_effort none."
+
+    /// Fixed client text for `response_format` JSON output with images or video:
+    /// a cluster pair validates the JSON of a text request, one Mac refuses it;
+    /// with media both refuse it in these words.
+    static let mediaJSONOutputUnsupportedMessage =
+        "GLM-5.3-Flash does not support response_format JSON output (json_object or json_schema) with images or video. Send the request without response_format, or without the media."
+
     /// Render-context key marking thinking-off (present only as `false`). The
     /// pinned template ignores it and always opens `<think>`;
     /// `GLM5NextThinkingTokenizer` reads it and closes that block with
@@ -183,11 +195,16 @@ enum GLM5NextPromptPolicy {
 
         /// `admitsReasoningExclusion`: a cluster pair serves `reasoning.exclude`
         /// and `include_reasoning: false` by withholding the reasoning it
-        /// generates (`ToolChoicePromptPolicy.Prepared.glm5PairExcludesReasoning`).
-        func validate(admitsReasoningExclusion: Bool = false) throws {
+        /// generates (`ToolChoicePromptPolicy.Prepared.glm5PairExcludesReasoning`),
+        /// for text requests: `withMedia` (images or video) is refused on every
+        /// slot in the same words.
+        func validate(admitsReasoningExclusion: Bool = false, withMedia: Bool = false) throws {
             guard !invalid else {
                 throw GLM5NextPromptPolicy.invalid(
                     "controls require reasoning_effort none/off/minimal/low/medium/high/xhigh/max, a positive integer reasoning.max_tokens, and Boolean clear_thinking and reasoning switches")
+            }
+            guard !excludesReasoning || !withMedia else {
+                throw MultiModelBatchSchedulerEngineError.mediaReasoningExclusionUnsupported
             }
             guard !excludesReasoning || admitsReasoningExclusion else {
                 throw MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
@@ -196,6 +213,19 @@ enum GLM5NextPromptPolicy {
             guard !(disablesThinking && requestsThinking) else {
                 throw GLM5NextPromptPolicy.invalid(GLM5NextPromptPolicy.contradictoryThinking)
             }
+        }
+    }
+
+    /// The output controls a request with images or video may carry, checked
+    /// before any media decode on every GLM slot (one Mac, or a pair's leader
+    /// preparing its media): no hidden reasoning and no JSON output. The text
+    /// paths differ (a pair serves both, one Mac neither), so the media refusals
+    /// name media and read the same everywhere.
+    static func requireMediaOutputControls(request: OpenAIChatCompletionRequest,
+                                           controls: ChatTemplateControls) throws {
+        try controls.rawGLM5Controls.validate(admitsReasoningExclusion: true, withMedia: true)
+        guard request.responseFormat?.requiresJSONOutput != true else {
+            throw MultiModelBatchSchedulerEngineError.mediaJSONOutputUnsupported
         }
     }
 

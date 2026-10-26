@@ -44,6 +44,10 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? 
             // sampled model output. Another sample/provider can comply, so
             // these share the retryable non-provider-fault reason above.
             return .toolNoncompliance
+        case .responseFormatCutOffByMaxTokens:
+            // The request's own max_tokens ended the answer; the same budget
+            // ends it on another provider too.
+            return .clientError
         case .embeddingsNotConfigured, .responseNotFound:
             break
         }

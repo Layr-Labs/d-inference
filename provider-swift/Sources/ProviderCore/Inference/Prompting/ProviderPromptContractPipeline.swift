@@ -8,12 +8,14 @@ enum ProviderPromptContractPipeline {
         let tools: [[String: any Sendable]]?
         let additionalContext: [String: any Sendable]?
     }
+    /// `withMedia`: the request carries images or video, whose GLM output
+    /// controls read the same on one Mac and on a pair (`GLM5NextPromptPolicy.requireMediaOutputControls`).
     static func validateNativeControls(_ controls: ChatTemplateControls, modelType: String?,
-                                       glm5PairPostValidation: Bool = false) throws {
+                                       glm5PairPostValidation: Bool = false, withMedia: Bool = false) throws {
         try controls.rawMiMoControls.validate(modelType: modelType)
         try FlintRequestPolicy.validateControls(controls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
-            try controls.rawGLM5Controls.validate(admitsReasoningExclusion: glm5PairPostValidation)
+            try controls.rawGLM5Controls.validate(admitsReasoningExclusion: glm5PairPostValidation, withMedia: withMedia)
         }
     }
     static func tokenizeProviderBody(

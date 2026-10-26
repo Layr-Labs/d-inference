@@ -1,5 +1,6 @@
 import Foundation
 import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import ProviderCoreFoundation
 
@@ -44,8 +45,33 @@ public struct ClusterMemberPreparation: Sendable {
                 throw ClusterConfigurationError.invalid("Cluster member model integrity differs from the pinned product manifest")
             }
             model.weightHash = hash
+            model = registeredModel(model, capability: validation.plan.capability,
+                                    mode: validation.plan.configuration.selectedGenerationMode)
             try validation.requireUnchanged()
             return Self(model: model, validation: validation)
+        }
+    }
+
+    /// What a member registers for its pair's model: the artifact's scan, with image and video input only where
+    /// the placed mode's ranks serve them (`ClusterModelFeaturePolicy.mediaContract`). The scan reads the model's
+    /// configuration, which declares vision whatever the placement; the coordinator routes media by
+    /// `ModelInfo.isVision`, so a pair that cannot serve media (any pipeline, GLM-5.3-Flash included) is never
+    /// sent any.
+    static func registeredModel(_ scanned: ModelInfo, capability: ClusterRuntimeCapability,
+                                mode: ClusterGenerationMode) -> ModelInfo {
+        guard ClusterModelFeaturePolicy.mediaContract(capability: capability, mode: mode) == nil else { return scanned }
+        var model = scanned
+        model.isVision = nil
+        model.nativeMediaTools = nil
+        return model
+    }
+
+    /// A pair slot is published only while its readiness serves what its member registered: a registration that
+    /// claims image and video input needs both ranks' media contract (`DistributedResidentReadiness.media`).
+    static func requireRegisteredMedia(_ registered: ModelInfo?, ready: DistributedResidentReadiness) throws {
+        guard registered?.isVision != true || ready.media != nil else {
+            throw DistributedEngineError.invalidConfiguration(
+                "The pair registered image and video input, but its ranks serve no media contract")
         }
     }
 

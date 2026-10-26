@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -65,10 +65,12 @@ position, as the verify window computes it; the window's arithmetic differs in
 its last bits from one-token decode, so, as with the pipeline itself, output
 matches a single Mac's up to near ties. Your pair's own measured speed-up
 replaces the records' figure in the choice once the pair has served the same
-placement both with and without the rounds. Speeds the pair served count only
-for the Darkbloom build that served them: after an update, speeds an earlier
-build served no longer steer the plan (`darkbloom cluster plan` says how many
-records it left out).
+placement both with and without the rounds. GLM-5.3-Flash in tensor parallel
+always decodes with its own NextN (MTP) head, at depth 2; `darkbloom cluster
+status` and the pair's `/metrics` report MTP on from the start. Speeds the
+pair served count only for the Darkbloom build that served them: after an
+update, speeds an earlier build served no longer steer the plan (`darkbloom
+cluster plan` says how many records it left out).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
@@ -254,6 +256,17 @@ and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that
 full memory budget even when recent chat requests are short. Request history
 still guides the speed estimate and choice of split.
+
+### Images and video
+
+A pair takes image and video input only where its placed mode serves it:
+GLM-5.3-Flash and Qwen3.8 27B in tensor parallel. In every other mode (any
+pipeline, other models) it registers with the coordinator as text only, so no
+media request is routed to it, and a pair registered for media serves only
+while both Macs' parts report media. With images or video, GLM-5.3-Flash
+refuses hidden reasoning and `response_format` JSON in the same words as one
+Mac. Content parts of an unknown type are refused, never answered from the
+remaining text ([refused request shapes](direct-mode.md#refused-request-shapes)).
 
 ### GLM candidate setup
 

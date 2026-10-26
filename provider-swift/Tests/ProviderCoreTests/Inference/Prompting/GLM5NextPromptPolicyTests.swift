@@ -341,6 +341,62 @@ struct GLM5NextPromptPolicyTests {
         #expect(ReasoningPromptProbe.streamingPrefix(forPromptTail: rendered + "</think>") == "<think></think>")
     }
 
+    /// With images or video, hidden reasoning and JSON output are refused in
+    /// the same fixed words on one Mac and on a pair (whose text requests serve
+    /// both), before any media decode; text requests keep their own answers.
+    @Test func mediaRequestsRefuseHiddenReasoningAndJSONOutputAlikeOnEverySlot() throws {
+        for controls in Self.reasoningExclusionControls {
+            let body = try body(controls)
+            let evidence = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: body)
+            let local = try JSONDecoder().decode(LocalChatRequest.self, from: body)
+            for pair in [false, true] {
+                #expect(throws: MultiModelBatchSchedulerEngineError.mediaReasoningExclusionUnsupported) {
+                    try evidence.validate(admitsReasoningExclusion: pair, withMedia: true)
+                }
+                #expect(throws: MultiModelBatchSchedulerEngineError.mediaReasoningExclusionUnsupported) {
+                    try ProviderPromptContractPipeline.validateNativeControls(local.templateControls, modelType: "glm5_next",
+                        glm5PairPostValidation: pair, withMedia: true)
+                }
+            }
+            // Text: a pair withholds the reasoning, one Mac refuses it.
+            try evidence.validate(admitsReasoningExclusion: true, withMedia: false)
+            #expect(throws: MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported) {
+                try evidence.validate(admitsReasoningExclusion: false, withMedia: false)
+            }
+            // Other families ignore the GLM media rule.
+            try ProviderPromptContractPipeline.validateNativeControls(local.templateControls, modelType: "llama", withMedia: true)
+        }
+        let image = OpenAIChatMessage(role: .user, content: .parts([.text("Describe it."), .imageURL("data:image/png;base64,AAAA")]))
+        let hidden = try JSONDecoder().decode(LocalChatRequest.self, from: try body(["reasoning": ["exclude": true]]))
+        #expect(throws: MultiModelBatchSchedulerEngineError.mediaReasoningExclusionUnsupported) {
+            try GLM5NextPromptPolicy.requireMediaOutputControls(
+                request: OpenAIChatCompletionRequest(model: "m", messages: [image]), controls: hidden.templateControls)
+        }
+        for format in [OpenAIResponseFormat.jsonObject(), .jsonSchema(.init(name: "s", schema: .object([:])))] {
+            #expect(throws: MultiModelBatchSchedulerEngineError.mediaJSONOutputUnsupported) {
+                try GLM5NextPromptPolicy.requireMediaOutputControls(
+                    request: OpenAIChatCompletionRequest(model: "m", messages: [image], responseFormat: format), controls: .init())
+            }
+        }
+        try GLM5NextPromptPolicy.requireMediaOutputControls(
+            request: OpenAIChatCompletionRequest(model: "m", messages: [image], responseFormat: .text()), controls: .init())
+        try GLM5NextPromptPolicy.requireMediaOutputControls(
+            request: OpenAIChatCompletionRequest(model: "m", messages: [image]), controls: .init(enableThinking: false))
+        // Fixed client 400s that name the fix and never cross to the coordinator.
+        let refusals: [(MultiModelBatchSchedulerEngineError, String)] = [
+            (.mediaReasoningExclusionUnsupported, GLM5NextPromptPolicy.mediaReasoningExclusionUnsupportedMessage),
+            (.mediaJSONOutputUnsupported, GLM5NextPromptPolicy.mediaJSONOutputUnsupportedMessage)]
+        for (error, message) in refusals {
+            #expect(error.errorDescription == message)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .request)
+            #expect(failure.statusCode == 400 && failure.code == .invalidRequest && failure.errorReason == .clientError)
+            #expect(failure.message == InferenceFailureCode.invalidRequest.message)
+        }
+        #expect(GLM5NextPromptPolicy.mediaReasoningExclusionUnsupportedMessage.contains("reasoning.enabled false"))
+        #expect(GLM5NextPromptPolicy.mediaJSONOutputUnsupportedMessage.contains("without response_format"))
+    }
+
     @Test func reasoningRefusalIsAClient400WithAFixedMessageThatNeverCrossesToTheCoordinator() throws {
         let error = MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported
         #expect(error.errorDescription == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)

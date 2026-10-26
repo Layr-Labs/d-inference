@@ -32,6 +32,20 @@ enum ClusterModelFeaturePolicy {
         }
     }
 
+    /// The media contract a placement's ranks bind into every load and report as ready
+    /// (`ClusterWorkerReady.media`): GLM-5.3-Flash's and Qwen3.8 27B's tensor-parallel runtimes serve images and
+    /// video; every other placement (the pipeline modes, other models) serves text only. Nil: the pair serves no
+    /// media, so neither its registration nor its slot may claim any, whatever the artifact's configuration
+    /// declares.
+    static func mediaContract(capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> String? {
+        guard mode == .tensorParallel else { return nil }
+        if capability.runtimeModelID == ClusterGLMImageCandidate.runtimeModelID,
+           capability.profile.id == ClusterGLMImageCandidate.textProfileID {
+            return ClusterGLMMedia.contract
+        }
+        return requiresQwenMediaAndLogprobs(capability) ? ClusterQwenMedia.contract : nil
+    }
+
     /// Why the plan leaves the pipeline out, for its reason line (`ClusterPlacementPolicy.modesReason`); nil when
     /// this policy leaves no mode out.
     static func modesReason(_ capability: ClusterRuntimeCapability) -> String? {

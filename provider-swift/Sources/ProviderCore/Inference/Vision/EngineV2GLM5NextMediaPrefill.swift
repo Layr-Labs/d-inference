@@ -25,6 +25,9 @@ extension EngineV2VisionPrefill {
     /// bytes enter the prompt, and non-user media is rejected rather than lost.
     static func glm5NextUserInput(request: OpenAIChatCompletionRequest,
                                   controls: ChatTemplateControls) async throws -> UserInput {
+        // One Mac and a pair's leader both prepare media here: the controls no
+        // GLM slot serves with media are refused first, in the same words.
+        try GLM5NextPromptPolicy.requireMediaOutputControls(request: request, controls: controls)
         var textRequest = request
         for index in request.messages.indices {
             let message = request.messages[index]

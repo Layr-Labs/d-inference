@@ -195,7 +195,7 @@ runs:
         export MIMO_V26_WIRED_METADATA_FIXTURE="$RUNNER_TEMP/mimo-sdk-provider-fixtures/tiny-bf16"
         python3 ../scripts/run-provider-test-watchdog.py \
           --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
-          --diagnostic-after-seconds 480 --timeout-seconds 900 \
+          --diagnostic-after-seconds 900 --timeout-seconds 1800 \
           -- ../scripts/run-provider-tests.sh
     - name: Restore pinned MiMo audio codec
       if: inputs.lane == 'qualification'

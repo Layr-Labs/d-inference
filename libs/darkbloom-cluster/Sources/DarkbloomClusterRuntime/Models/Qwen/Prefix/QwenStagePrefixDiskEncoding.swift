@@ -55,8 +55,11 @@ public enum QwenStagePrefixDiskFamily: String, Sendable, Equatable, CaseIterable
 /// native, the older ones encoded; restore decodes into native arrays of the
 /// shapes a native record gives, so adoption is unchanged. Restored older
 /// rows are approximate: a request restored from an encoded record is not
-/// byte-equal to the same request computed from zero. `native` keeps every
-/// row exact (the byte-exact option).
+/// byte-equal to the same request computed from zero. The codec is not
+/// idempotent on its own output, so a record written from such a request
+/// keeps the restored rows' bytes rather than encoding them again
+/// (`QwenStagePrefixDiskVerbatimSource`). `native` keeps every row exact
+/// (the byte-exact option).
 ///
 /// Bound three ways: into the plan directory (`planScopeSuffix`; records of
 /// another encoding live in another directory and are never offered), into
@@ -193,15 +196,27 @@ struct QwenStagePrefixDiskEncodedRows: Equatable {
         return codec
     }
 
+    /// An earlier record's encoded bytes for row `row` of `head` of the same
+    /// entry, or nil (`QwenStagePrefixDiskVerbatimSource`).
+    typealias Verbatim = (_ head: Int, _ row: Int) -> Data?
+
     /// One unit's plaintext: every head's rows `[first, first + rows)` of
     /// `source`, the entry's native bytes (`[heads, committed, width]`, row
     /// major). Throws for a row the codec refuses (non-finite, or one whose
     /// reconstruction leaves the native dtype): such a record is not written.
     func encode(source: UnsafeRawBufferPointer, heads: Int, committed: Int, first: Int, rows: Int) throws -> Data {
+        try encode(source: source, heads: heads, committed: committed, first: first, rows: rows, verbatim: nil).plaintext
+    }
+
+    /// The same, a row equal bit for bit to the decode of `verbatim`'s bytes
+    /// for it stored as those bytes instead of encoded again (the codec is
+    /// not idempotent on its own output); `verbatimRows` counts them.
+    func encode(source: UnsafeRawBufferPointer, heads: Int, committed: Int, first: Int, rows: Int,
+                verbatim: Verbatim?) throws -> (plaintext: Data, verbatimRows: Int) {
         guard source.count == heads * committed * nativeRowBytes, first >= 0, rows > 0, first + rows <= committed else {
             throw ProbeError("Prefix record unit lies outside its source")
         }
-        return try encode(heads: heads, first: first, rows: rows) {
+        return try encode(heads: heads, first: first, rows: rows, verbatim: verbatim) {
             source.baseAddress!.advanced(by: ($0 * committed + first) * nativeRowBytes)
         }
     }
@@ -211,25 +226,39 @@ struct QwenStagePrefixDiskEncodedRows: Equatable {
     /// for an entry whose writer reads each unit's rows from a history
     /// instead of slicing a whole array. The bytes equal `encode(source:...)`'s.
     func encode(unit: UnsafeRawBufferPointer, heads: Int, first: Int, rows: Int) throws -> Data {
+        try encode(unit: unit, heads: heads, first: first, rows: rows, verbatim: nil).plaintext
+    }
+
+    func encode(unit: UnsafeRawBufferPointer, heads: Int, first: Int, rows: Int,
+                verbatim: Verbatim?) throws -> (plaintext: Data, verbatimRows: Int) {
         guard unit.count == heads * rows * nativeRowBytes, first >= 0, rows > 0 else {
             throw ProbeError("Prefix record unit lies outside its source")
         }
-        return try encode(heads: heads, first: first, rows: rows) { unit.baseAddress!.advanced(by: $0 * rows * nativeRowBytes) }
+        return try encode(heads: heads, first: first, rows: rows, verbatim: verbatim) {
+            unit.baseAddress!.advanced(by: $0 * rows * nativeRowBytes)
+        }
     }
 
     /// Each head's rows lie one after another from `start(head)`: those below
-    /// `nativeFrom` through the codec, the rest copied.
-    private func encode(heads: Int, first: Int, rows: Int, start: (Int) -> UnsafeRawPointer) throws -> Data {
+    /// `nativeFrom` through the codec (or `verbatim`'s bytes, when they
+    /// decode to the row exactly), the rest copied.
+    private func encode(heads: Int, first: Int, rows: Int, verbatim: Verbatim?,
+                        start: (Int) -> UnsafeRawPointer) throws -> (plaintext: Data, verbatimRows: Int) {
         let encoded = encodedCount(first: first, rows: rows), run = headBytes(first: first, rows: rows)
         let codec = encoded > 0 ? try codec() : nil
-        var plaintext = Data(count: heads * run)
+        var plaintext = Data(count: heads * run), copied = 0
         try plaintext.withUnsafeMutableBytes { target in
             for head in 0..<heads {
                 let native = start(head)
                 var cursor = head * run
                 for row in 0 ..< encoded {
-                    let bytes = try codec!.encode(UnsafeRawBufferPointer(start: native.advanced(by: row * nativeRowBytes),
-                        count: nativeRowBytes))
+                    let input = UnsafeRawBufferPointer(start: native.advanced(by: row * nativeRowBytes), count: nativeRowBytes)
+                    let bytes: Data
+                    if let earlier = verbatim?(head, first + row), decodes(earlier, to: input, codec: codec!) {
+                        bytes = earlier; copied += 1
+                    } else {
+                        bytes = try codec!.encode(input)
+                    }
                     guard bytes.count == encodedRowBytes else { throw ProbeError("Prefix record encoded row size differs") }
                     bytes.withUnsafeBytes { target.baseAddress!.advanced(by: cursor).copyMemory(from: $0.baseAddress!, byteCount: encodedRowBytes) }
                     cursor += encodedRowBytes
@@ -241,7 +270,15 @@ struct QwenStagePrefixDiskEncodedRows: Equatable {
                 }
             }
         }
-        return plaintext
+        return (plaintext, copied)
+    }
+
+    /// Whether `encoded` (an earlier record's row) decodes to `row` bit for
+    /// bit: then `row` came from it, and storing it again stores the same row.
+    private func decodes(_ encoded: Data, to row: UnsafeRawBufferPointer, codec: CBv2CheckpointRowCodec) -> Bool {
+        guard encoded.count == encodedRowBytes,
+              let decoded = try? encoded.withUnsafeBytes({ try codec.decode($0) }), decoded.count == row.count else { return false }
+        return decoded.withUnsafeBytes { memcmp($0.baseAddress!, row.baseAddress!, row.count) == 0 }
     }
 
     /// One unit's plaintext decoded into `target`, native rows of

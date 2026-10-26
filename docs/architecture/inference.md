@@ -3338,7 +3338,11 @@ flowchart LR
   `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION`; that variable in the owner's
   own environment is a diagnosis override. The rank parses it as main parses a
   checkpoint precision (`QwenStagePrefixDiskEncoding.fromEnvironment`; absent
-  is `balanced`) and refuses any other value by name.
+  is `balanced`) and refuses any other value by name. The leader does not sync
+  the precision: both Macs default to `balanced`, and a Mac set to another
+  precision makes the pair refuse to load (the ranks' load agreement differs)
+  rather than serve with records the other Mac would write differently; that
+  is the expected, fail-closed behavior.
 - **Profile.** `balanced` is 4-bit keys and values in affine groups of 64 with
   FP32 scale and offset, keys in a normalized signed Hadamard basis (block 128,
   or the key width's largest power-of-two divisor when smaller); `k8v4` and
@@ -3371,9 +3375,31 @@ flowchart LR
   not byte-equal to the same request computed from zero, and tokens can
   diverge. Each rank restores from its own tiers, memory first, and a state
   read from disk becomes resident as decoded, so one rank can restore exact
-  rows from memory while its peer decodes approximate rows from disk. A record
-  captured from a request that was itself restored encodes the decoded rows
-  again; no drift bound is claimed.
+  rows from memory while its peer decodes approximate rows from disk. Under
+  GLM tensor parallel each rank holds its own copy of the replicated DSA
+  latents, so the two copies can then differ; the index keys and pool gates
+  are exact on both, so both ranks choose the same top-k rows. That mix is
+  accepted for the encoded precisions, which are lossy by contract; `native`
+  records keep every restore byte-exact on every family.
+- **Re-encoding.** Decode then encode is not idempotent on the codec's own
+  output: a key row is rotated before it is quantized and rounded to its dtype
+  after it is decoded, so encoding a decoded row again stores other scales and
+  offsets and its decode moves (in every dtype, at every profile); FP32 value
+  rows move too, while FP16 and BF16 value rows came back bit for bit on every
+  row tested (`NativeCheckpointRowCodecTests`), which is not a proof. Each
+  restore-and-write cycle would move such rows again. So a record written from
+  a request that was itself restored keeps the restored rows' first encoding:
+  the writer takes the record holding the deepest kept prefix of the same
+  prompt on this rank, pins it until the new record is written, and stores
+  every row whose native bytes equal the decode of that record's bytes for it
+  as those bytes (`QwenStagePrefixDiskVerbatimSource`); other rows, computed
+  rather than restored, are encoded as usual. Restore, extend and write
+  therefore return the same restored rows bit for bit through every
+  generation. If that record cannot be read when the new one is written, the
+  new record is dropped rather than encoded again. Only a request whose
+  source record has left this rank before its own record is written (evicted
+  or expired, although memory hits keep it recent) has its decoded rows
+  encoded once more.
 - **Binding.** The encoding names the tier's directory (`planScopeSuffix`, so
   records of another encoding are never offered and stay as another plan's
   within the byte budget until they expire), is sealed in every record header
@@ -3405,9 +3431,13 @@ flowchart LR
 Failure modes: an unparsable precision refuses the load by name; Macs that
 resolved different precisions refuse to load (the agreement differs); a row
 the codec refuses (non-finite, or a reconstruction outside the dtype) drops the
-record (`persist-dropped reason=write_failed`); a changed, truncated,
+record (`persist-dropped reason=write_failed`); an earlier record the writer
+would keep restored rows from that cannot be opened drops the new record
+(`persist-dropped reason=verbatim_source_unreadable`; a unit of it that fails
+authentication mid-write gives `write_failed`); a changed, truncated,
 foreign-encoding or undecodable record restores nothing, is deleted, and both
-ranks prefill from zero.
+ranks prefill from zero. The tier's `persist` line logs `verbatim_rows`, and
+`QwenStagePrefixDiskTier.Statistics.verbatimRows` counts them.
 
 Measurement on real weights: `darkbloom-cluster-tp-check run --prefix-records
 native|balanced|k8v4|k8v8` (full, simulated or tp) puts the prompt's state at
@@ -3425,17 +3455,22 @@ selects the workers' encoding; the tier's `persist` lines log
 |---|---|
 | Encoding, family eligibility, row layout | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` (`QwenStagePrefixDiskEncoding`, `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncodedRows`) |
 | Record writer and reader | `QwenStagePrefixDiskRecord.swift` (`QwenStagePrefixDiskJob`, `QwenStagePrefixDiskRestoreWork.place`) and `QwenStagePrefixDiskTier.swift` in the same directory |
+| Restored rows kept verbatim | `QwenStagePrefixDiskVerbatim.swift` there (`QwenStagePrefixDiskVerbatimSource`); `QwenStagePrefixDiskEncodedRows.encode(source:heads:committed:first:rows:verbatim:)`; the source chosen and pinned in `QwenStagePrefixDiskTier.persist` |
 | Measurement | `QwenStagePrefixDiskMeasurement.swift` there; `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixRecordCheck.swift` |
 | GLM tensor parallel | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelPrefixDisk.swift` (`GLM5NextTensorParallelPrefixDisk.encoding`; its records' rows read through `QwenStagePrefixDiskRows`) |
 | Row codec | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeCheckpointRowCodec.swift` (`CBv2CheckpointRowCodec`) |
 | Owner resolution | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledKVQuantization.swift` (`recordsEnvironment`), `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedInstalledKVQuantization+Product.swift` (`recordsResolver`) |
 
-Tests: `PrefixDiskEncodingTests`,
+Tests: `PrefixDiskEncodingTests` (with
+`restoredRowsKeepTheirFirstEncodingThroughLaterRecords`: three generations of
+records at every precision and dtype),
 `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
 (both ranks adopt a balanced record; the band equals a cold prefill),
 `GLM5NextTensorParallelPrefixRecordEncodingTests` (a GLM tensor-parallel rank's
-record read row by row: only the DSA latents encoded, and it adopts) and, with
-`GLM53_PREFIX_SSD=1`,
+record read row by row: only the DSA latents encoded, it adopts, and a
+deeper record keeps the restored latents' bytes),
+`NativeCheckpointRowCodecTests.testReencodingDecodedRowsIsIdempotentOnlyForHalfPrecisionValues`
+in the SDK and, with `GLM53_PREFIX_SSD=1`,
 `GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
 (the serving-width stage's paged histories through a balanced record).
 

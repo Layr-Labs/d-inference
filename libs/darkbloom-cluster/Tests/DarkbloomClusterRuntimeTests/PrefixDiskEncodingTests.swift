@@ -137,27 +137,35 @@ struct PrefixDiskEncodingTests {
         let balanced = try #require(PagedKVQuantizationSelection.balanced.configuration)
         #expect(balanced.identity == "affine-v2-k4v4-g64-f32-h128-s1-r128")
         // Qwen: keys and values, any width the format encodes, the newest 128 rows native.
-        let key = try #require(balancedQwen.rows(slot: "keys", width: 256, dtype: .bfloat16, committed: 4096))
-        let value = try #require(balancedQwen.rows(slot: "values", width: 256, dtype: .bfloat16, committed: 4096))
+        let key = try #require(balancedQwen.rows(layer: 3, slot: "keys", width: 256, dtype: .bfloat16, committed: 4096))
+        let value = try #require(balancedQwen.rows(layer: 3, slot: "values", width: 256, dtype: .bfloat16, committed: 4096))
         #expect(!key.values && value.values && key.nativeFrom == 3968 && value.nativeFrom == 3968)
         #expect(key.nativeRowBytes == 512 && key.encodedRowBytes == 128 + 4 * 4 + 4 * 4)
-        #expect(balancedQwen.rows(slot: "keys", width: 256, dtype: .bfloat16, committed: 100)?.nativeFrom == 0)
+        #expect(balancedQwen.rows(layer: 3, slot: "keys", width: 256, dtype: .bfloat16, committed: 100)?.nativeFrom == 0)
         for (width, dtype) in [(8, DType.bfloat16), (96, .bfloat16), (576, .bfloat16), (640, .float32), (128, .int32)] {
-            #expect(balancedQwen.rows(slot: "keys", width: width, dtype: dtype, committed: 4096) == nil, "\(width) \(dtype)")
+            #expect(balancedQwen.rows(layer: 3, slot: "keys", width: width, dtype: dtype, committed: 4096) == nil, "\(width) \(dtype)")
         }
-        #expect(balancedQwen.rows(slot: "conv", width: 128, dtype: .bfloat16, committed: 4096) == nil)
+        #expect(balancedQwen.rows(layer: 3, slot: "conv", width: 128, dtype: .bfloat16, committed: 4096) == nil)
         // GLM: the DSA latents (keys slot) when the width is encodable; the index keys and gates never.
         let glm = QwenStagePrefixDiskEncoding(quantization: .balanced, family: .glm5NextDSA)
-        #expect(glm.rows(slot: "keys", width: 512, dtype: .float32, committed: 8192)?.nativeFrom == 8064)
-        #expect(glm.rows(slot: "keys", width: 512, dtype: .bfloat16, committed: 8192) != nil)
-        #expect(glm.rows(slot: "values", width: 256, dtype: .bfloat16, committed: 8192) == nil)
-        #expect(glm.rows(slot: "keys", width: 576, dtype: .bfloat16, committed: 8192) == nil)
+        #expect(glm.rows(layer: 3, slot: "keys", width: 512, dtype: .float32, committed: 8192)?.nativeFrom == 8064)
+        #expect(glm.rows(layer: 3, slot: "keys", width: 512, dtype: .bfloat16, committed: 8192) != nil)
+        #expect(glm.rows(layer: 3, slot: "values", width: 256, dtype: .bfloat16, committed: 8192) == nil)
+        #expect(glm.rows(layer: 3, slot: "keys", width: 576, dtype: .bfloat16, committed: 8192) == nil)
+        // A speculative head's history kept as an attention entry (GLM's NextN layer under tensor
+        // parallel) stays native; the other layers do not change, nor does anything the encoding binds.
+        let nextN = glm.keepingNative(layers: [47])
+        #expect(nextN.rows(layer: 47, slot: "keys", width: 512, dtype: .bfloat16, committed: 8192) == nil)
+        #expect(nextN.rows(layer: 3, slot: "keys", width: 512, dtype: .bfloat16, committed: 8192)
+            == glm.rows(layer: 3, slot: "keys", width: 512, dtype: .bfloat16, committed: 8192))
+        #expect(nextN != glm && nextN.header == glm.header && nextN.planScopeSuffix == glm.planScopeSuffix
+            && nextN.loadAgreementFields == glm.loadAgreementFields)
         // Native, by selection or by family, encodes nothing and binds nothing.
         for encoding in [QwenStagePrefixDiskEncoding.native, .init(quantization: .native, family: .qwenAttention),
                          .init(quantization: .balanced, family: .native)] {
             #expect(encoding.configuration == nil && encoding.loadAgreementFields.isEmpty && encoding.planScopeSuffix.isEmpty
                 && encoding.header == nil && encoding.description == "native")
-            #expect(encoding.rows(slot: "keys", width: 256, dtype: .bfloat16, committed: 4096) == nil)
+            #expect(encoding.rows(layer: 3, slot: "keys", width: 256, dtype: .bfloat16, committed: 4096) == nil)
         }
         #expect(balancedQwen.loadAgreementFields == ["cluster-prefix-ssd-records-v1", "balanced", balanced.identity, "qwen-attention"])
         let k8v8 = QwenStagePrefixDiskEncoding(quantization: .k8v8, family: .qwenAttention)
@@ -443,6 +451,72 @@ struct PrefixDiskEncodingTests {
         }
     }
 
+    /// A writer that reads each unit's rows from a history (GLM tensor
+    /// parallel's paged DSA histories) instead of slicing a whole array gets
+    /// the same plaintext through the same codec, across the band's edge.
+    @Test func aUnitReadRowByRowEncodesAsTheWholeArrayDoes() throws {
+        try onCPU {
+            let committed = 300, heads = 2, width = 128
+            for (kind, dtype) in [("keys", DType.bfloat16), ("values", .float16), ("keys", .float32)] {
+                let rowBytes = width * dtype.size
+                let whole = bytes(rows(heads: heads, tokens: committed, width: width, seed: 9, dtype: dtype))
+                let encoded = try #require(balancedQwen.rows(layer: 3, slot: kind, width: width, dtype: dtype, committed: committed))
+                for first in stride(from: 0, to: committed, by: 64) {
+                    let count = min(64, committed - first)
+                    var unit = Data(count: heads * count * rowBytes)
+                    unit.withUnsafeMutableBytes { target in
+                        whole.withUnsafeBytes { source in
+                            for head in 0..<heads {
+                                target.baseAddress!.advanced(by: head * count * rowBytes).copyMemory(
+                                    from: source.baseAddress!.advanced(by: (head * committed + first) * rowBytes), byteCount: count * rowBytes)
+                            }
+                        }
+                    }
+                    let fromUnit = try unit.withUnsafeBytes { try encoded.encode(unit: $0, heads: heads, first: first, rows: count) }
+                    let fromWhole = try whole.withUnsafeBytes {
+                        try encoded.encode(source: $0, heads: heads, committed: committed, first: first, rows: count)
+                    }
+                    #expect(fromUnit == fromWhole && fromUnit.count == heads * encoded.headBytes(first: first, rows: count),
+                        "\(kind) \(dtype) rows from \(first)")
+                }
+                #expect(throws: ProbeError.self) {
+                    _ = try whole.withUnsafeBytes { try encoded.encode(unit: $0, heads: heads, first: 0, rows: 64) }
+                }
+            }
+        }
+    }
+
+    /// A layer the tier keeps native (a speculative head's history) is
+    /// written and restored bit for bit beside encoded layers; a tier on the
+    /// same directory that would encode it refuses the record and deletes it.
+    @Test func aLayerKeptNativeStaysExactBesideEncodedOnes() throws {
+        try onCPU {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let committed = 300, band = committed - 128, tokens = Array(4000 ... 4000 + committed)
+            let captured = states(committed: committed, frontiers: []), original = captured[0].attention
+            let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan",
+                rank: 0, encoding: balancedQwen.keepingNative(layers: [7])))
+            tier.persist(scope: "s", tokens: tokens, states: captured, blockTokens: 64)
+            #expect(tier.drain(timeoutSeconds: 60) && tier.recordCount == 1)
+            let opened = try QwenStagePrefixDiskIO.open(url: try recordURL(tier), keys: tier.keys)
+            #expect(opened.header.attention.map(\.layer) == [3, 3, 7, 7]
+                && opened.header.attention.map(\.nativeFrom) == [band, band, nil, nil])
+            let restored = try #require(try tier.restore(scope: "s", tokens: tokens, frontier: committed, check: {}))
+            #expect(bytes(restored.attention[7]!.keys) == bytes(original[7]!.keys)
+                && bytes(restored.attention[7]!.values) == bytes(original[7]!.values))
+            #expect(bytes(restored.attention[3]!.keys) != bytes(original[3]!.keys))
+            tier.close()
+            let other = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan",
+                rank: 0, encoding: balancedQwen))
+            #expect(other.planDirectory == tier.planDirectory && other.recordCount == 1)
+            #expect(try other.restore(scope: "s", tokens: tokens, frontier: committed, check: {}) == nil)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: other.directory.path).filter { $0.hasSuffix(".dbpx") }.isEmpty
+                && other.stats.failedRestores == 1)
+            other.close()
+        }
+    }
+
     /// A changed byte, a truncated file, or authenticated rows the decoder
     /// refuses: the record is absent and deleted, never adopted.
     @Test func corruptOrTruncatedEncodedRecordsAreRefused() throws {
@@ -593,7 +667,7 @@ struct PrefixDiskEncodingTests {
                                 committed: Int, block: Int) -> Int {
                 stride(from: 0, to: committed, by: block).reduce(0) { total, first in
                     let count = min(block, committed - first)
-                    let run = encoding.rows(slot: slot, width: width, dtype: dtype, committed: committed)?
+                    let run = encoding.rows(layer: 3, slot: slot, width: width, dtype: dtype, committed: committed)?
                         .headBytes(first: first, rows: count) ?? count * width * dtype.size
                     return total + heads * run + tag
                 }

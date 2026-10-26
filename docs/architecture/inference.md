@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3243,9 +3243,14 @@ flowchart LR
   pass through `CBv2CheckpointRowCodec`, so a record's encoded row is the row
   main's complete checkpoints store. Recurrent, convolution and
   speculative-history state stays native.
-- **Eligibility.** `QwenStagePrefixDiskFamily` alone decides which attention
-  slots may be encoded; the codec's geometry check (width a multiple of 64,
-  at most 512; FP16, BF16 or FP32) decides the rest:
+- **Eligibility.** `QwenStagePrefixDiskFamily` decides which attention slots
+  may be encoded; the tier's `QwenStagePrefixDiskEncoding.nativeLayers` keep a
+  speculative head's history native where a record stores it as an attention
+  entry (a NextN history); the codec's geometry check (width a multiple of 64,
+  at most 512; FP16, BF16 or FP32) decides the rest. Every attention entry is
+  laid out in one place (`QwenStagePrefixDiskJob.prepare`), and a unit read
+  row by row from a history encodes to the bytes of the same rows sliced from
+  an array (`QwenStagePrefixDiskEncodedRows.encode(unit:heads:first:rows:)`):
 
   | Family | Encoded | Native |
   |---|---|---|
@@ -3275,7 +3280,9 @@ flowchart LR
   profile identity and the family. An encoding that encodes nothing adds
   nothing to any of the three. Qwen tensor parallel binds it while the prefix
   cache is on, the Qwen pipeline while it keeps prefixes, the GLM pipeline
-  stage while its cache is on.
+  stage while its cache is on. Native layers bind nothing of their own: the
+  model and the build fix them and both name the directory, and a record whose
+  entries were encoded under another set is refused at restore.
 - **Size.** From the record layout: a Qwen 3.8 27B tensor-parallel rank (two
   key/value heads of 256 per full-attention layer, BF16) stores 160 bytes per
   encoded row against 512, so its attention rows are 3.17 times smaller at

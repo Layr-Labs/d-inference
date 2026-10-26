@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1770,7 +1770,9 @@ encodings refusing the load's first exchange (local sockets), a round trip
 whose older rows equal the SDK reference's and lie within the 4-bit affine
 bound while the newest 128 rows stay exact, shallower frontiers, GLM's DSA and
 KDA layer caches through a balanced record (only the older latents
-approximate), encodings never restored under one another, a root holding both
+approximate), a unit read row by row from a history encoding as the whole
+array does, a layer kept native (a speculative head's history) beside encoded
+ones, encodings never restored under one another, a root holding both
 encodings, refused corrupt, truncated and undecodable records, and the bytes at
 the beta models' shapes. Like every MLX
 test in the target it needs the source-matched `mlx.metallib` beside the test

@@ -4,9 +4,10 @@ import MLX
 
 /// Which attention rows of a family's prompt-prefix records may be stored
 /// encoded. The one place that decides it (`QwenStagePrefixDiskEncoding.rows`
-/// asks only this and the codec's own geometry check). A record keeps
-/// recurrent, convolution and speculative-history state native whatever the
-/// family; only the `attention` slots (`keys`, `values`) can be encoded.
+/// asks only this, the layers its tier keeps native and the codec's own
+/// geometry check). A record keeps recurrent, convolution and
+/// speculative-history state native whatever the family; only the
+/// `attention` slots (`keys`, `values`) can be encoded.
 public enum QwenStagePrefixDiskFamily: String, Sendable, Equatable, CaseIterable {
     /// Qwen 3.5-family full-attention keys and values, both slots (the 9B,
     /// 27B and 35B A3B rows and the Bonsai packs that share their attention,
@@ -16,7 +17,9 @@ public enum QwenStagePrefixDiskFamily: String, Sendable, Equatable, CaseIterable
     /// absorbed attention as its keys) when the codec encodes their width. The
     /// index keys and pool gates (the `values` slot) select each query's top-k
     /// history rows; an approximate index key can select another row, so they
-    /// stay native.
+    /// stay native. A NextN history a record keeps as an attention entry is
+    /// speculative state: its tier names that layer native
+    /// (`QwenStagePrefixDiskEncoding.nativeLayers`).
     case glm5NextDSA = "glm5-next-dsa"
     /// Every row native: the families whose records are not qualified encoded
     /// (MiMo, which the single-Mac product also keeps native, Gemma 4 and
@@ -71,12 +74,26 @@ public struct QwenStagePrefixDiskEncoding: Equatable, Sendable, CustomStringConv
     /// What the owner asked for; `configuration` says what applies.
     public let quantization: PagedKVQuantizationSelection
     public let family: QwenStagePrefixDiskFamily
+    /// Layers whose attention entries stay native whatever the family: a
+    /// speculative head's history that a record keeps as an attention entry
+    /// (GLM-5.3-Flash's NextN layer under tensor parallel), because
+    /// speculative state is never encoded. The model and the build fix it,
+    /// and both name the tier's directory, so it binds nothing itself; a
+    /// record whose entries were encoded under another set is refused at
+    /// restore (`QwenStagePrefixDiskRestoreWork`).
+    public let nativeLayers: Set<Int>
 
     public static let native = Self(quantization: .native, family: .native)
 
-    public init(quantization: PagedKVQuantizationSelection, family: QwenStagePrefixDiskFamily) {
+    public init(quantization: PagedKVQuantizationSelection, family: QwenStagePrefixDiskFamily, nativeLayers: Set<Int> = []) {
         self.quantization = quantization
         self.family = family
+        self.nativeLayers = nativeLayers
+    }
+
+    /// This encoding with `layers` kept native too.
+    public func keepingNative(layers: some Sequence<Int>) -> Self {
+        .init(quantization: quantization, family: family, nativeLayers: nativeLayers.union(layers))
     }
 
     /// This rank's encoding for `family`, from its launch environment, as main
@@ -98,12 +115,13 @@ public struct QwenStagePrefixDiskEncoding: Equatable, Sendable, CustomStringConv
         family == .native ? nil : quantization.configuration
     }
 
-    /// The layout of one attention entry (`slot` of a `[1, heads, committed,
-    /// width]` array of `dtype`), or nil when it stays native: a slot the
-    /// family encodes, an FP16, BF16 or FP32 row, and a width the format
-    /// encodes (a multiple of the group size, at most 512).
-    func rows(slot kind: String, width: Int, dtype: DType, committed: Int) -> QwenStagePrefixDiskEncodedRows? {
-        guard let configuration, family.encodes(slot: kind), committed > 0 else { return nil }
+    /// The layout of one attention entry (`slot` of `layer`, a `[1, heads,
+    /// committed, width]` array of `dtype`, or the same rows read from a
+    /// history), or nil when it stays native. Encoded: a slot the family
+    /// encodes of a layer not kept native, an FP16, BF16 or FP32 row, and a
+    /// width the format encodes (a multiple of the group size, at most 512).
+    func rows(layer: Int, slot kind: String, width: Int, dtype: DType, committed: Int) -> QwenStagePrefixDiskEncodedRows? {
+        guard let configuration, family.encodes(slot: kind), !nativeLayers.contains(layer), committed > 0 else { return nil }
         return try? QwenStagePrefixDiskEncodedRows(configuration: configuration, dtype: dtype, width: width,
             values: kind == "values", nativeFrom: max(0, committed - configuration.recentTokenCount))
     }
@@ -183,23 +201,43 @@ struct QwenStagePrefixDiskEncodedRows: Equatable {
         guard source.count == heads * committed * nativeRowBytes, first >= 0, rows > 0, first + rows <= committed else {
             throw ProbeError("Prefix record unit lies outside its source")
         }
+        return try encode(heads: heads, first: first, rows: rows) {
+            source.baseAddress!.advanced(by: ($0 * committed + first) * nativeRowBytes)
+        }
+    }
+
+    /// The same plaintext from `unit`, the unit's own native rows
+    /// (`[heads, rows, width]`, rows `[first, first + rows)` of each head):
+    /// for an entry whose writer reads each unit's rows from a history
+    /// instead of slicing a whole array. The bytes equal `encode(source:...)`'s.
+    func encode(unit: UnsafeRawBufferPointer, heads: Int, first: Int, rows: Int) throws -> Data {
+        guard unit.count == heads * rows * nativeRowBytes, first >= 0, rows > 0 else {
+            throw ProbeError("Prefix record unit lies outside its source")
+        }
+        return try encode(heads: heads, first: first, rows: rows) { unit.baseAddress!.advanced(by: $0 * rows * nativeRowBytes) }
+    }
+
+    /// Each head's rows lie one after another from `start(head)`: those below
+    /// `nativeFrom` through the codec, the rest copied.
+    private func encode(heads: Int, first: Int, rows: Int, start: (Int) -> UnsafeRawPointer) throws -> Data {
         let encoded = encodedCount(first: first, rows: rows), run = headBytes(first: first, rows: rows)
         let codec = encoded > 0 ? try codec() : nil
         var plaintext = Data(count: heads * run)
         try plaintext.withUnsafeMutableBytes { target in
             for head in 0..<heads {
+                let native = start(head)
                 var cursor = head * run
-                for row in first ..< first + encoded {
-                    let from = (head * committed + row) * nativeRowBytes
-                    let bytes = try codec!.encode(UnsafeRawBufferPointer(rebasing: source[from ..< from + nativeRowBytes]))
+                for row in 0 ..< encoded {
+                    let bytes = try codec!.encode(UnsafeRawBufferPointer(start: native.advanced(by: row * nativeRowBytes),
+                        count: nativeRowBytes))
                     guard bytes.count == encodedRowBytes else { throw ProbeError("Prefix record encoded row size differs") }
                     bytes.withUnsafeBytes { target.baseAddress!.advanced(by: cursor).copyMemory(from: $0.baseAddress!, byteCount: encodedRowBytes) }
                     cursor += encodedRowBytes
                 }
                 let exact = (rows - encoded) * nativeRowBytes
                 if exact > 0 {
-                    target.baseAddress!.advanced(by: cursor).copyMemory(
-                        from: source.baseAddress!.advanced(by: (head * committed + first + encoded) * nativeRowBytes), byteCount: exact)
+                    target.baseAddress!.advanced(by: cursor).copyMemory(from: native.advanced(by: encoded * nativeRowBytes),
+                        byteCount: exact)
                 }
             }
         }

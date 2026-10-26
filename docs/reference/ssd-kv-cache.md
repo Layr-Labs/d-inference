@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -480,7 +480,7 @@ per family and bindings are in the
 | Attention units | Rows `[k * blockTokens, ...)` of every head of one entry; a frontier `f` on the block grid reads only its own units | `QwenStagePrefixDiskHeader.Attention` |
 | Encoded entry | Header `nativeFrom` = committed tokens less the profile's `recentTokenCount` (128): per head, rows below it encoded (`encodedRowBytes`: codes, FP32 scales, FP32 offsets), the rest native; absent means every row native | `QwenStagePrefixDiskEncodedRows` |
 | Record encoding | Header `encoding` (`quantization`, `identity`, `family`), absent for native records; must equal the tier's, and every entry's `nativeFrom` must be what that encoding writes, or the record is refused and deleted | `QwenStagePrefixDiskRestoreWork`, `QwenStagePrefixDiskTier` (`loadIndex`) |
-| Always native | Recurrent and convolution state, speculative (MTP) history, GLM index keys and pool gates | `QwenStagePrefixDiskFamily` |
+| Always native | Recurrent and convolution state, speculative (MTP) history (a NextN history a record keeps as an attention entry included), GLM index keys and pool gates | `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncoding.nativeLayers` |
 | Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
 | Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |
 

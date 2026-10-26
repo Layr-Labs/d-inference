@@ -242,27 +242,36 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
         }
         var attention: [QwenStagePrefixDiskHeader.Attention] = [], attentionSources: [Source] = []
         var encodedRows: [QwenStagePrefixDiskEncodedRows?] = []
+        // One attention entry's header and units, its rows encoded as
+        // `encoding` says for its layer, slot, width and dtype; every
+        // attention entry, whatever holds its rows, is laid out here.
+        func appendEntry(layer: Int, kind: String, dtype: DType, heads: Int, width: Int) throws {
+            guard let name = QwenStagePrefixDiskFormat.name(dtype), heads > 0, width > 0 else {
+                throw ProbeError("Prefix record attention shape or dtype is not storable")
+            }
+            let rows = encoding.rows(layer: layer, slot: kind, width: width, dtype: dtype, committed: committed)
+            let rowBytes = width * dtype.size, blocks = (committed + blockTokens - 1) / blockTokens
+            let units = (0..<blocks).map { block in
+                let first = block * blockTokens, count = min(blockTokens, committed - first)
+                return unit(heads * (rows?.headBytes(first: first, rows: count) ?? count * rowBytes))
+            }
+            var entry = QwenStagePrefixDiskHeader.Attention(layer: layer, kind: kind, dtype: name, heads: heads,
+                headDim: width, units: units)
+            entry.nativeFrom = rows?.nativeFrom
+            attention.append(entry)
+            encodedRows.append(rows)
+        }
         for layer in deepest.attention.keys.sorted() {
             let pair = deepest.attention[layer]!
             for (kind, array) in [("keys", pair.keys), ("values", pair.values)] {
-                guard array.ndim == 4, array.dim(0) == 1, array.dim(2) == committed,
-                      let dtype = QwenStagePrefixDiskFormat.name(array.dtype) else {
+                guard array.ndim == 4, array.dim(0) == 1, array.dim(2) == committed else {
                     throw ProbeError("Prefix record attention shape or dtype is not storable")
                 }
-                let heads = array.dim(1), headDim = array.dim(3), rowBytes = headDim * array.dtype.size
-                let rows = encoding.rows(slot: kind, width: headDim, dtype: array.dtype, committed: committed)
-                let blocks = (committed + blockTokens - 1) / blockTokens
-                let units = (0..<blocks).map { block in
-                    let first = block * blockTokens, count = min(blockTokens, committed - first)
-                    return unit(heads * (rows?.headBytes(first: first, rows: count) ?? count * rowBytes))
-                }
-                var entry = QwenStagePrefixDiskHeader.Attention(layer: layer, kind: kind, dtype: dtype, heads: heads,
-                    headDim: headDim, units: units)
-                entry.nativeFrom = rows?.nativeFrom
-                attention.append(entry)
-                encodedRows.append(rows)
+                try appendEntry(layer: layer, kind: kind, dtype: array.dtype, heads: array.dim(1), width: array.dim(3))
                 let data = array.asData(access: .noCopyIfContiguous)
-                guard data.data.count == heads * committed * rowBytes else { throw ProbeError("Prefix record attention bytes differ") }
+                guard data.data.count == array.dim(1) * committed * array.dim(3) * array.dtype.size else {
+                    throw ProbeError("Prefix record attention bytes differ")
+                }
                 attentionSources.append(.init(array: array, data: data.data))
             }
         }
@@ -769,7 +778,8 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                   item.heads > 0, item.headDim > 0 else {
                 throw ProbeError("Prefix record attention entry is malformed")
             }
-            let rows = encoding.rows(slot: item.kind, width: item.headDim, dtype: dtype, committed: header.committedTokens)
+            let rows = encoding.rows(layer: item.layer, slot: item.kind, width: item.headDim, dtype: dtype,
+                committed: header.committedTokens)
             guard rows?.nativeFrom == item.nativeFrom else {
                 throw ProbeError("Prefix record attention encoding differs from its tier's")
             }

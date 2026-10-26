@@ -1,6 +1,6 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's

@@ -200,6 +200,31 @@ struct GLM5NextTensorParallelDepthInvarianceTests {
         }
     }
 
+    /// The switch changes decode-sized steps only: a prompt whose one step
+    /// straddles the dense-to-sparse switch (3,000 rows) prefills to the same
+    /// hidden rows and caches with it on and off, so prompt-prefix entries
+    /// and SSD records do not depend on it.
+    @Test(.enabled(if: enabled))
+    func prefillIsTheSameWithAndWithoutTheSwitch() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let (stage, _) = try Self.model(sharded: false)
+            let vocabulary = stage.plan.configuration.vocabularySize
+            let prompt = (0..<3_000).map { ($0 * 7919 + 13) % vocabulary }
+            func prefill(widthInvariant: Bool) throws -> [Data] {
+                stage.widthInvariantWindows = widthInvariant
+                let cache = stage.newCache()
+                let candidate = try stage.prepareForward(tokens: MLXArray(prompt.map(Int32.init), [1, prompt.count]),
+                    cache: cache, readout: .lastToken)
+                try candidate.commit(afterEvaluating: Rows.fence)
+                guard case .final(let output) = candidate.output else { throw ProbeError("no readout") }
+                let states = cache.layers.flatMap(\.state)
+                try Rows.fence([output.hidden, output.logits] + states)
+                return [Rows.bytes(output.hidden), Rows.bytes(output.logits)] + states.map(Rows.bytes)
+            }
+            #expect(try prefill(widthInvariant: true) == prefill(widthInvariant: false))
+        }
+    }
+
     /// Default off: without padding a request's last round (window 0)
     /// verifies one row, as before; padded it verifies two and keeps one.
     /// Both keep the same tokens before it and leave the same cache length.

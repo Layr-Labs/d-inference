@@ -189,4 +189,59 @@ struct GLM5NextTensorParallelPrefixRecordEncodingTests {
             #expect(Self.bytes(exact.histories[3]![0]) == record.keys[3]!)
         }
     }
+
+    /// A rank restored from a balanced record keeps a deeper boundary of a
+    /// longer prompt: its row readers' latents that decode from the earlier
+    /// record's are stored as that record stored them
+    /// (`QwenStagePrefixDiskVerbatimSource`), so they come back bit for bit;
+    /// written without the earlier record, they are encoded again and move.
+    @Test func restoredLatentsKeepTheirFirstEncoding() throws {
+        try Device.withDefaultDevice(.cpu) {
+            func directory() throws -> URL {
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("glm-tp-verbatim-\(UUID().uuidString)",
+                    isDirectory: true)
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                return url
+            }
+            let root = try directory(), elsewhere = try directory()
+            defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: elsewhere) }
+            let first = 192, second = 320, prompt = (0 ..< second + 3).map { 4 + ($0 * 11) % 29 }
+            let record = Self.synthetic(frontier: first)
+            let disk = try Self.open(root, records: Self.balanced)
+            defer { disk.tier.close() }
+            let scope = disk.scope(chunk: Self.chunk)
+            disk.tier.persist(scope: scope, tokens: Array(prompt[0...first]), states: [record.state], blockTokens: Self.chunk,
+                attentionRows: record.rows)
+            #expect(disk.tier.drain(timeoutSeconds: 60) && disk.tier.stats.persisted == 1)
+            let restored = try #require(disk.read(boundary: first, prompt: Array(prompt[0...first]), scope: scope, stop: { false }))
+            // The rank's histories at the deeper boundary: the restored rows, then its own.
+            var rows: [Int: Record.Rows] = [:], latents: [Int: Data] = [:]
+            for layer in Self.layout.dsaLayers + [8] {
+                let history = try #require(layer == 8 ? restored.nextN : restored.histories[layer])
+                latents[layer] = Self.bytes(history[0])
+                let k = latents[layer]! + Self.plane(rows: second - first, width: 512, seed: layer * 7 + 1)
+                let v = record.values[layer]! + Self.plane(rows: second - first, width: 256, seed: layer * 13 + 2)
+                rows[layer] = (Self.source(k, width: 512, rows: second), Self.source(v, width: 256, rows: second))
+            }
+            let state = QwenStagePrefixState(committedTokens: second, attention: [:], recurrent: record.state.recurrent)
+            disk.tier.persist(scope: scope, tokens: Array(prompt[0...second]), states: [state], blockTokens: Self.chunk,
+                attentionRows: rows)
+            // The DSA latents below the earlier record's band: two layers of one head.
+            #expect(disk.tier.drain(timeoutSeconds: 60) && disk.tier.stats.persisted == 2
+                && disk.tier.stats.verbatimRows == 2 * (first - 128))
+            let again = try #require(disk.read(boundary: second, prompt: Array(prompt[0...second]), scope: scope, stop: { false }))
+            let kept = (first - 128) * 1024
+            for layer in Self.layout.dsaLayers {
+                #expect(Self.bytes(again.histories[layer]![0]).prefix(kept) == latents[layer]!.prefix(kept), "layer \(layer)")
+            }
+            let fresh = try Self.open(elsewhere, records: Self.balanced)
+            defer { fresh.tier.close() }
+            fresh.tier.persist(scope: fresh.scope(chunk: Self.chunk), tokens: Array(prompt[0...second]), states: [state],
+                blockTokens: Self.chunk, attentionRows: rows)
+            #expect(fresh.tier.drain(timeoutSeconds: 60) && fresh.tier.stats.verbatimRows == 0)
+            let moved = try #require(fresh.read(boundary: second, prompt: Array(prompt[0...second]),
+                scope: fresh.scope(chunk: Self.chunk), stop: { false }))
+            #expect(Self.layout.dsaLayers.contains { Self.bytes(moved.histories[$0]![0]).prefix(kept) != latents[$0]!.prefix(kept) })
+        }
+    }
 }

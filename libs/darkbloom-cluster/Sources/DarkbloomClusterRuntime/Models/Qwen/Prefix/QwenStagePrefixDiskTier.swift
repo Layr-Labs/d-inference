@@ -81,6 +81,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         public var restoredBytes = 0
         public var persisted = 0
         public var persistedBytes = 0
+        /// Encoded rows written as an earlier record stored them
+        /// (`QwenStagePrefixDiskVerbatimSource`), over every persisted record.
+        public var verbatimRows = 0
         public var droppedPersists = 0
         public var evictions = 0
         public var expirations = 0
@@ -108,7 +111,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private let lock = NSLock()
     private var records: [String: Record] = [:]
     private var byKey: [String: String] = [:]
-    private var pinned: Set<String> = []
+    /// Records a restore is reading or a write is copying rows from, with
+    /// how many hold each: not evicted nor expired while held.
+    private var pinned: [String: Int] = [:]
     private var clock: UInt64 = 0
     private let queue = DispatchQueue(label: "darkbloom.cluster.prefix-ssd.writer")
     /// A shared lock on `<plan directory>/in-use`, held for this process's
@@ -265,14 +270,14 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             guard let name = byKey[key], let record = records[name], record.written, record.frontiers[frontier] == key else {
                 return nil
             }
-            pinned.insert(name)
+            pin(name)
             return name
         }
         guard let name = found else {
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-failed frontier=\(frontier) error=no_record")
             return nil
         }
-        defer { _ = lock.withLock { pinned.remove(name) } }
+        defer { lock.withLock { unpin(name) } }
         let url = directory.appendingPathComponent(name)
         var checkFailed = false
         func guarded() throws { do { try check() } catch { checkFailed = true; throw error } }
@@ -329,6 +334,26 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         touch(name: name)
     }
 
+    /// Callers hold `lock`.
+    private func pin(_ name: String) { pinned[name, default: 0] += 1 }
+    private func unpin(_ name: String) {
+        guard let count = pinned[name] else { return }
+        pinned[name] = count > 1 ? count - 1 : nil
+    }
+
+    /// A written record holding the deepest kept frontier of `tokens`' prefix
+    /// (at most `committed`), whose encoded rows a new record of this prompt
+    /// keeps where they decode to its own (`QwenStagePrefixDiskVerbatimSource`).
+    private func verbatimSource(scope: String, tokens: [Int], committed: Int) -> VerbatimSource? {
+        guard encoding.configuration != nil,
+              let frontier = frontiers(scope: scope, tokens: tokens, maximumFrontier: committed).first,
+              let key = QwenStagePrefixKeys.keys(scope: scope, tokens: tokens, frontiers: [frontier])[frontier],
+              let name = lock.withLock({ byKey[key] }) else { return nil }
+        return VerbatimSource(name: name, frontier: frontier, key: key)
+    }
+
+    private struct VerbatimSource { let name: String; let frontier: Int; let key: String }
+
     private func touch(name: String) {
         let time = now()
         let exists: Bool = lock.withLock {
@@ -354,7 +379,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// record of the same prompt is only touched. `attentionRows`: deepest
     /// attention entries the writer reads unit by unit
     /// (`QwenStagePrefixDiskJob.prepare`); what they keep alive counts in the
-    /// queue's byte bound.
+    /// queue's byte bound. Rows that decode exactly from the record holding
+    /// this prompt's deepest kept prefix keep that record's bytes
+    /// (`QwenStagePrefixDiskVerbatimSource`); it is pinned until this record
+    /// is written, and if it cannot be read then, this record is dropped.
     func persist(scope: String, tokens: [Int], states: [QwenStagePrefixState], blockTokens: Int,
                  attentionRows: [Int: (keys: QwenStagePrefixDiskRows, values: QwenStagePrefixDiskRows)] = [:]) {
         guard let deepest = states.max(by: { $0.committedTokens < $1.committedTokens }),
@@ -403,25 +431,36 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=unstorable")
             return
         }
-        let accepted: Bool = lock.withLock {
-            guard records[name] == nil, !cancelled else { return false }
+        // Rows restored from an earlier record of this prompt's prefix keep its
+        // bytes; it stays (pinned) until this record is written.
+        let candidate = verbatimSource(scope: scope, tokens: tokens, committed: committed)
+        let accepted: (Bool, VerbatimSource?) = lock.withLock {
+            guard records[name] == nil, !cancelled else { return (false, nil) }
             clock += 1
             records[name] = Record(name: name, scope: scope, recordKey: recordKey, committedTokens: committed,
                 frontiers: Dictionary(uniqueKeysWithValues: job.header.frontiers.map { ($0.tokens, $0.key) }),
                 bytes: 0, lastUse: clock, lastUseTime: now(), written: false)
             queuedJobs += 1; queuedBytes += job.hostBytes
-            return true
+            let source = candidate.flatMap { records[$0.name]?.written == true ? $0 : nil }
+            if let source { pin(source.name) }
+            return (true, source)
         }
-        guard accepted else { return }
+        guard accepted.0 else { return }
+        let source = accepted.1
         group.enter()
         queue.async { [self] in
             defer { group.leave() }
-            write(job)
+            write(job, verbatim: source)
         }
     }
 
-    private func write(_ job: QwenStagePrefixDiskJob) {
-        defer { lock.withLock { queuedJobs -= 1; queuedBytes -= job.hostBytes } }
+    private func write(_ job: QwenStagePrefixDiskJob, verbatim source: VerbatimSource?) {
+        defer {
+            lock.withLock {
+                queuedJobs -= 1; queuedBytes -= job.hostBytes
+                if let source { unpin(source.name) }
+            }
+        }
         let name = job.fileName, expected = job.header.dataBytes + 64 * 1024
         let start = DispatchTime.now().uptimeNanoseconds
         func abandon(_ reason: String) {
@@ -440,6 +479,16 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
         if let free = Self.freeBytes(directory), free < configuration.minimumFreeBytes + expected {
             abandon("low_disk"); return
+        }
+        // A source that cannot be read is not replaced by encoding its rows
+        // again: rows restored from it would drift. The record is dropped.
+        if let source {
+            do {
+                job.verbatim = try QwenStagePrefixDiskVerbatimSource(url: directory.appendingPathComponent(source.name),
+                    keys: keys, scope: job.header.scope, encoding: encoding, frontier: source.frontier, frontierKey: source.key)
+            } catch {
+                abandon("verbatim_source_unreadable"); return
+            }
         }
         // Staged under this session's epoch (recreated if the reaper or a
         // reclaim removed it while idle), else beside the record.
@@ -470,7 +519,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                     record.written = true; record.bytes = bytes; record.lastUseTime = written; records[name] = record
                     for key in record.frontiers.values { byKey[key] = name }
                 }
-                statistics.persisted += 1; statistics.persistedBytes += bytes
+                statistics.persisted += 1; statistics.persistedBytes += bytes; statistics.verbatimRows += job.verbatimRows
                 writeWindowBytes += bytes
                 lastCompletedWrite = written
             }
@@ -479,7 +528,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist prompt=\(job.header.committedTokens)"
                 + " frontiers=\(job.header.frontiers.map { String($0.tokens) }.joined(separator: "_"))"
                 + " bytes=\(bytes) ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) records=\(recordCount)"
-                + " encoding=\(encoding) attention_bytes=\(job.attentionBytes) native_attention_bytes=\(job.nativeAttentionBytes)")
+                + " encoding=\(encoding) attention_bytes=\(job.attentionBytes) native_attention_bytes=\(job.nativeAttentionBytes)"
+                + " verbatim_rows=\(job.verbatimRows)")
         } catch {
             unlink(temporary.path)
             abandon("write_failed")
@@ -556,7 +606,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                 let written = records.values.filter { $0.written }
                 let bytes = written.reduce(0) { $0 + $1.bytes }
                 guard written.count > configuration.recordLimit || bytes > configuration.byteBudget else { return nil }
-                return written.filter { $0.name != protecting && !pinned.contains($0.name) }
+                return written.filter { $0.name != protecting && pinned[$0.name] == nil }
                     .min(by: { ($0.lastUse, $0.name) < ($1.lastUse, $1.name) })?.name
             }
             guard let victim else { return }
@@ -568,7 +618,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private func removeExpired() {
         let time = now()
         let expired = lock.withLock {
-            records.values.filter { $0.written && !pinned.contains($0.name)
+            records.values.filter { $0.written && pinned[$0.name] == nil
                 && time - $0.lastUseTime > Double(configuration.ttlSeconds) }.map(\.name)
         }
         for name in expired { remove(name: name, reason: "expired"); lock.withLock { statistics.expirations += 1 } }

@@ -336,8 +336,11 @@ the cluster:
 engine_v2_kv_checkpoint_quantization = "native"
 ```
 
-Both Macs must resolve the same precision; otherwise the pair refuses to load
-the model. The [record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding)
+Both Macs must resolve the same precision. The leader does not sync it, and
+both default to `balanced`; a Mac set differently makes the pair refuse to
+load the model (the ranks' load agreement differs), which is the expected
+behavior: set the value on both Macs. The
+[record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding)
 lists what each model stores compactly.
 
 ## MiMo V2.6 Flash on the pair

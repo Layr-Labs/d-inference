@@ -517,6 +517,142 @@ struct PrefixDiskEncodingTests {
         }
     }
 
+    /// `state` restored, then `extra` new rows appended to every attention
+    /// entry (and a new recurrent state): what a request that restored it
+    /// and prefilled on captures.
+    private func extended(_ state: QwenStagePrefixState, by extra: Int, seed: UInt64, dtype: DType) -> QwenStagePrefixState {
+        let committed = state.committedTokens + extra
+        var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        for (layer, pair) in state.attention {
+            let heads = pair.keys.dim(1), width = pair.keys.dim(3)
+            attention[layer] = (
+                keys: concatenated([pair.keys, rows(heads: heads, tokens: extra, width: width, seed: seed &+ UInt64(layer), dtype: dtype)], axis: 2),
+                values: concatenated([pair.values, rows(heads: heads, tokens: extra, width: width, seed: seed &+ UInt64(layer) &+ 50,
+                    dtype: dtype)], axis: 2))
+            eval(attention[layer]!.keys, attention[layer]!.values)
+        }
+        let conv = MLXArray((0..<24).map { Float($0 + committed) * 0.5 }).reshaped([1, 3, 8]).asType(.bfloat16)
+        let ssm = MLXArray((0..<32).map { Float($0 * committed) * 0.001 }).reshaped([1, 2, 4, 4])
+        return QwenStagePrefixState(committedTokens: committed, attention: attention, recurrent: [0: (conv: conv, ssm: ssm)])
+    }
+
+    /// The codec is not idempotent on its own output (key rows in every
+    /// dtype, FP32 value rows: `NativeCheckpointRowCodecTests`), so a record
+    /// written from a request restored from an encoded record keeps the
+    /// restored rows' bytes (`QwenStagePrefixDiskVerbatimSource`). Over three
+    /// generations of records, each written from the previous one's restore
+    /// with new rows appended, every row the previous record held encoded
+    /// comes back bit for bit, at every precision and dtype. Written to a tier
+    /// without the earlier record, the same state's restored key rows move.
+    @Test func restoredRowsKeepTheirFirstEncodingThroughLaterRecords() throws {
+        try onCPU {
+            for selection in [PagedKVQuantizationSelection.balanced, .k8v4, .k8v8] {
+                for dtype in [DType.bfloat16, .float16, .float32] {
+                    let encoding = QwenStagePrefixDiskEncoding(quantization: selection, family: .qwenAttention)
+                    let root = try temporaryRoot(), elsewhere = try temporaryRoot()
+                    defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: elsewhere) }
+                    let tokens = Array(2000 ... 2600), label = "\(selection.rawValue) \(dtype)"
+                    let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan",
+                        rank: 0, encoding: encoding))
+                    defer { tier.close() }
+                    func restore(_ committed: Int) throws -> QwenStagePrefixState {
+                        try #require(try tier.restore(scope: "s", tokens: Array(tokens[0...committed]), frontier: committed, check: {}))
+                    }
+                    tier.persist(scope: "s", tokens: Array(tokens[0...300]),
+                        states: [states(committed: 300, frontiers: [], dtype: dtype, seed: 9)[0]], blockTokens: 64)
+                    #expect(tier.drain(timeoutSeconds: 60) && tier.stats.verbatimRows == 0, "\(label)")
+                    var previous = try restore(300)
+                    let first = previous
+                    for (generation, committed) in [(2, 450), (3, 600)] {
+                        let state = extended(previous, by: committed - previous.committedTokens, seed: UInt64(generation * 1000),
+                            dtype: dtype)
+                        tier.persist(scope: "s", tokens: Array(tokens[0...committed]), states: [state], blockTokens: 64)
+                        #expect(tier.drain(timeoutSeconds: 60) && tier.stats.persisted == generation, "\(label) \(generation)")
+                        let next = try restore(committed)
+                        // The previous record's encoded rows: 2 layers, keys and values, 2 heads each.
+                        let kept = previous.committedTokens - 128
+                        #expect(tier.stats.verbatimRows >= 8 * kept, "\(label) generation \(generation)")
+                        for (layer, pair) in previous.attention {
+                            let back = try #require(next.attention[layer])
+                            for (was, now) in [(pair.keys, back.keys), (pair.values, back.values)] {
+                                #expect(bytes(now[0..., 0..., ..<kept, 0...]) == bytes(was[0..., 0..., ..<kept, 0...]),
+                                    "\(label) generation \(generation) layer \(layer)")
+                            }
+                        }
+                        if generation == 2 {
+                            // Without the earlier record the decoded key rows are encoded again, and move.
+                            let fresh = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(elsewhere),
+                                planScope: "plan", rank: 0, encoding: encoding))
+                            fresh.persist(scope: "s", tokens: Array(tokens[0...committed]), states: [state], blockTokens: 64)
+                            #expect(fresh.drain(timeoutSeconds: 60) && fresh.stats.verbatimRows == 0)
+                            let moved = try #require(try fresh.restore(scope: "s", tokens: Array(tokens[0...committed]),
+                                frontier: committed, check: {}))
+                            #expect(bytes(moved.attention[3]!.keys[0..., 0..., ..<kept, 0...])
+                                != bytes(first.attention[3]!.keys[0..., 0..., ..<kept, 0...]), "\(label) keys re-encoded")
+                            fresh.close()
+                        }
+                        previous = next
+                    }
+                    // The first generation's encoded rows, through both later records.
+                    for (layer, pair) in first.attention {
+                        #expect(bytes(previous.attention[layer]!.keys[0..., 0..., ..<172, 0...]) == bytes(pair.keys[0..., 0..., ..<172, 0...]))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rows that did not come from the earlier record (the same prefix
+    /// computed again, exactly) are encoded as any record encodes them: none
+    /// is copied, and the record restores what a record of that state alone does.
+    @Test func rowsNotRestoredFromTheEarlierRecordAreEncodedAsUsual() throws {
+        try onCPU {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let tokens = Array(3000 ... 3450), exact = states(committed: 300, frontiers: [], seed: 4)[0]
+            let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan",
+                rank: 0, encoding: balancedQwen))
+            defer { tier.close() }
+            tier.persist(scope: "s", tokens: Array(tokens[0...300]), states: [exact], blockTokens: 64)
+            #expect(tier.drain(timeoutSeconds: 60))
+            let state = extended(exact, by: 150, seed: 77, dtype: .bfloat16)
+            tier.persist(scope: "s", tokens: tokens, states: [state], blockTokens: 64)
+            #expect(tier.drain(timeoutSeconds: 60) && tier.stats.persisted == 2 && tier.stats.verbatimRows == 0)
+            let restored = try #require(try tier.restore(scope: "s", tokens: tokens, frontier: 450, check: {}))
+            let alone = try QwenStagePrefixDiskMeasurement.measure(state, encoding: balancedQwen, blockTokens: 64).restored
+            for (layer, pair) in alone.attention {
+                #expect(bytes(restored.attention[layer]!.keys) == bytes(pair.keys)
+                    && bytes(restored.attention[layer]!.values) == bytes(pair.values))
+            }
+        }
+    }
+
+    /// An earlier record that cannot be read when the new one is written is
+    /// not replaced by encoding its rows again: the new record is dropped.
+    @Test func anUnreadableEarlierRecordDropsTheNewOne() throws {
+        try onCPU {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let tokens = Array(4000 ... 4450), exact = states(committed: 300, frontiers: [], seed: 6)[0]
+            let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan",
+                rank: 0, encoding: balancedQwen))
+            defer { tier.close() }
+            tier.persist(scope: "s", tokens: Array(tokens[0...300]), states: [exact], blockTokens: 64)
+            #expect(tier.drain(timeoutSeconds: 60) && tier.recordCount == 1)
+            let url = try recordURL(tier)
+            let opened = try QwenStagePrefixDiskIO.open(url: url, keys: tier.keys)
+            let unit = opened.header.attention[0].units[0]
+            let handle = try FileHandle(forUpdating: url)
+            try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset + 9))
+            let byte = try #require(try handle.read(upToCount: 1))
+            try handle.seek(toOffset: UInt64(opened.dataStart + unit.offset + 9))
+            try handle.write(contentsOf: Data([byte[0] ^ 0x10])); try handle.close()
+            tier.persist(scope: "s", tokens: tokens, states: [extended(exact, by: 150, seed: 8, dtype: .bfloat16)], blockTokens: 64)
+            #expect(tier.drain(timeoutSeconds: 60) && tier.stats.persisted == 1 && tier.stats.droppedPersists == 1)
+            #expect(tier.frontiers(scope: "s", tokens: tokens, maximumFrontier: 450) == [300])
+        }
+    }
+
     /// A changed byte, a truncated file, or authenticated rows the decoder
     /// refuses: the record is absent and deleted, never adopted.
     @Test func corruptOrTruncatedEncodedRecordsAreRefused() throws {
@@ -622,7 +758,9 @@ struct PrefixDiskEncodingTests {
     /// Opt-in timing (`PREFIX_RECORD_ENCODE_BENCH=1`): one Qwen 3.8 27B
     /// tensor-parallel rank's full-attention layer at 32,768 tokens (two
     /// key/value heads of 256, BF16) encoded unit by unit on one thread, then
-    /// written by the tier (its encoding writers) and restored.
+    /// written by the tier (its encoding writers) and restored; then the next
+    /// record of a 4,096-token-longer prompt from that restore, its restored
+    /// rows kept verbatim.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["PREFIX_RECORD_ENCODE_BENCH"] == "1"))
     func encodingThroughputAtTheBetaShape() throws {
         try onCPU {
@@ -646,10 +784,18 @@ struct PrefixDiskEncodingTests {
             #expect(tier.drain(timeoutSeconds: 600) && tier.recordCount == 1)
             let written = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
             started = DispatchTime.now().uptimeNanoseconds
-            #expect(try tier.restore(scope: "s", tokens: tokens, frontier: committed, check: {}) != nil)
+            let back = try #require(try tier.restore(scope: "s", tokens: tokens, frontier: committed, check: {}))
             let restored = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
-            print(String(format: "encode one thread %.2f s (%.0f rows/s, %.2f us/row); tier write with %d writers %.2f s; restore %.2f s",
-                         single, rows / single, single / rows * 1e6, QwenStagePrefixDiskIO.encodingWriters, written, restored))
+            // The next record of a longer prompt from that restore: the restored rows kept verbatim.
+            let longer = Array(0 ..< committed + 4097)
+            started = DispatchTime.now().uptimeNanoseconds
+            tier.persist(scope: "s", tokens: longer, states: [extended(back, by: 4096, seed: 5, dtype: .bfloat16)], blockTokens: 4096)
+            #expect(tier.drain(timeoutSeconds: 600) && tier.recordCount == 2)
+            let rewritten = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+            print(String(format: "encode one thread %.2f s (%.0f rows/s, %.2f us/row); tier write with %d writers %.2f s; restore %.2f s;"
+                         + " next record of %d rows with %d kept verbatim %.2f s",
+                         single, rows / single, single / rows * 1e6, QwenStagePrefixDiskIO.encodingWriters, written, restored,
+                         committed + 4096, tier.stats.verbatimRows, rewritten))
             tier.close()
         }
     }

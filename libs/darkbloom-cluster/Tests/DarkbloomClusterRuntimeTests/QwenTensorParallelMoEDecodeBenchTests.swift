@@ -73,7 +73,7 @@ struct QwenTensorParallelMoEDecodeBenchTests {
     /// One decode step's graph after `prompt`, counted by primitive name (MLX's
     /// own printout, as `QwenTensorParallelModel.decodeStepCensus` counts it).
     private static func census(_ model: QwenTensorParallelModel, prompt: [Int]) throws -> [String: Int] {
-        let cache = model.newCache()
+        let cache = try model.newCache()
         let first = model.select(model.prefill(prompt, chunk: prompt.count, cache: cache))
         eval([first] + cache.flatMap { $0.innerState() })
         let next = model.select(model.step(first, cache: cache))
@@ -142,7 +142,7 @@ struct QwenTensorParallelMoEDecodeBenchTests {
                 try GPU.withCommandBufferLimits(.init(operations: ops, megabytes: 1 << 20)) {
                     for mode in [Mode.local, .cpuHop, .evalEach] {
                         reduction.mode = mode
-                        let cache = model.newCache()
+                        let cache = try model.newCache()
                         var token = model.select(model.prefill(prompt, chunk: 512, cache: cache))
                         eval([token] + cache.flatMap { $0.innerState() })
                         var build: [Double] = [], encode: [Double] = [], wait: [Double] = [], step: [Double] = []
@@ -170,7 +170,7 @@ struct QwenTensorParallelMoEDecodeBenchTests {
                     }
                     // The retired single-lane loop: greedy steps built one ahead.
                     reduction.mode = .cpuHop
-                    let cache = model.newCache()
+                    let cache = try model.newCache()
                     var current = model.select(model.prefill(prompt, chunk: 512, cache: cache))
                     asyncEval(current)
                     var samples: [Double] = []

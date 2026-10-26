@@ -67,7 +67,7 @@ struct QwenMixedRouterTensorParallelTests {
                 let loaded = try QwenTensorParallelModel.assemble(configurationData: config, role: .full, reduction: nil) { _, keep in
                     for name in weights.keys.sorted() { try keep(name, weights[name]!) }
                 }
-                let referenceCache = fixture.model.newCache(parameters: nil), loadedCache = loaded.newCache()
+                let referenceCache = try fixture.model.newCache(parameters: nil), loadedCache = try loaded.newCache()
                 for tokens: [Int32] in [[1, 7, 19], [31], [43, 59]] {
                     let input = MLXArray(tokens).reshaped([1, tokens.count])
                     let expected = fixture.model(input, cache: referenceCache)

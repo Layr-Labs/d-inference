@@ -32,7 +32,7 @@ struct GPTOSSBatchForwardTests {
                 let head = try #require(consumer.namedModules().first { $0.0 == "lm_head" }?.1 as? Linear)
                 let lengths = [3, 9, 17, 63, 65, 127, 129, 261]
                 let before = lengths.map { _ in pages(producer) }, after = lengths.map { _ in pages(consumer) }
-                let oracle = lengths.map { _ in whole.newCache(parameters: nil) }
+                let oracle = try lengths.map { _ in try whole.newCache(parameters: nil) }
                 for (lane, length) in lengths.enumerated() {
                     // Each request keeps its own prefill chunk grid and ring
                     // layout before it participates in a shared decode frame.

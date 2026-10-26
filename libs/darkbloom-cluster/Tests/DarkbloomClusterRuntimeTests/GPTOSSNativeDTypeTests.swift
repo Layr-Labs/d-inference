@@ -20,9 +20,9 @@ struct GPTOSSNativeDTypeTests {
                     let producer = try GPTOSSNativeTestFixture.stage(from: whole, layers: 0..<cut, first: true, dtype: dtype)
                     let consumer = try GPTOSSNativeTestFixture.stage(from: whole, layers: cut..<4, first: false, dtype: dtype)
                     let head = try #require(consumer.namedModules().first { $0.0 == "lm_head" }?.1 as? Linear)
-                    let referenceCaches = whole.newCache(parameters: nil)
-                    let producerCaches = producer.newCache(parameters: nil)
-                    let consumerCaches = consumer.newCache(parameters: nil)
+                    let referenceCaches = try whole.newCache(parameters: nil)
+                    let producerCaches = try producer.newCache(parameters: nil)
+                    let consumerCaches = try consumer.newCache(parameters: nil)
                     // Cross the sliding-window boundary and use both prompt
                     // chunks and decode, with real sinks and packed experts.
                     for tokens in [[1, 7, 13, 21, 31, 43, 59], [5], [9], [17, 29], [47]] {

@@ -674,6 +674,13 @@ struct QwenTensorParallelMTPSessionTests {
         try verifyWarmPrefix(hybrid: true)
     }
 
+    /// MLX's process-default compile cache, emptied through mlx-c's handle API.
+    private static func clearDefaultCompileCache() {
+        var cache = mlx_compile_cache_new()
+        defer { _ = mlx_compile_cache_free(cache) }
+        if mlx_detail_compile_cache(&cache) == 0 { _ = mlx_detail_compile_clear_cache(cache) }
+    }
+
     private func verifyWarmPrefix(hybrid: Bool) throws {
         let device = hybrid ? Device.gpu : Device.cpu
         // MLX keys compiled traces by its C++ default device, which the
@@ -681,8 +688,8 @@ struct QwenTensorParallelMTPSessionTests {
         // test made would be replayed here with its operations on the GPU
         // stream, and one made here on the CPU by a later GPU test. This CPU
         // fixture starts and ends with an empty compile cache.
-        if device == .cpu { _ = mlx_detail_compile_clear_cache() }
-        defer { if device == .cpu { _ = mlx_detail_compile_clear_cache() } }
+        if device == .cpu { Self.clearDefaultCompileCache() }
+        defer { if device == .cpu { Self.clearDefaultCompileCache() } }
         try Device.withDefaultDevice(device) {
             let source = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4,
                 kvHeads: 2, vocabulary: 256)

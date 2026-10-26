@@ -131,6 +131,74 @@ struct SelectedModelRecoveryPolicyTests {
         await loop.modelLoadingSetLoadingAny(false)
     }
 
+    /// Whatever else owns residency at the check pauses it the same way: a
+    /// drain, an Autopilot operation, a switch, the startup preload, or
+    /// another load, unload or revision activation.
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        (ModelAutopilotBusyReason.draining, "the provider is draining"),
+        (.reconnectAfterRetirement, "the provider is draining"),
+        (.autopilotOperation, "an Autopilot operation is in progress"),
+        (.modelSwitch, "a model switch is in progress"),
+        (.startupPreload, "the startup preload is still running"),
+        (.modelLoading, "another model load or unload is in progress"),
+        (.modelUnloading, "another model load or unload is in progress"),
+        (.revisionActivation, "another model load or unload is in progress"),
+    ])
+    func anotherResidencyOwnerPausesTheCheck(_ owner: ModelAutopilotBusyReason, blocker: String) async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let now = ContinuousClock.now
+        await loop.raiseBusyFlagForTesting(owner)
+        await checkSelectedModelRecovery(loop, at: now)
+        await loop.lowerBusyFlagForTesting(owner)
+        let paused = try await superRecoveryEntry(loop)
+        #expect(paused.checks == 0)
+        #expect(paused.blocker == blocker)
+        #expect(paused.nextCheckAt == now.advanced(by: SelectedModelRecovery.pauseRecheck))
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+    }
+
+    /// A live Autopilot lease manages residency: recovery waits for it.
+    @Test(.timeLimit(.minutes(1)))
+    func aLiveAutopilotLeasePausesTheCheck() async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let now = ContinuousClock.now
+        await loop.activateAutopilotForTesting()
+        #expect(await loop.autopilotManagesResidency)
+        await checkSelectedModelRecovery(loop, at: now)
+        let paused = try await superRecoveryEntry(loop)
+        #expect(paused.checks == 0)
+        #expect(paused.blocker == "Autopilot manages residency under its live lease")
+        #expect(paused.nextCheckAt == now.advanced(by: SelectedModelRecovery.pauseRecheck))
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+    }
+
+    /// While an attempt evicts or loads, an Autopilot operation is refused as
+    /// busy (`preload`) and a model switch waits for it.
+    @Test(.timeLimit(.minutes(1)))
+    func anAttemptInProgressIsBusyAsPreload() async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let (release, releaseLoad) = AsyncStream<Void>.makeStream()
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in
+            for await _ in release { break }
+            await fixture.install(id)
+        }
+        await loop.checkSelectedModelRecoveryIfDue(now: .now)
+        #expect(await modelLoadingWaitUntil { fixture.shutdownCalls(Fixture.glmID) == 1 })
+        #expect(await loop.autopilotBusyReasons().contains(.preload))
+        #expect(await loop.modelSwitchMutationsSettled == false)
+        releaseLoad.yield()
+        releaseLoad.finish()
+        await loop.awaitSelectedModelRecoveryAttemptForTesting()
+        #expect(await loop.autopilotBusyReasons().contains(.preload) == false)
+        #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
+    }
+
     /// With no explicit selection every model on disk is served and a cold
     /// one loads on request: nothing is retried.
     @Test func withoutAnExplicitSelectionNothingIsRetried() async throws {

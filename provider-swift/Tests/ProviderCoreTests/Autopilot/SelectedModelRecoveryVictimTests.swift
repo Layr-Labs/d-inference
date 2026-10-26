@@ -14,8 +14,8 @@ import Testing
 struct SelectedModelRecoveryVictimTests {
     private typealias Fixture = UnreclaimableLoadMemoryFixture
 
-    /// The operation Mark's coordinator sends: load GLM with a placement hold,
-    /// unloading Super first, with no lease.
+    /// The reported operation: load GLM with a placement hold, unloading
+    /// Super first, with no lease.
     private static func operation(expecting residents: [String]) -> ModelAutopilotCommand {
         ModelAutopilotCommand(commandId: "op_fedcba9876543210fedcba9876543210",
             loadModelId: Fixture.glmID, unloadModelIds: [Fixture.superID], expectedResidentModels: residents,

@@ -247,6 +247,9 @@ original activations, assignment maps and live expert arrays as graph inputs.
 It avoids the expanded sorted token tensor for the two gate/up products while
 retaining separate output arrays and the existing down/reduction graph. The
 helper adds no persistent parameter identity cache or copied expert bank.
+The guarded route is enabled by default; the
+[exact `0` rollback](../reference/configuration.md#gemma-4-row-mapped-nax)
+restores the original graph without changing hardware or admission eligibility.
 Sources: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
 (`tryPair`) and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).

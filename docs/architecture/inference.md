@@ -1474,7 +1474,7 @@ qualifying trace identity and evaluation modes; changing its SDK pin is insuffic
 
 ### Gemma 4 row-mapped NAX prefill
 
-The pinned SDK adds an opt-in route for the sorted Gemma 4 expert gate/up
+The pinned SDK enables a guarded route for the sorted Gemma 4 expert gate/up
 products. Each NAX product reads the original token row through the existing
 sorted assignment map, avoiding the expanded activation gather. Gate and up
 remain separate outputs with the same K16 MMA sequence, FP32 accumulation and
@@ -1494,11 +1494,12 @@ adapters, training, transformations, CPU and custom-stream execution retain the
 complete original graph. Parameters remain live inputs; no parameter or row-map
 cache is introduced. One-token tails and decode remain outside this route.
 
-It is disabled by default. Exact `DARKBLOOM_GEMMA4_NAX_ROW_MAP=1` requests the
-route in the serving process; adopting the SDK pin alone does not enable it.
-The flag is not in the provider LaunchAgent allowlist, so use the
-[foreground/local process setting](../reference/configuration.md#gemma-4-row-mapped-nax)
-when qualifying it. No new CLI command or `provider.toml` setting is added.
+The route is enabled by default within those guards. Exact
+`DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` restores the original graph; unset or exact `1`
+enables the guarded route, while other explicit values leave it disabled.
+The provider forwards this override when creating its LaunchAgent environment.
+See the [process setting and rollback](../reference/configuration.md#gemma-4-row-mapped-nax).
+No new CLI command or `provider.toml` setting is added.
 
 [Same-artifact endpoint comparisons](https://github.com/Layr-Labs/mlx-swift-lm/blob/0cada65a3ff7eb338ef9d827ce551a49d6c08831/docs/benchmarks/gemma4-row-mapped-nax-2026-10-26/README.md) on one M5 Max with 128GB memory
 measured about 6–7% lower cold HTTP time to first generated frame for

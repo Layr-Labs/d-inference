@@ -215,18 +215,19 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 ### Gemma 4 row-mapped NAX
 
-This SDK opt-in uses exact `1`, not the general boolean convention above.
-The provider pin alone does not activate it; no `provider.toml` key is added.
+This SDK route defaults on within its eligibility guards. Its setting uses exact
+values, not the general boolean convention above; no `provider.toml` key is added.
 
 | Variable | Values / default | Consumer and effect |
 |---|---|---|
-| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | Exact `1` requests the route; unset or every other value is off. Read once by the SDK's static selection | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); eligible stock Gemma expert prefill reads original token rows through the sorted assignment map. Hardware, shape, dtype, module and tracing guards still apply. |
+| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | Enabled when unset or exactly `1`; exact `0` restores the original graph. Other explicit values, including empty, also disable it. Read once by the SDK's static selection | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); eligible stock Gemma expert prefill reads original token rows through the sorted assignment map. Hardware, shape, dtype, module and tracing guards still apply. |
 
-The flag is absent from `LaunchAgent.passthroughEnvKeys` and
-`LaunchAgent.inferencePassthroughEnvKeys` in
-`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`; an export in the
-shell that installs a background job is not forwarded to it. It applies to the
-environment of a directly launched foreground/local serving process. See the
+`LaunchAgent.inferencePassthroughEnvKeys` and `passthroughEnvironment` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` forward this
+override verbatim, including empty, when creating the background provider job.
+Foreground/local processes read it directly. Restarting an existing job reuses
+its saved environment; stop and start with `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` to
+persist the rollback, or without the override to restore the default. See the
 [mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
 and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
 

@@ -247,8 +247,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         try require(route == nil || route.flatMap(ClusterWorkerRoute.init(rawValue:)) != nil, "unknown route")
         var digest: String?
         if case .tenant(let value)? = prefixPartition { digest = value }
-        try require(prefixCache == nil || prefixCache == "disabled"
-            || digest.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } == true,
+        try require(prefixCache == nil || prefixCache == "disabled" || digest.map(QualificationHash.isSHA256) == true,
             "prefix cache must be disabled, or tenant: and a 64-digit lowercase hexadecimal digest")
         if let sampling {
             let wire = sampling.wire

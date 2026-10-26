@@ -8,8 +8,9 @@ import MLX
 //     [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no]
 //     [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3]
 //     [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--mtp-vocab-split yes|no] [--mtp-batch-heads yes|no] [--prefill-schedule chunked|product|merged]
+//     [--mtp-depth-policy fixed|load] [--mtp-load-lanes 2...8] [--width-invariant yes|no] [--mtp-depth-schedule fixed|random]
 //     [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no]
-//     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no]]
+//     [--lanes N (with --mtp-depth) [--lanes-batched yes|no] [--lanes-split-eval yes|no] [--lanes-check-solo yes|no]]
 //     [--kv paged|contiguous]
 //     [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--prefill-ops N] [--selection-split yes|no [--selection-split-history N]] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]]
 // darkbloom-cluster-tp-check glm allsum | sealprobe   (link and crypto costs alone)
@@ -73,7 +74,7 @@ enum GLMBench {
         guard let modeName = fields["--mode"], let mode = GLM5NextTensorParallelBench.Mode(rawValue: modeName),
               let directory = fields["--model-dir"], directory.hasPrefix("/"),
               let report = fields["--report"], report.hasPrefix("/") else {
-            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--mtp-vocab-split yes|no] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]] [--prefill-ops N] [--selection-split yes|no [--selection-split-history N]] [--mtp-batch-heads yes|no]")
+            throw Failure("usage: glm --mode full|shard|tp --model-dir /ABS --report /ABS [--prompt-tokens N | --prompt-file /ABS] [--output-count N] [--chunk N] [--repeats N] [--shard-rank R] [--partials float32|stored] [--pipelined yes|no] [--census yes|no] [--reduction native|sealed] [--cache-limit-mb N] [--micro-batches N] [--mtp-depth 0...3] [--mtp-check none|keep-first|one-token] [--mtp-early none|proposals|layers] [--mtp-vocab-split yes|no] [--mtp-depth-policy fixed|load] [--mtp-load-lanes 2...8] [--width-invariant yes|no] [--mtp-depth-schedule fixed|random] [--prefill-schedule chunked|product|merged] [--merged-tokens N] [--keep-prefix yes|no] [--micro-batch-tokens N] [--perplexity yes|no] [--lanes N [--lanes-batched yes|no] [--lanes-split-eval yes|no] [--lanes-check-solo yes|no]] [--kv paged|contiguous] [--sequence-parallel yes|no] [--prefix-grid chunk|bulk] [--pin-selections yes|no] [--micro-batch-rule half|all] [--divergence N [--divergence-rows R] [--divergence-start K[,K2...]]] [--prefill-ops N] [--selection-split yes|no [--selection-split-history N]] [--mtp-batch-heads yes|no]")
         }
         let promptCount = Int(fields["--prompt-tokens"] ?? "4096") ?? 4096
         var prompt: [Int]
@@ -117,6 +118,19 @@ enum GLMBench {
         options.mtpEarly = fields["--mtp-early"] ?? "proposals"
         options.mtpVocabularySplit = (fields["--mtp-vocab-split"] ?? "yes") == "yes"
         options.mtpBatchHeads = (fields["--mtp-batch-heads"] ?? "yes") == "yes"
+        // The runtime's decode policy; each flag defaults to the worker's environment switch.
+        let environment = ProcessInfo.processInfo.environment
+        options.mtpDepthPolicy = fields["--mtp-depth-policy"]
+            ?? environment["DARKBLOOM_GLM_TP_MTP_DEPTH_POLICY"] ?? "load"
+        guard let loadLanes = Int(fields["--mtp-load-lanes"] ?? environment["DARKBLOOM_GLM_TP_MTP_LOAD_LANES"] ?? "3"),
+              (2...8).contains(loadLanes) else {
+            throw Failure("glm: --mtp-load-lanes takes 2 through 8")
+        }
+        options.mtpLoadLanes = loadLanes
+        options.widthInvariant = (fields["--width-invariant"]
+            ?? (environment["DARKBLOOM_GLM_TP_WIDTH_INVARIANT"] == "1" ? "yes" : "no")) == "yes"
+        // Diagnostic: 1 to --mtp-depth proposals a round, pseudo-random by round (same on both ranks).
+        options.mtpDepthSchedule = fields["--mtp-depth-schedule"] ?? "fixed"
         // The product's prefill chunks (`product`), run together as the runtime does (`merged`).
         guard let schedule = GLM5NextTensorParallelBench.Options.PrefillSchedule(
                 rawValue: fields["--prefill-schedule"] ?? "chunked"),
@@ -187,6 +201,8 @@ enum GLMBench {
         options.lanes = lanes
         options.lanesBatched = (fields["--lanes-batched"] ?? "yes") == "yes"
         options.lanesSplitEval = (fields["--lanes-split-eval"] ?? "no") == "yes"
+        // Afterwards each lane's prompt alone: its tokens must equal the lane's (c1 = cN).
+        options.lanesCheckSolo = (fields["--lanes-check-solo"] ?? "no") == "yes"
         // DSA and NextN histories: paged as the product's runtime, or contiguous (A/B).
         let kv = fields["--kv"] ?? "paged"
         guard ["paged", "contiguous"].contains(kv) else {

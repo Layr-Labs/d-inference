@@ -277,6 +277,11 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
 
     var rank: Int { runtime.collective.rank }
     var depth: Int { runtime.mtp == nil ? 0 : Runtime.mtpDepth }
+    /// The decode policy's window (`GLM5NextTensorParallelDecodePolicy`): with
+    /// `load`, one proposal a round while enough lanes decode in the step.
+    func window(lanes: Int, outputLeft: Int) -> Int {
+        Runtime.decodePolicy.window(maximum: depth, lanes: lanes, outputLeft: outputLeft)
+    }
     var prefixEnabled: Bool { runtime.prefix.enabled }
 
     func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] {

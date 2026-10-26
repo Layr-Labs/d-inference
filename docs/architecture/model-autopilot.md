@@ -285,6 +285,11 @@ stops the driver at its next candidate, and the current step finishes normally.
 - A restart drops adoptions and holds. Startup preload skips unadvertised
   inventory, so adopted inventory is not reloaded; the operator's ordinary
   selection and idle policy apply.
+- A saved `enabled_models` edit reaches the running selection only through a
+  restart or a committed `switch`; until then the old selection keeps serving,
+  recovery never evicts it, and `darkbloom status` prints `Configuration change
+  needs a restart to apply` (`enabled_models_at_start`,
+  `enabled_models_at_last_switch`).
 - A healthy operation slower than its bound is cancelled and can be retried. A
   slow preload is answered as failed even if it later warms the model, which then
   appears in heartbeats; the startup preload skips its remaining models.

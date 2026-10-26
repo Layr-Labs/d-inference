@@ -10,7 +10,8 @@ extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
         case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
-        case warmModels, advertisedModels, servingSelection, enabledModelsAtStart, evictionExclusions
+        case warmModels, advertisedModels, servingSelection, enabledModelsAtStart, enabledModelsAtLastSwitch
+        case evictionExclusions
         case startupPreloadPendingModels, selectedModelRecovery, lifecycle, modelSwitch
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
@@ -34,6 +35,7 @@ extension DaemonState {
         advertisedModels = try c.decodeIfPresent([String].self, forKey: .advertisedModels)
         servingSelection = try c.decodeIfPresent([String].self, forKey: .servingSelection)
         enabledModelsAtStart = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtStart)
+        enabledModelsAtLastSwitch = try c.decodeIfPresent([String].self, forKey: .enabledModelsAtLastSwitch)
         evictionExclusions = try c.decodeIfPresent([EvictionExclusion].self, forKey: .evictionExclusions)
         startupPreloadPendingModels = try c.decodeIfPresent([String].self, forKey: .startupPreloadPendingModels)
         selectedModelRecovery = try c.decodeIfPresent([SelectedModelRecoveryEntry].self, forKey: .selectedModelRecovery)
@@ -73,6 +75,7 @@ extension DaemonState {
         try c.encodeIfPresent(advertisedModels, forKey: .advertisedModels)
         try c.encodeIfPresent(servingSelection, forKey: .servingSelection)
         try c.encodeIfPresent(enabledModelsAtStart, forKey: .enabledModelsAtStart)
+        try c.encodeIfPresent(enabledModelsAtLastSwitch, forKey: .enabledModelsAtLastSwitch)
         try c.encodeIfPresent(evictionExclusions, forKey: .evictionExclusions)
         try c.encodeIfPresent(startupPreloadPendingModels, forKey: .startupPreloadPendingModels)
         try c.encodeIfPresent(selectedModelRecovery, forKey: .selectedModelRecovery)

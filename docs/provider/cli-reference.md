@@ -997,7 +997,10 @@ Output includes:
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Configuration change needs
   a restart to apply: enabled_models adds …; removes …` appears when the saved
-  filter differs from the one the running daemon started with. `Serving
+  filter differs from the one the running selection applies: the filter the
+  daemon started with, or the one the last committed `switch` saved and applied
+  (`enabled_models_at_start`, `enabled_models_at_last_switch` in the daemon
+  state). `Serving
   outside the enabled model filter` names each warm or advertised model the
   filter omits and why it serves: an Autopilot operation's adoption, the
   running daemon's selection, or the live Autopilot lease. `Autopilot

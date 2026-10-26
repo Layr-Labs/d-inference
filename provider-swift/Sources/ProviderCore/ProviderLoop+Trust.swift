@@ -48,6 +48,7 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             servingSelection: ordinaryServingModelIDs.sorted(),
             enabledModelsAtStart: loopConfig.config.backend.enabledModels,
+            enabledModelsAtLastSwitch: enabledModelsAtLastSwitch,
             evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             selectedModelRecovery: selectedModelRecoveryReport(),

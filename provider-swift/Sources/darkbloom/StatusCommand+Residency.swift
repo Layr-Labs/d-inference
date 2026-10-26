@@ -42,18 +42,21 @@ extension Status {
         return ["Autopilot placements: " + entries.joined(separator: "; ")]
     }
 
-    /// A saved `enabled_models` that differs from the one the running daemon
-    /// started with: the daemon applies it only at its next start. Older
-    /// daemons do not report their start filter.
+    /// A saved `enabled_models` that differs from the filter the running
+    /// selection applies: the start configuration's, or the one the last
+    /// committed `switch` saved and applied. The daemon applies a changed
+    /// file only at its next start. Older daemons do not report their filter.
     static func pendingSelectionLines(state: DaemonState, enabledModels: [String]) -> [String] {
-        guard let started = state.enabledModelsAtStart, Set(started) != Set(enabledModels) else { return [] }
-        let added = enabledModels.filter { !started.contains($0) }
-        let removed = started.filter { !enabledModels.contains($0) }
+        guard let applied = state.enabledModelsAtLastSwitch ?? state.enabledModelsAtStart,
+              Set(applied) != Set(enabledModels) else { return [] }
+        let added = enabledModels.filter { !applied.contains($0) }
+        let removed = applied.filter { !enabledModels.contains($0) }
         var changes: [String] = []
         if !added.isEmpty { changes.append("adds \(added.joined(separator: ", "))") }
         if !removed.isEmpty { changes.append("removes \(removed.joined(separator: ", "))") }
-        if changes.isEmpty || started.isEmpty || enabledModels.isEmpty {
-            changes = ["was [\(started.joined(separator: ", "))] at start, is [\(enabledModels.joined(separator: ", "))] now"]
+        if changes.isEmpty || applied.isEmpty || enabledModels.isEmpty {
+            let when = state.enabledModelsAtLastSwitch == nil ? "at start" : "at the last switch"
+            changes = ["was [\(applied.joined(separator: ", "))] \(when), is [\(enabledModels.joined(separator: ", "))] now"]
         }
         return ["Configuration change needs a restart to apply: enabled_models "
             + changes.joined(separator: "; ") + ". Run `\(BuildEnvironment.current.cliName) restart`."]

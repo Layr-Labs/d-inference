@@ -55,6 +55,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// compares it with the saved filter, which applies only at a start.
     /// Nil for older daemons.
     public var enabledModelsAtStart: [String]?
+    /// The `enabled_models` the last committed `darkbloom switch` saved and
+    /// applied; `status` compares the saved filter with it instead of the
+    /// start's. Nil until a switch commits, and for older daemons.
+    public var enabledModelsAtLastSwitch: [String]?
     /// Resident models no load can evict now, each with every reason
     /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
     public var evictionExclusions: [EvictionExclusion]?
@@ -337,6 +341,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         servingSelection: [String]? = nil,
         enabledModelsAtStart: [String]? = nil,
+        enabledModelsAtLastSwitch: [String]? = nil,
         evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         selectedModelRecovery: [SelectedModelRecoveryEntry]? = nil,
@@ -372,6 +377,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.advertisedModels = advertisedModels
         self.servingSelection = servingSelection
         self.enabledModelsAtStart = enabledModelsAtStart
+        self.enabledModelsAtLastSwitch = enabledModelsAtLastSwitch
         self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
         self.selectedModelRecovery = selectedModelRecovery

@@ -689,10 +689,12 @@ struct PhaseSplitContractTests {
                 #expect(agreement.phaseSplit == nil && !agreement.compactDecode)
             }
         }
-        // The 9B's profile and its cut-4 Plan are the ones the capability
-        // fixture pinned before this work, and the pipeline over JACCL adds
-        // nothing to the load agreement.
-        #expect(try PhaseSplitFixture.request().profile.fingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
+        // The 9B's cut-4 Plan is the one the capability fixture pinned before
+        // this work; its profile is the 32K prompt / 32K output / 64K context
+        // profile that replaced the fixture's 4,096-token output
+        // (`ResidentAdmissionA3BTests` pins the same fingerprint). The pipeline
+        // over JACCL adds nothing to the load agreement.
+        #expect(try PhaseSplitFixture.request().profile.fingerprint == "fc11ff677896ab33897564a8c2aaafe966b0e1414acf73ad15d76ee3dbfeb0d1")
         #expect(try PhaseSplitFixture.plan(cut: 4).fingerprint == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
         #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty && ClusterTransport.jaccl.loadAgreementFields.isEmpty)
     }

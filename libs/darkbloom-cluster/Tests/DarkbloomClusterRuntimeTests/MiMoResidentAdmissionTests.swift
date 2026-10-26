@@ -386,7 +386,7 @@ struct MiMoResidentAdmissionTests {
             "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
             "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
             "registered_glm53_flash"])
-        #expect(all.map(\.family) == Array(repeating: .qwenDense, count: 6) + [.gptoss, .mimoV26]
+        #expect(all.map(\.family) == Array(repeating: .qwenDense, count: 7) + [.gptoss, .mimoV26]
             + Array(repeating: .qwenDense, count: 3) + [.glm5Next])
         // Every entry is a pair the protocol admits for that adapter.
         for entry in all {

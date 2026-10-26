@@ -412,6 +412,11 @@ the usual CORS header. Health reads and OPTIONS preflights remain available;
 already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
+During distributed startup, `SIGTERM` and `SIGINT` are latched before the serving
+task is attached. Closing the startup signal owner restores each signal’s prior
+handler, flags and blocked-signal mask, including when one signal was already
+ignored. Repeated close calls leave later signal changes alone.
+Source: `provider-swift/Sources/darkbloom/DistributedStartSignals.swift`.
 With no accepted work left, a graceful drain retries native MiMo owner
 retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers

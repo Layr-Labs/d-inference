@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2175,7 +2175,15 @@ headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
 2 and 1.5 GiB (`QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes:)`),
 so a smaller Mac takes the share it can hold instead of none. Every load and
-request is still checked against that Mac's memory at that moment.
+request is still checked against that Mac's memory at that moment. At normal
+memory pressure the gate counts every file-backed page as admissible
+(`QwenDenseStageLoadPolicy.decide`): the kernel drops clean file pages on
+demand. The kernel's file-cache minimum and its inactive-share bound are
+recorded with each decision, not applied. Pressure above normal, or more than
+512 MiB compressed or 64 MiB swapped out since a load's or request's first
+sample, withdraws all of it, and such a refusal stands on the gate's own
+sample: the room-making pass (`QwenDenseStageLoadReclaim`) runs only at normal
+pressure, for file cache the gate does not count.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native

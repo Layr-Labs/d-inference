@@ -416,7 +416,7 @@ extension CoordinatorClient {
                             // state change that follows the frame can end the session
                             // before this task reads the frame.
                             if let wsMeta, wsMeta.opcode == .close,
-                               let closeCode = wsMeta.closeCode.wireValue {
+                               let closeCode = wsMeta.sentCloseCode(content: data) {
                                 session.recordCloseCode(closeCode)
                             }
                             if let error {
@@ -499,5 +499,25 @@ extension NWProtocolWebSocket.CloseCode {
         @unknown default:
             return nil
         }
+    }
+}
+
+extension NWProtocolWebSocket.Metadata {
+    /// The status code of this close frame as the peer sent it.
+    ///
+    /// `closeCode` names only the codes that Network.framework knows. It reports
+    /// other codes, such as 1012 (service restart), as `noStatusReceived`, but it
+    /// delivers the frame's payload as the message content. The payload starts
+    /// with the code in network byte order (RFC 6455, section 5.5.1), so the code
+    /// is read from the content in that case.
+    func sentCloseCode(content: Data?) -> UInt16? {
+        let reported = closeCode.wireValue
+        let noStatus = NWProtocolWebSocket.CloseCode.Defined.noStatusReceived.rawValue
+        guard reported == nil || reported == noStatus, let content, content.count >= 2 else {
+            return reported
+        }
+        let high = content[content.startIndex]
+        let low = content[content.index(after: content.startIndex)]
+        return UInt16(high) << 8 | UInt16(low)
     }
 }

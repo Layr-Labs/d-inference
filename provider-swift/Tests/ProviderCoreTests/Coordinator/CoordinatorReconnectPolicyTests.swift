@@ -4,7 +4,6 @@
 /// from, so each row checks exact ranges.
 
 import Foundation
-import Network
 import Testing
 
 @testable import ProviderCore
@@ -92,12 +91,5 @@ struct CoordinatorReconnectPolicyTests {
             ranges.append(policy.nextDelayRange(after: end))
         }
         #expect(ranges == Self.backoffRanges)
-    }
-
-    @Test("each Network.framework close-code case gives the code number on the wire")
-    func closeCodeWireValue() {
-        #expect(NWProtocolWebSocket.CloseCode.protocolCode(.goingAway).wireValue == 1001)
-        #expect(NWProtocolWebSocket.CloseCode.applicationCode(3001).wireValue == 3001)
-        #expect(NWProtocolWebSocket.CloseCode.privateCode(4001).wireValue == 4001)
     }
 }

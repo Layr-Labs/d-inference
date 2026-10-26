@@ -127,7 +127,9 @@ drops grew. A close frame with code `1012` (service restart) gives
 `serviceRestartDelayRange`, and the backoff does not grow. Every other end takes
 the next `ExponentialBackoff` range. The receive callback records the close code
 on the connection queue, because the transport state change that follows the
-frame can end the session first. The
+frame can end the session first. Network.framework reports a code that it does
+not name, such as `1012`, as `noStatusReceived`; the callback then reads the
+code from the first two bytes of the frame's payload (`sentCloseCode`). The
 [close codes](../../reference/protocol-messages.md#close-codes-and-the-reconnect-wait)
 and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
 give the codes and the values. Sources:

@@ -46,7 +46,7 @@ extension ProviderLoop {
 
     /// Selected models a recovery never evicts: the ordinary selection and
     /// Autopilot pins.
-    private func isProtectedFromRecoveryEviction(_ id: String) -> Bool {
+    func isProtectedFromRecoveryEviction(_ id: String) -> Bool {
         ordinaryServingModelIDs.contains(id) || autopilotPinnedModels.contains(id)
     }
 
@@ -68,6 +68,9 @@ extension ProviderLoop {
                   selectedModelRecovery.entries[target] != nil else { return }
             let task = Task { await self.attemptSelectedModelRecovery(target, evicting: victims) }
             selectedModelRecovery.attempt = (target, task)
+        case .releaseAdoption(let id):
+            let blocker = await releaseAdoptionForSelectedModelRecovery(id, target: target)
+            selectedModelRecovery.pause(target, blocker: blocker, now: now)
         }
     }
 
@@ -89,6 +92,8 @@ extension ProviderLoop {
     enum SelectedModelRecoveryPlan: Equatable {
         /// Load after unloading these idle unselected models, in order.
         case load(evicting: [String])
+        /// End this busy adoption so it drains (`adoptionReleaseTime`).
+        case releaseAdoption(String)
         case blocked(String, retryAt: ContinuousClock.Instant?)
     }
 
@@ -99,6 +104,7 @@ extension ProviderLoop {
         guard let info = advertisedModels[target] else { return .blocked("not advertised", retryAt: nil) }
         let exclusions = evictionExclusions(now: now)
         var victims: [(id: String, bytes: UInt64)] = []
+        var releasable: [(id: String, bytes: UInt64, at: ContinuousClock.Instant)] = []
         var waits: [String] = []
         var retryAt: ContinuousClock.Instant?
         let outside = modelSlots.filter { $0.key != target && !isProtectedFromRecoveryEviction($0.key) }
@@ -108,6 +114,10 @@ extension ProviderLoop {
                 waits.append(contentsOf: evictionExclusionRecords([id: reasons]).map(\.summary))
                 if let hold = autopilotHolds[id], autopilotHoldsModel(id, now: now) {
                     retryAt = Self.earlier(retryAt, hold.until.advanced(by: SelectedModelRecovery.victimMinimumIdle))
+                }
+                if let since = selectedModelRecovery.entries[target]?.since,
+                   let at = adoptionReleaseTime(id, reasons: reasons, waitingSince: since, now: now) {
+                    releasable.append((id, UInt64(max(0, slot.sizing.weightsBytes)), at))
                 }
                 continue
             }
@@ -132,6 +142,17 @@ extension ProviderLoop {
             if count >= slotsToFree, room.fits(reclaimed) {
                 return .load(evicting: victims.prefix(count).map(\.id))
             }
+        }
+        // Busy adoptions whose release, once they drain, makes the room.
+        var withReleased = reclaimed
+        for count in releasable.indices.map({ $0 + 1 }) {
+            let (sum, overflow) = withReleased.addingReportingOverflow(releasable[count - 1].bytes)
+            withReleased = overflow ? .max : sum
+            guard victims.count + count >= slotsToFree, room.fits(withReleased) else { continue }
+            let drained = releasable.prefix(count)
+            if let due = drained.first(where: { $0.at <= now }) { return .releaseAdoption(due.id) }
+            retryAt = Self.earlier(retryAt, drained.map(\.at).min() ?? now)
+            break
         }
         var blocker = "needs \(Self.recoveryGb(room.requiredBytes)) GB; \(Self.recoveryGb(room.usableBytes)) GB usable"
         if slotsToFree > victims.count { blocker += "; all \(maxModelSlots) model slot(s) are in use" }

@@ -228,6 +228,7 @@ extension ProviderLoop {
                       advertisedModels[target] != nil else { throw AutopilotFailure("load_did_not_settle") }
                 autopilotLeaseUntil[target] = .now.advanced(by: .seconds(command.leaseSeconds))
                 recordAutopilotPlacement(command)
+                queueSelectedModelsDisplaced(by: command)
             }
             autopilotLastElapsedMs = (ContinuousClock.now - operationStart).autopilotMilliseconds
             finishModelAutopilot(command, status: .succeeded, send: send)

@@ -148,7 +148,7 @@ by `recordAutopilotPlacement` before the command releases ownership:
 
 | Placement | Recorded when | Effect | Ends when |
 |---|---|---|---|
-| Adoption | The target is cached inventory: in the Autopilot set, outside ordinary serving | `autopilotServesModel` admits it to network, local and `load_model` serving without a lease; `withdrawInactiveAutopilotModels` keeps it advertised | The slot leaves residency for any reason; consent is revoked, Autopilot disabled or the model leaves the Autopilot set; a failed self-test, retirement or unverifiable weight hash; shutdown |
+| Adoption | The target is cached inventory: in the Autopilot set, outside ordinary serving | `autopilotServesModel` admits it to network, local and `load_model` serving without a lease; `withdrawInactiveAutopilotModels` keeps it advertised | The slot leaves residency for any reason; consent is revoked, Autopilot disabled or the model leaves the Autopilot set; a failed self-test, retirement or unverifiable weight hash; selected-model recovery releases it after its hold (below); shutdown |
 | Hold | The command carries `hold_seconds` above zero | LRU eviction (`evictableModelSlots`) and idle unload skip the slot until expiry; afterwards the idle timeout restarts at the expiry; `free_for_load_gb` gives its weights no reclaim credit | Expiry; any end of the adoption basis above; the model stops being advertised; an operation unloads it |
 
 `reconcileAutopilotPlacements` enforces the end conditions before every snapshot
@@ -183,6 +183,22 @@ recovery attempt is busy as `preload`, so an operation is refused while it
 evicts or loads. The policy refresh also re-reads `enabled_models`, which the
 recovery uses only to stop retrying a model the saved filter dropped and to
 name a model that stays in the running daemon's selection until a restart.
+
+The operator's selection outranks a placement outside it once the placement's
+hold is over (policy pending owner review,
+`ProviderLoop+SelectedModelPlacementPolicy.swift`). A succeeded operation whose
+target is outside the ordinary selection queues the selected models it unloaded
+for recovery (`queueSelectedModelsDisplaced`). When such a target, adopted and
+unheld, keeps a waiting selected model out only because it serves requests,
+recovery releases the adoption ten minutes after the hold expired, or after the
+selected model began waiting when there was no hold
+(`adoptionReleaseTime`, `adoptionReleaseDelay`), and only if evicting it would
+make the room. The released model is withdrawn and refuses new requests as
+`model_not_selected`; its requests in flight finish, and the next check evicts
+it without waiting for the idle threshold. An unexpired hold, a model in the
+ordinary selection and an Autopilot pin are never released. The selected
+model's own `min_dwell_seconds` then protects it from an operation's victim
+list as for any resident model.
 
 ## Busy reasons and stalled transitions
 

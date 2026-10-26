@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1775,6 +1775,14 @@ scheduler, media preprocessing and bridge into `MLXOpenAIService`; fabricated
 native tokens prove positive JSON responses, schema rejection and unchanged
 retirement. It observes the shared format instruction reaching the tokenizer.
 These results establish response plumbing, not model-generated schema accuracy.
+Generated PNGs below the 32-pixel resize factor (16×16, 64×31, 31×64) and at a
+201:1 aspect ratio must raise the same `VLMError` from the factory's
+`Qwen3VLProcessor` (the single-Mac path) and from the pair's metadata pass,
+both answered with the invalid-media 400 and no outstanding host charge; the
+scheduler refuses a 16×16 image before any lease, and 32×32 is served with the
+single-Mac grid. `EngineV2VisionRoutingTests` pins the same 400 for every
+`VLMError` media case on the single-Mac route, and the retriable refusal for a
+processor configuration fault.
 
 `DistributedQwenMediaLifetimeTests` and `DistributedQwenMediaHostMemoryTests`
 cover the two ownership fences, stale generation/request identity, cancellation,

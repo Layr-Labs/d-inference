@@ -89,10 +89,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     case mediaUnsupportedByModel(String)
     /// The v2 engine rejected a vision (multimodal) submission at submit
     /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
-    /// message, see `EngineV2Translation.admissionErrorMessage`). Every
-    /// such rejection is deterministic for the request/engine pairing —
-    /// never transient capacity — so it surfaces as 400, not a retry
-    /// signal.
+    /// message, see `EngineV2Translation.admissionErrorMessage`), or media
+    /// preparation met a fault of the request's own media
+    /// (`EngineV2VisionPrefill.clientFault(for:)`). Every such rejection is
+    /// deterministic for the request/engine pairing — never transient
+    /// capacity — so it surfaces as 400, not a retry signal.
     case multimodalRejected(String)
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.

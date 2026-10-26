@@ -3894,7 +3894,16 @@ configuration declares, and answers each request shape as one Mac does.
    although a pair serves both for text. A `response_format` answer stopped
    by `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
-   internal failure. Wire and HTTP details:
+   internal failure. Media the model's processor refuses is the request's own
+   fault on every provider: `EngineV2VisionPrefill.clientFault(for:)` turns the
+   deterministic preparation shapes and the processor's `VLMError` media cases
+   (geometry it cannot resize, such as Qwen's side below
+   `patch_size × merge_size` or aspect ratio above 200:1; a video without a
+   decodable track; a media count it does not take) into the
+   `multimodalRejected` 400 in the single-Mac preparation and in both pairs'
+   media ingress (`prepareClusterGLMMedia`, `prepareClusterQwenMedia`). Only
+   construction faults (processor configuration, MLX, tower budget, span
+   agreement) remain the retriable 503 refusal. Wire and HTTP details:
    [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
    [direct mode](../provider/direct-mode.md#refused-request-shapes).
 

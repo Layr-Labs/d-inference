@@ -18,8 +18,11 @@ struct QwenStagePrefixDiskFault: Equatable {
 ///
 /// Layout: `<root>/v1-<plan scope digest>/rank<r>/<keyed name>.dbpx`. The plan
 /// scope is the plan fingerprint, the verified artifact, the storage
-/// commitment and both ranks' builds: a re-split, another model or a new build
-/// gets a new directory. Directories of other plans under the root are kept
+/// commitment and both ranks' builds, and the records' attention encoding when
+/// it encodes anything (`QwenStagePrefixDiskEncoding`; `balanced` by default
+/// for the families that allow it, older rows approximate after a restore): a
+/// re-split, another model, a new build or another encoding gets a new
+/// directory. Directories of other plans under the root are kept
 /// while their records are live, inside this rank's one byte budget (finding
 /// F5/S4: a model or mode switch deleted the other model's whole cache on
 /// both Macs, so switching back started cold). At load every rank deletes
@@ -88,6 +91,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     }
 
     public let configuration: QwenStagePrefixDiskConfiguration
+    /// How this tier's records store attention rows; part of its directory's
+    /// name and of every record's sealed header (`QwenStagePrefixDiskEncoding`).
+    public let encoding: QwenStagePrefixDiskEncoding
     let keys: QwenStagePrefixDiskKeys
     let root: URL
     let planDirectory: URL
@@ -156,7 +162,11 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
 
     /// Opens this rank's tier, or nil when it is off. Either way, directories
     /// of other plans under the root (all of them when off) are deleted first.
+    /// `encoding` is the one the load bound into its agreement
+    /// (`QwenStagePrefixDiskEncoding.fromEnvironment`); the default, native,
+    /// is every family's that names none.
     static func open(configuration: QwenStagePrefixDiskConfiguration, planScope: String, rank: Int,
+                     encoding: QwenStagePrefixDiskEncoding = .native,
                      stagingEpoch: String? = nil, fault: QwenStagePrefixDiskFault? = nil) -> QwenStagePrefixDiskTier? {
         switch configuration.mode {
         case .off(let sweepRoot, let reason):
@@ -167,7 +177,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         case .on(let root, let key):
             do {
                 return try QwenStagePrefixDiskTier(configuration: configuration, root: root, key: key,
-                    planScope: planScope, rank: rank, stagingEpoch: stagingEpoch, fault: fault)
+                    planScope: planScope, rank: rank, encoding: encoding, stagingEpoch: stagingEpoch, fault: fault)
             } catch {
                 log("darkbloom-prefix-ssd-v1 rank=\(rank) event=unavailable error=\(qwenPrefixLogWord(error))")
                 return nil
@@ -176,11 +186,15 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     }
 
     init(configuration: QwenStagePrefixDiskConfiguration, root: URL, key: Data, planScope: String, rank: Int,
+         encoding: QwenStagePrefixDiskEncoding = .native,
          stagingEpoch: String? = nil, fault: QwenStagePrefixDiskFault? = nil) throws {
         guard (0...63).contains(rank) else { throw ProbeError("Prefix SSD rank is out of range") }
         self.configuration = configuration; self.keys = QwenStagePrefixDiskKeys(master: key)
-        self.root = root; self.rank = rank; self.fault = fault
-        let planName = Self.planDirectoryName(scope: planScope)
+        self.root = root; self.rank = rank; self.fault = fault; self.encoding = encoding
+        // Records of another encoding live under another directory: never
+        // offered here, kept as another plan's within the budget until they
+        // expire (a switch back finds them).
+        let planName = Self.planDirectoryName(scope: planScope + encoding.planScopeSuffix)
         planDirectory = root.appendingPathComponent(planName, isDirectory: true)
         directory = planDirectory.appendingPathComponent("rank\(rank)", isDirectory: true)
         stagingDirectory = Self.stagingName(epoch: stagingEpoch).map {
@@ -207,6 +221,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         statistics.keptOtherBytes = otherPlanBytes
         let bytes = lock.withLock { records.values.reduce(0) { $0 + $1.bytes } }
         log("darkbloom-prefix-ssd-v1 rank=\(rank) event=open plan=\(planName) records=\(recordCount) bytes=\(bytes)"
+            + " encoding=\(encoding)"
             + " swept_plans=\(sweptPlans) swept_files=\(statistics.sweptFiles) expired=\(statistics.expirations)"
             + " other_plan_records=\(statistics.keptOtherRecords) other_plan_bytes=\(statistics.keptOtherBytes)"
             + " ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)")
@@ -273,7 +288,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             if fault?.restoreFails == true {
                 throw QwenStagePrefixDiskInjectedFault()
             }
-            let state = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier,
+            let state = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier, encoding: encoding,
                 stallMilliseconds: fault?.restoreStallMilliseconds, check: guarded)
             let bytes = state.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
                 + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
@@ -281,7 +296,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             touch(name: name)
             lock.withLock { statistics.restores += 1; statistics.restoredBytes += bytes }
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore frontier=\(frontier) bytes=\(bytes)"
-                + " ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)")
+                + " ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) encoding=\(encoding)")
             return state
         } catch {
             lock.withLock { statistics.failedRestores += 1 }
@@ -382,7 +397,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         do {
             job = try QwenStagePrefixDiskJob.prepare(scope: scope, recordKey: recordKey, fileName: name, rank: rank, deepest: deepest,
                 frontiers: chosen.map { ($0, frontierKeys[$0.committedTokens]!) }, blockTokens: blockTokens,
-                attentionRows: attentionRows)
+                attentionRows: attentionRows, encoding: encoding)
         } catch {
             lock.withLock { statistics.droppedPersists += 1 }
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=unstorable")
@@ -463,7 +478,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             evictOverLimits(protecting: name)
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist prompt=\(job.header.committedTokens)"
                 + " frontiers=\(job.header.frontiers.map { String($0.tokens) }.joined(separator: "_"))"
-                + " bytes=\(bytes) ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) records=\(recordCount)")
+                + " bytes=\(bytes) ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) records=\(recordCount)"
+                + " encoding=\(encoding) attention_bytes=\(job.attentionBytes) native_attention_bytes=\(job.nativeAttentionBytes)")
         } catch {
             unlink(temporary.path)
             abandon("write_failed")
@@ -596,9 +612,12 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         var loaded: [(Record, TimeInterval)] = []
         for name in names where name != "key-check" && name != "write-window" {
             let url = directory.appendingPathComponent(name)
+            // A record of another encoding cannot be in this directory unless
+            // something wrote it there: it is never restored, so it goes.
             guard name.hasSuffix(".dbpx"), !name.hasPrefix("."),
                   let opened = try? QwenStagePrefixDiskIO.open(url: url, keys: keys),
-                  keys.fileName(recordKey: opened.header.recordKey) == name else {
+                  keys.fileName(recordKey: opened.header.recordKey) == name,
+                  opened.header.encoding == encoding.header else {
                 unlink(url.path); statistics.sweptFiles += 1; continue
             }
             let modified = Self.modificationTime(url.path) ?? 0

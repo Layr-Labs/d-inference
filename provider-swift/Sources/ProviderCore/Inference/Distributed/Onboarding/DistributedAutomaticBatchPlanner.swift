@@ -162,9 +162,13 @@ struct DistributedAutomaticBatchPlanner {
             maximum: ClusterModelLayout.maximumEncodedBytes))
         let usesNativeBatchQuote = [.gptossLayerStage, .mimoV26LayerStage].contains(
             ClusterRuntimeAdapter.registering(runtimeModelID: capability.runtimeModelID))
+        // Every width is quoted for the memory plan's request: the profile, or
+        // the standard request for a row that serves its native context (a
+        // longer request is charged at its own context when a rank reserves it).
+        let memory = capability.profile.memoryScope
         let request = usesNativeBatchQuote ? nil : try ClusterPlacementRequestScope.decode(run(
             ["request-scope", "--model-dir", local.modelDirectory,
-             "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens)],
+             "--prompt-tokens", String(memory.maximumPromptTokens), "--output-tokens", String(memory.maximumOutputTokens)],
             maximum: ClusterPlacementRequestScope.maximumEncodedBytes))
         guard let link = configuration.linkControl else { return nil }
         let members = configuration.peers.map { peer in
@@ -198,22 +202,22 @@ struct DistributedAutomaticBatchPlanner {
             let scope: ClusterPlacementBatchScope
             if usesNativeBatchQuote {
                 let quote = try ClusterPlacementBatchQuote.decode(run(["batch-scope", "--model-dir", local.modelDirectory,
-                    "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens),
+                    "--prompt-tokens", String(memory.maximumPromptTokens), "--output-tokens", String(memory.maximumOutputTokens),
                     "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)],
                     maximum: ClusterPlacementBatchQuote.maximumEncodedBytes))
-                try quote.requireRequest(promptTokens: demand.maximumPromptTokens,
-                    outputTokens: demand.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
+                try quote.requireRequest(promptTokens: memory.maximumPromptTokens,
+                    outputTokens: memory.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
                 scope = try ClusterPlacementBatchScope(quote: quote)
             } else {
                 let tensorQuote: ClusterPlacementTensorBatchQuote?
                 if ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID) {
                     let quote = try ClusterPlacementTensorBatchQuote.decode(run(["tensor-batch-scope", "--model-dir", local.modelDirectory,
-                        "--prompt-tokens", String(demand.maximumPromptTokens), "--output-tokens", String(demand.maximumOutputTokens),
+                        "--prompt-tokens", String(memory.maximumPromptTokens), "--output-tokens", String(memory.maximumOutputTokens),
                         "--batch-lanes", String(lanes), "--chunk-size", String(configuration.chunkTokens)]
                         + (configuration.tensorAssistant.map { ["--mtp-depth", String($0.depth)] + $0.verificationArguments } ?? []),
                         maximum: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
-                    try quote.requireRequest(promptTokens: demand.maximumPromptTokens,
-                        outputTokens: demand.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
+                    try quote.requireRequest(promptTokens: memory.maximumPromptTokens,
+                        outputTokens: memory.maximumOutputTokens, lanes: lanes, chunkTokens: configuration.chunkTokens)
                     try quote.requireAssistant(configuration.tensorAssistant)
                     tensorQuote = quote
                 } else { tensorQuote = nil }

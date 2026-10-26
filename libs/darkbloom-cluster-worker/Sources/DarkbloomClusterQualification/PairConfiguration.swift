@@ -170,6 +170,12 @@ public struct PairConfiguration: Sendable {
     public var remotePrefixSSD: PairPrefixSSD?
     /// Diagnosis: both workers keep nothing on disk and delete what they kept.
     public var prefixSSDOff = false
+    /// How both workers' SSD records store attention rows
+    /// (`DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION`: `balanced`, `k8v4`,
+    /// `k8v8` or `native`); nil keeps the workers' default, balanced. Both
+    /// ranks get the same value: they bind it into their load agreement.
+    public var prefixSSDQuantization: String?
+    public static let prefixSSDQuantizations: Set<String> = ["balanced", "k8v4", "k8v8", "native"]
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
@@ -529,6 +535,7 @@ public struct PairConfiguration: Sendable {
             environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR", ssd.directory))
         }
         if prefixSSDOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD", "off")) }
+        if let prefixSSDQuantization { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION", prefixSSDQuantization)) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {

@@ -32,7 +32,7 @@ final class PairWorkerEndpointReservationTests: XCTestCase {
 
         let sent = Self.oneReservationPerCarrier(deadline: lineRead + 60_000_000_000)
         // Together the fixtures set every optional field.
-        XCTAssertTrue(sent.contains { $0.sampling != nil } && sent.contains { $0.route != nil }
+        XCTAssertTrue(sent.contains { $0.sampling != nil } && sent.contains { $0.prefixCache != nil } && sent.contains { $0.route != nil }
             && sent.contains { $0.mimoImages != nil } && sent.contains { $0.stillImages != nil }
             && sent.contains { $0.glmMedia != nil } && sent.contains { $0.qwenMedia != nil })
         for reservation in sent {
@@ -46,6 +46,7 @@ final class PairWorkerEndpointReservationTests: XCTestCase {
         XCTAssertEqual(received.count, sent.count)
         for (given, delivered) in zip(sent, received) {
             XCTAssertEqual(delivered.sampling, given.sampling)
+            XCTAssertEqual(delivered.prefixCache, given.prefixCache)
             XCTAssertEqual(delivered.route, given.route)
             XCTAssertEqual(delivered.mimoImages, given.mimoImages)
             XCTAssertEqual(delivered.stillImages, given.stillImages)
@@ -79,18 +80,20 @@ final class PairWorkerEndpointReservationTests: XCTestCase {
     }
 
     /// One reservation per media carrier, since the protocol lets a request
-    /// carry one, each with every other field its carrier allows: sampling on
-    /// all of them, the route only without media.
+    /// carry one, each with every other field its carrier allows: sampling and
+    /// a prefix partition on all of them (a tenant's on text, the cache off
+    /// with media), the route only without media.
     private static func oneReservationPerCarrier(deadline: UInt64) -> [ClusterWorkerReservation] {
         let sampling = ClusterWorkerSampling(temperature: 0.7, topP: 0.9, topK: 20, minP: 0.05, repetitionPenalty: 1.1,
             repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0.5, seed: 41, stream: 7,
             logitBias: [.init(tokenID: 3, bias: -2)], topLogprobs: 2)
-        func reservation(_ profileID: String, _ prompt: [Int], route: ClusterWorkerRoute? = nil,
+        func reservation(_ profileID: String, _ prompt: [Int], prefixCache: ClusterWorkerPrefixCache = .disabled,
+                         route: ClusterWorkerRoute? = nil,
                          mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
                          glmMedia: ClusterGLMMedia? = nil, qwenMedia: ClusterQwenMedia? = nil) -> ClusterWorkerReservation {
             .init(profileID: profileID, promptTokenIDs: prompt, stopTokenIDs: [2, 9], outputCount: 4, chunkSize: 2,
-                deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 20, sampling: sampling, route: route,
-                mimoImages: mimoImages, stillImages: stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
+                deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 20, sampling: sampling, prefixCache: prefixCache,
+                route: route, mimoImages: mimoImages, stillImages: stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
         }
         let png = Data([137, 80, 78, 71, 13, 10, 26, 10]) + Data(repeating: 7, count: 40)
         let bytes = Data([1, 2, 3])
@@ -107,7 +110,7 @@ final class PairWorkerEndpointReservationTests: XCTestCase {
                 decodedPixels: 1, encoded: bytes, temporal: 1, height: 2, width: 2, tokenOffset: 1, tokenCount: 1,
                 patchesSHA256: hash)])
         return [
-            reservation("example-profile", [1, 2, 3, 4], route: .decodingRankAlone),
+            reservation("example-profile", [1, 2, 3, 4], prefixCache: .tenant(hash), route: .decodingRankAlone),
             reservation(ClusterStillImages.glmProfileID, [1, 2, 3, 4], stillImages: .init(configurationSHA256: hash,
                 images: [.init(png: png, width: 2, height: 2, tokenOffset: 1, tokenCount: 1)])),
             reservation(ClusterMiMoImageCandidate.profileID, [1, 151_652, 151_655, 151_653, 2],

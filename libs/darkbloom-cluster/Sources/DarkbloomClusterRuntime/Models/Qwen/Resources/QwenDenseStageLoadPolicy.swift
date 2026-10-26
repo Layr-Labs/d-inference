@@ -95,7 +95,8 @@ public struct QwenDenseStageLoadAdmission: Encodable, Equatable, Sendable {
     /// kernel's pageout scan takes before fewer than half of the file cache is
     /// inactive and it turns to anonymous pages. Nil when not reported.
     public let fileCacheBeforeAnonymousBytes: Int?
-    /// The smaller of the two kernel bounds; three quarters of it is counted.
+    /// The smaller of the two kernel bounds. Recorded only: every file-backed
+    /// page is counted (`countedReclaimableBytes`).
     public let countableFileCacheBytes: Int
     /// The most file cache this Mac could ever have counted with its
     /// anonymous memory as it is now, if everything else were file cache.
@@ -127,21 +128,22 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
 /// Pure decision checks. A passing caller-fabricated observation is not a grant;
 /// only the private native gate samples current resources and permits reads.
 ///
-/// Version 3 admits on free pages plus part of the file cache, because macOS
-/// keeps almost nothing free once files have been read: after a download or a
-/// hash pass a Mac has a few hundred MiB free and tens of GiB of cache.
+/// Version 3 admits on free pages plus the file cache, because macOS keeps
+/// almost nothing free once files have been read: after a download or a hash
+/// pass a Mac has a few hundred MiB free and tens of GiB of cache.
 ///
-/// Counted is three quarters of the file-backed memory inside both of the
-/// kernel's own bounds (above its file-cache minimum, and before fewer than
-/// half of the file cache is inactive, speculative pages counted inactive),
-/// at most 32 GiB. Those bounds say
-/// where the pageout scan is forced onto anonymous pages; inside them it may
-/// still compress, so counting cache is a bet that the kernel can evict
-/// closed files, and it is withdrawn the moment the bet is seen to fail: a
-/// load or a request stops counting cache once more than a small amount has
-/// been compressed or swapped out since its first sample. Anonymous pages are
-/// never counted. Memory pressure is a last-resort condition only: on a Mac
-/// with this much memory "warning" comes long after the harm.
+/// Counted is every file-backed page (owner decision, 2026-10-21): the kernel
+/// drops clean file pages on demand. The kernel's own bounds (its file-cache
+/// minimum, and the point where fewer than half of the file cache is
+/// inactive, speculative pages counted inactive) say where the pageout scan is
+/// forced onto anonymous pages; they are recorded with each decision, not
+/// applied. Counting cache is a bet that the kernel can evict closed files,
+/// and it is withdrawn the moment the bet is seen to fail: a load or a request
+/// stops counting cache once more than a small amount has been compressed or
+/// swapped out since its first sample, and at any pressure above normal.
+/// Anonymous pages are never counted. Memory pressure is a last-resort
+/// condition only: on a Mac with this much memory "warning" comes long after
+/// the harm.
 ///
 /// Only the pressure level, the swap in use, the kernel's file-cache minimum
 /// and the live compression counter are current at every decision. The queue

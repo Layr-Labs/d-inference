@@ -54,10 +54,10 @@ struct QwenTensorParallelBatchSessionTests {
         var selected: [Int] = []
         var failure: Error?
         var releaseAttempts = 0, rejectRelease = false
-        init(_ model: QwenTensorParallelModel, lanes: Int) throws {
+        init(_ model: QwenTensorParallelModel, lanes: Int, maximumTokens: Int = 256) throws {
             self.model = model
             host = try CBv2StageKVHost(model: model.model, kind: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged" ? .paged : .contiguous,
-                lanes: lanes, maximumTokensPerRequest: 256, maximumChunkTokens: 64)
+                lanes: lanes, maximumTokensPerRequest: maximumTokens, maximumChunkTokens: 64)
         }
     }
     private struct SelectionReservation: QwenTensorParallelBatchReservation {
@@ -67,9 +67,12 @@ struct QwenTensorParallelBatchSessionTests {
         var joinable: Bool { true }
     }
     private var device: Device { ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1" ? .gpu : .cpu }
+    /// Each test's own rank threads: in CPU mode a reused worker thread would
+    /// replay compiled traces an earlier GPU test recorded (`TensorParallelRankThreads`).
+    private let ranks = TensorParallelRankThreads()
     private func parallel(_ owners: [Owned], body: @escaping (Owned) throws -> Void) throws {
-        let work = Work(body)
-        DispatchQueue.concurrentPerform(iterations: 2) { rank in
+        let work = Work(body), device = self.device
+        ranks.run { rank in
             Device.withDefaultDevice(device) {
                 do { try work.body(owners[rank]) } catch { owners[rank].failure = error }
             }
@@ -137,6 +140,106 @@ struct QwenTensorParallelBatchSessionTests {
             heads: 4, kvHeads: 2, vocabulary: 256)
         try verifyCapacityParity(configuration: fixture.configuration, tensors: fixture.tensors,
             hiddenSize: 256, recurrentLayers: 3)
+    }
+
+    /// A request longer than its prompt and one 1,024-token granule opens
+    /// with only those pages reserved and grows them before the decode step
+    /// that needs them (`QwenTensorParallelBatchSession.reservePages`): every
+    /// logits row, key, value and recurrent row on both ranks equals the same
+    /// request's whose pages were reserved for its whole length before its
+    /// first token. Paged only (the contiguous reference backend keeps its
+    /// whole-length rows), at capacity one and two.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"
+        && ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged"), arguments: [1, 2])
+    func pagesGrowMidDecodeWithoutChangingAByte(capacity: Int) throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        try Device.withDefaultDevice(.gpu) {
+            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-paged-growth-tiny",
+                vocabularySize: 256, hiddenSize: 256, activationDType: "bfloat16",
+                maximumPromptTokens: 128, maximumChunkTokens: 64, maximumOutputTokens: 1_200, maximumContextTokens: 1_400)
+            func pair() throws -> [Owned] {
+                let wire = Rendezvous()
+                return try (0..<2).map { rank in
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: Rank(rank, wire)) { _, keep in
+                        for (name, value) in fixture.tensors { try keep(name, value) }
+                    }
+                    return try Owned(model, lanes: capacity, maximumTokens: 1_400)
+                }
+            }
+            let grown = try pair(), whole = try pair()
+            defer { for owner in grown + whole { for session in owner.sessions { try? session.retire() } } }
+            let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: (0..<40).map { ($0 * 17 + 2) % 256 }, chunkSize: 16,
+                outputCount: 1_150, stopTokenIDs: [])
+            for owner in grown + whole {
+                owner.sessions = [try .init(model: owner.model, configuration: configuration, host: owner.host, request: request)]
+            }
+            // The reference reserves every page before its first token.
+            for owner in whole { try owner.sessions[0].state.growReservation(toTokens: request.maximumTokens) }
+            let opened = QwenTensorParallelBatchSession.initialReservedTokens(request)
+            #expect(opened == 40 + QwenTensorParallelBatchSession.pageGrowthTokens && opened < request.maximumTokens)
+            for rank in 0..<2 {
+                #expect(grown[rank].sessions[0].state.reservedTokens == opened)
+                #expect(whole[rank].sessions[0].state.reservedTokens == request.maximumTokens)
+                let small = (grown[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                let large = (whole[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                #expect(small < large)
+            }
+            func compare(_ label: String, state: Bool) throws {
+                for rank in 0..<2 {
+                    let a = grown[rank], b = whole[rank]
+                    let actual = try #require(a.output), expected = try #require(b.output)
+                    #expect(bytes(actual) == bytes(expected), "\(label) rank=\(rank) logits")
+                    let x = a.sessions[0], y = b.sessions[0]
+                    #expect(x.committedTokens == y.committedTokens)
+                    guard state else { continue }
+                    for (left, right) in zip(x.state.rows, y.state.rows) {
+                        let l = left!.snapshot(), r = right!.snapshot()
+                        #expect(l.offset == r.offset && bytes(l.keys) == bytes(r.keys) && bytes(l.values) == bytes(r.values),
+                            "\(label) rank=\(rank) keys and values")
+                    }
+                    let l = x.state.recurrent.confirmedStateSnapshot() ?? [:], r = y.state.recurrent.confirmedStateSnapshot() ?? [:]
+                    #expect(l.keys.sorted() == r.keys.sorted() && l.count == 3)
+                    for layer in l.keys {
+                        #expect(bytes(l[layer]!.conv!) == bytes(r[layer]!.conv!) && bytes(l[layer]!.ssm!) == bytes(r[layer]!.ssm!))
+                    }
+                }
+            }
+            while grown[0].sessions[0].schedule.committedPromptTokens < request.promptCount {
+                let final = grown[0].sessions[0].schedule.committedPromptTokens + request.chunkSize >= request.promptCount
+                try parallel(grown) { $0.output = try $0.sessions[0].prefill(check: {}) }
+                try parallel(whole) { $0.output = try $0.sessions[0].prefill(check: {}) }
+                if final { try compare("prefill", state: true) }
+            }
+            var grewAt: Int?
+            for step in 0..<(request.outputCount - 1) {
+                let token = (step * 13 + 9) % 256
+                let before = grown[0].sessions[0].state.reservedTokens
+                try parallel(grown) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
+                try parallel(whole) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
+                let after = grown[0].sessions[0].state.reservedTokens
+                #expect(grown[1].sessions[0].state.reservedTokens == after)
+                if after != before { grewAt = grewAt ?? step }
+                let near = grewAt.map { step - $0 <= 1 } ?? false
+                try compare("decode-\(step)", state: near || step == request.outputCount - 2 || step == 0)
+            }
+            // One growth, a granule before the end: from the prompt's granule to the request's length.
+            #expect(grewAt == opened - 40 - QwenTensorParallelBatchSession.pageGrowthMargin)
+            for rank in 0..<2 {
+                #expect(grown[rank].sessions[0].state.reservedTokens == request.maximumTokens)
+                #expect((grown[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                    == (whole[rank].host.backend as! PagedKVBackend).pool.bytesReserved)
+            }
+            for owner in grown + whole {
+                try owner.sessions[0].retire()
+                #expect(owner.sessions[0].state.isClosed && owner.host.isDrained)
+            }
+        }
     }
 
     /// One request at capacity one and at capacity two: the same paged
@@ -950,6 +1053,132 @@ struct QwenTensorParallelBatchSessionTests {
             #expect(third[0].tier.recordCount == width - 1)
             for owner in lossy { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 0, last: nil) }
             for disk in third { disk.tier.close() }
+        }
+    }
+
+    /// Balanced records, the default, through the batch owner: a prompt whose
+    /// captured frontier lies past the exact band is written encoded, offered
+    /// by reopened tiers and adopted on both ranks into native rows of the
+    /// captured shapes; the record's newest rows match a cold prefill bit for
+    /// bit, older rows are approximate, and the restored request runs on (its
+    /// outputs close to, not equal to, a cold request's).
+    @Test func ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand() throws {
+        try Device.withDefaultDevice(device) {
+            let (configuration, tensors, _) = try warmFixture(hybrid: false)
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-warm-tiny", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 384,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 512)
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwen-tp-ssd-balanced-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let key = Data((0..<32).map { UInt8(($0 * 29 + 3) % 256) })
+            var settings = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+            settings.minimumTokens = 1
+            settings.minimumFreeBytes = 1 << 20
+            let planScope = "qwen-tp-ssd-balanced|shares=1:1"
+            let encoding = QwenStagePrefixDiskEncoding(quantization: .balanced, family: .qwenAttention)
+            func tiers() throws -> [QwenTensorParallelPrefixDisk] {
+                try (0..<2).map { rank in
+                    .init(tier: try QwenStagePrefixDiskTier(configuration: settings, root: root, key: key,
+                        planScope: planScope, rank: rank, encoding: encoding), planScope: planScope)
+                }
+            }
+            func pair(caches: [QwenTensorParallelBatchPrefixCache]?, disks: [QwenTensorParallelPrefixDisk]?) throws -> [Owned] {
+                let wire = Rendezvous(), load = UUID().uuidString
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owner = try Owned(model, lanes: 1, maximumTokens: 512)
+                    let warm = caches != nil
+                    owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
+                        group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
+                        releaseResources: { _ in }, prefix: caches?[rank],
+                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20, residentBytes: 64 << 20) : nil,
+                        prefixScope: warm ? { _ in load } : nil,
+                        prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=16|text" },
+                        allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
+                    return owner
+                }
+            }
+            // 300 prompt tokens in 16-token chunks: the frontier kept is 288, the band rows [160, 288).
+            let prompt = [10] + (1..<300).map { ($0 * 17 + 7) % 256 }
+            let frontier = 288, band = frontier - 128
+            func request() throws -> QwenLayerStageGenerationRequest {
+                try .init(profile: profile, requestID: UUID(), promptTokenIDs: prompt, chunkSize: 16, outputCount: 8,
+                    stopTokenIDs: [])
+            }
+            let first = try tiers()
+            let writer = try pair(caches: (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) },
+                disks: first)
+            let stored = try request()
+            try parallel(writer) { $0.nativeLanes = [try $0.executor!.open(.init(request: stored), check: {})] }
+            while writer[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                try parallel(writer) { owner in
+                    let lane = owner.nativeLanes[0]
+                    if let token = try owner.executor!.prefill(lane, frame: lane.nextFrame!, check: {}) { owner.selected = [token] }
+                }
+            }
+            for owner in writer {
+                try owner.executor!.retire(owner.nativeLanes[0], reason: .clientStop, selected: 1, last: owner.selected[0])
+            }
+            for owner in writer { try owner.executor!.confirmedRetirement(owner.nativeLanes[0], clean: true) }
+            #expect(writer.allSatisfy { $0.nativeLanes[0].storedPrefixFrontiers == [frontier] })
+            for disk in first {
+                #expect(disk.tier.drain(timeoutSeconds: 60) && disk.tier.recordCount == 1)
+                let name = try #require(try FileManager.default.contentsOfDirectory(atPath: disk.tier.directory.path)
+                    .first { $0.hasSuffix(".dbpx") })
+                let header = try QwenStagePrefixDiskIO.open(url: disk.tier.directory.appendingPathComponent(name), keys: disk.tier.keys).header
+                #expect(header.encoding == encoding.header && header.committedTokens == frontier
+                    && !header.attention.isEmpty && header.attention.allSatisfy { $0.nativeFrom == band && $0.heads == 1 })
+                disk.tier.close()
+            }
+            let second = try tiers()
+            let resident = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            let cold = try pair(caches: nil, disks: nil), warm = try pair(caches: resident, disks: second)
+            let r = try request()
+            try parallel(cold) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+            try parallel(warm) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+            #expect(warm.allSatisfy { $0.nativeLanes[0].committedTokens == frontier })
+            #expect(cold.allSatisfy { $0.nativeLanes[0].committedTokens == 0 })
+            for owners in [cold, warm] {
+                while owners[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                    try parallel(owners) { owner in owner.output = try owner.nativeLanes[0].session.prefill(check: {}) }
+                }
+            }
+            #expect(second.allSatisfy { $0.tier.stats.restores == 1 } && resident.allSatisfy { $0.bytesInUse > 0 })
+            for rank in 0..<2 {
+                let a = cold[rank].nativeLanes[0].session.state, b = warm[rank].nativeLanes[0].session.state
+                #expect(a.committedTokens == b.committedTokens)
+                var compared = 0
+                for (x, y) in zip(a.rows, b.rows) {
+                    guard let x, let y else { continue }
+                    let computed = x.snapshot(), adopted = y.snapshot()
+                    for (c, w) in [(computed.keys, adopted.keys), (computed.values, adopted.values)] {
+                        #expect(c.shape == w.shape && c.dtype == w.dtype)
+                        #expect(bytes(c[0..., 0..., band ..< frontier, 0...]) == bytes(w[0..., 0..., band ..< frontier, 0...]),
+                            "rank \(rank): the record's band is exact")
+                        #expect(bytes(c[0..., 0..., ..<band, 0...]) != bytes(w[0..., 0..., ..<band, 0...]),
+                            "rank \(rank): older rows come back approximate")
+                        let difference = abs(c[0..., 0..., ..<band, 0...].asType(.float32) - w[0..., 0..., ..<band, 0...].asType(.float32)).max()
+                        let scale = abs(c[0..., 0..., ..<band, 0...].asType(.float32)).max()
+                        #expect(difference.item(Float.self) < 0.25 * scale.item(Float.self))
+                    }
+                    compared += 1
+                }
+                #expect(compared == 4)
+                let coldLogits = cold[rank].output!.asType(.float32), warmLogits = warm[rank].output!.asType(.float32)
+                #expect(all(isFinite(warmLogits)).item(Bool.self))
+                #expect(bytes(cold[rank].output!) != bytes(warm[rank].output!), "a balanced restore is not byte-equal to a cold prefill")
+                #expect(abs(coldLogits - warmLogits).max().item(Float.self) < 0.25 * max(1, abs(coldLogits).max().item(Float.self)))
+            }
+            for owner in cold + warm {
+                for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 0, last: nil) }
+                owner.nativeLanes.removeAll(); #expect(owner.host.isDrained)
+            }
+            for disk in second { disk.tier.close() }
         }
     }
 }

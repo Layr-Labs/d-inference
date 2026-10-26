@@ -14,6 +14,11 @@ import MLX
 struct QwenDensePlacementFamily: ClusterPlacementFamily {
     let definition: QwenResidentModelDefinition
     let geometry: QwenLongPrefillBudgetGeometry
+    /// The memory plan's request (`QwenResidentAdapterDefinition.memoryProfile`),
+    /// which the planner, every quote and every LOAD gate size the pair for:
+    /// the row's limits, or the standard request for a row that serves its
+    /// native context (the capability advertises that; a longer request is
+    /// charged at its own context when a rank reserves it).
     let profile: QwenLayerStageGenerationProfile
     let pack: QwenRegisteredPack
     let layerPrefix: String
@@ -54,7 +59,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             headDimension: n("head_dim"), linearKeyHeads: n("linear_num_key_heads"),
             linearValueHeads: n("linear_num_value_heads"), linearKeyDimension: n("linear_key_head_dim"),
             linearValueDimension: n("linear_value_head_dim"), convolutionKernel: n("linear_conv_kernel_dim"))
-        profile = try QwenResidentAdapterDefinition.profile(specification: definition.specification)
+        profile = try QwenResidentAdapterDefinition.memoryProfile(specification: definition.specification)
         pack = definition.specification.model.pack
         // The wrapper types (the dense and routed-expert wrappers, a Prism
         // pack) construct the text model under `language_model.`.
@@ -143,8 +148,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         QwenPlacementCharge.wholeModelStateBytesPerToken(geometry: geometry, profile: profile)
     }
 
-    /// The model's largest context (`QwenResidentContextLimits`), which ranks
-    /// admit at load when memory allows; a placement may be planned for it.
+    /// The memory plan's largest context (`QwenResidentContextLimits`), which
+    /// ranks admit at load when memory allows; a placement may be planned for it.
     var largestContextTokens: Int { profile.maximumContextTokens }
 
     /// The same charge at another context: what a placement planned for that

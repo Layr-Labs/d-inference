@@ -352,6 +352,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
         // The prefix cache votes in a reduction of its own: both ranks must
         // have it on, or both off (`DARKBLOOM_CLUSTER_PREFIX_CACHE=off`).
         let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
+        // How the SSD tier's records store the DSA latents (main's checkpoint
+        // precision, as the owner resolved it; balanced unless it says
+        // native), bound into the load agreement while prefixes are kept.
+        let prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(environment, family: .glm5NextDSA)
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: GLM5NextTextStage?
@@ -374,6 +378,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
                 collective.transport.rawValue, configuration.allocatorPolicy.rawValue,
                 "glm5-next-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]
+                + (prefixEnabled ? prefixRecords.loadAgreementFields : [])
                 + Self.laneAgreementFields(lanes) + Self.pagedKVAgreementFields(pagedKV)
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
@@ -543,7 +548,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 planScope: GLM5NextTensorParallelPrefixDisk.planScope(
                     artifactAggregateSHA256: descriptor.artifactAggregateSHA256, inventorySHA256: spec.inventorySHA256,
                     rankBuildSHA256: identity.peers.map(\.buildSHA256), mtpDepth: Self.mtpDepth),
-                rank: collective.rank, stagingEpoch: identity.membershipEpoch.uuidString.lowercased(),
+                rank: collective.rank, encoding: prefixRecords, stagingEpoch: identity.membershipEpoch.uuidString.lowercased(),
                 stage: stage, mtp: loadedMTP) : nil
             log("darkbloom-prefix-v1 rank=\(collective.rank) family=glm mode=tensor_parallel budget_bytes=\(prefixBudget)"
                 + " ssd=\(prefixDisk != nil)")
@@ -996,7 +1001,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         /// The same partition's scope on this rank's SSD tier
         /// (`prefixDiskScope(_:chunk:request:resident:)`); nil without the
         /// tier or when `prefixScope` is nil.
-        var prefixDiskScope: String? = nil
+        let prefixDiskScope: String?
     }
 
     /// The SSD tier's scope for a request kept under `resident`: the tier's
@@ -1049,7 +1054,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         if let media, try !media.open(rank: rank, tower: vision?.tower, sum: { [group] in group.allSum($0) }, stop: stop) {
             return OpenedRequest(cache: stage.newCache(), pages: nil, start: 0, speculation: nil,
                 chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, selectionKeepAt: 0, media: media,
-                stopped: true, prefixScope: nil)
+                stopped: true, prefixScope: nil, prefixDiskScope: nil)
         }
         mark("digest")
         let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
@@ -1080,8 +1085,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
         if let scope, prompt.count > chunk {
             let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
             let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
-            let onDisk = zip(prefixDisk.map { [$0] } ?? [], diskScope.map { [$0] } ?? []).flatMap { disk, diskScope in
-                disk.boundaries(scope: diskScope, prompt: prompt, candidates: candidates)
+            var onDisk: Set<Int> = []
+            if let disk = prefixDisk, let diskScope {
+                onDisk = disk.boundaries(scope: diskScope, prompt: prompt, candidates: candidates)
             }
             mark("held")
             let vote = try QwenTensorParallelPrefixCache.agree(offers: zip(candidates, held).map {
@@ -1090,8 +1096,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             mark("vote")
             if let agreed = vote, agreed.ssd {
                 if let restored = try restoreAgreedFromEitherTier(agreed.boundary, prompt: prompt, scope: scope,
-                        diskScope: diskScope,
-                        stage: stage, pages: pages, speculation: speculation, stop: stop) {
+                        diskScope: diskScope, stage: stage, pages: pages, speculation: speculation, stop: stop) {
                     cache = restored; start = agreed.boundary
                 }
             } else if let agreed = vote {

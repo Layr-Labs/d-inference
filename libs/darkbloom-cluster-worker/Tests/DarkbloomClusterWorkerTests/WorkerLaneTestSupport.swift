@@ -19,6 +19,12 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     var leaveOnStart = Set<UUID>()
     /// Deterministic test barrier after the first fabricated polling token.
     var afterPollingToken: (() -> Void)?
+    /// As a rank's live memory gate: a lane whose prompt plus output is
+    /// longer than this is refused, for that request alone.
+    var refusesContextAbove: Int?
+    /// What `refreshLaneServingContext` re-derives between batches; nil keeps
+    /// readiness's (every lane owner but Qwen tensor parallel).
+    var laneServingContext: Int?
     var observedCancel: ((UUID) -> Void)?
     private let lock = NSLock()
     private var reservations: [UUID: ClusterWorkerReservation] = [:]
@@ -54,10 +60,14 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
             guard reservations.count < batchLanes, reservations[id] == nil else {
                 throw WorkerFailure.invalid("Test lanes full")
             }
+            if let refusesContextAbove, value.promptTokenIDs.count + value.outputCount > refusesContextAbove {
+                throw WorkerFailure.invalid("Test lane exceeds its live memory allowance")
+            }
             reservations[id] = value
             return 1024
         }
     }
+    func refreshLaneServingContext() -> Int? { lock.withLock { laneServingContext } }
     func startLane(_ id: UUID) throws {
         try lock.withLock {
             guard reservations[id] != nil, started.insert(id).inserted else {
@@ -241,8 +251,9 @@ final class LanePipeHarness {
         }
         return try ClusterWorkerCodec.decodeEvent(bytes)
     }
-    var reservation: ClusterWorkerReservation {
-        .init(profileID: "test", promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 1,
+    var reservation: ClusterWorkerReservation { reservation(prompt: 3, output: 1) }
+    func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
+        .init(profileID: "test", promptTokenIDs: Array(1...prompt), stopTokenIDs: [], outputCount: output,
             chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000,
             capacityLimitBytes: 4096, sampling: nil, prefixCache: nil)
     }

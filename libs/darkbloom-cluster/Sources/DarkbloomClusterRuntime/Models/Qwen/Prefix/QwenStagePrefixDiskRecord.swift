@@ -43,6 +43,21 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
         let heads: Int
         let headDim: Int
         let units: [Unit]
+        /// An encoded entry: rows `[0, nativeFrom)` of every head are stored
+        /// encoded under the record's `encoding` (the key or value role by
+        /// `kind`), rows `[nativeFrom, committedTokens)` native
+        /// (`QwenStagePrefixDiskEncodedRows`). Absent: every row native.
+        var nativeFrom: Int? = nil
+    }
+    /// The attention encoding the record was written under; absent for
+    /// native records. Only a tier of the same encoding restores it.
+    struct Encoding: Codable, Equatable {
+        /// `PagedKVQuantizationSelection` name, e.g. `balanced`.
+        let quantization: String
+        /// `PagedKVQuantizationConfig.identity` of that selection.
+        let identity: String
+        /// `QwenStagePrefixDiskFamily` raw value.
+        let family: String
     }
     struct Recurrent: Codable, Equatable {
         let frontier: Int
@@ -89,6 +104,8 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
         /// The kept frontiers that carry a history.
         let frontiers: [Int]
     }
+    /// The encoding of its encoded attention entries (`Attention.nativeFrom`).
+    var encoding: Encoding? = nil
     /// The rank that wrote the record, sealed with the header: a record
     /// restores only on that rank (`QwenStagePrefixDiskPolicy.belongs`), not on
     /// another rank of the same plan that shares a root on one Mac.
@@ -152,6 +169,9 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     let fileName: String
     /// Per attention entry, its whole `[1, heads, committed, headDim]` source.
     let attention: [Source]
+    /// Per attention entry, its encoded rows; nil for a native entry. The
+    /// writer encodes each unit from the source when it seals it.
+    let encodedRows: [QwenStagePrefixDiskEncodedRows?]
     /// Per recurrent entry, its source.
     let recurrent: [Source]
     /// Per history entry, its source.
@@ -160,11 +180,23 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     let sharedHidden: Source?
     let sharedLast: Source?
     let sharedTokens: Source?
+    /// The attention units' plaintext bytes as written, and as a native
+    /// record of the same state would write them (log lines and measurement).
+    let attentionBytes: Int
+    let nativeAttentionBytes: Int
 
-    init(header: QwenStagePrefixDiskHeader, fileName: String, attention: [Source], recurrent: [Source], history: [Source] = [],
+    init(header: QwenStagePrefixDiskHeader, fileName: String, attention: [Source],
+         encodedRows: [QwenStagePrefixDiskEncodedRows?] = [], recurrent: [Source], history: [Source] = [],
          sharedHidden: Source? = nil, sharedLast: Source? = nil, sharedTokens: Source? = nil) {
-        self.header = header; self.fileName = fileName; self.attention = attention; self.recurrent = recurrent
+        self.header = header; self.fileName = fileName; self.attention = attention
+        self.encodedRows = encodedRows.isEmpty ? Array(repeating: nil, count: attention.count) : encodedRows
+        self.recurrent = recurrent
         self.history = history; self.sharedHidden = sharedHidden; self.sharedLast = sharedLast; self.sharedTokens = sharedTokens
+        let tag = QwenStagePrefixDiskFormat.tagBytes
+        attentionBytes = header.attention.reduce(0) { $0 + $1.units.reduce(0) { $0 + $1.length - tag } }
+        nativeAttentionBytes = header.attention.reduce(0) { total, item in
+            total + item.heads * header.committedTokens * item.headDim * (QwenStagePrefixDiskFormat.dtypes[item.dtype]?.size ?? 0)
+        }
     }
 
     var hostBytes: Int {
@@ -205,15 +237,16 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     }
 
     /// Prepares a record of `states` (one prompt's captured frontiers, the
-    /// deepest carrying the whole attention copy). Runs on the serving thread:
-    /// it evaluates (normally a no-op) and borrows the arrays' bytes.
+    /// deepest carrying the whole attention copy) under `encoding`. Runs on
+    /// the serving thread: it evaluates (normally a no-op) and borrows the
+    /// arrays' bytes; encoding happens on the writer, unit by unit.
     /// `attentionRows`: the deepest frontier's attention entries the writer
-    /// reads unit by unit (`QwenStagePrefixDiskRows`), stored as attention
-    /// arrays of one head are; a layer is in one of the two, never both.
+    /// reads unit by unit (`QwenStagePrefixDiskRows`), stored and encoded as
+    /// attention arrays of one head are; a layer is in one of the two, never both.
     static func prepare(scope: String, recordKey: String, fileName: String, rank: Int, deepest: QwenStagePrefixState,
                         frontiers: [(state: QwenStagePrefixState, key: String)], blockTokens: Int,
-                        attentionRows: [Int: (keys: QwenStagePrefixDiskRows, values: QwenStagePrefixDiskRows)] = [:])
-        throws -> QwenStagePrefixDiskJob {
+                        attentionRows: [Int: (keys: QwenStagePrefixDiskRows, values: QwenStagePrefixDiskRows)] = [:],
+                        encoding: QwenStagePrefixDiskEncoding = .native) throws -> QwenStagePrefixDiskJob {
         let committed = deepest.committedTokens
         guard committed > 0, blockTokens > 0, !frontiers.isEmpty,
               frontiers.allSatisfy({ $0.state.committedTokens == committed || $0.state.committedTokens % blockTokens == 0 }) else {
@@ -231,31 +264,44 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             return .init(index: index, offset: offset, length: plain + QwenStagePrefixDiskFormat.tagBytes)
         }
         var attention: [QwenStagePrefixDiskHeader.Attention] = [], attentionSources: [Source] = []
+        var encodedRows: [QwenStagePrefixDiskEncodedRows?] = []
+        // One attention entry's header and units, its rows encoded as
+        // `encoding` says for its layer, slot, width and dtype; every
+        // attention entry, whatever holds its rows, is laid out here.
+        func appendEntry(layer: Int, kind: String, dtype: DType, heads: Int, width: Int) throws {
+            guard let name = QwenStagePrefixDiskFormat.name(dtype), heads > 0, width > 0 else {
+                throw ProbeError("Prefix record attention shape or dtype is not storable")
+            }
+            let rows = encoding.rows(layer: layer, slot: kind, width: width, dtype: dtype, committed: committed)
+            let rowBytes = width * dtype.size, blocks = (committed + blockTokens - 1) / blockTokens
+            let units = (0..<blocks).map { block in
+                let first = block * blockTokens, count = min(blockTokens, committed - first)
+                return unit(heads * (rows?.headBytes(first: first, rows: count) ?? count * rowBytes))
+            }
+            var entry = QwenStagePrefixDiskHeader.Attention(layer: layer, kind: kind, dtype: name, heads: heads,
+                headDim: width, units: units)
+            entry.nativeFrom = rows?.nativeFrom
+            attention.append(entry)
+            encodedRows.append(rows)
+        }
         for layer in Set(deepest.attention.keys).union(attentionRows.keys).sorted() {
             if let pair = attentionRows[layer] {
                 for (kind, rows) in [("keys", pair.keys), ("values", pair.values)] {
-                    guard let dtype = QwenStagePrefixDiskFormat.name(rows.dtype) else {
-                        throw ProbeError("Prefix record attention rows' dtype is not storable")
-                    }
-                    let rowBytes = rows.width * rows.dtype.size, blocks = (committed + blockTokens - 1) / blockTokens
-                    let units = (0..<blocks).map { block in unit(min(blockTokens, committed - block * blockTokens) * rowBytes) }
-                    attention.append(.init(layer: layer, kind: kind, dtype: dtype, heads: 1, headDim: rows.width, units: units))
+                    try appendEntry(layer: layer, kind: kind, dtype: rows.dtype, heads: 1, width: rows.width)
                     attentionSources.append(.init(array: nil, data: Data(), rows: rows))
                 }
                 continue
             }
             let pair = deepest.attention[layer]!
             for (kind, array) in [("keys", pair.keys), ("values", pair.values)] {
-                guard array.ndim == 4, array.dim(0) == 1, array.dim(2) == committed,
-                      let dtype = QwenStagePrefixDiskFormat.name(array.dtype) else {
+                guard array.ndim == 4, array.dim(0) == 1, array.dim(2) == committed else {
                     throw ProbeError("Prefix record attention shape or dtype is not storable")
                 }
-                let heads = array.dim(1), headDim = array.dim(3), rowBytes = headDim * array.dtype.size
-                let blocks = (committed + blockTokens - 1) / blockTokens
-                let units = (0..<blocks).map { block in unit(heads * min(blockTokens, committed - block * blockTokens) * rowBytes) }
-                attention.append(.init(layer: layer, kind: kind, dtype: dtype, heads: heads, headDim: headDim, units: units))
+                try appendEntry(layer: layer, kind: kind, dtype: array.dtype, heads: array.dim(1), width: array.dim(3))
                 let data = array.asData(access: .noCopyIfContiguous)
-                guard data.data.count == heads * committed * rowBytes else { throw ProbeError("Prefix record attention bytes differ") }
+                guard data.data.count == array.dim(1) * committed * array.dim(3) * array.dtype.size else {
+                    throw ProbeError("Prefix record attention bytes differ")
+                }
                 attentionSources.append(.init(array: array, data: data.data))
             }
         }
@@ -329,10 +375,11 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             attention: attention, recurrent: recurrent, createdUnixSeconds: Date().timeIntervalSince1970)
         if !history.isEmpty { header.history = history }
         if let shared { header.sharedHistory = shared; header.version = QwenStagePrefixDiskHeader.sharedHistoryVersion }
+        header.encoding = encoding.header
         header.rank = rank
-        return .init(header: header, fileName: fileName, attention: attentionSources, recurrent: recurrentSources,
-            history: historySources, sharedHidden: sharedSources?.hidden, sharedLast: sharedSources?.last,
-            sharedTokens: sharedSources?.tokens)
+        return .init(header: header, fileName: fileName, attention: attentionSources, encodedRows: encodedRows,
+            recurrent: recurrentSources, history: historySources, sharedHidden: sharedSources?.hidden,
+            sharedLast: sharedSources?.last, sharedTokens: sharedSources?.tokens)
     }
 
     /// The plaintext of one version-2 history unit: rows
@@ -361,19 +408,28 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
 
     /// The plaintext of one attention unit: all heads of rows
     /// `[block * blockTokens, ...)` from the whole source, or read from the
-    /// entry's row source.
+    /// entry's row source, encoded as the entry's rows say. The writer calls
+    /// it for several units at once (`QwenStagePrefixDiskIO.encodingWriters`),
+    /// so a row source reads concurrently.
     func attentionPlaintext(entry: Int, block: Int) throws -> Data {
         let item = header.attention[entry], committed = header.committedTokens, b = header.blockTokens
         let rowBytes = item.headDim * (QwenStagePrefixDiskFormat.dtypes[item.dtype]?.size ?? 0)
-        let rows = min(b, committed - block * b), run = rows * rowBytes
-        var out = Data(count: item.heads * run)
+        let first = block * b, rows = min(b, committed - first), run = rows * rowBytes
         if let source = attention[entry].rows {
             guard item.heads == 1 else { throw ProbeError("Prefix record attention rows have one head") }
-            try out.withUnsafeMutableBytes { target in
-                try source.read(block * b ..< block * b + rows, target.baseAddress!)
+            var native = Data(count: run)
+            try native.withUnsafeMutableBytes { target in
+                try source.read(first ..< first + rows, target.baseAddress!)
             }
-            return out
+            guard let encoded = encodedRows[entry] else { return native }
+            return try native.withUnsafeBytes { try encoded.encode(unit: $0, heads: 1, first: first, rows: rows) }
         }
+        if let encoded = encodedRows[entry] {
+            return try attention[entry].data.withUnsafeBytes { source in
+                try encoded.encode(source: source, heads: item.heads, committed: committed, first: first, rows: rows)
+            }
+        }
+        var out = Data(count: item.heads * run)
         attention[entry].data.withUnsafeBytes { source in
             out.withUnsafeMutableBytes { target in
                 for head in 0..<item.heads {
@@ -399,8 +455,15 @@ enum QwenStagePrefixDiskIO {
         let fileBytes: Int
     }
 
+    /// Encoding a unit's older rows costs far more than sealing and writing
+    /// it, so the attention units of a record with encoded entries are
+    /// prepared, sealed and written on this many threads at once (each unit
+    /// has its own nonce and offset). A few, not every core: the writer runs
+    /// beside serving. A native record writes on the writer's thread alone.
+    static let encodingWriters = 4
+
     static func write(job: QwenStagePrefixDiskJob, keys: QwenStagePrefixDiskKeys, to url: URL,
-                      cancelled: () -> Bool) throws -> Int {
+                      cancelled: @escaping @Sendable () -> Bool) throws -> Int {
         let dek = SymmetricKey(size: .bits256)
         let wrapped = try AES.GCM.seal(dek.withUnsafeBytes { Data($0) }, using: keys.encryption,
             authenticating: QwenStagePrefixDiskFormat.magic).combined!
@@ -419,16 +482,26 @@ enum QwenStagePrefixDiskIO {
         _ = fcntl(fd, F_NOCACHE, 1)
         try writeAll(fd, preamble, at: 0)
         let dataStart = preamble.count
-        func seal(_ plain: Data, _ unit: QwenStagePrefixDiskHeader.Unit) throws {
+        @Sendable func seal(_ plain: Data, _ unit: QwenStagePrefixDiskHeader.Unit) throws {
             guard !cancelled() else { throw ProbeError("Prefix record write cancelled") }
             let box = try AES.GCM.seal(plain, using: dek, nonce: QwenStagePrefixDiskFormat.unitNonce(unit.index))
             let sealed = box.ciphertext + box.tag
             guard sealed.count == unit.length else { throw ProbeError("Prefix record unit length differs") }
             try writeAll(fd, sealed, at: dataStart + unit.offset)
         }
-        for (entry, item) in job.header.attention.enumerated() {
-            for (block, unit) in item.units.enumerated() { try seal(try job.attentionPlaintext(entry: entry, block: block), unit) }
+        let attention = job.header.attention.indices.flatMap { entry in job.header.attention[entry].units.indices.map { (entry, $0) } }
+        let writers = job.encodedRows.contains { $0 != nil } ? min(encodingWriters, attention.count) : 1
+        final class FirstError: @unchecked Sendable { let lock = NSLock(); var error: Error? }
+        let failed = FirstError()
+        DispatchQueue.concurrentPerform(iterations: writers) { writer in
+            for index in stride(from: writer, to: attention.count, by: writers) {
+                guard failed.lock.withLock({ failed.error == nil }) else { return }
+                let (entry, block) = attention[index]
+                do { try seal(job.attentionPlaintext(entry: entry, block: block), job.header.attention[entry].units[block]) }
+                catch { failed.lock.withLock { if failed.error == nil { failed.error = error } }; return }
+            }
         }
+        if let error = failed.error { throw error }
         for (entry, item) in job.header.recurrent.enumerated() { try seal(job.recurrent[entry].data, item.unit) }
         for (entry, item) in job.header.historyEntries.enumerated() { try seal(job.history[entry].data, item.unit) }
         if let shared = job.header.sharedHistory, let tokens = job.sharedTokens {
@@ -487,10 +560,13 @@ enum QwenStagePrefixDiskIO {
     /// unit read through its page-aligned superset (`readUnit`) and its
     /// plaintext placed in page-aligned buffers that the arrays then own
     /// without a copy (`QwenStagePrefixRestoreBuffer`); arrays are created on
-    /// the calling (serving) thread. `stallMilliseconds` (qualification only)
-    /// stops halfway, still calling `check`. `readCall` is `pread` (tests
-    /// observe the reads).
-    static func restore(url: URL, opened: Opened, frontier: Int, stallMilliseconds: Int? = nil,
+    /// the calling (serving) thread. Encoded rows are decoded into the same
+    /// buffers, so the arrays are native `[1, heads, frontier, headDim]` as a
+    /// native record's are; the record must have been written under
+    /// `encoding`. `stallMilliseconds` (qualification only) stops halfway,
+    /// still calling `check`. `readCall` is `pread` (tests observe the reads).
+    static func restore(url: URL, opened: Opened, frontier: Int, encoding: QwenStagePrefixDiskEncoding = .native,
+                        stallMilliseconds: Int? = nil,
                         readCall: @escaping ReadCall = { Darwin.pread($0, $1, $2, $3) },
                         check: () throws -> Void) throws -> QwenStagePrefixState {
         let header = opened.header, b = header.blockTokens
@@ -503,7 +579,8 @@ enum QwenStagePrefixDiskIO {
         guard fd >= 0 else { throw QwenStagePrefixDiskPolicy.IOFailure("open", code: errno) }
         defer { close(fd) }
         _ = fcntl(fd, F_NOCACHE, 1)
-        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier, readCall: readCall)
+        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier, encoding: encoding,
+            readCall: readCall)
         try check()
         if let stallMilliseconds {
             // Qualification: the first half, a stall (the rank is checked while
@@ -689,7 +766,13 @@ final class QwenStagePrefixRestoreBuffer: @unchecked Sendable {
 /// disjoint per unit; which units finished and the first error are kept
 /// under a lock. Nothing here calls MLX.
 final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
-    struct Target { let buffer: QwenStagePrefixRestoreBuffer; let rowBytes: Int; let heads: Int }
+    struct Target {
+        let buffer: QwenStagePrefixRestoreBuffer
+        let rowBytes: Int
+        let heads: Int
+        /// An encoded entry's rows, decoded into `buffer`; nil copies them.
+        let rows: QwenStagePrefixDiskEncodedRows?
+    }
     let fd: Int32
     let header: QwenStagePrefixDiskHeader
     let frontier: Int
@@ -717,19 +800,32 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     var total: Int { attentionWork.count + recurrentItems.count + historyItems.count + (sharedRows == nil ? 0 : sharedBlocks + 1) }
     var sharedFilled: Bool { lock.withLock { sharedRows != nil && sharedDone == sharedBlocks + 1 } }
 
-    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int,
+    /// The record must have been written under `encoding`: its sealed
+    /// encoding and every entry's encoded rows are exactly what that
+    /// encoding writes for the entry's slot, width and dtype, or it is
+    /// refused (and the tier deletes it).
+    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int, encoding: QwenStagePrefixDiskEncoding = .native,
          readCall: @escaping QwenStagePrefixDiskIO.ReadCall = { Darwin.pread($0, $1, $2, $3) }) throws {
         let header = opened.header, b = header.blockTokens
         self.fd = fd; self.header = header; self.frontier = frontier; self.readCall = readCall
         dataStart = opened.dataStart; fileSize = opened.fileBytes; key = opened.key
+        guard header.encoding == encoding.header else {
+            throw ProbeError("Prefix record was written under another encoding")
+        }
         var targets: [Target] = []
         for item in header.attention {
             guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype], item.units.count == (header.committedTokens + b - 1) / b,
                   item.heads > 0, item.headDim > 0 else {
                 throw ProbeError("Prefix record attention entry is malformed")
             }
+            let rows = encoding.rows(layer: item.layer, slot: item.kind, width: item.headDim, dtype: dtype,
+                committed: header.committedTokens)
+            guard rows?.nativeFrom == item.nativeFrom else {
+                throw ProbeError("Prefix record attention encoding differs from its tier's")
+            }
             let rowBytes = item.headDim * dtype.size, bytes = item.heads * frontier * rowBytes
-            targets.append(.init(buffer: try QwenStagePrefixRestoreBuffer(bytes: bytes), rowBytes: rowBytes, heads: item.heads))
+            targets.append(.init(buffer: try QwenStagePrefixRestoreBuffer(bytes: bytes), rowBytes: rowBytes, heads: item.heads,
+                rows: rows))
         }
         self.targets = targets
         let blocks = (frontier + b - 1) / b
@@ -782,22 +878,38 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
         try QwenStagePrefixDiskIO.readUnit(fd, unit, dataStart: dataStart, fileSize: fileSize, key: key, readCall: readCall)
     }
 
+    /// One attention unit's plaintext (rows `[first, first + count)` of every
+    /// head) placed into its entry's native `[heads, frontier, row]` buffer:
+    /// encoded rows decoded, native rows copied byte for byte.
+    static func place(_ plain: UnsafeRawBufferPointer, into target: UnsafeMutableRawPointer,
+                      rows encoded: QwenStagePrefixDiskEncodedRows?, heads: Int, rowBytes: Int, frontier: Int,
+                      first: Int, count: Int) throws {
+        if let encoded {
+            try encoded.decode(plain, into: target, heads: heads, frontier: frontier, first: first, rows: count)
+            return
+        }
+        let run = count * rowBytes
+        guard plain.count == heads * run, first + count <= frontier else { throw ProbeError("Prefix record unit size differs") }
+        for head in 0..<heads {
+            target.advanced(by: (head * frontier + first) * rowBytes)
+                .copyMemory(from: plain.baseAddress!.advanced(by: head * run), byteCount: run)
+        }
+    }
+
     func run(_ index: Int) {
         do {
             let b = header.blockTokens
             if index < attentionWork.count {
                 let (entry, block) = attentionWork[index]
                 let item = header.attention[entry], unit = item.units[block], target = targets[entry]
-                let rows = min(b, header.committedTokens - block * b)
-                guard unit.length == target.heads * rows * target.rowBytes + QwenStagePrefixDiskFormat.tagBytes,
-                      rows == min(b, frontier - block * b) else { throw ProbeError("Prefix record unit size differs") }
+                let first = block * b, rows = min(b, header.committedTokens - first)
+                let run = target.rows?.headBytes(first: first, rows: rows) ?? rows * target.rowBytes
+                guard unit.length == target.heads * run + QwenStagePrefixDiskFormat.tagBytes,
+                      rows == min(b, frontier - first) else { throw ProbeError("Prefix record unit size differs") }
                 let plain = try open(unit)
-                let run = rows * target.rowBytes
-                plain.withUnsafeBytes { source in
-                    for head in 0..<target.heads {
-                        target.buffer.pointer.advanced(by: (head * frontier + block * b) * target.rowBytes)
-                            .copyMemory(from: source.baseAddress!.advanced(by: head * run), byteCount: run)
-                    }
+                try plain.withUnsafeBytes { source in
+                    try Self.place(source, into: target.buffer.pointer, rows: target.rows, heads: target.heads,
+                        rowBytes: target.rowBytes, frontier: frontier, first: first, count: rows)
                 }
             } else if index < attentionWork.count + recurrentItems.count {
                 let slot = index - attentionWork.count

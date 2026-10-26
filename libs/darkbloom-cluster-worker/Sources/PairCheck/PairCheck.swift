@@ -56,6 +56,9 @@ import Foundation
               [--worker-environment NAME=DIGITS (repeatable, diagnosis: both workers get a timing or scheduling knob,
                one of MLX_MAX_OPS_PER_BUFFER, MLX_QMM_STEEL_TILE, DARKBLOOM_QWEN_TP_PREFILL_STRIDE,
                DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING)]
+              [--prefix-ssd-quantization balanced|k8v4|k8v8|native (how both workers' SSD records store attention
+                                  rows; default the workers' balanced, older rows approximate after a restore;
+                                  native keeps restores bit-exact)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
               [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
@@ -243,7 +246,7 @@ import Foundation
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
             "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
-            "--remote-prefix-ssd-key-file", "--worker-environment"]
+            "--remote-prefix-ssd-key-file", "--worker-environment", "--prefix-ssd-quantization"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
             "--batch-request", "--batch-wave", "--worker-environment"])
         func required(_ name: String) throws -> String {
@@ -368,6 +371,12 @@ import Foundation
         if let ssd = fields["--prefix-ssd"]?.first {
             guard ["on", "off"].contains(ssd) else { throw Failure("--prefix-ssd takes on or off") }
             configuration.prefixSSDOff = ssd == "off"
+        }
+        if let quantization = fields["--prefix-ssd-quantization"]?.first {
+            guard PairConfiguration.prefixSSDQuantizations.contains(quantization) else {
+                throw Failure("--prefix-ssd-quantization takes balanced, k8v4, k8v8 or native")
+            }
+            configuration.prefixSSDQuantization = quantization
         }
         if fields["--local-prefix-ssd-dir"] != nil || fields["--remote-prefix-ssd-dir"] != nil { try configuration.validate() }
         if let follow = fields["--follow-request"] {

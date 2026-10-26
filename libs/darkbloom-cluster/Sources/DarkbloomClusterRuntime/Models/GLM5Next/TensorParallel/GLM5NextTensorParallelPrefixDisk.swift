@@ -9,6 +9,9 @@ import MLXLMCommon
 /// records of `QwenStagePrefixDiskTier`. Each rank keeps only its own state at
 /// a prompt's kept boundary: its heads' KDA state, its copy of the replicated
 /// DSA histories and the NextN history (`GLM5NextTensorParallelPrefixRecord`).
+/// The DSA latents are stored at the pair's checkpoint precision
+/// (`encoding(_:layout:)`, balanced by default): a record's older latent rows
+/// restore approximate, its newest 128 and everything else exact.
 ///
 /// A record is written behind serving, after the request retired cleanly, and
 /// only for a boundary the memory tier holds; it is read from that entry's
@@ -50,16 +53,29 @@ struct GLM5NextTensorParallelPrefixDisk {
     }
 
     /// Opens this rank's tier, or nil when it is off or unusable (the rank
-    /// then keeps prefixes in memory only).
+    /// then keeps prefixes in memory only). `encoding` is the one the load
+    /// bound into its agreement (`QwenStagePrefixDiskEncoding.fromEnvironment`
+    /// for `.glm5NextDSA`); the tier applies it as `encoding(_:layout:)` says.
     static func open(configuration: QwenStagePrefixDiskConfiguration, planScope: String, rank: Int,
-                     stagingEpoch: String, stage: GLM5NextTextStage, mtp: GLM5NextMTP?) -> Self? {
+                     encoding: QwenStagePrefixDiskEncoding = .native, stagingEpoch: String, stage: GLM5NextTextStage,
+                     mtp: GLM5NextMTP?) -> Self? {
         let layout: GLM5NextTensorParallelPrefixRecord.Layout
         do { layout = try .init(stage: stage, mtp: mtp) } catch {
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=unavailable error=\(qwenPrefixLogWord(error))")
             return nil
         }
         return QwenStagePrefixDiskTier.open(configuration: configuration, planScope: planScope, rank: rank,
-            stagingEpoch: stagingEpoch).map { Self(tier: $0, planScope: planScope, layout: layout) }
+            encoding: Self.encoding(encoding, layout: layout), stagingEpoch: stagingEpoch)
+            .map { Self(tier: $0, planScope: planScope, layout: layout) }
+    }
+
+    /// How a rank of `layout` stores its records under `records`: each DSA
+    /// layer's latents encoded (the family's `keys` slot), its index keys and
+    /// pool gates native, and the NextN history, kept as an attention entry
+    /// under its own layer, native as all speculative state is.
+    static func encoding(_ records: QwenStagePrefixDiskEncoding,
+                         layout: GLM5NextTensorParallelPrefixRecord.Layout) -> QwenStagePrefixDiskEncoding {
+        records.keepingNative(layers: layout.nextNLayer.map { [$0] } ?? [])
     }
 
     /// The candidates this rank holds as complete, live records.
@@ -285,6 +301,8 @@ extension GLM5NextTensorParallelResidentRuntime {
     /// pages of the request's account, which the memory tier then keeps too,
     /// so the next offer finds the boundary in memory. Otherwise (either rank
     /// could not) both prefill from zero. Returns the restored cache, or nil.
+    /// `scope` and `diskScope`: the request's partition of each tier
+    /// (`OpenedRequest.prefixScope`, `prefixDiskScope`).
     func restoreAgreedFromEitherTier(_ boundary: Int, prompt: [Int], scope: String, diskScope: String?,
                                      stage: GLM5NextTextStage, pages: GLM5NextPageReservation?,
                                      speculation: GLM5NextTensorParallelSpeculation?,
@@ -319,19 +337,20 @@ extension GLM5NextTensorParallelResidentRuntime {
     }
 
     /// After a request retired cleanly: its kept boundary, as the memory tier
-    /// holds it, goes to this rank's SSD tier behind serving (read from the
-    /// entry's pages on the writer; an existing record is only touched).
-    /// Nothing when the tier is off or the memory tier no longer holds it.
+    /// holds it, goes to this rank's SSD tier behind serving, in the request's
+    /// partition (`OpenedRequest.prefixDiskScope`; read from the entry's pages
+    /// on the writer; an existing record is only touched). Nothing when the
+    /// tier is off, the request keeps no prefix or the memory tier no longer
+    /// holds it.
     func persistPrefix(_ prompt: [Int], opened: OpenedRequest, boundary: Int) {
         guard let disk = prefixDisk, let scope = opened.prefixScope, let diskScope = opened.prefixDiskScope,
               let entry = prefix.entry(scope: scope, prompt: prompt, length: boundary) else {
             return
         }
-        let chunk = opened.chunk
         do {
             let record = try GLM5NextTensorParallelPrefixRecord.capture(cache: entry.cache, history: entry.mtp,
                 layout: disk.layout, frontier: boundary)
-            disk.tier.persist(scope: diskScope, tokens: prompt, states: [record.state], blockTokens: chunk,
+            disk.tier.persist(scope: diskScope, tokens: prompt, states: [record.state], blockTokens: opened.chunk,
                 attentionRows: record.rows)
         } catch {
             log("darkbloom-prefix-ssd-v1 rank=\(collective.rank) event=persist-dropped reason=unstorable prompt=\(boundary)"

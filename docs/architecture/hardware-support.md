@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -1167,7 +1167,10 @@ Qwen TP automatic batching (every registered TP row, each priced by its own
 geometry) retains the feature-preserving TP mode filter.
 TP uses the same canonical-inventory full request allowance as its native owner
 at widths 2, 4, 6 and 8; a narrower reference request or installed chunk does not
-shrink that floor. During LOAD, this complete future reservation coexists with
+shrink that floor. Every width is quoted at the memory plan's request (32,768
+prompt plus 32,768 output tokens), including for Qwen3.8 27B, whose profile
+advertises 262,144 tokens; a longer request is charged at its own context when
+a rank reserves it ([native context](inference.md#qwen27-tensor-parallel-native-context)). During LOAD, this complete future reservation coexists with
 the shard, two whole host tensors, aligned-read scratch and loading headroom.
 The placement and shard assessment add it to the LOAD peak and allocator ask;
 resident and request phases are not substitutes for that simultaneous peak.

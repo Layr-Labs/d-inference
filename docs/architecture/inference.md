@@ -172,7 +172,9 @@ priced by that row's own geometry (per-rank KV heads, recurrent state and, for a
 routed-expert row, the packed MoE payload's source partials).
 `ClusterPlacementArtifact.requestedTensorBatchQuote` validates the canonical
 stored tensor headers and reuses `QwenTensorParallelBatchBudget.derive` at the
-full native LOAD context and maximum frame, even for a short reference request.
+memory plan's full LOAD context and maximum frame, even for a short reference
+request. For Qwen3.8 27B that is the standard request, not its advertised
+262,144-token context ([native context](#qwen27-tensor-parallel-native-context)).
 The TP floor includes all lanes, retained and temporary projection constants,
 shared fusion/prefill/decode work, page-pool slack and eight separately bounded
 sealed collective frames. The quote also carries `rankQuotes`: what each rank of
@@ -1040,7 +1042,12 @@ per-token KDA and selection graphs exceed MLX's Metal resource limit at real
 prompt lengths. Routed-expert prefill on Neural-Accelerator GPUs runs the NAX
 expert kernel for affine 4-bit and NVFP4 banks (`RoutedExperts.fusedDecodeNAXPrefill`;
 other GPUs keep MLX's sorted gather), and prefill chunks past position 2,048 run the
-native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). The policy is part of the encrypted checkpoint storage identity
+native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). A prefill
+chunk's KDA recurrence runs the pipelined value-row ranges
+(`GLM5NextKDAPrefillKernel.Launch.pipelined`): on an 80-core M5 Ultra the model's
+64 heads take a 56/56/32/56/56 cut per head pair, two ranges per GPU core, with
+every row's FP32 steps in the same order as the even per-core split, so the
+bits are unchanged. The policy is part of the encrypted checkpoint storage identity
 (`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
 engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
@@ -1154,7 +1161,9 @@ verifies them in one captured target forward over the window, whose KDA layers
 stage every position's recurrent state so any accepted prefix commits without a
 repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
-acceptance. The window runs the batched multi-token kernels, so greedy output is
+acceptance. Each draft step is submitted to the GPU as soon as it is built
+(`GLM5NextMTPAdapter.submitsEveryDraftStepEarly`), so the proposals draft while
+the engine still builds the verification forward; the graphs are the same. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
 batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
 two requests decode, every decoding row drafts and one captured forward verifies
@@ -2767,7 +2776,15 @@ headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
 2 and 1.5 GiB (`QwenDenseStageLoadPolicy.minimumAdmissibleBytes(physicalMemoryBytes:)`),
 so a smaller Mac takes the share it can hold instead of none. Every load and
-request is still checked against that Mac's memory at that moment.
+request is still checked against that Mac's memory at that moment. At normal
+memory pressure the gate counts every file-backed page as admissible
+(`QwenDenseStageLoadPolicy.decide`): the kernel drops clean file pages on
+demand. The kernel's file-cache minimum and its inactive-share bound are
+recorded with each decision, not applied. Pressure above normal, or more than
+512 MiB compressed or 64 MiB swapped out since a load's or request's first
+sample, withdraws all of it, and such a refusal stands on the gate's own
+sample: the room-making pass (`QwenDenseStageLoadReclaim`) runs only at normal
+pressure, for file cache the gate does not count.
 
 Explicit placement requests may exceed a layout's default prompt or output
 reference while remaining inside the registered family profile. Both the native
@@ -3547,8 +3564,13 @@ forwards fuse, on the families measured byte-equal to the unfused operations
 the Gated DeltaNet convolution step (concatenation, depthwise convolution and
 SiLU) and its q/k normalization, the attention output gate, the SwiGLU product,
 and a single vector's gate, up and SwiGLU in one launch (a window keeps the two
-projections: the fused kernel measured slower there). A 27B step runs 934
-non-view kernels instead of 1,862. Measured locally on the M3 Ultra's 27B shard
+projections: the fused kernel measured slower there). A residual stream
+narrower than its norms (the Prism/Bonsai packs: FP16 packed embedding rows
+under FP32 norms and projections) keeps the unfused sum that promotes it to
+FP32 on every family (`Qwen35DecoderLayer.residualNorm`); the fused step
+rounds a wider branch to the stream's dtype, which would keep such a stream in
+FP16 and leave a producer stage's residual outside its FP32 contract. A 27B
+step runs 934 non-view kernels instead of 1,862. Measured locally on the M3 Ultra's 27B shard
 at 3/5 (2026-10-25, product path): the four-token verify window 24.3 ms against
 37.3 ms on the c41 kernels, the plain step 16.9 against 18.2 ms. The change of
 rounding means tensor-parallel references recorded before it are regenerated
@@ -3981,9 +4003,9 @@ flowchart LR
 - **Prefixes.** Packed rows have no exact snapshot, so a packed stage keeps no
   prompt prefixes (memory or SSD) and refuses adopted arrays, as main keeps no
   snapshot prefixes for packed storage; main's packed complete-checkpoint codec
-  is not ported. A phase-split hand-off refuses a packed precision. The
-  checkpoint precision is not applied to the pair's SSD records: they stay exact
-  native states, so a restore stays bit-identical to computing the prefix.
+  is not ported. A phase-split hand-off refuses a packed precision. With native
+  live rows, the pair's SSD records follow main's separate checkpoint
+  precision ([SSD prefix record encoding](#cluster-ssd-prefix-record-encoding)).
 - **Other paths.** GPT-OSS stage storage and GLM (native FP32 payload KV)
   refuse a packed precision by name; MiMo resolves native as on one Mac. A
   packed tensor-parallel step is evaluated whole rather than layer by layer, so
@@ -3995,6 +4017,138 @@ for tests. Sources: `CBv2StageKVHost.swift` and `CBv2OwnedRequestState.swift` in
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/`; tests
 `CBv2StageKVQuantizationTests` and `CBv2PagedQuantizedStageTests` (a stage's
 packed decode equals main's engine on the same packed pool, synthetic model).
+
+## Cluster SSD prefix record encoding
+
+Each rank of a pair keeps its prompt prefixes on its Mac's encrypted SSD tier
+(`QwenStagePrefixDiskTier`). Attention rows in those records are stored at the
+single-Mac product's checkpoint precision for the pair's public model
+(`engine_v2_kv_checkpoint_quantization`, default `balanced`), through the row
+codec main's complete checkpoints use; live KV stays native. `native` keeps
+records byte-exact. The record format is in the
+[SSD reference](../reference/ssd-kv-cache.md#cluster-prompt-prefix-records).
+
+```mermaid
+flowchart LR
+    S["provider.toml engine_v2_kv_checkpoint_quantization (+ by model)"] --> O["cluster worker-owner (each Mac)"]
+    E["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] --> P["provider"] -->|forwarded switch| O
+    O -->|"DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION"| W["native rank"]
+    W -->|load agreement field| A{"both ranks equal?"}
+    A -->|no| R["both refuse to load"]
+    A -->|yes| T["SSD tier: directory and sealed header name the encoding"]
+    T --> C["persist: older rows encoded, newest 128 native"]
+    T --> D["restore: decode into native arrays, adopt unchanged"]
+```
+
+- **Launch.** `cluster worker-owner` installs the checkpoint resolver from the
+  saved configuration (`DistributedInstalledKVQuantization.installProduct`):
+  the switch, then the per-model setting, then the global setting, as
+  `EngineV2KVQuantizationPolicy.resolve` resolves the `.checkpoint` purpose.
+  The provider forwards its own switch to the owner it starts. While the
+  prefix cache is on, the rank gets the resolved name in
+  `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION`; that variable in the owner's
+  own environment is a diagnosis override. The rank parses it as main parses a
+  checkpoint precision (`QwenStagePrefixDiskEncoding.fromEnvironment`; absent
+  is `balanced`) and refuses any other value by name.
+- **Profile.** `balanced` is 4-bit keys and values in affine groups of 64 with
+  FP32 scale and offset, keys in a normalized signed Hadamard basis (block 128,
+  or the key width's largest power-of-two divisor when smaller); `k8v4` and
+  `k8v8` widen keys or both to 8 bits (`PagedKVQuantizationSelection`). Rows
+  pass through `CBv2CheckpointRowCodec`, so a record's encoded row is the row
+  main's complete checkpoints store. Recurrent, convolution and
+  speculative-history state stays native.
+- **Eligibility.** `QwenStagePrefixDiskFamily` decides which attention slots
+  may be encoded; the tier's `QwenStagePrefixDiskEncoding.nativeLayers` keep a
+  speculative head's history native where a record stores it as an attention
+  entry (a NextN history); the codec's geometry check (width a multiple of 64,
+  at most 512; FP16, BF16 or FP32) decides the rest. Every attention entry is
+  laid out in one place (`QwenStagePrefixDiskJob.prepare`), and a unit read
+  row by row from a history encodes to the bytes of the same rows sliced from
+  an array (`QwenStagePrefixDiskEncodedRows.encode(unit:heads:first:rows:)`):
+
+  | Family | Encoded | Native |
+  |---|---|---|
+  | `qwenAttention` (Qwen 3.5 9B, 3.8 27B, 3.5 and 3.6 35B A3B, Bonsai; tensor parallel and pipeline) | Full-attention keys and values | Linear-attention convolution and SSM state, assistant history |
+  | `glm5NextDSA` (GLM-5.3-Flash pipeline stage and tensor-parallel rank) | DSA latents (`keys` slot, `kv_lora_rank` 512) | Index keys and pool gates (`values` slot): they choose each query's top-k rows, and an approximate index key can choose another row; KDA state; the NextN history, which a tensor-parallel record keeps as an attention entry under its own layer (`GLM5NextTensorParallelPrefixDisk.encoding` names that layer native) |
+  | `native` (MiMo, as on one Mac; Gemma 4; Nemotron; any tier that names no family) | Nothing | Everything |
+
+- **Frontiers.** A record holds rows `[0, N)` of the prompt's deepest kept
+  frontier and serves every kept frontier `f` with rows `[0, f)`. Rows below
+  `N - 128` are encoded; rows `[N - 128, N)`, the record's newest, are stored
+  native (`QwenStagePrefixDiskEncodedRows.nativeFrom`). The deepest frontier
+  therefore restores its newest 128 rows exactly; a shallower frontier reads
+  approximate rows except those inside that band. Restored older rows are
+  approximate by contract: a request after a restore from an encoded record is
+  not byte-equal to the same request computed from zero, and tokens can
+  diverge. Each rank restores from its own tiers, memory first, and a state
+  read from disk becomes resident as decoded, so one rank can restore exact
+  rows from memory while its peer decodes approximate rows from disk. A record
+  captured from a request that was itself restored encodes the decoded rows
+  again; no drift bound is claimed.
+- **Binding.** The encoding names the tier's directory (`planScopeSuffix`, so
+  records of another encoding are never offered and stay as another plan's
+  within the byte budget until they expire), is sealed in every record header
+  (`QwenStagePrefixDiskHeader.encoding`; a record of another encoding, or with
+  entries other than this encoding writes, is refused and deleted), and enters
+  the load agreement as `cluster-prefix-ssd-records-v1`, the selection, the
+  profile identity and the family. An encoding that encodes nothing adds
+  nothing to any of the three. Qwen tensor parallel binds it while the prefix
+  cache is on, the Qwen pipeline while it keeps prefixes, the GLM pipeline
+  stage and GLM tensor parallel while their caches are on. Native layers bind
+  nothing of their own: the
+  model and the build fix them and both name the directory, and a record whose
+  entries were encoded under another set is refused at restore.
+- **Size.** From the record layout: a Qwen 3.8 27B tensor-parallel rank (two
+  key/value heads of 256 per full-attention layer, BF16) stores 160 bytes per
+  encoded row against 512, so its attention rows are 3.17 times smaller at
+  32,768 tokens; a GLM-5.3-Flash DSA layer is 1.85 times smaller with BF16
+  latents and 2.28 times with FP32 latents, its index keys and gates
+  unchanged. Recurrent state and assistant history keep their size, so a whole
+  record shrinks less [INFERENCE: about 2 times for a 27B rank's 32,768-token
+  record with its MTP history, whose 5,120-wide BF16 rows cost as much as the
+  encoded attention].
+- **Cost.** Encoding runs behind serving on the tier's writer, on
+  `QwenStagePrefixDiskIO.encodingWriters` threads for a record with encoded
+  entries; restore decodes rows inside its parallel unit reads, into the
+  page-aligned buffers the arrays then own. The serving thread only borrows
+  the captured arrays, as for a native record.
+
+Failure modes: an unparsable precision refuses the load by name; Macs that
+resolved different precisions refuse to load (the agreement differs); a row
+the codec refuses (non-finite, or a reconstruction outside the dtype) drops the
+record (`persist-dropped reason=write_failed`); a changed, truncated,
+foreign-encoding or undecodable record restores nothing, is deleted, and both
+ranks prefill from zero.
+
+Measurement on real weights: `darkbloom-cluster-tp-check run --prefix-records
+native|balanced|k8v4|k8v8` (full, simulated or tp) puts the prompt's state at
+its last whole chunk through a record of that encoding in memory, with the
+writer's and reader's unit code (`QwenStagePrefixDiskMeasurement`), and
+continues from the restored state: the report adds each layer's largest, mean
+and RMS error and bytes against a native record, and, unsharded, the prompt
+tail teacher-forced from the captured and the restored state (mean NLL, greedy
+agreement, largest logit difference). `native` reproduces the plain run's
+tokens bit for bit. `darkbloom-cluster-pair-check --prefix-ssd-quantization`
+selects the workers' encoding; the tier's `persist` lines log
+`attention_bytes` and `native_attention_bytes`.
+
+| Concern | Code |
+|---|---|
+| Encoding, family eligibility, row layout | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` (`QwenStagePrefixDiskEncoding`, `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncodedRows`) |
+| Record writer and reader | `QwenStagePrefixDiskRecord.swift` (`QwenStagePrefixDiskJob`, `QwenStagePrefixDiskRestoreWork.place`) and `QwenStagePrefixDiskTier.swift` in the same directory |
+| Measurement | `QwenStagePrefixDiskMeasurement.swift` there; `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixRecordCheck.swift` |
+| GLM tensor parallel | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelPrefixDisk.swift` (`GLM5NextTensorParallelPrefixDisk.encoding`; its records' rows read through `QwenStagePrefixDiskRows`) |
+| Row codec | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeCheckpointRowCodec.swift` (`CBv2CheckpointRowCodec`) |
+| Owner resolution | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledKVQuantization.swift` (`recordsEnvironment`), `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedInstalledKVQuantization+Product.swift` (`recordsResolver`) |
+
+Tests: `PrefixDiskEncodingTests`,
+`QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
+(both ranks adopt a balanced record; the band equals a cold prefill),
+`GLM5NextTensorParallelPrefixRecordEncodingTests` (a GLM tensor-parallel rank's
+record read row by row: only the DSA latents encoded, and it adopts) and, with
+`GLM53_PREFIX_SSD=1`,
+`GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
+(the serving-width stage's paged histories through a balanced record).
 
 ## GPT-OSS cluster paged KV
 
@@ -4625,6 +4779,81 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
 (`serveBatch`, `prepareBatch`).
 
+### Qwen27 tensor-parallel native context
+
+The registered Qwen3.8 27B row advertises the limits the single-Mac product
+serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
+context (the catalog's `max_context_length` and `max_output_length`;
+`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
+validation on both ranks and every profile fingerprint use these limits. LOAD,
+the placement planner and every width quote still size the pair for the standard
+request, 32,768 prompt plus 32,768 output tokens
+(`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
+No lane reserves KV for the native context in advance, and widths one through
+eight are planned and admitted as before. Every other Qwen row's profile is its
+memory plan, byte for byte.
+
+A tensor-parallel request longer than the memory plan is charged at its own
+context when a rank reserves it (`QwenTensorParallelRequestCharge`). The charge
+covers the lane at the request's prompt plus output: its pages, replacement
+pages, recurrent state, prefix capture and assistant history. It also covers the
+shared workspaces at the longest context any held request has: one prompt
+frame's full-history gather bank, that frame's attention scores, and the decode
+and verify transients. The shared charge is never below LOAD's. Each rank's live
+gate (`reserveLane`, with the same OS and allocator checks) admits the whole
+charge or refuses that request alone. The endpoint then answers 503 with the
+context the pair serves now, and the pair keeps serving. A request within the
+memory plan is charged as before and must still fit LOAD's per-lane quote.
+
+READY's request capacity is the larger of LOAD's quote and one request at
+262,144 tokens. READY, and every keep-warm answer while no lane is held, carry
+the longest context the reservation gate admits now (`servingContextTokens`,
+computed with the gate's own arithmetic). The pair refuses a longer request
+before either rank is asked. With the registered inventory on an M5 Ultra
+(256 GB), eight lanes with the depth-3 assistant reserve 48.4 GB a rank at LOAD
+(4.6 GB a lane). A 262,144-token request beside seven standard ones is charged
+69.4 GB a rank (a 13.9 GB lane and 22.8 GB of shared workspaces), beside at most
+16.3 GB of weights (`QwenTensorParallelNativeContextTests`).
+
+The pipeline and hand-off modes stay at the memory plan. Their LOAD gates size
+it, and they refuse a longer reservation (`requireWithinMemoryProfile`). Provider
+quotes, placement comparisons and installed-plan checks compare memory scopes,
+so a profile's longer native limits never re-price or re-plan a pair.
+
+Pages grow with the request. A paged lane reserves its prompt and one
+1,024-token granule when it opens. Before each prompt frame, decode step or
+assistant window, it keeps what that forward writes plus 64 tokens reserved,
+growing by a granule up to its own length (`QwenTensorParallelBatchSession.reservePages`,
+`CBv2OwnedRequestState.growReservation`, and `PagedKVBackend.extendReservation`
+in the SDK). The pool reserves and backs the added pages before a row's
+reservation moves, so rows, their bounds and every value equal what a
+whole-length reservation holds. A write past the reservation is refused before
+its forward. Growth applies to every Qwen TP row by construction; before it, a
+lane reserved and backed its whole prompt plus output at open. A growth the pool
+cannot back fails the batch, as the periodic live check does; GLM instead ends
+that request at `length`. Arithmetic is unchanged: requests below 32,768 tokens
+produce identical bytes (`CBv2PagedGrowthSyntheticTests`,
+`QwenTensorParallelBatchSessionTests.pagesGrowMidDecodeWithoutChangingAByte`).
+
+Fingerprints: the 27B profile fingerprint changes. With it change the capability
+record's `profileFingerprint`, the resident load agreement (which also binds the
+memory plan's fingerprint, only where it differs from the profile), the TP prefix
+cache's resident scope (prefixed by that agreement), the installed start's
+`profileSHA256`, the native member attachment hashes and request fingerprints.
+Bundled pair qualification records do not bind it. Existing 27B setups re-plan
+after the update, as for any worker change, and 27B qualification records are
+recorded again. Other rows' fingerprints and agreements are unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelRequestCharge.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`
+(`servingContext`, `refreshServingContext`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
+(`requireWithinMemoryProfile`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
+(`growReservation`).
+
 ### Qwen27 cluster media ingress ownership
 
 The scheduler routes image/video requests through `DistributedQwenMediaIngress`
@@ -4783,7 +5012,7 @@ A local-only optional `ClusterSetupRecord.stopDrain` token is written atomically
 
 ### Qwen27 capacity changes preserve request arithmetic
 
-The authenticated Qwen3.8 27B tensor-parallel owner uses CBv2 request-owned attention and recurrent history at capacity one and at wider capacities. A singleton adapter keeps the existing one-token worker credit while executing the same native batch driver; its completion is constructed only after both ranks confirm retirement. Native metadata quotations charge the full singleton CBv2 state, workspace, collectives and prefix allowance, including the selected assistant policy. Paged storage still grows on demand inside that reservation. Other model families and unkeyed singleton probes retain their existing execution paths. See `QwenTensorParallelBatchSettings`, `QwenTensorParallelResidentRuntime+Singleton.swift`, `QwenTensorParallelBatchBudget` and `ClusterPlacementTensorBatchBudget` under `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/`.
+The authenticated Qwen3.8 27B tensor-parallel owner uses CBv2 request-owned attention and recurrent history at capacity one and at wider capacities. A singleton adapter keeps the existing one-token worker credit while executing the same native batch driver; its completion is constructed only after both ranks confirm retirement. Native metadata quotations charge the full singleton CBv2 state, workspace, collectives and prefix allowance, including the selected assistant policy. Within that charge a paged lane's pages are reserved as the request grows ([native context](#qwen27-tensor-parallel-native-context)). Other model families and unkeyed singleton probes retain their existing execution paths. See `QwenTensorParallelBatchSettings`, `QwenTensorParallelResidentRuntime+Singleton.swift`, `QwenTensorParallelBatchBudget` and `ClusterPlacementTensorBatchBudget` under `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/`.
 
 Automatic capacity-only replacements retain the current ordered tensor shares for this exact model. The planner still checks the complete simultaneous LOAD and request reservation against current memory; if the existing partition cannot widen, it keeps serving at its current capacity. `DistributedAutomaticBatchPlanner`, `ClusterPlacementFlow` and `ClusterAutomaticSetupHandoff` enforce this restriction; the ordinary initial planner still selects the partition. Installed exact-output comparison across the actual replacement remains a separate acceptance gate.
 

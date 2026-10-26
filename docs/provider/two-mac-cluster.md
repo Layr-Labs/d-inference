@@ -262,12 +262,23 @@ installed artifact, not from a per-model table:
 ### Response length
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
-within a 65,536-token combined ceiling. Each model's declared context and both
+within a 65,536-token combined ceiling, except for a model served at its native
+context (Qwen3.8 27B in tensor parallel, below). Each model's declared context and both
 ranks' live memory admission may reduce that budget. Omitting `max_tokens` on the local endpoint uses the full
 allowance, clamped to the model and remaining context; an explicit
 `max_tokens: 32768` requests the same allowance. A model can finish earlier
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
+Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
+Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output tokens,
+within 262,144 combined. The pair is still loaded and planned for the
+32,768 + 32,768-token request, at any number of lanes. A longer request is
+admitted on its own when both Macs' memory holds it at that moment. If it does
+not fit, it alone receives HTTP 503 with the context the pair serves now, and
+other requests keep running. The 27B's pipeline modes keep the 65,536-token
+ceiling. See
+[native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that
@@ -349,8 +360,27 @@ keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own
 share of it to the SSD once the request has finished, and a later prompt is
-restored from it only when both Macs hold it, with the same tokens as a request
-that prefilled the whole prompt ([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+restored from it only when both Macs hold it, close to a request that
+prefilled the whole prompt at the default record precision below, and with
+its tokens when records are `native`
+([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+
+The SSD tier stores older attention rows compactly at the same checkpoint
+precision as a single Mac (`balanced` by default; a Qwen 3.8 27B record's
+attention rows take about a third of their exact size), so a prefix restored
+from disk (and kept in memory after that restore) is close to, not identical
+with, computing it again; prefixes the pair computed and kept in memory are
+exact. For exact disk restores, set the same value on both Macs and restart
+the cluster:
+
+```toml
+[backend]
+engine_v2_kv_checkpoint_quantization = "native"
+```
+
+Both Macs must resolve the same precision; otherwise the pair refuses to load
+the model. The [record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding)
+lists what each model stores compactly.
 
 Prefixes are kept per tenant, as on one Mac: a request served through Darkbloom
 reuses only prefixes that requests with its own cache scope left, on both Macs.
@@ -445,7 +475,9 @@ The leader's cache choices (`darkbloom cache set`, the prefix cache switch, the
 daily write limit, the TTL and an explicit disk budget) reach the other Mac
 through its cluster service, which applies them to the ranks it starts. Each Mac
 keeps its own cache folder and, without an explicit budget, sizes the pair's
-cache from its own free space.
+cache from its own free space. The SSD records' precision
+(`engine_v2_kv_checkpoint_quantization`) is not synced: each Mac reads its own,
+and they must match.
 
 ## Not yet in this build
 

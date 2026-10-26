@@ -94,6 +94,7 @@ extension QwenResidentRuntime {
                 throw ProbeError("Batch lanes are not configured for this resident owner")
             }
             let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+            try admission.requireWithinMemoryProfile(value)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: collective.rank,
                 maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),

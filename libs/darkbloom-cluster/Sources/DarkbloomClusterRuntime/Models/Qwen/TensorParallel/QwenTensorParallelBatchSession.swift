@@ -53,15 +53,49 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         self.model = model; self.request = request; self.inputs = inputs
         self.captureFrontier = captureFrontier; self.captureLimitBytes = captureLimitBytes
         self.allocationBound = allocationBound ?? { _ in throw ProbeError("Unpriced TP prefix capture") }
+        // Paged pages grow with the request (`reservePages`); the reference
+        // contiguous backend keeps its whole-length rows.
+        let reserved = host.kind == .paged ? Self.initialReservedTokens(request) : nil
         if let restored {
             state = try CBv2OwnedRequestState(geometry: geometry, promptCount: request.promptCount,
                 outputCount: request.outputCount, adoptingCommittedTokens: restored.committedTokens,
-                attention: restored.attention, recurrent: restored.recurrent)
+                attention: restored.attention, recurrent: restored.recurrent, reservedTokens: reserved)
         } else {
             state = try CBv2OwnedRequestState(geometry: geometry,
-                promptCount: request.promptCount, outputCount: request.outputCount)
+                promptCount: request.promptCount, outputCount: request.outputCount, reservedTokens: reserved)
         }
         schedule = QwenLayerStageGenerationSchedule(request: request)
+    }
+
+    /// Tokens a request's pages grow by (owner rule: no reservation for the
+    /// whole output, grow on demand, no context cap; GLM's granule).
+    static let pageGrowthTokens = 1024
+    /// Tokens a request keeps reserved past what the next forward writes.
+    static let pageGrowthMargin = 64
+
+    /// The tokens a request's pages cover when it opens: its prompt and one
+    /// granule, at most its whole length.
+    static func initialReservedTokens(_ request: QwenLayerStageGenerationRequest) -> Int {
+        min(request.maximumTokens, request.promptCount + pageGrowthTokens)
+    }
+
+    /// What a growth takes a reservation of `reserved` tokens to when `needed`
+    /// tokens plus the margin pass it: a granule on, or the margin past
+    /// `needed`, never past `limit`; nil when no growth is due.
+    static func pageGrowthTarget(reserved: Int, needed: Int, limit: Int) -> Int? {
+        guard needed + pageGrowthMargin > reserved, reserved < limit else { return nil }
+        return min(limit, max(needed + pageGrowthMargin, reserved + pageGrowthTokens))
+    }
+
+    /// Before a forward that writes `count` tokens: keeps them and the margin
+    /// reserved, growing by granules up to the request's length. Between
+    /// steps only (the pool may grow); every byte the rows hold is unchanged.
+    /// A growth the pool cannot back throws, as a forward that cannot
+    /// allocate fails, before any of this step is built.
+    func reservePages(writing count: Int) throws {
+        guard state.pagedHost, let target = Self.pageGrowthTarget(reserved: state.reservedTokens,
+            needed: state.committedTokens + count, limit: request.maximumTokens) else { return }
+        try state.growReservation(toTokens: target)
     }
 
     /// This rank's request-state geometry for a request of `maximumTokens`.
@@ -93,6 +127,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             guard !retired, !failed, window?.isIdle ?? true, frame.phase == .prefill, state.committedTokens == frame.tokenOffset else {
                 throw ProbeError("Qwen TP batch prefill frontier differs")
             }
+            try reservePages(writing: frame.tokenCount)
             let range = frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)
             let input = MLXArray(request.promptTokenIDs[range].map(Int32.init)).reshaped([1, frame.tokenCount])
             let positions = try inputs.map { try $0.positions(range) }
@@ -287,6 +322,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                       session.state.committedTokens == session.schedule.committedTokens else {
                     throw ProbeError("Qwen TP decode token or committed frontier differs")
                 }
+                try session.reservePages(writing: 1)
                 let frame = try session.schedule.admitDecode(offset: session.committedTokens)
                 frames.append(frame)
                 if positioned {
@@ -345,6 +381,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 throw ProbeError("Qwen TP batch cannot begin this captured cohort")
             }
             for session in sessions {
+                try session.reservePages(writing: tokens.ndim == 2 ? tokens.dim(1) : 0)
                 _ = try session.schedule.admitDecode(offset: session.committedTokens)
                 if session.window == nil {
                     session.window = QwenTensorParallelTargetWindow(model: session.model, request: session.request, state: session.state)
@@ -387,6 +424,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                   window?.isIdle ?? true, schedule.committedTokens == offset else {
                 throw ProbeError("Qwen TP batched target cannot begin this assistant window")
             }
+            try reservePages(writing: tokens.ndim == 2 ? tokens.dim(1) : 0)
             _ = try schedule.admitDecode(offset: offset)
             let transaction = window ?? QwenTensorParallelTargetWindow(model: model, request: request, state: state)
             window = transaction

@@ -94,8 +94,8 @@ extension ClusterPlacementFlow {
         if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
            let policy = inputs.tensorAssistant {
             assistantQuote = try ClusterPlacementTensorAssistantSelection.read(tool: tool, modelDirectory: local.modelDirectory,
-                policy: policy, promptTokens: capability.profile.maximumPromptTokens,
-                outputTokens: capability.profile.maximumOutputTokens, lanes: 1, chunkTokens: assistantChunk, deadline: deadline)
+                policy: policy, promptTokens: capability.profile.memoryScope.maximumPromptTokens,
+                outputTokens: capability.profile.memoryScope.maximumOutputTokens, lanes: 1, chunkTokens: assistantChunk, deadline: deadline)
         } else {
             assistantQuote = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                 modelDirectory: URL(fileURLWithPath: local.modelDirectory), publicModelID: description.publicModelID,

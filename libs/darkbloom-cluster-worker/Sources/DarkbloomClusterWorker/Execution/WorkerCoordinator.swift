@@ -578,8 +578,12 @@ final class WorkerCoordinator: @unchecked Sendable {
         case .start:
             try runtime.startLane(command.requestID!)
         case .keepWarm(let ordinal):
+            // The pair asks only while no lane is held: a runtime that
+            // re-derives its serving context between batches answers it too.
             let elapsed = try runtime.dataPlanePing()
-            try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max)))), requestID: nil)
+            let serving = runtime.refreshLaneServingContext().map { min($0, ready?.profile.maximumContextTokens ?? $0) }
+            try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max))),
+                servingContextTokens: serving), requestID: nil)
         case .shutdown:
             condition.lock(); keepWarmArmed = false; condition.unlock()
             try runtime.shutdown()

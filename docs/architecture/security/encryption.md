@@ -239,8 +239,8 @@ across the Thunderbolt cable:
   partition, as one Mac does with the request's cache scope: a coordinator
   request's authenticated cache scope reaches the ranks only as a SHA-256 digest
   (`ClusterWorkerPrefixCache.tenantDigest`, domain
-  `darkbloom-cluster-prefix-tenant-v1|`), which ends every key and record
-  scope, so one scope's requests never restore or probe another's prefixes. A
+  `darkbloom-cluster-prefix-tenant-v1|`), which every key and record
+  scope carries, so one scope's requests never restore or probe another's prefixes. A
   request whose cache is off (a remote request without an authenticated scope,
   or one with GLM or Qwen media) restores and keeps nothing on either rank. The
   scope itself never leaves the leader's provider process; the digest stays out

@@ -1018,6 +1018,21 @@ exits non-zero on a failure. The library's XCTest targets
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.
 
+Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
+-c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc
+arm64-apple-macosx26.2 -Xswiftc -enable-testing`), stage the source-matched
+`mlx.metallib` in the test bundle's `Contents/MacOS/`, and run `swift test`
+with the same flags plus `--skip-build --no-parallel`. Without environment
+switches the run evaluates synthetic models on the GPU by default; the GPU-only
+cases (`QWEN_TP_BATCH_GPU=1`, `QWEN_TP_MTP_GPU=1`, `QWEN_TP_MOE_GPU=1`,
+`QWEN_TP_AQV_GPU=1`) run each in a process of their own with their filter. On
+an M5 GPU MLX computes float32 matrix products in TF32 unless the process
+starts with `MLX_ENABLE_TF32=0` (`libs/mlx-swift-lm/CONTRIBUTING.md`): the
+forward comparison in `GLM5NextStageSessionTests` asserts a float32 tolerance
+and is skipped without it. `StageLoadRealSamplerTests` reads this Mac's own
+counters; its kernel file-cache minimum check is cancelled, with the figure it
+read, when the pageout scan does not run during its four-second window.
+
 Most runners compile a model-free source closure with `swiftc`. Worker
 `CapabilityChecks` and the worker argument portion of `PrefillScheduleChecks`
 link the actual runtime catalog, including MLXLLM metadata dependencies. These
@@ -1991,6 +2006,7 @@ at every layer it crosses:
 | Stage SSD records | `PrefixDiskTierTests.aTenantsRecordsAreFoundOnlyUnderThatTenant` |
 | Qwen TP batch owner, both tiers | `QwenTensorParallelBatchSessionTests.partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing` (CPU; with `QWEN_TP_BATCH_GPU=1` on Metal) |
 | GLM pipeline and GLM TP caches | `GLM5NextPipelineGenerationTests.promptPrefixesArePartitionedByTenantAndKeptNoneWhenOff`, `GLM5NextTensorParallelPrefixCacheTests.entriesAreHeldOnlyForTheirTenant` (synthetic artifact, Metal) |
+| GLM TP SSD record scopes | `GLM5NextTensorParallelPrefixDiskTests.aRequestsRecordsAreItsOwnPartitions` (CPU) |
 | Qualification request files | `QualificationRequestPrefixCacheTests` in the worker package |
 | Provider owner and bridge | `DistributedPrefixPartitionTests`, `GLMPairForcedOutputTests.thePrefixCacheFieldsReachThePairReservation`, `DistributedHTTPCompletionTests.localRequestsReachThePairWithTheCacheOnAndNoSalt` |
 
@@ -2075,8 +2091,9 @@ round-trips both encoded and metadata-only envelopes through owner and peer-link
 clock translation. `ClusterReservationRelayTests` (run by
 `bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) sends one reservation
 per media carrier (still images, MiMo images, GLM media, Qwen media), each with
-sampling, and a routed text reservation through both hops and requires each to
-arrive unchanged but for its deadline. `PairWorkerEndpointReservationTests` (run
+sampling and a prefix partition, and a routed text reservation through both
+hops and requires each to arrive unchanged but for its deadline.
+`PairWorkerEndpointReservationTests` (run
 by `bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh`) sends
 the same set through the pair-check driver's `PairWorkerEndpoint` into a
 `/bin/sh` stand-in that records its input, and the protocol checks' `retiming`
@@ -2109,6 +2126,48 @@ media positions/features. They do not exercise RDMA, the registered tower or
 actual artifact, installed owner capacity, warm prefixes or TP speculation.
 Full model/reference, media, concurrency, throughput and logical-retirement
 checks remain required.
+
+### Cluster SSD prefix record encoding checks
+
+`PrefixDiskEncodingTests` (Runtime test target, CPU, synthetic rows) covers
+family eligibility, the rank's precision parsing, peers told different
+encodings refusing the load's first exchange (local sockets), a round trip
+whose older rows equal the SDK reference's and lie within the 4-bit affine
+bound while the newest 128 rows stay exact, shallower frontiers, GLM's DSA and
+KDA layer caches through a balanced record (only the older latents
+approximate), a unit read row by row from a history encoding as the whole
+array does, a layer kept native (a speculative head's history) beside encoded
+ones, encodings never restored under one another, a root holding both
+encodings, refused corrupt, truncated and undecodable records, and the bytes at
+the beta models' shapes. Like every MLX
+test in the target it needs the source-matched `mlx.metallib` beside the test
+executable. `PREFIX_RECORD_ENCODE_BENCH=1` adds a timing of one 27B rank layer
+at 32,768 tokens. `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
+writes a balanced record through the batch owner and adopts it on both ranks.
+`GLM5NextTensorParallelPrefixRecordEncodingTests` writes a GLM tensor-parallel
+rank's record through its row readers at the artifact's widths (only the DSA
+latents encoded; the NextN history native) and adopts it;
+`GLM53_PREFIX_SSD=1` adds
+`GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
+(GPU, about 1 GB of synthetic weights: real paged histories through a balanced
+record, then the restored request prefills on).
+
+On real weights, compare a plain run with a run through a record:
+
+```bash
+darkbloom-cluster-tp-check run --mode full --model-dir "$MODEL" --request request.json \
+  --record-top 8 --report cold.json
+darkbloom-cluster-tp-check run --mode full --model-dir "$MODEL" --request request.json \
+  --record-top 8 --prefix-records balanced --report balanced.json
+darkbloom-cluster-tp-check compare --reference cold.json --candidate balanced.json
+```
+
+The second report's `prefixRecord` holds each layer's errors and bytes and the
+prompt tail scored from both states; `--prefix-records native` must reproduce
+the first run's tokens. `--mode tp` measures each rank's own shard (no tail
+scoring). These synthetic and tool checks do not establish answer quality on
+the pair; needle and perplexity comparisons after a restored disk prefix remain
+model qualification work.
 
 ### Qwen cluster media provider ingress checks
 
@@ -2166,7 +2225,14 @@ real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
 outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
 reordered decode and one-sided cache loss. Run it with both contiguous and
 paged backends; production recurrent kernels require the Metal invocation
-listed above. `QwenTensorParallelBatchDriverTests` checks that donation follows
+listed above. Its two ranks, like those of `QwenTensorParallelMTPSessionTests`,
+run on threads created for each test (`TensorParallelRankThreads`): MLX keys a
+compiled function's traces by the calling thread's default GPU stream, not by
+the Swift device scope, so on reused worker threads a CPU-mode rank replayed
+traces that earlier GPU suites had recorded, and a full-target run reported
+cold and restored bytes that differ (`MLX_DISABLE_COMPILE=1` removed the
+difference; alone the suite passed). `QwenTensorParallelBatchDriverTests`
+checks that donation follows
 both ranks' cleanup while the lane charge is still held, and that cancelled or
 failed lanes cannot donate. The registered-header quote test must continue
 matching the exact native LOAD budget. Full-artifact warm reuse and speed are

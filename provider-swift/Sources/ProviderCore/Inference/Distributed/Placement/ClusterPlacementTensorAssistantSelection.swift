@@ -72,18 +72,21 @@ enum ClusterPlacementTensorAssistantSelection {
             ClusterQwenTensorAssistantPolicy.Verification.admittedCohort.rawValue] : [])
     }
 
+    /// The quote prices the memory plan's whole request (`ClusterWorkerProfile.memoryScope`):
+    /// the profile's, or the standard request for a row that serves its native context.
     static func requireDiscoveredQuote(_ quote: ClusterPlacementTensorBatchQuote,
                                        capability: ClusterRuntimeCapability, chunkTokens: Int, assistant: Bool = true,
                                        lanes: Int = 1) throws {
         try quote.validate()
-        try quote.requireRequest(promptTokens: capability.profile.maximumPromptTokens,
-            outputTokens: capability.profile.maximumOutputTokens, lanes: lanes, chunkTokens: chunkTokens)
+        let memory = capability.profile.memoryScope
+        try quote.requireRequest(promptTokens: memory.maximumPromptTokens,
+            outputTokens: memory.maximumOutputTokens, lanes: lanes, chunkTokens: chunkTokens)
         guard quote.request.runtimeModelID == capability.runtimeModelID,
               quote.request.artifactSHA256 == capability.artifactSHA256,
               quote.request.configurationSHA256 == capability.configurationSHA256,
-              quote.request.maximumPromptTokens == capability.profile.maximumPromptTokens,
-              quote.request.maximumOutputTokens == capability.profile.maximumOutputTokens,
-              quote.request.maximumContextTokens == capability.profile.maximumContextTokens else {
+              quote.request.maximumPromptTokens == memory.maximumPromptTokens,
+              quote.request.maximumOutputTokens == memory.maximumOutputTokens,
+              quote.request.maximumContextTokens == memory.maximumContextTokens else {
             throw ClusterConfigurationError.invalid("Native discovery changed the tensor owner's artifact or complete request scope")
         }
         if assistant {
@@ -106,9 +109,10 @@ enum ClusterPlacementTensorAssistantSelection {
         let assistant = try automaticCandidate(mode: mode, runtimeModelID: capability.runtimeModelID,
             modelDirectory: modelDirectory, publicModelID: publicModelID, artifactSHA256: capability.artifactSHA256,
             manifestSHA256: capability.manifestSHA256, environment: environment)
+        let memory = capability.profile.memoryScope
         let quote = try ClusterPlacementTensorBatchQuote.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: discoveryArguments(modelDirectory: modelDirectory.path,
-                promptTokens: capability.profile.maximumPromptTokens, outputTokens: capability.profile.maximumOutputTokens,
+                promptTokens: memory.maximumPromptTokens, outputTokens: memory.maximumOutputTokens,
                 chunkTokens: chunkTokens, assistant: assistant, lanes: lanes), deadline: deadline, maximumOutputBytes: ClusterPlacementTensorBatchQuote.maximumEncodedBytes))
         try requireDiscoveredQuote(quote, capability: capability, chunkTokens: chunkTokens, assistant: assistant, lanes: lanes)
         return quote

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -171,12 +172,19 @@ struct CBv2PagedBatchSyntheticTests {
         let state = try CBv2OwnedRequestState(geometry: g, promptCount: 32_768, outputCount: 32_768)
         #expect(state.maximumTokens == 65_536 && state.committedTokens == 0)
         try state.retire()
-        #expect(throws: (any Error).self) { _ = try geometry(65_537) }
+        // The model's declared context bounds the state; each profile holds
+        // its requests to its own limits (a native row's past 65,536 tokens),
+        // and the wire bounds every profile.
+        let long = try geometry(131_072)
+        let native = try CBv2OwnedRequestState(geometry: long, promptCount: 98_304, outputCount: 32_768)
+        #expect(native.maximumTokens == 131_072 && native.reservedTokens == 131_072)
+        try native.retire()
+        #expect(throws: (any Error).self) { _ = try geometry(131_073) }
         #expect(throws: (any Error).self) {
-            _ = try CBv2OwnedRequestState(geometry: g, promptCount: 1, outputCount: 32_769)
+            _ = try CBv2OwnedRequestState(geometry: long, promptCount: 1, outputCount: ClusterWorkerLimits.wireOutputTokens + 1)
         }
         #expect(throws: (any Error).self) {
-            _ = try CBv2OwnedRequestState(geometry: g, promptCount: 32_769, outputCount: 1)
+            _ = try CBv2OwnedRequestState(geometry: long, promptCount: ClusterWorkerLimits.wireContextTokens, outputCount: 1)
         }
         // The original fixture still declares only 4K; raising the protocol must not widen it.
         _ = try geometry(4096, configuration: Self.configuration())
@@ -184,11 +192,11 @@ struct CBv2PagedBatchSyntheticTests {
             _ = try geometry(4097, configuration: Self.configuration())
         }
         let host = try CBv2StageKVHost(model: model, kind: .contiguous, lanes: 1,
-            maximumTokensPerRequest: 65_536, maximumChunkTokens: Self.chunk)
-        #expect(host.maximumTokensPerRequest == 65_536 && host.isDrained)
+            maximumTokensPerRequest: 262_144, maximumChunkTokens: Self.chunk)
+        #expect(host.maximumTokensPerRequest == 262_144 && host.isDrained)
         #expect(throws: (any Error).self) {
             _ = try CBv2StageKVHost(model: model, kind: .contiguous, lanes: 1,
-                maximumTokensPerRequest: 65_537, maximumChunkTokens: Self.chunk)
+                maximumTokensPerRequest: ClusterWorkerLimits.wireContextTokens + 1, maximumChunkTokens: Self.chunk)
         }
     }
 

@@ -160,7 +160,10 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
             let short = decision.requiredBytes - decision.admissibleBytes
             // The kernel drops the cache the gate already counts first (inactive pages), which frees nothing new:
             // the touch covers that part too, then the shortfall and a margin, so active cache is reached.
+            // Only at normal pressure: above it the gate withdraws all cache on purpose, which is not cache it
+            // leaves uncounted, and the refusal stands on the caller's sample instead of on the reclaim's fresh one.
             if !decision.admitted, !decision.stoppedByCompressionOrSwap, short > 0,
+               decision.pressureLevel == QwenDenseStageLoadPolicy.normalPressureLevel,
                decision.fileCacheAboveReserveBytes - decision.countedReclaimableBytes >= short {
                 let asked = min(decision.fileCacheAboveReserveBytes, decision.countedReclaimableBytes + short + (1 << 30))
                 let touched = QwenDenseStageLoadReclaim.makeRoom(bytes: asked)

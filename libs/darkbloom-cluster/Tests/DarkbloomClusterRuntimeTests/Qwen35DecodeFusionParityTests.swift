@@ -7,8 +7,9 @@ import Testing
 
 /// The SDK's Qwen 3.5 decode fusions keep the unfused chain's bits: one
 /// compiled SwiGLU product equals `silu(gate) * up`, and the cached Gated
-/// DeltaNet scale constants equal the per-forward ones. GPU-gated
-/// (`QWEN_TP_AQV_GPU=1` or `QWEN_TP_MTP_GPU=1`).
+/// DeltaNet scale constants equal the per-forward ones. The kernel tests are
+/// GPU-gated (`QWEN_TP_AQV_GPU=1` or `QWEN_TP_MTP_GPU=1`); the residual step's
+/// dtype rule runs on the CPU.
 @Suite(.serialized)
 struct Qwen35DecodeFusionParityTests {
     static var gpu: Bool {
@@ -62,6 +63,32 @@ struct Qwen35DecodeFusionParityTests {
                     }
                 }
             }
+        }
+    }
+
+    /// A residual stream narrower than its norm (Bonsai: the packed
+    /// embedding's FP16 rows, FP32 norms and projections) takes the unfused
+    /// sum, which promotes it to FP32, and the norm of that sum; a wider
+    /// (tensor-parallel FP32) sum under a norm of the stream's own dtype is
+    /// still rounded to the stream's dtype first. CPU, so no fused kernel.
+    @Test func residualStepKeepsTheUnfusedPromotion() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let (x, wide) = withRandomState(MLXRandom.RandomState(seed: 7)) {
+                ((MLXRandom.normal([2, 3, 64]) * 3).asType(.float16), MLXRandom.normal([2, 3, 64]) * 2)
+            }
+            let promoting = RMSNorm(dimensions: 64)
+            #expect(promoting.weight.dtype == .float32)
+            let (sum, normalized) = Qwen35DecoderLayer.residualNorm(x, wide, promoting)
+            let unfused = x + wide
+            #expect(sum.dtype == .float32 && Self.bytes(sum) == Self.bytes(unfused))
+            #expect(Self.bytes(normalized) == Self.bytes(promoting(unfused)))
+            let stream = x.asType(.bfloat16), own = RMSNorm(dimensions: 64)
+            try own.update(parameters: ModuleParameters.unflattened(["weight": MLXArray.ones([64], dtype: .bfloat16)]),
+                           verify: .noUnusedKeys)
+            let (rounded, roundedNorm) = Qwen35DecoderLayer.residualNorm(stream, wide, own)
+            let expected = stream + wide.asType(.bfloat16)
+            #expect(rounded.dtype == .bfloat16 && Self.bytes(rounded) == Self.bytes(expected))
+            #expect(Self.bytes(roundedNorm) == Self.bytes(own(expected)))
         }
     }
 

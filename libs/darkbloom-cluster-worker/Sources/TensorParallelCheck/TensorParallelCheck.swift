@@ -13,6 +13,10 @@ import MLX
 //       [--shares A:B (each rank's share weight; default 1:1 = equal shards)]
 //       [--reduction native|sealed-bench (sealed: AES-GCM frames through the fork's sealed all-sum, BENCH keys from an
 //        unauthenticated ephemeral exchange; measures the sealed path's cost, never a product trust)]
+//       [--prefix-records native|balanced|k8v4|k8v8 (full, simulated or tp: the prompt's state at its last whole chunk
+//        goes through an SSD prefix record of that encoding, in memory, and the rest of the prompt and the output
+//        follow from the restored state; the report adds the record's per-layer errors and bytes and, unsharded, the
+//        prompt tail scored from both states. native reproduces the plain run's tokens bit for bit)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check synthesize --output /DIR   (a tiny random dense qwen3_5 checkpoint + request.json:
 //       tensor parallel against one rank without a registered model; never a model pass)
@@ -107,6 +111,8 @@ struct Report: Codable {
     /// Diagnostic (--census yes): primitives of one decode step's graph by name, and their total.
     var census: [String: Int]?
     var censusTotal: Int?
+    /// --prefix-records: the first run's record measurement (its tokens are the run's).
+    var prefixRecord: QwenTensorParallelPrefixRecordReport?
     var runs: [RunReport] = []
     var topTokenIDs: [[Int]]?
     var topLogits: [[Float]]?
@@ -133,6 +139,7 @@ struct Options {
     var warmup = true
     var wiredResidency = true
     var census = false
+    var prefixRecords: String?
     var deadlineSeconds = 900
     var outputCount: Int?
     var reference = ""
@@ -183,6 +190,12 @@ struct Options {
             case "--warmup": warmup = try yesNo(try value())
             case "--wired-residency": wiredResidency = try yesNo(try value())
             case "--census": census = try yesNo(try value())
+            case "--prefix-records":
+                let name = try value()
+                guard ["native", "balanced", "k8v4", "k8v8"].contains(name) else {
+                    throw Failure("--prefix-records takes native, balanced, k8v4 or k8v8")
+                }
+                prefixRecords = name
             case "--deadline-seconds": deadlineSeconds = Int(try value()) ?? 0
             case "--output-count": outputCount = Int(try value())
             case "--reference": reference = try value(); references.append(reference)
@@ -209,6 +222,9 @@ struct Options {
             }
             if Set(shares).count > 1 && ["full", "simulated", "hybrid"].contains(mode) {
                 throw Failure("unequal --shares apply to tp and shard-local only")
+            }
+            if prefixRecords != nil && !["full", "simulated", "tp"].contains(mode) {
+                throw Failure("--prefix-records applies to full, simulated and tp")
             }
         } else if command == "synthesize" {
             guard output.hasPrefix("/"), !FileManager.default.fileExists(atPath: output) else {
@@ -283,7 +299,8 @@ enum RunCommand {
                 sealedReduction: options.reductionPath == "sealed-bench")
             // First exchange: fixed width in every build (4 int32 per rank), so a rank of another build is refused.
             guard try g.digestsEqual(launch.digest),
-                  try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
+                  try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";")
+                      + (options.prefixRecords.map { "|prefix-records=" + $0 } ?? ""))) else {
                 throw Failure("the ranks disagree on the workload, the model configuration, the prompt or the arithmetic environment")
             }
             if options.reductionPath == "sealed-bench" {
@@ -352,7 +369,27 @@ enum RunCommand {
         }
         for index in 0..<options.repeats {
             Memory.peakMemory = 0
-            let generation = try generate(request.promptTokenIDs, outputCount, recordTop: index == 0 ? options.recordTop : 0)
+            let generation: QwenTensorParallelModel.Generation
+            if let records = options.prefixRecords {
+                let measured = try model.generateAfterPrefixRecord(prompt: request.promptTokenIDs, outputCount: outputCount,
+                    chunk: request.chunkSize, recordTop: index == 0 ? options.recordTop : 0, quantization: records)
+                generation = measured.generation
+                if index == 0 {
+                    report.prefixRecord = measured.report
+                    let record = measured.report.record
+                    note(String(format: "prefix record %@ at %d: attention %d of %d native bytes (%.2fx), worst key error %.4g, worst value error %.4g, %.2f s",
+                                record.encoding, measured.report.frontier, record.attentionBytes, record.nativeAttentionBytes,
+                                Double(record.nativeAttentionBytes) / Double(max(1, record.attentionBytes)),
+                                record.maxAbsError(kind: "keys") ?? 0, record.maxAbsError(kind: "values") ?? 0, record.seconds))
+                    if let tail = measured.report.tail {
+                        note(String(format: "prefix record tail of %d positions: mean NLL %.5f captured, %.5f restored; greedy agreement %.4f; max logit difference %.4g",
+                                    tail.positions, tail.meanNegativeLogLikelihoodCaptured, tail.meanNegativeLogLikelihoodRestored,
+                                    tail.top1Agreement, tail.maxAbsLogitDifference))
+                    }
+                }
+            } else {
+                generation = try generate(request.promptTokenIDs, outputCount, recordTop: index == 0 ? options.recordTop : 0)
+            }
             let steps = generation.stepSeconds
             let run = RunReport(tokenIDs: generation.tokenIDs, tokenIDsSHA256: tokenDigest(generation.tokenIDs),
                 firstTokenSeconds: generation.firstTokenSeconds,

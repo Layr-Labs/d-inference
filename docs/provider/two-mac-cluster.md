@@ -345,8 +345,27 @@ keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own
 share of it to the SSD once the request has finished, and a later prompt is
-restored from it only when both Macs hold it, with the same tokens as a request
-that prefilled the whole prompt ([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+restored from it only when both Macs hold it, close to a request that
+prefilled the whole prompt at the default record precision below, and with
+its tokens when records are `native`
+([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+
+The SSD tier stores older attention rows compactly at the same checkpoint
+precision as a single Mac (`balanced` by default; a Qwen 3.8 27B record's
+attention rows take about a third of their exact size), so a prefix restored
+from disk (and kept in memory after that restore) is close to, not identical
+with, computing it again; prefixes the pair computed and kept in memory are
+exact. For exact disk restores, set the same value on both Macs and restart
+the cluster:
+
+```toml
+[backend]
+engine_v2_kv_checkpoint_quantization = "native"
+```
+
+Both Macs must resolve the same precision; otherwise the pair refuses to load
+the model. The [record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding)
+lists what each model stores compactly.
 
 Prefixes are kept per tenant, as on one Mac: a request served through Darkbloom
 reuses only prefixes that requests with its own cache scope left, on both Macs.
@@ -441,7 +460,9 @@ The leader's cache choices (`darkbloom cache set`, the prefix cache switch, the
 daily write limit, the TTL and an explicit disk budget) reach the other Mac
 through its cluster service, which applies them to the ranks it starts. Each Mac
 keeps its own cache folder and, without an explicit budget, sizes the pair's
-cache from its own free space.
+cache from its own free space. The SSD records' precision
+(`engine_v2_kv_checkpoint_quantization`) is not synced: each Mac reads its own,
+and they must match.
 
 ## Not yet in this build
 

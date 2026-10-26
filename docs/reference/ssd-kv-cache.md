@@ -462,6 +462,28 @@ reconnect regain). No call site consumes them yet and there is no
 cross-host raw-KV reuse contract; the epoch store, durable-budget
 accounting and publication behavior are unchanged.
 
+## Cluster prompt-prefix records
+
+The two-Mac cluster's ranks keep their prompt prefixes in their own encrypted
+records under `<cache base>/darkbloom/cluster-prefix-v1`, separate from the
+`kv3/` tier above and its DBK3 format
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskTier.swift`,
+`QwenStagePrefixDiskRecord.swift` beside it). Attention rows are stored at the
+pair's checkpoint precision, `balanced` by default; the mechanism, eligibility
+per family and bindings are in the
+[cluster record encoding](../architecture/inference.md#cluster-ssd-prefix-record-encoding).
+
+| Item | Value | Code |
+|---|---|---|
+| Path | `<root>/v1-<24 hex of the plan scope digest>/rank<r>/<32 hex keyed tag>.dbpx`; an encoding that encodes anything adds `\|records=<selection>:<profile identity>:<family>` to the plan scope, so its records live in their own directory | `QwenStagePrefixDiskTier.planDirectoryName`, `QwenStagePrefixDiskEncoding.planScopeSuffix` |
+| File | Magic `DBPXSSD1`, the record's data key sealed with the owner-derived key, the JSON header sealed with the data key, then every unit sealed under a nonce made of its index | `QwenStagePrefixDiskIO` |
+| Attention units | Rows `[k * blockTokens, ...)` of every head of one entry; a frontier `f` on the block grid reads only its own units | `QwenStagePrefixDiskHeader.Attention` |
+| Encoded entry | Header `nativeFrom` = committed tokens less the profile's `recentTokenCount` (128): per head, rows below it encoded (`encodedRowBytes`: codes, FP32 scales, FP32 offsets), the rest native; absent means every row native | `QwenStagePrefixDiskEncodedRows` |
+| Record encoding | Header `encoding` (`quantization`, `identity`, `family`), absent for native records; must equal the tier's, and every entry's `nativeFrom` must be what that encoding writes, or the record is refused and deleted | `QwenStagePrefixDiskRestoreWork`, `QwenStagePrefixDiskTier` (`loadIndex`) |
+| Always native | Recurrent and convolution state, speculative (MTP) history (a NextN history a record keeps as an attention entry included), GLM index keys and pool gates | `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncoding.nativeLayers` |
+| Restore | Decoded into page-aligned native buffers the arrays own: `[1, heads, frontier, width]` of the captured dtype, as a native record restores; older rows approximate | `QwenStagePrefixDiskRestoreWork.place` |
+| Switch | `DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION` on the rank, from the owner ([configuration](configuration.md#cluster-ssd-prefix-record-precision)) | `QwenStagePrefixDiskEncoding.fromEnvironment` |
+
 ## GLM cluster image exclusion
 
 | Input | SSD prefix behavior | Enforcement |

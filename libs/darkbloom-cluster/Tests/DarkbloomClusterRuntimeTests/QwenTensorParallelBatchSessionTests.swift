@@ -54,10 +54,10 @@ struct QwenTensorParallelBatchSessionTests {
         var selected: [Int] = []
         var failure: Error?
         var releaseAttempts = 0, rejectRelease = false
-        init(_ model: QwenTensorParallelModel, lanes: Int) throws {
+        init(_ model: QwenTensorParallelModel, lanes: Int, maximumTokens: Int = 256) throws {
             self.model = model
             host = try CBv2StageKVHost(model: model.model, kind: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged" ? .paged : .contiguous,
-                lanes: lanes, maximumTokensPerRequest: 256, maximumChunkTokens: 64)
+                lanes: lanes, maximumTokensPerRequest: maximumTokens, maximumChunkTokens: 64)
         }
     }
     private struct SelectionReservation: QwenTensorParallelBatchReservation {
@@ -953,6 +953,132 @@ struct QwenTensorParallelBatchSessionTests {
             #expect(third[0].tier.recordCount == width - 1)
             for owner in lossy { try owner.executor!.retire(owner.nativeLanes[0], reason: nil, selected: 0, last: nil) }
             for disk in third { disk.tier.close() }
+        }
+    }
+
+    /// Balanced records, the default, through the batch owner: a prompt whose
+    /// captured frontier lies past the exact band is written encoded, offered
+    /// by reopened tiers and adopted on both ranks into native rows of the
+    /// captured shapes; the record's newest rows match a cold prefill bit for
+    /// bit, older rows are approximate, and the restored request runs on (its
+    /// outputs close to, not equal to, a cold request's).
+    @Test func ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand() throws {
+        try Device.withDefaultDevice(device) {
+            let (configuration, tensors, _) = try warmFixture(hybrid: false)
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-warm-tiny", vocabularySize: 256,
+                hiddenSize: 256, activationDType: "bfloat16", maximumPromptTokens: 384,
+                maximumChunkTokens: 64, maximumOutputTokens: 16, maximumContextTokens: 512)
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qwen-tp-ssd-balanced-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let key = Data((0..<32).map { UInt8(($0 * 29 + 3) % 256) })
+            var settings = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+            settings.minimumTokens = 1
+            settings.minimumFreeBytes = 1 << 20
+            let planScope = "qwen-tp-ssd-balanced|shares=1:1"
+            let encoding = QwenStagePrefixDiskEncoding(quantization: .balanced, family: .qwenAttention)
+            func tiers() throws -> [QwenTensorParallelPrefixDisk] {
+                try (0..<2).map { rank in
+                    .init(tier: try QwenStagePrefixDiskTier(configuration: settings, root: root, key: key,
+                        planScope: planScope, rank: rank, encoding: encoding), planScope: planScope)
+                }
+            }
+            func pair(caches: [QwenTensorParallelBatchPrefixCache]?, disks: [QwenTensorParallelPrefixDisk]?) throws -> [Owned] {
+                let wire = Rendezvous(), load = UUID().uuidString
+                return try (0..<2).map { rank in
+                    let reduction = Rank(rank, wire)
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: reduction) { _, keep in
+                        for (name, value) in tensors { try keep(name, value) }
+                    }
+                    let owner = try Owned(model, lanes: 1, maximumTokens: 512)
+                    let warm = caches != nil
+                    owner.executor = try .init(model: model, configuration: configuration, host: owner.host,
+                        group: reduction, prepare: { _, _ in nil }, completedDecode: { _ in }, completedPrefill: {},
+                        releaseResources: { _ in }, prefix: caches?[rank],
+                        prefixBudget: warm ? .init(maximumTokens: 384, captureBytes: 16 << 20, residentBytes: 64 << 20) : nil,
+                        prefixScope: warm ? { _ in load } : nil,
+                        prefixDisk: disks?[rank], prefixDiskScope: disks == nil ? nil : { _ in planScope + "|chunk=16|text" },
+                        allocationBound: warm ? { (($0 + 16383) / 16384) * 16384 } : nil)
+                    return owner
+                }
+            }
+            // 300 prompt tokens in 16-token chunks: the frontier kept is 288, the band rows [160, 288).
+            let prompt = [10] + (1..<300).map { ($0 * 17 + 7) % 256 }
+            let frontier = 288, band = frontier - 128
+            func request() throws -> QwenLayerStageGenerationRequest {
+                try .init(profile: profile, requestID: UUID(), promptTokenIDs: prompt, chunkSize: 16, outputCount: 8,
+                    stopTokenIDs: [])
+            }
+            let first = try tiers()
+            let writer = try pair(caches: (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) },
+                disks: first)
+            let stored = try request()
+            try parallel(writer) { $0.nativeLanes = [try $0.executor!.open(.init(request: stored), check: {})] }
+            while writer[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                try parallel(writer) { owner in
+                    let lane = owner.nativeLanes[0]
+                    if let token = try owner.executor!.prefill(lane, frame: lane.nextFrame!, check: {}) { owner.selected = [token] }
+                }
+            }
+            for owner in writer {
+                try owner.executor!.retire(owner.nativeLanes[0], reason: .clientStop, selected: 1, last: owner.selected[0])
+            }
+            for owner in writer { try owner.executor!.confirmedRetirement(owner.nativeLanes[0], clean: true) }
+            #expect(writer.allSatisfy { $0.nativeLanes[0].storedPrefixFrontiers == [frontier] })
+            for disk in first {
+                #expect(disk.tier.drain(timeoutSeconds: 60) && disk.tier.recordCount == 1)
+                let name = try #require(try FileManager.default.contentsOfDirectory(atPath: disk.tier.directory.path)
+                    .first { $0.hasSuffix(".dbpx") })
+                let header = try QwenStagePrefixDiskIO.open(url: disk.tier.directory.appendingPathComponent(name), keys: disk.tier.keys).header
+                #expect(header.encoding == encoding.header && header.committedTokens == frontier
+                    && !header.attention.isEmpty && header.attention.allSatisfy { $0.nativeFrom == band && $0.heads == 1 })
+                disk.tier.close()
+            }
+            let second = try tiers()
+            let resident = (0..<2).map { _ in QwenTensorParallelBatchPrefixCache(enabled: true, budgetBytes: 64 << 20) }
+            let cold = try pair(caches: nil, disks: nil), warm = try pair(caches: resident, disks: second)
+            let r = try request()
+            try parallel(cold) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+            try parallel(warm) { $0.nativeLanes = [try $0.executor!.open(.init(request: r), check: {})] }
+            #expect(warm.allSatisfy { $0.nativeLanes[0].committedTokens == frontier })
+            #expect(cold.allSatisfy { $0.nativeLanes[0].committedTokens == 0 })
+            for owners in [cold, warm] {
+                while owners[0].nativeLanes[0].nextFrame?.phase == .prefill {
+                    try parallel(owners) { owner in owner.output = try owner.nativeLanes[0].session.prefill(check: {}) }
+                }
+            }
+            #expect(second.allSatisfy { $0.tier.stats.restores == 1 } && resident.allSatisfy { $0.bytesInUse > 0 })
+            for rank in 0..<2 {
+                let a = cold[rank].nativeLanes[0].session.state, b = warm[rank].nativeLanes[0].session.state
+                #expect(a.committedTokens == b.committedTokens)
+                var compared = 0
+                for (x, y) in zip(a.rows, b.rows) {
+                    guard let x, let y else { continue }
+                    let computed = x.snapshot(), adopted = y.snapshot()
+                    for (c, w) in [(computed.keys, adopted.keys), (computed.values, adopted.values)] {
+                        #expect(c.shape == w.shape && c.dtype == w.dtype)
+                        #expect(bytes(c[0..., 0..., band ..< frontier, 0...]) == bytes(w[0..., 0..., band ..< frontier, 0...]),
+                            "rank \(rank): the record's band is exact")
+                        #expect(bytes(c[0..., 0..., ..<band, 0...]) != bytes(w[0..., 0..., ..<band, 0...]),
+                            "rank \(rank): older rows come back approximate")
+                        let difference = abs(c[0..., 0..., ..<band, 0...].asType(.float32) - w[0..., 0..., ..<band, 0...].asType(.float32)).max()
+                        let scale = abs(c[0..., 0..., ..<band, 0...].asType(.float32)).max()
+                        #expect(difference.item(Float.self) < 0.25 * scale.item(Float.self))
+                    }
+                    compared += 1
+                }
+                #expect(compared == 4)
+                let coldLogits = cold[rank].output!.asType(.float32), warmLogits = warm[rank].output!.asType(.float32)
+                #expect(all(isFinite(warmLogits)).item(Bool.self))
+                #expect(bytes(cold[rank].output!) != bytes(warm[rank].output!), "a balanced restore is not byte-equal to a cold prefill")
+                #expect(abs(coldLogits - warmLogits).max().item(Float.self) < 0.25 * max(1, abs(coldLogits).max().item(Float.self)))
+            }
+            for owner in cold + warm {
+                for lane in owner.nativeLanes { try owner.executor!.retire(lane, reason: nil, selected: 0, last: nil) }
+                owner.nativeLanes.removeAll(); #expect(owner.host.isDrained)
+            }
+            for disk in second { disk.tier.close() }
         }
     }
 }

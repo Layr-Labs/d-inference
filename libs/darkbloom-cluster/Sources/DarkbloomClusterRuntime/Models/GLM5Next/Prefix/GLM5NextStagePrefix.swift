@@ -20,7 +20,11 @@ import MLXLMCommon
 /// they do attention rows; a KDA layer's convolution and recurrent state are
 /// its `recurrent` pair. A committed prompt prefix is valid at every position,
 /// so the DSA validity history is not stored and is rebuilt on restore. The
-/// layer index is the model's global layer index.
+/// layer index is the model's global layer index. On the SSD tier the latents
+/// may be stored encoded (`QwenStagePrefixDiskFamily.glm5NextDSA`, balanced by
+/// default, decoded to their native dtype on restore); the index keys and
+/// pool gates, which choose each query's top-k rows, and the KDA state stay
+/// native.
 enum GLM5NextStagePrefixSnapshot {
     /// The state of every layer at `frontier`, or nil when a DSA history is
     /// not storable here (a position marked invalid, or index keys and pool

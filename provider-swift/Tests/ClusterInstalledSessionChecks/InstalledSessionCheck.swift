@@ -540,6 +540,18 @@ final class EndpointBox: @unchecked Sendable {
             "prefix cache off must not configure the SSD tier")
         try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])==nil,
             "prefix cache off must send no SSD key")
+        // The records' precision: the owner's resolved checkpoint precision whenever the prefix cache is on (both ranks bind
+        // it into their load agreement), this owner's own override first; nothing with the cache off or without a resolver.
+        let records="DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION"
+        try require(environment[records]==nil,"a rank got a records precision with no resolver installed")
+        DistributedInstalledKVQuantization.installRecords { _,_ in "native" }
+        let resolvedRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])[records]
+        let overriddenRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[records:"K8V8"])[records]
+        let cacheOffRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])[records]
+        DistributedInstalledKVQuantization.installRecords(nil)
+        try require(resolvedRecords=="native" && overriddenRecords=="k8v8" && cacheOffRecords==nil,
+            "the records precision does not reach the rank as the prefix cache says")
         let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
         try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,

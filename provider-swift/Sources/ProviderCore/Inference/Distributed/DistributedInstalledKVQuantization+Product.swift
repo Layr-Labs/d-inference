@@ -7,11 +7,14 @@ import Foundation
 /// (`EngineV2KVQuantizationPolicy.resolve`), nothing cluster-specific.
 extension DistributedInstalledKVQuantization {
     /// Resolve from the saved provider configuration at `url` and install for
-    /// this owner process. `cluster worker-owner` has just read the same file
-    /// for its cluster reference and stops when it cannot; a later failure
-    /// here leaves main's default with the owner's switch.
+    /// this owner process: the live precision and the SSD records' checkpoint
+    /// precision. `cluster worker-owner` has just read the same file for its
+    /// cluster reference and stops when it cannot; a later failure here leaves
+    /// main's defaults with the owner's switches.
     public static func installProduct(providerConfiguration url: URL) {
-        install(resolver(backend: (try? savedBackendSettings(providerConfiguration: url)) ?? BackendSettings()))
+        let backend = (try? savedBackendSettings(providerConfiguration: url)) ?? BackendSettings()
+        install(resolver(backend: backend))
+        installRecords(recordsResolver(backend: backend))
     }
 
     /// Main's resolution for one public model ID: the switch, then the per-model
@@ -26,6 +29,22 @@ extension DistributedInstalledKVQuantization {
                 return selection == .native ? nil : selection.rawValue
             } catch {
                 return boundedName(environment[switchName] ?? byModel[modelID] ?? global)
+            }
+        }
+    }
+
+    /// Main's checkpoint resolution for one public model ID, the precision of
+    /// the pair's SSD prompt-prefix records: the switch, then the per-model and
+    /// global checkpoint settings, `balanced` by default. Always a name, native
+    /// included; a setting main would refuse is passed on as its bounded name.
+    static func recordsResolver(backend: BackendSettings) -> Resolver {
+        let global = backend.engineV2KVCheckpointQuantization, byModel = backend.engineV2KVCheckpointQuantizationByModel
+        return { modelID, environment in
+            do {
+                return try EngineV2KVQuantizationPolicy.resolve(modelType: nil, global: global, byModel: byModel,
+                    modelID: modelID, environment: environment, purpose: .checkpoint).rawValue
+            } catch {
+                return boundedName(environment[checkpointSwitchName] ?? byModel[modelID] ?? global)
             }
         }
     }

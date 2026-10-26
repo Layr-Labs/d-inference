@@ -1808,6 +1808,48 @@ actual artifact, installed owner capacity, warm prefixes or TP speculation.
 Full model/reference, media, concurrency, throughput and logical-retirement
 checks remain required.
 
+### Cluster SSD prefix record encoding checks
+
+`PrefixDiskEncodingTests` (Runtime test target, CPU, synthetic rows) covers
+family eligibility, the rank's precision parsing, peers told different
+encodings refusing the load's first exchange (local sockets), a round trip
+whose older rows equal the SDK reference's and lie within the 4-bit affine
+bound while the newest 128 rows stay exact, shallower frontiers, GLM's DSA and
+KDA layer caches through a balanced record (only the older latents
+approximate), a unit read row by row from a history encoding as the whole
+array does, a layer kept native (a speculative head's history) beside encoded
+ones, encodings never restored under one another, a root holding both
+encodings, refused corrupt, truncated and undecodable records, and the bytes at
+the beta models' shapes. Like every MLX
+test in the target it needs the source-matched `mlx.metallib` beside the test
+executable. `PREFIX_RECORD_ENCODE_BENCH=1` adds a timing of one 27B rank layer
+at 32,768 tokens. `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
+writes a balanced record through the batch owner and adopts it on both ranks.
+`GLM5NextTensorParallelPrefixRecordEncodingTests` writes a GLM tensor-parallel
+rank's record through its row readers at the artifact's widths (only the DSA
+latents encoded; the NextN history native) and adopts it;
+`GLM53_PREFIX_SSD=1` adds
+`GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
+(GPU, about 1 GB of synthetic weights: real paged histories through a balanced
+record, then the restored request prefills on).
+
+On real weights, compare a plain run with a run through a record:
+
+```bash
+darkbloom-cluster-tp-check run --mode full --model-dir "$MODEL" --request request.json \
+  --record-top 8 --report cold.json
+darkbloom-cluster-tp-check run --mode full --model-dir "$MODEL" --request request.json \
+  --record-top 8 --prefix-records balanced --report balanced.json
+darkbloom-cluster-tp-check compare --reference cold.json --candidate balanced.json
+```
+
+The second report's `prefixRecord` holds each layer's errors and bytes and the
+prompt tail scored from both states; `--prefix-records native` must reproduce
+the first run's tokens. `--mode tp` measures each rank's own shard (no tail
+scoring). These synthetic and tool checks do not establish answer quality on
+the pair; needle and perplexity comparisons after a restored disk prefix remain
+model qualification work.
+
 ### Qwen cluster media provider ingress checks
 
 `DistributedQwenMediaIngressTests` runs the actual ImageIO/AVFoundation and Qwen

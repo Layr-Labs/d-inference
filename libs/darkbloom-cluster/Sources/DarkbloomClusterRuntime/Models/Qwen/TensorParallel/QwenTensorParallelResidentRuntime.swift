@@ -114,6 +114,9 @@ public final class QwenTensorParallelResidentRuntime {
         // Live precision (main's policy, as the owner resolved it): every
         // request-owned row sits on the product's paged pool.
         let kvQuantization = try PagedKVQuantizationSelection.clusterLive(environment)
+        // How the SSD tier's records store attention rows (main's checkpoint
+        // precision, as the owner resolved it; balanced unless it says native).
+        let prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(environment, family: .qwenAttention)
         // The assistant's request-owned history needs the CBv2 paged backend;
         // refuse before LOAD rather than at the first request.
         try QwenTensorParallelMTPPolicy.require(model: admission.specification.model, lanes: batch.lanes,
@@ -177,6 +180,7 @@ public final class QwenTensorParallelResidentRuntime {
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + QwenTensorParallelBatchSession.decodeAgreementFields
                 + ["qwen-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]
+                + (prefixEnabled ? prefixRecords.loadAgreementFields : [])
                 + (mediaEnabled ? [ClusterQwenMedia.contract, Qwen3VLMediaProcessor.policyID] : [])
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint()] + fields))
@@ -317,7 +321,7 @@ public final class QwenTensorParallelResidentRuntime {
                     rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
                     assistantPolicy: speculativeTerms.map { "depth=\($0.depth)|inventory=\(mtpInventory?.fingerprint ?? "none")" })
                 return QwenStagePrefixDiskTier.open(configuration: .fromEnvironment(environment, key: prefixSSDKey),
-                    planScope: scope, rank: collective.rank,
+                    planScope: scope, rank: collective.rank, encoding: prefixRecords,
                     stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased())
                     .map { QwenTensorParallelPrefixDisk(tier: $0, planScope: scope) }
             }() : nil

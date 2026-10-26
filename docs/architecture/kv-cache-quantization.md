@@ -1,9 +1,10 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-26
 
 The provider defaults to native attention execution and independently requests
-`balanced` storage for eligible encrypted checkpoints. Explicit live packed
+`balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's
+SSD prompt-prefix records included. Explicit live packed
 execution remains available. This page explains the numerical and ownership
 contracts, not completed model qualification or a release. The
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
@@ -72,6 +73,21 @@ eligibility checks still apply; fallback does not enable a previously unsupporte
 An explicitly live-packed pool retains its existing packed checkpoint format,
 including when the separate checkpoint request is `native` or another profile.
 Effective diagnostics describe that actual format, not the ignored request.
+
+### Two-Mac cluster SSD prompt-prefix records
+
+The same checkpoint precision, resolved per Mac for the pair's public model,
+encodes the attention rows of the pair's encrypted SSD prompt-prefix records;
+live stage KV stays native. Rows go through `CBv2CheckpointRowCodec`, the
+SDK's prepared form of the row codec above, so an encoded row is the row a
+complete checkpoint stores. Three things differ from complete checkpoints. A
+record serves several prompt frontiers, and its native band is the record's
+newest 128 rows, so only its deepest frontier restores an exact recent band.
+Eligibility is explicit per model family rather than derived from layer
+geometry: Qwen full-attention keys and values, and GLM-5.3-Flash DSA latents
+but not its index keys and pool gates. Both ranks bind the encoding into their
+load agreement. Mechanism, bindings and measurement are in
+[cluster SSD prefix record encoding](inference.md#cluster-ssd-prefix-record-encoding).
 
 Generic contiguous historical targets can supply
 `completeCheckpointKVDTypes: [DType]?` to `EngineV2`. The provider passes its
@@ -280,6 +296,7 @@ whole-model quality or performance guarantee for this path.
 | Model/backend composition | `EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Effective checkpoint eligibility and identity | `CheckpointStorageQuantization.swift`, `EngineV2SlotFactory+CompletePrefixCache.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Bounded native checkpoint conversion | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `NativeQuantizedCheckpointRestore.swift` |
+| Cluster SSD prefix record encoding | `NativeCheckpointRowCodec.swift` (`CBv2CheckpointRowCodec`); `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` |
 | Token-local encoding | `PagedKVQuantization.swift`, `PagedQuantizedTransfers.swift` |
 | Mixed inference and masks | `PagedQuantizedAttention.swift`, `PagedQuantizedLayerOperation.swift` |
 | Compact Qwen4 selected rows | `PagedQuantizedSelectedGather.swift` |

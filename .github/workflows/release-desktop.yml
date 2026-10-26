@@ -129,7 +129,7 @@ jobs:
           npm ci
           npm run dist
 
-      - name: Notarize and staple the DMG
+      - name: Sign, notarize and staple the DMG
         working-directory: desktop-app/release
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -137,6 +137,9 @@ jobs:
         run: |
           set -euo pipefail
           DMG="Darkbloom-$VERSION-arm64.dmg"
+          # electron-builder leaves the DMG unsigned; Gatekeeper wants the container
+          # signed by the same Developer ID before it's notarized.
+          codesign --sign "$CSC_NAME" --keychain "$KEYCHAIN_PATH" --timestamp "$DMG"
           xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" --wait --output-format json > "$RUNNER_TEMP/notary.json"
           status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json")
@@ -166,7 +169,11 @@ jobs:
           grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl.txt"
           xcrun stapler validate "$APP"
           xcrun stapler validate "$DMG"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+          codesign --verify --verbose=2 "$DMG"
+          team=$(codesign -dv "$DMG" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [ "$team" = "$APPLE_TEAM_ID" ] || { echo "::error::DMG signed by team $team, expected $APPLE_TEAM_ID"; exit 1; }
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG" 2>&1 | tee "$RUNNER_TEMP/spctl-dmg.txt"
+          grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl-dmg.txt"
           hdiutil verify "$DMG"
           bash -n "$APP/Contents/Resources/bootstrap/install-runtime.sh"
           shasum -a 256 "$DMG" "$ZIP" > SHA256SUMS

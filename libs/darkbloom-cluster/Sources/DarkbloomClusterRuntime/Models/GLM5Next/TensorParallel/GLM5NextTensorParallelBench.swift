@@ -69,9 +69,10 @@ public enum GLM5NextTensorParallelBench {
         /// (`GLM5NextTensorParallelSpeculation.batchesProposalHeads`, the runtime's).
         public var mtpBatchHeads = true
         /// The runtime's decode policy (`GLM5NextTensorParallelDecodePolicy`):
-        /// `fixed` or `load` (one proposal a round from `mtpLoadLanes` lanes),
-        /// and `widthInvariant` (no window of one row; implied by `load`).
-        public var mtpDepthPolicy = "fixed"
+        /// `load` (the runtime's default: one proposal a round from
+        /// `mtpLoadLanes` lanes) or `fixed`, and `widthInvariant` (one
+        /// arithmetic at any window width; implied by `load`).
+        public var mtpDepthPolicy = "load"
         public var mtpLoadLanes = 3
         public var widthInvariant = false
         /// Diagnostic, one request: `random` verifies 1 to `mtpDepth`

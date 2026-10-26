@@ -10,18 +10,31 @@ struct GLM5NextTensorParallelDecodePolicyTests {
     typealias Policy = GLM5NextTensorParallelDecodePolicy
     typealias Switches = ClusterGLMTensorParallel
 
-    /// No switch is today's decode: the fixed depth cut at the output limit,
-    /// one-row windows unpadded, and nothing added to the load agreement.
-    @Test func theDefaultIsTodaysDecode() throws {
+    /// No switch is `load` from three decoding lanes, width-invariant, bound
+    /// into the load agreement.
+    @Test func theDefaultIsTheLoadPolicy() throws {
         let policy = try Policy(environment: [:])
+        #expect(policy == .standard && policy.depth == .load && policy.loadLanes == 3 && policy.widthInvariant)
+        #expect(policy.loadAgreementFields == ["glm5-next-tp-decode-policy-v1", "load", "load-lanes=3", "padded"])
+        if ProcessInfo.processInfo.environment[Switches.depthPolicySwitch] == nil {
+            #expect(GLM5NextTensorParallelDecodePolicy.current == .standard)
+        }
+        #expect(try Policy(environment: [Switches.loadLanesSwitch: "5"]).loadLanes == 5)
+    }
+
+    /// `fixed` still gives the decode before `load` became the default: the
+    /// fixed depth cut at the output limit, one-row windows unpadded, and
+    /// nothing added to the load agreement.
+    @Test func fixedKeepsTheOldWindowsAndAgreement() throws {
+        let policy = try Policy(environment: [Switches.depthPolicySwitch: "fixed"])
         #expect(policy == .fixed && !policy.widthInvariant && policy.loadAgreementFields.isEmpty)
         for lanes in 1...8 {
             for left in 1...5 {
                 #expect(policy.window(maximum: 2, lanes: lanes, outputLeft: left) == min(2, left - 1))
             }
         }
-        // A lane threshold alone changes nothing.
-        #expect(try Policy(environment: [Switches.loadLanesSwitch: "5"]) == .fixed)
+        // A lane threshold beside `fixed` changes nothing.
+        #expect(try Policy(environment: [Switches.depthPolicySwitch: "fixed", Switches.loadLanesSwitch: "5"]) == .fixed)
         #expect(try Policy(environment: [Switches.depthPolicySwitch: "fixed",
             Switches.widthInvariantSwitch: "0"]) == .fixed)
     }

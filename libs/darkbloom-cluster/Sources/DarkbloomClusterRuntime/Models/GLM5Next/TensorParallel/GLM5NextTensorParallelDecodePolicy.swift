@@ -19,18 +19,19 @@ import Foundation
 /// projects both parts' attention rows in one product, so a part of one row
 /// does not take the one-row product either.
 ///
-/// - `fixed` (the default): every round verifies up to `depth` proposals, as
-///   before; with `widthInvariant` off this is the product's decode
-///   bit for bit.
-/// - `load`: up to `depth` proposals while fewer than `loadLanes` lanes decode
-///   in a step, one from then on; implies `widthInvariant`. A request
-///   then gets the same tokens and logits at any concurrency, while a busy
-///   pair verifies fewer rows per accepted token.
+/// - `load` (the default, `standard`): up to `depth` proposals while fewer
+///   than `loadLanes` (3) lanes decode in a step, one from then on; implies
+///   `widthInvariant`. A request then gets the same tokens and logits at any
+///   concurrency, while a busy pair verifies fewer rows per accepted token.
+/// - `fixed` (`DARKBLOOM_GLM_TP_MTP_DEPTH_POLICY=fixed`): every round
+///   verifies up to `depth` proposals; with `widthInvariant` off this is the
+///   decode before `load` became the default, bit for bit, with its load
+///   agreement.
 ///
 /// Windows follow agreed state only (the lanes in the agreed plan, a
 /// request's agreed tokens), so both ranks verify the same rows. Both ranks
 /// bind the policy into their load agreement (`loadAgreementFields`; none for
-/// the default, so a default load's agreement is unchanged).
+/// `fixed` without the width switch).
 struct GLM5NextTensorParallelDecodePolicy: Equatable, Sendable {
     enum Depth: String, Sendable { case fixed, load }
 
@@ -44,7 +45,11 @@ struct GLM5NextTensorParallelDecodePolicy: Equatable, Sendable {
     /// (`GLM5NextTextStage.widthInvariantWindows`).
     var widthInvariant = false
 
+    /// `fixed` without the width switch: the windows and the load agreement of
+    /// the decode before `load` became the default.
     static let fixed = Self()
+    /// The default: `load` from three decoding lanes.
+    static let standard = Self(depth: .load, loadLanes: 3)
 
     /// The lane count matters to `load` only; other policies keep the default.
     init(depth: Depth = .fixed, loadLanes: Int = 3, widthInvariant: Bool = false) {
@@ -61,7 +66,7 @@ struct GLM5NextTensorParallelDecodePolicy: Equatable, Sendable {
                 throw ProbeError("\(name) takes " + values.sorted().joined(separator: ", "))
             }
         }
-        self.init(depth: environment[Switches.depthPolicySwitch].flatMap(Depth.init(rawValue:)) ?? .fixed,
+        self.init(depth: environment[Switches.depthPolicySwitch].flatMap(Depth.init(rawValue:)) ?? .load,
             loadLanes: environment[Switches.loadLanesSwitch].flatMap(Int.init) ?? 3,
             widthInvariant: environment[Switches.widthInvariantSwitch] == "1")
     }
@@ -69,9 +74,9 @@ struct GLM5NextTensorParallelDecodePolicy: Equatable, Sendable {
     /// The process's own policy, read once (`GLM5NextTensorParallelResidentRuntime.load`
     /// refuses a malformed one before anything is loaded).
     static let environment = Result { try Self(environment: ProcessInfo.processInfo.environment) }
-    static var current: Self { (try? environment.get()) ?? .fixed }
+    static var current: Self { (try? environment.get()) ?? .standard }
 
-    /// The load agreement's fields; none for the default.
+    /// The load agreement's fields; none for `fixed` (the agreement before `load`).
     var loadAgreementFields: [String] {
         self == .fixed ? [] : ["glm5-next-tp-decode-policy-v1", depth.rawValue,
             "load-lanes=\(loadLanes)", widthInvariant ? "padded" : "unpadded"]

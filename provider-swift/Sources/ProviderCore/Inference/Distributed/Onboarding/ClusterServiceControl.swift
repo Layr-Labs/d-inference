@@ -210,7 +210,7 @@ extension ClusterService {
             control!.rankOrder = order
             let actions = control!.tick(now: now)
             let node = control!
-            let names = node.members.mapValues(\.name)
+            let names = ClusterOnboardingMacName.names(node.members.mapValues(\.name), viewerID: node.localID)
             let line = ClusterControlWords.line(node.mode(now: now), names: names, model: record?.leadership?.modelName,
                                                 aloneRefusal: node.members[node.localID]?.aloneRefusal)
             let logKey = ClusterControlWords.logKey(node.mode(now: now), line: line)
@@ -247,7 +247,7 @@ extension ClusterService {
                 // hand-over's exchange in turn, then finds this Mac no longer leads and is routed to the new leader.
                 guard target == pairing.peerMemberID, let held = ClusterControlCommandLock.acquire(seconds: 0) else { continue }
                 guard (try? store.readRecord().stopDrain) == nil else { held.release(); continue }
-                say("control: handing leadership to \(due.facts.first { $0.memberID == target }?.name ?? target) (term \(claim.term): \(claim.reason))")
+                say("control: handing leadership to \(ClusterOnboardingMacName.other(named: due.facts.first { $0.memberID == target }?.name)) (term \(claim.term): \(claim.reason))")
                 sendLease(claim, running: false, facts: due.facts, alonePlan: due.alonePlan, to: target, pairing: pairing, say: say,
                           done: { held.release() })
             case .tookOver, .steppedDown:
@@ -314,14 +314,17 @@ extension ClusterService {
     }
 
     func report(_ actions: [ClusterControlNode.Action], say: @Sendable (String) -> Void) {
+        // Named as this Mac's log names the other members (`ClusterOnboardingMacName`).
+        func name(_ id: String) -> String {
+            let names = lock.withLock { control.map { ClusterOnboardingMacName.names($0.members.mapValues(\.name), viewerID: $0.localID) } }
+            return names?[id] ?? id
+        }
         for action in actions {
             switch action {
             case .tookOver(let claim, let from):
-                let name = lock.withLock { control?.members[from]?.name } ?? from
-                say("control: took over as leader, term \(claim.term) (\(name) stopped renewing its lease for \(Int(Self.leaseTTLSeconds)) s)")
+                say("control: took over as leader, term \(claim.term) (\(name(from)) stopped renewing its lease for \(Int(Self.leaseTTLSeconds)) s)")
             case .steppedDown(let claim):
-                let name = lock.withLock { control?.members[claim.leaderID]?.name } ?? claim.leaderID
-                say("control: stepped down; \(name) leads from term \(claim.term) (\(claim.reason))")
+                say("control: stepped down; \(name(claim.leaderID)) leads from term \(claim.term) (\(claim.reason))")
             case .lease, .handOver:
                 break
             }
@@ -351,8 +354,8 @@ extension ClusterService {
         }
         return .init(leaderID: node.claim.leaderID, leaderName: node.members[node.claim.leaderID]?.name ?? node.claim.leaderID,
                      term: node.claim.term, reason: node.claim.reason, leads: node.leads,
-                     line: ClusterControlWords.line(mode, names: node.members.mapValues(\.name), model: model,
-                                                    aloneRefusal: node.members[node.localID]?.aloneRefusal), mode: word,
+                     line: ClusterControlWords.line(mode, names: ClusterOnboardingMacName.names(node.members.mapValues(\.name), viewerID: node.localID),
+                                                    model: model, aloneRefusal: node.members[node.localID]?.aloneRefusal), mode: word,
                      confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn)
     }
 
@@ -361,8 +364,12 @@ extension ClusterService {
     func executeControl(_ request: ClusterControlRequest, pairing: ClusterSetupLinkExchange.Pairing,
                         say: @Sendable (String) -> Void) -> ClusterControlReply {
         ensureControl(pairing: pairing)
-        guard let node = lock.withLock({ control }) else { return .init(lines: ["This Mac's cluster service is still starting."], failed: true) }
-        if let refusal = ClusterControlRouting.refusal(localID: node.localID, claim: node.claim, names: node.members.mapValues(\.name)) {
+        // The reply is shown on the Mac that asked: its words name this Mac "the other Mac".
+        func names(_ node: ClusterControlNode) -> [String: String] {
+            ClusterOnboardingMacName.names(node.members.mapValues(\.name), viewerID: pairing.peerMemberID)
+        }
+        guard let node = lock.withLock({ control }) else { return .init(lines: ["The other Mac's cluster service is still starting."], failed: true) }
+        if let refusal = ClusterControlRouting.refusal(localID: node.localID, claim: node.claim, names: names(node)) {
             return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: node.claim.leaderID, notLeader: true)
         }
         // A command that acts as the leader waits until this Mac's claim is confirmed (a restarted Mac whose saved claim
@@ -370,12 +377,12 @@ extension ClusterService {
         if Self.actsAsLeader(request.op) {
             let deadline = Self.monotonicSeconds() + Self.leaseTTLSeconds + 5
             while !leadershipConfirmed(), Self.monotonicSeconds() < deadline, lock.withLock({ control?.leads ?? false }) { usleep(250_000) }
-            guard let now = lock.withLock({ control }) else { return .init(lines: ["This Mac's cluster service is stopping."], failed: true) }
-            if let refusal = ClusterControlRouting.refusal(localID: now.localID, claim: now.claim, names: now.members.mapValues(\.name)) {
+            guard let now = lock.withLock({ control }) else { return .init(lines: ["The other Mac's cluster service is stopping."], failed: true) }
+            if let refusal = ClusterControlRouting.refusal(localID: now.localID, claim: now.claim, names: names(now)) {
                 return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: now.claim.leaderID, notLeader: true)
             }
             guard leadershipConfirmed() else {
-                return .init(lines: ["The command did not run: this Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
+                return .init(lines: ["The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
                              leaderID: now.claim.leaderID)
             }
         }
@@ -384,21 +391,21 @@ extension ClusterService {
         var held: ClusterControlCommandLock?
         if Self.actsAsLeader(request.op) || request.op == .planModels {
             guard let taken = ClusterControlCommandLock.acquire(seconds: 600) else {
-                return .init(lines: ["The command did not run: another cluster command is still running on this Mac; run `darkbloom cluster` again."], failed: true)
+                return .init(lines: ["The command did not run: another cluster command is still running on the other Mac; run `darkbloom cluster` again."], failed: true)
             }
             held = taken
         }
         defer { held?.release() }
         // Leadership may have moved while the command waited (a hand-over finished): then it does not run here.
-        guard let current = lock.withLock({ control }) else { return .init(lines: ["This Mac's cluster service is stopping."], failed: true) }
-        if let refusal = ClusterControlRouting.refusal(localID: current.localID, claim: current.claim, names: current.members.mapValues(\.name)) {
+        guard let current = lock.withLock({ control }) else { return .init(lines: ["The other Mac's cluster service is stopping."], failed: true) }
+        if let refusal = ClusterControlRouting.refusal(localID: current.localID, claim: current.claim, names: names(current)) {
             return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: current.claim.leaderID, notLeader: true)
         }
         if Self.actsAsLeader(request.op), !leadershipConfirmed() {
-            return .init(lines: ["The command did not run: this Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
+            return .init(lines: ["The command did not run: the other Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
                          leaderID: current.claim.leaderID)
         }
-        say("control: running `\(request.op.rawValue)` for \(node.members[pairing.peerMemberID]?.name ?? "the other Mac")")
+        say("control: running `\(request.op.rawValue)` for \(ClusterOnboardingMacName.other(named: node.members[pairing.peerMemberID]?.name))")
         return controlLive.execute(request, leaderID: node.localID)
     }
 
@@ -420,9 +427,11 @@ extension ClusterService {
         return reason.replacingOccurrences(of: #"\s*\(?pid \d+\)?"#, with: "", options: .regularExpression)
     }
 
-    /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap left).
-    static func teardownLines() -> [String] {
-        let name = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
+    /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap
+    /// left), "<Mac>: …" with the Mac named `mac` (the screen's words), else by its hardware (an answer to the other Mac,
+    /// which names it as its screen does).
+    static func teardownLines(mac: String? = nil) -> [String] {
+        let name = mac ?? ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
         do {
             let report = try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3)
             // The part the cluster service started is a cluster process too, also when it is no cluster worker or owner

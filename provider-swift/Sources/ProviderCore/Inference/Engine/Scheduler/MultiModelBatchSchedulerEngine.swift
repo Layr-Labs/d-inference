@@ -348,7 +348,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // evidence marks `reasoning.exclude` invalid for its own rules, so
             // a GLM request carrying it reaches this check too.
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType,
-                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType))
+                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType),
+                withMedia: MediaIngest.hasMedia(request))
         }
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure
@@ -502,7 +503,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
-                glm5PairPostValidation: glm5PairPostValidation)
+                glm5PairPostValidation: glm5PairPostValidation, withMedia: MediaIngest.hasMedia(request))
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
             request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
@@ -702,15 +703,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
-            // Five throws are NOT refusals: `CancellationError` (the
+            // These throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
-            // (deterministic input fault — keeps its 4xx mapping), and
-            // `noProcessedMedia` (media on non-user roles only — a
-            // deterministic 400; rerouting would fail identically
-            // everywhere), plus `unsupportedMedia` (the loaded family rejects
-            // this shape on every equivalent provider) and the bridge's
-            // `tokenBudgetExhausted` admission refusal (capacity, not a
-            // construction fault).
+            // (deterministic input fault — keeps its 4xx mapping), the
+            // bridge's `tokenBudgetExhausted` admission refusal (capacity,
+            // not a construction fault), and every media fault
+            // `EngineV2VisionPrefill.clientFault(for:)` answers with 400:
+            // `noProcessedMedia` (media on non-user roles only),
+            // `unsupportedMedia` (the loaded family rejects this shape) and
+            // the processor's refusal of the media itself (e.g. an image side
+            // below Qwen's resize factor). Rerouting those would fail
+            // identically on every equivalent provider, one Mac or a pair.
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 // Vision eval precedes bridge admission and has no text-token
@@ -852,19 +855,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
                     if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-                    if let visionError = error as? EngineV2VisionPrefillError {
-                        switch visionError {
-                        case .noProcessedMedia:
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                                "multimodal_rejected: media parts must be attached to user "
-                                    + "messages; none of this request's media was consumable")
-                        case .unsupportedMedia(let detail):
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                                "multimodal_rejected: \(detail)")
-                        default:
-                            break
-                        }
-                    }
+                    if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
                     // Construction failures are retryable; deterministic input faults,
                     // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
@@ -1183,17 +1174,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if error is CancellationError { throw CancellationError() }
             if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
             if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-            if let visionError = error as? EngineV2VisionPrefillError {
-                switch visionError {
-                case .noProcessedMedia:
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                        "multimodal_rejected: media parts must be attached to user "
-                            + "messages; none of this request's media was consumable")
-                case .unsupportedMedia(let detail):
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("multimodal_rejected: \(detail)")
-                default: break
-                }
-            }
+            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
             let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
             (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
                 modelId: request.model, mediaKind: mediaKind, error: error))
@@ -1269,16 +1250,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if error is CancellationError { throw CancellationError() }
             if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
             if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-            if let visionError = error as? EngineV2VisionPrefillError {
-                switch visionError {
-                case .noProcessedMedia:
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                        "multimodal_rejected: no consumable user media")
-                case .unsupportedMedia(let detail):
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("multimodal_rejected: \(detail)")
-                default: break
-                }
-            }
+            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
             throw MultiModelBatchSchedulerEngineError.requestRejected(
                 "engine_v2 media prefill construction failed: "
                     + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started")

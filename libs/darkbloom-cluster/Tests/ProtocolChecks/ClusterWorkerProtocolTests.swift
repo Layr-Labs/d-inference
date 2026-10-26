@@ -62,7 +62,8 @@ struct ClusterWorkerProtocolTests {
         try mtpTelemetry()
         try tensorAssistantReadiness()
         try prefixCache()
-        print("{\"passed\":true,\"groups\":19,\"modelExecution\":false,\"localPipeIO\":true}")
+        try retiming()
+        print("{\"passed\":true,\"groups\":20,\"modelExecution\":false,\"localPipeIO\":true}")
     }
 
     /// The request's prefix partition: the product request's cache switch and
@@ -159,6 +160,31 @@ struct ClusterWorkerProtocolTests {
                      String(describing: carried), String(reflecting: carried), "\(reserved(.tenant(digest)))"] {
             try check(!text.contains(digest) && !text.contains(salt), "A description redacts the tenant")
         }
+    }
+
+    /// Re-timing a reservation for another clock changes its deadline alone:
+    /// every optional field is set here at once (a struct check, not a wire
+    /// shape), and the result equals the same reservation built field by field.
+    static func retiming() throws {
+        let hash = String(repeating: "a", count: 64), png = Data([137, 80, 78, 71, 13, 10, 26, 10])
+        let sampling = ClusterWorkerSampling(temperature: 0.7, topP: 0.9, topK: 20, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: [])
+        let mimo = ClusterMiMoImages(images: [.init(png: png, width: 1, height: 1, tokenOffset: 1, tokenCount: 1)])
+        let still = ClusterStillImages(configurationSHA256: hash,
+            images: [.init(png: png, width: 1, height: 1, tokenOffset: 1, tokenCount: 1)])
+        let glm = ClusterGLMMedia(configurationSHA256: hash, processor: .init(patchSize: 14, imageMinimumTokens: 1,
+            imageMaximumTokens: 16, videoMinimumTokens: 1, videoMaximumTokens: 16), items: [])
+        let qwen = ClusterQwenMedia(artifactSHA256: hash, configurationSHA256: hash, processorSHA256: hash,
+            processorPolicy: .qwen35, promptLength: 3, promptSHA256: hash, positionIDsSHA256: hash,
+            decodeDeltas: [-1], items: [])
+        func full(_ deadline: UInt64) -> ClusterWorkerReservation {
+            .init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [4], outputCount: 2, chunkSize: 2,
+                deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: sampling,
+                prefixCache: .tenant(String(repeating: "b", count: 64)), route: .decodingRankAlone, mimoImages: mimo, stillImages: still, glmMedia: glm, qwenMedia: qwen)
+        }
+        let original = full(1000)
+        try check(original.withDeadline(5) == full(5), "Re-timing keeps every other field")
+        try check(original == full(1000), "Re-timing leaves the original unchanged")
     }
 
     static func tensorAssistantReadiness() throws {

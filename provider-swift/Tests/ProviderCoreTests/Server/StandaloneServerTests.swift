@@ -442,6 +442,15 @@ private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendab
     #expect(refusal["message"] as? String == GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage)
     #expect(refusal["code"] as? String == "unsupported_value")
     #expect(refusal["type"] as? String == "invalid_request_error")
+    // GLM's media refusals read the same on one Mac's API and on a pair's.
+    for (error, message) in [(MultiModelBatchSchedulerEngineError.mediaReasoningExclusionUnsupported,
+                              GLM5NextPromptPolicy.mediaReasoningExclusionUnsupportedMessage),
+                             (.mediaJSONOutputUnsupported, GLM5NextPromptPolicy.mediaJSONOutputUnsupportedMessage)] {
+        let (mediaStatus, media) = try await render(error)
+        #expect(mediaStatus == .badRequest)
+        #expect(media["message"] as? String == message)
+        #expect(media["code"] as? String == "unsupported_value")
+    }
     // Other GLM policy refusals keep the closed, content-free message.
     let (otherStatus, other) = try await render(.invalidToolPayload("GLM5: caller-detail"))
     #expect(otherStatus == .badRequest)

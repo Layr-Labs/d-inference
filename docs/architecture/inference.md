@@ -181,6 +181,22 @@ member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the
 [guided two-Mac setup](../provider/two-mac-cluster.md) for operator steps.
 
+Lines name the two Macs for the screen that shows them
+(`ClusterOnboardingMacName`): "this Mac" and "the other Mac (<hardware name>)",
+because two Macs of one kind share the hardware name. The leader words an
+answer to a command the other Mac forwarded for that Mac's screen
+(`OnboardingLive.answeringForwarded`, `here`, `there`), and the cluster
+service names members the same way in its control lines and refusals
+(`ClusterOnboardingMacName.names`). A deployment line recorded for both Macs
+keeps hardware names; lines shown now carry the screen's words
+(`ClusterOnboardingDeployment.Share.label`). The Mac that joins ends its
+onboarding once paired, also for `darkbloom cluster local`
+(`ClusterOnboardingDriver.joinedLocalLine`). The model list keeps one line per
+artifact and name (`OnboardingLive.presentedChoices`): a choice that cannot be
+served is left out when another offers the same digests under the same name,
+and an artifact this build serves is never called unsupported for a copy the
+worker does not take (`ClusterSetupPlanning.copyNotTaken`).
+
 ## Context
 
 The unregistered `NemotronSuperLocalBridgeBuilder` assembles an installed Super
@@ -3717,7 +3733,10 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Med
 
 Qwen media reservations retain the encoded source only in the request owner and
 rank 0; rank 1 receives the same authenticated metadata without encoded bytes.
-Owner and peer deadline translation preserve the entire media envelope. The
+Every hop that moves a reservation to another clock (the owner wire, the peer
+link and the qualification driver's `PairWorkerEndpoint`) re-times it with
+`ClusterWorkerReservation.withDeadline`, a copy that changes the deadline
+alone, so sampling, route and every media envelope cross unchanged. The
 request owner drops its encoded alias only after definitive retirement and
 resource release, preserving immutable metadata for accounting. This transport
 prerequisite does not advertise media support or activate a native model path.
@@ -3847,6 +3866,54 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/Dis
 The exact registered Qwen3.8 27B dense adapter/profile requires images, video and committed-token logprobs on its installed cluster route. `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift` restricts that row to the advertised tensor-parallel mode before the ordinary placement cost ranking. Initial onboarding and automatic batch replacement share this intersection in `ClusterPlacementFlow.swift`; an incumbent pipeline cannot override it. Other registrations, GLM, measured rates, qualification shape exclusions and native memory gates keep their existing behavior. This policy is a restriction on existing metadata, not a new model catalog or capability grant. It does not prove tensor parallel is faster.
 
 New saves and installed startup enforce the same mode rule. Old pipeline records remain strictly readable so ordinary onboarding can replan them; startup explains that replan is required. If the current measured link, supported shape or memory cannot admit tensor parallel, no reduced-feature setup is produced. After LOAD, the actual owner identity/profile, Qwen media READY contract and logprob execution profile must match before `DistributedEngineFactory.makeBridge` constructs the serving bridge. No artifact digest, shape or READY check is bypassed. This mode policy does not add grammar constraints or change JSON/schema post-validation; standalone model behavior remains the reference for those capabilities.
+
+## Cluster pair capability honesty
+
+A pair advertises what its placed mode serves, not what the artifact's
+configuration declares, and answers each request shape as one Mac does.
+
+1. Media registration follows the placed mode. Registration happens before
+   any rank is ready, so a member predicts the media contract its ranks bind at
+   LOAD (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash
+   `ClusterGLMMedia.contract` and Qwen3.8 27B `ClusterQwenMedia.contract` in
+   tensor parallel, nil for every other placement) and registers `is_vision`
+   and `native_media_tools` only with one (`ClusterMemberPreparation.registeredModel`).
+   The coordinator routes media by `is_vision`; a pipeline (GLM's included)
+   registers text only. The prediction is checked against READY: a slot whose
+   member registered media is not published unless both ranks report a media
+   contract (`ClusterMemberPreparation.requireRegisteredMedia` in
+   `ProviderLoop.publishClusterPairSlot`).
+2. Speculative decode status follows the placed mode. GLM tensor parallel
+   loads its NextN head and decodes with it at
+   `ClusterGLMTensorParallel.speculativeDepth` (2, shared with
+   `GLM5NextTensorParallelResidentRuntime.mtpDepth`) on every load, under a
+   mode that names no head. The saved setup's speculation
+   (`DistributedInstalledSpeculation.init(mode:runtimeModelID:tensorAssistant:everyMemberAdvertisesHead:)`)
+   and so the live status report it as on; the pair's `/metrics` sets
+   `mtp_enabled` from the session before any request
+   (`ProviderMTPStatusSnapshot.init(pair:placementDecodesWithHead:)`). Its
+   pipeline runs no head.
+3. Request shapes are refused alike. A content part type no engine serves is
+   refused before acquisition by the shared request preparation
+   (`OpenAIRequestValidationError.unsupportedContentPart`) and before
+   acceptance on the coordinator path, never served from the remaining text.
+   With images or video, GLM's hidden reasoning and JSON output are refused on
+   every slot before any media decode (`GLM5NextPromptPolicy.requireMediaOutputControls`),
+   although a pair serves both for text. A `response_format` answer stopped
+   by `max_tokens` before it was complete is
+   `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
+   internal failure. Media the model's processor refuses is the request's own
+   fault on every provider: `EngineV2VisionPrefill.clientFault(for:)` turns the
+   deterministic preparation shapes and the processor's `VLMError` media cases
+   (geometry it cannot resize, such as Qwen's side below
+   `patch_size × merge_size` or aspect ratio above 200:1; a video without a
+   decodable track; a media count it does not take) into the
+   `multimodalRejected` 400 in the single-Mac preparation and in both pairs'
+   media ingress (`prepareClusterGLMMedia`, `prepareClusterQwenMedia`). Only
+   construction faults (processor configuration, MLX, tower budget, span
+   agreement) remain the retriable 503 refusal. Wire and HTTP details:
+   [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
+   [direct mode](../provider/direct-mode.md#refused-request-shapes).
 
 ### Cross-stream fence ordering
 

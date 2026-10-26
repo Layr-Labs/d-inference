@@ -3,6 +3,7 @@ import Testing
 import DarkbloomClusterProtocol
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 @testable import ProviderCore
 
 @Suite("Qwen distributed media preprocessing", .serialized)
@@ -85,6 +86,55 @@ struct DistributedQwenMediaIngressTests {
             }
             #expect(await budget.outstandingReservedBytes() == 0)
         }
+    }
+
+    /// Qwen's resize refuses a side under patch × merge (32 px, as for the
+    /// registered 27B) and an aspect ratio over 200:1; it does not upscale
+    /// them. The single-Mac product's processor (the factory's
+    /// `Qwen3VLProcessor` over the product's decode) and the pair's metadata
+    /// pass throw the same error, answered on both with the invalid-media 400.
+    @Test func mediaTheProcessorCannotResizeIsTheSameClientFaultOnOneMacAndThePair() async throws {
+        let ingress = try ingress()
+        let singleMac = try await VLMProcessorTypeRegistry.shared.createModel(configuration: processor,
+            processorType: "Qwen3VLProcessor", tokenizer: QwenIngressTokenizer())
+        for (width, height) in [(16, 16), (64, 31), (31, 64), (6432, 32)] {
+            let image = try #require(QwenIngressFixtures.redPNG(width: width, height: height))
+            let request = try request([("image", image)])
+            var oneMac: VLMError?
+            do {
+                _ = try await singleMac.prepare(input: MediaIngest.buildUserInput(from: request))
+            } catch let error as VLMError { oneMac = error }
+            let budget = budget()
+            var pair: VLMError?
+            do {
+                _ = try await ingress.prepare(request: request, controls: .init(),
+                    tokenizer: QwenIngressTokenizer(), hostBudget: budget)
+            } catch let error as VLMError { pair = error }
+            guard case .imageProcessingFailure? = oneMac else {
+                Issue.record("\(width)x\(height): the single-Mac processor did not refuse the geometry")
+                continue
+            }
+            #expect(pair == oneMac, "\(width)x\(height)")
+            #expect(await budget.outstandingReservedBytes() == 0)
+            for fault in [oneMac, pair] {
+                let answer = try #require(fault.flatMap { EngineV2VisionPrefill.clientFault(for: $0) })
+                #expect(ProviderLoop.mapInferenceErrorToStatus(answer) == 400)
+                let failure = ProviderLoop.sanitizedInferenceFailure(from: answer, phase: .streamStart)
+                #expect(failure.code == .invalidMedia && failure.errorReason == .clientError)
+            }
+        }
+        // At the bound the image is served, with the single-Mac processor's grid.
+        let bound = try #require(QwenIngressFixtures.redPNG(width: 32, height: 32))
+        let budget = budget()
+        let prepared = try await ingress.prepare(request: request([("image", bound)]), controls: .init(),
+            tokenizer: QwenIngressTokenizer(), hostBudget: budget)
+        let item = try await prepared.lifetime.withSubmission(requestID: UUID().uuidString) { wire, _ in
+            try #require(ClusterQwenMedia.decodeBounded(wire).items.first)
+        }
+        let grid = try Qwen3VLMediaProcessor(modelConfiguration: configuration(), processorConfiguration: processor)
+            .imageGrid(height: 32, width: 32)
+        #expect(item.temporal == grid.t && item.height == grid.h && item.width == grid.w)
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 
     @Test func hostMemoryRefusesBeforeDecodeAndWrongIdentityCannotPrepare() async throws {
@@ -187,6 +237,39 @@ struct DistributedQwenMediaIngressTests {
             #expect(await budget.outstandingReservedBytes() == 0)
             #expect(!owner.leases[index].holdsWire)
         }
+        await bridge.shutdown()
+    }
+
+    /// The scheduler answers a 16 px image (below Qwen's 32 px resize factor)
+    /// with the invalid-media 400 before any native reservation, as one Mac
+    /// does, never the retryable capacity 503 it returned before.
+    @Test func schedulerAnswersAnImageTheProcessorCannotResizeWithTheInvalidMedia400() async throws {
+        let owner = try QwenIngressOwner(configuration: configuration()), budget = budget()
+        let (bridge, directory) = try bridge(owner, budget: budget)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let releases = QwenIngressReleaseCounter(), model = "EigenLabs/Qwen3.8-27B-4bit-mtp"
+        let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+            tokenizer: TokenizerHandle(QwenIngressTokenizer()), modelType: "qwen3_5",
+            isVLM: true, engineV2Bridge: bridge)
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [model: entry] },
+            releaseModel: { _ in await releases.increment() })
+        let tiny = try #require(QwenIngressFixtures.redPNG(width: 16, height: 16))
+        do {
+            _ = try await scheduler.streamChatCompletion(request: request([("image", tiny)]))
+            Issue.record("a 16 px image reached the pair")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .multimodalRejected = error else {
+                Issue.record("expected multimodalRejected, got \(error)")
+                await bridge.shutdown()
+                return
+            }
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .generation)
+            #expect(failure.code == .invalidMedia && failure.errorReason == .clientError)
+        }
+        #expect(owner.leases.isEmpty)
+        #expect(await releases.value == 1)
+        #expect(await budget.outstandingReservedBytes() == 0)
         await bridge.shutdown()
     }
 

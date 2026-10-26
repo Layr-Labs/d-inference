@@ -49,6 +49,16 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// reasoning-exclusion request is a deterministic request error, before
     /// template rendering. Thinking-off is served.
     case reasoningExclusionUnsupported
+    /// GLM-5.3-Flash with images or video asked to hide its reasoning. No GLM
+    /// slot serves that, on one Mac or on a pair (which hides the reasoning of
+    /// text requests only), and both refuse it with the same fixed text before
+    /// any media decode.
+    case mediaReasoningExclusionUnsupported
+    /// GLM-5.3-Flash with images or video asked for `response_format` JSON
+    /// output. No GLM slot serves that, on one Mac or on a pair (which
+    /// validates the JSON of text requests only), and both refuse it with the
+    /// same fixed text before any media decode.
+    case mediaJSONOutputUnsupported
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -79,10 +89,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     case mediaUnsupportedByModel(String)
     /// The v2 engine rejected a vision (multimodal) submission at submit
     /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
-    /// message, see `EngineV2Translation.admissionErrorMessage`). Every
-    /// such rejection is deterministic for the request/engine pairing —
-    /// never transient capacity — so it surfaces as 400, not a retry
-    /// signal.
+    /// message, see `EngineV2Translation.admissionErrorMessage`), or media
+    /// preparation met a fault of the request's own media
+    /// (`EngineV2VisionPrefill.clientFault(for:)`). Every such rejection is
+    /// deterministic for the request/engine pairing — never transient
+    /// capacity — so it surfaces as 400, not a retry signal.
     case multimodalRejected(String)
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
@@ -127,6 +138,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
         case .reasoningExclusionUnsupported:
             return GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage
+        case .mediaReasoningExclusionUnsupported:
+            return GLM5NextPromptPolicy.mediaReasoningExclusionUnsupportedMessage
+        case .mediaJSONOutputUnsupported:
+            return GLM5NextPromptPolicy.mediaJSONOutputUnsupportedMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

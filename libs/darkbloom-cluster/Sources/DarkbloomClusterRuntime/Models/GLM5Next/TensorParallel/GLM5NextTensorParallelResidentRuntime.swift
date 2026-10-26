@@ -177,7 +177,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// pair (sealed, 3,931-token prompt, 256 tokens): one token per step
     /// 62.6 tok/s; depth 1 68.7, depth 2 76.0 (2.24 tokens a round), depth 3
     /// 71.8 (its third proposal is rarely kept and widens every window).
-    static let mtpDepth = 2
+    /// Shared with the provider's status (`ClusterGLMTensorParallel`).
+    static let mtpDepth = ClusterGLMTensorParallel.speculativeDepth
     /// The media contract this runtime serves; bound into the load agreement.
     /// Rank 0 holds the vision tower whole (1.13 GB of bfloat16 weights for
     /// the registered artifact, charged to its load gate); rank 1 holds none.

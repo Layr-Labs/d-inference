@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -551,8 +551,16 @@ Runs the onboarding asking for local-only serving (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
 `localBind`) until `p` in `darkbloom cluster` serves through Darkbloom again.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
-otherwise. Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
+otherwise. On the Mac that joins a waiting leader it pairs, says to run it on
+the leader and ends (exit 0) like `darkbloom cluster`
+(`ClusterOnboardingDriver.joinedLocalLine`). Steps: [Serving locally only](./two-mac-cluster.md#serving-locally-only)
 (`provider-swift/Sources/darkbloom/ClusterLocalCommand.swift`).
+
+`darkbloom cluster status` prints `MTP: on (decode verifies drafts of the
+model's own speculative head)` when the saved setup decodes with a head (the
+speculative pipeline, Qwen3.8 27B's resident assistant, GLM-5.3-Flash in
+tensor parallel), otherwise `MTP off: <reason>`
+(`provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift`).
 
 Provider-local Chat Completions, Completions and Responses reject negative output
 token limits with HTTP 400 before model invocation or streaming headers. Explicit

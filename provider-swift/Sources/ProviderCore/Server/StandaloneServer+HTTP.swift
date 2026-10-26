@@ -145,10 +145,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         } catch let error as MLXOpenAIServiceError {
             // Keep the upstream service's generic message policy distinct from
             // provider engine/media failures, which have bounded public codes.
+            // A response_format answer cut off by max_tokens says so: its text
+            // is fixed and names no request content.
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
-                message: InferenceFailureCode.internalFailure.message)
+                message: error == .responseFormatCutOffByMaxTokens
+                    ? error.localizedDescription : InferenceFailureCode.internalFailure.message)
         } catch let error as PreContentDeadlineFailure {
             // A distributed first-token budget that is already spent refuses
             // before any SSE header or content, with the existing mapping.
@@ -179,10 +182,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
             // This refusal's fixed text names the accepted controls; the closed
             // failure-code message alone would not tell the caller what to send.
-            if case .reasoningExclusionUnsupported? = error as? MultiModelBatchSchedulerEngineError {
+            // So do GLM's media refusals, which read the same on one Mac and on a pair.
+            switch error as? MultiModelBatchSchedulerEngineError {
+            case .reasoningExclusionUnsupported?, .mediaReasoningExclusionUnsupported?, .mediaJSONOutputUnsupported?:
                 return Self.openAIErrorResponse(
-                    status: status, message: GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage,
-                    code: "unsupported_value")
+                    status: status, message: error.localizedDescription, code: "unsupported_value")
+            default:
+                break
             }
             return Self.openAIErrorResponse(status: status, message: failure.message)
         }

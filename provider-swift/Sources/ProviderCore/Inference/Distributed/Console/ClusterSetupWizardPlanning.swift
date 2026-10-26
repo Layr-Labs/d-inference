@@ -199,6 +199,9 @@ enum ClusterSetupPlanning {
     /// The plain blocker for a model folder the cluster cannot read or run (not a model, or a version of it the cluster
     /// runtime does not take).
     static let notClusterModel = "not supported on a cluster yet"
+    /// The onboarding's words for such a folder when its artifact is one this build serves on a cluster: the model is
+    /// supported, this copy of it is not taken (the catalog's encoding of a manifest the worker pins in another, say).
+    static let copyNotTaken = "supported on a cluster, but this Mac's cluster worker does not take this copy of it"
     /// The plain blocker when the two Macs' installed cluster workers differ: nothing can be planned on both until they match.
     static let differentBuilds = "the two Macs run different Darkbloom builds; install the same Darkbloom on both"
     /// The plain blocker when every placement these Macs can hold is a shape that diverged on these chips.

@@ -33,11 +33,15 @@ extension EngineV2Bridge {
     /// and the requests `waitingRequests` waiting for a lane, its
     /// reservation ledger, and its prefix cache (resident on both ranks,
     /// never persisted). Nil unless the slot serves a pair.
-    func pairMetricsSample(model: String, waitingRequests: Int) -> MTPSlotMetricsSample? {
+    /// `placementDecodesWithHead`: the placed mode decodes with a speculative
+    /// head (`DistributedInstalledSpeculation`), reported before any request.
+    func pairMetricsSample(model: String, waitingRequests: Int,
+                           placementDecodesWithHead: Bool = false) -> MTPSlotMetricsSample? {
         guard let pair = ownedEngine as? DistributedCBv2Engine else { return nil }
         var capacity = capacitySnapshot()
         capacity.waitingRequests = max(capacity.waitingRequests, waitingRequests)
-        return .init(model: model, snapshot: ProviderMTPStatusSnapshot(pair: pair.mtpTotalsSnapshot()), posture: .init(
+        return .init(model: model, snapshot: ProviderMTPStatusSnapshot(pair: pair.mtpTotalsSnapshot(),
+            placementDecodesWithHead: placementDecodesWithHead), posture: .init(
             backend: kvBackendKind, capacity: capacity, pageSize: nil, prefix: prefixCacheModelStatus(),
             completeKeyPersistent: false, pairLedger: true))
     }
@@ -45,10 +49,11 @@ extension EngineV2Bridge {
 
 extension ProviderMTPStatusSnapshot {
     /// A cluster pair's MTP posture: its runtime drafts with the model's own
-    /// NextN head on the decoding rank; `configured` once a request reported
-    /// MTP counts, `active` once a round ran. No assistant artifact.
-    init(pair totals: DistributedMTPTotals) {
-        configured = totals.reported
+    /// NextN head on the decoding rank; `configured` when the placed mode
+    /// decodes with a head or once a request reported MTP counts, `active`
+    /// once a round ran. No assistant artifact.
+    init(pair totals: DistributedMTPTotals, placementDecodesWithHead: Bool = false) {
+        configured = placementDecodesWithHead || totals.reported
         active = totals.rounds > 0
         verificationMode = nil
         acceptance = nil

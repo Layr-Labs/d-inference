@@ -1755,7 +1755,16 @@ media concurrency. Those require separate paired hardware evidence.
 
 Qwen media forwarding is covered by `ClusterQwenMediaForwardingTests`, which
 round-trips both encoded and metadata-only envelopes through owner and peer-link
-clock translation. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+clock translation. `ClusterReservationRelayTests` (run by
+`bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) sends one reservation
+per media carrier (still images, MiMo images, GLM media, Qwen media), each with
+sampling, and a routed text reservation through both hops and requires each to
+arrive unchanged but for its deadline. `PairWorkerEndpointReservationTests` (run
+by `bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh`) sends
+the same set through the pair-check driver's `PairWorkerEndpoint` into a
+`/bin/sh` stand-in that records its input, and the protocol checks' `retiming`
+group compares `ClusterWorkerReservation.withDeadline` with a field-by-field
+construction. `bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 --owner-only` runs the actual child/owner checks, including rank-specific media
 bytes, cancellation before start, early-release refusal and idempotent release
 after retirement. It runs no model or MLX code; it does not replace the full
@@ -1797,6 +1806,14 @@ scheduler, media preprocessing and bridge into `MLXOpenAIService`; fabricated
 native tokens prove positive JSON responses, schema rejection and unchanged
 retirement. It observes the shared format instruction reaching the tokenizer.
 These results establish response plumbing, not model-generated schema accuracy.
+Generated PNGs below the 32-pixel resize factor (16×16, 64×31, 31×64) and at a
+201:1 aspect ratio must raise the same `VLMError` from the factory's
+`Qwen3VLProcessor` (the single-Mac path) and from the pair's metadata pass,
+both answered with the invalid-media 400 and no outstanding host charge; the
+scheduler refuses a 16×16 image before any lease, and 32×32 is served with the
+single-Mac grid. `EngineV2VisionRoutingTests` pins the same 400 for every
+`VLMError` media case on the single-Mac route, and the retriable refusal for a
+processor configuration fault.
 
 `DistributedQwenMediaLifetimeTests` and `DistributedQwenMediaHostMemoryTests`
 cover the two ownership fences, stale generation/request identity, cancellation,

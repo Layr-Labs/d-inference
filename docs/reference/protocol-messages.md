@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -308,7 +308,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `model_type` | `string` | `String?` | req in Go | |
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
-| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
@@ -1161,6 +1161,20 @@ identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
 
+#### Unserved content part types
+
+A decrypted Chat body with a content part type no engine serves (none of
+`text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`,
+`input_audio`) is refused before acceptance or any model load with
+`inference_error` status 400 and `failure_code` `invalid_request`, without an
+`error_reason`; the part type never crosses to the coordinator. Pair members
+refuse it the same way. A `response_format` answer cut off by `max_tokens`
+fails with 422 `invalid_request` / `client_error`. Local HTTP names both causes
+([direct mode](../provider/direct-mode.md#refused-request-shapes)). Sources:
+`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+(`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
+(`mapInferenceErrorToStatus`).
+
 #### MiMo Chat tool-schema preservation
 
 The decrypted Chat body adds no envelope field or schema-metadata trust grant.
@@ -1187,10 +1201,10 @@ model names cannot authorize the raw-schema path.
 | `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and `off` are thinking-off requests (below); other invalid values reject even when shadowed. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`, `Effort`) |
 | `reasoning.max_tokens` | Positive integer. Selects the nearest effort when no effort alias is present: at most 1,024 renders `low`, at most 8,192 `high`, otherwise `max` (the budgets OpenAI-compatible APIs give `low` and `medium`). The template does not enforce a token budget. | Same source (`Effort.init(reasoningBudget:)`) |
 | `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking` | Boolean only. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a `reasoning.max_tokens` budget is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
-| `include_reasoning`, `reasoning.exclude` | Boolean only. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. The opposite value refuses with 400 `MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported`: the provider has no per-request seam to withhold reasoning it generates. Local HTTP returns the fixed `GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage` with code `unsupported_value`; the coordinator frame keeps the closed `invalid_request` / `client_error` vocabulary. | Same source (`RawControls`, `validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `include_reasoning`, `reasoning.exclude` | Boolean only. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. On one Mac the opposite value refuses with 400 `MultiModelBatchSchedulerEngineError.reasoningExclusionUnsupported`: it has no per-request seam to withhold reasoning it generates; a cluster pair withholds a text request's reasoning (`ToolChoicePromptPolicy.Prepared.glm5PairExcludesReasoning`). With images or video both refuse it with 400 `mediaReasoningExclusionUnsupported`. Local HTTP returns the fixed `GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage` or `mediaReasoningExclusionUnsupportedMessage` with code `unsupported_value`; the coordinator frame keeps the closed `invalid_request` / `client_error` vocabulary. | Same source (`RawControls`, `validate`, `requireMediaOutputControls`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | `clear_thinking`, `chat_template_kwargs.clear_thinking` | Boolean only; top-level precedes template value; default `false`. This clears historical reasoning, not newly generated reasoning. | Same source and symbols |
 | Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. | Same source (`normalizedTextInput`, `validateHistory`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
-| Unqualified modes | Reject `preserve_thinking`, top-level `thinking`, other `reasoning` or `chat_template_kwargs` keys, forced tool calls, strict tool decoding, JSON output modes and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+| Unqualified modes | Reject `preserve_thinking`, top-level `thinking`, other `reasoning` or `chat_template_kwargs` keys, forced tool calls, strict tool decoding, JSON output modes and media. A cluster pair prompt-forces and validates a text request's forced tool calls and JSON output instead. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. With media, JSON output is refused on every slot with 400 `mediaJSONOutputUnsupported` (`mediaJSONOutputUnsupportedMessage`) before media decode. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`, `requireMediaOutputControls`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 
 `LocalResponseRequest` retains request-local raw controls for the same later
 loaded-model check; capture alone grants no capability

@@ -364,7 +364,7 @@ struct GLM5NextResidentAdmission {
         }
         return try .init(profile: descriptor.profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling, stillImages: value.stillImages)
+            sampling: value.sampling, stillImages: value.stillImages, prefixCache: value.prefixCache)
     }
 
     var wireProfile: ClusterWorkerProfile { descriptor.wireProfile }

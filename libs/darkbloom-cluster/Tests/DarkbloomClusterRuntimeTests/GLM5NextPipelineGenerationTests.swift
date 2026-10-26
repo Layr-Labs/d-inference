@@ -47,9 +47,10 @@ struct GLM5NextPipelineGenerationTests {
 
         /// Full target oracle on its own cache, with the same prompt chunks and
         /// greedy scalar selection. No stage or distributed driver is involved.
-        func request(prompt: [Int], chunk: Int = 2, outputs: Int = 3) throws -> QwenLayerStageGenerationRequest {
+        func request(prompt: [Int], chunk: Int = 2, outputs: Int = 3,
+                     prefixCache: ClusterWorkerPrefixCache? = nil) throws -> QwenLayerStageGenerationRequest {
             try .init(profile: profile, requestID: UUID(), promptTokenIDs: prompt, chunkSize: chunk,
-                outputCount: outputs, stopTokenIDs: [], sampling: nil)
+                outputCount: outputs, stopTokenIDs: [], sampling: nil, prefixCache: prefixCache)
         }
 
         func greedyOracle(_ request: QwenLayerStageGenerationRequest) throws -> [Int] {
@@ -411,5 +412,90 @@ struct GLM5NextPipelineGenerationTests {
         let longerRun = try run(longer)
         #expect(longerRun.reused[0] == longerRun.reused[1] && longerRun.reused[0] >= 2)
         #expect(longerRun.tokens == (try fixture.greedyOracle(longer)))
+    }
+
+    /// The shared stage plan keys both tiers by the request's partition
+    /// (`qwenStagePrefixScope`): a tenant's prompt is restored by that tenant
+    /// alone, resident and then from the SSD, never by another tenant or a
+    /// request without one, though each keeps the same prompt; a request
+    /// whose cache is off offers, restores, captures and stores nothing on
+    /// either rank, and still splits as a cold request does. Every request
+    /// selects the full target's greedy tokens.
+    @Test func promptPrefixesArePartitionedByTenantAndKeptNoneWhenOff() throws {
+        let fixture = try Fixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glm-prefix-tenant-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = Data(repeating: 9, count: 32)
+        var settings = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+        settings.strideTokens = 2; settings.minimumTokens = 1; settings.minimumFreeBytes = 1
+        let caches = [QwenStagePrefixCache(strideTokens: 2), QwenStagePrefixCache(strideTokens: 2)]
+        for (rank, cache) in caches.enumerated() {
+            cache.disk = try QwenStagePrefixDiskTier(configuration: settings, root: root, key: key,
+                planScope: "glm-prefix-tenant-plan", rank: rank)
+        }
+        defer { for cache in caches { cache.disk?.close() } }
+        let prompt = [4, 5, 6, 7, 8]
+        let expected = try fixture.greedyOracle(try fixture.request(prompt: prompt))
+        func run(_ partition: ClusterWorkerPrefixCache?) throws
+            -> (reused: [Int], stored: [[Int]], tiers: [String?], split: [Bool]) {
+            let request = try fixture.request(prompt: prompt, prefixCache: partition)
+            let agreement = try fixture.agreement(request), wire = try ResidualStreamCollectiveFixture()
+            func rank(_ index: Int) throws -> (QwenLayerStageGenerationResult, QwenStagePrefixSummary, [Int]) {
+                let cache = caches[index], collective = index == 0 ? wire.first : wire.last
+                let planned = try agreeGLM5NextStagePrefixPlan(cache: cache, stage: index == 0 ? fixture.first : fixture.last,
+                    agreement: agreement, collective: collective, check: {})
+                let limit = beginClusterStagePrefixCapture(cache: cache, capture: planned.session.prefixCapture)
+                defer { cache.endCapture() }
+                let driver = try GLM5NextPipelineGeneration(session: planned.session, collective: collective)
+                let result = try driver.run(onCommittedToken: { _ in
+                    guard index == 0 else { throw Failure.wrongRank }
+                    return true
+                }, check: {})
+                let stored = storeClusterStagePrefix(cache: cache, capture: planned.session.prefixCapture,
+                    agreement: planned.agreement, rank: index, captureLimit: limit, family: "glm", skippedKey: "skipped")
+                return (result, planned.summary, stored)
+            }
+            var producer: Result<(QwenLayerStageGenerationResult, QwenStagePrefixSummary, [Int]), Error>?
+            let consumer = try wire.exchange(send: { producer = Result { try rank(0) } },
+                                             receive: { _ in Result { try rank(1) } })
+            let first = try #require(producer).get(), last = try consumer.get()
+            #expect(first.0.selectedTokenIDs == expected && last.0.selectedTokenIDs == expected)
+            for cache in caches { #expect(cache.disk?.drain(timeoutSeconds: 60) == true) }
+            return ([first.1.reusedPromptTokens, last.1.reusedPromptTokens], [first.2, last.2],
+                    [first.1.restoredTier, last.1.restoredTier], [first.1.splitFinalToken, last.1.splitFinalToken])
+        }
+        func records() -> [Int] { caches.map { $0.disk?.recordCount ?? -1 } }
+        let tenantA = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-a"))
+        let tenantB = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-b"))
+        let tenantC = ClusterWorkerPrefixCache.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-c"))
+        let first = try run(tenantA)
+        #expect(first.reused == [0, 0] && first.stored.allSatisfy { $0.contains(4) } && records() == [1, 1])
+        // Another tenant, and a request without one, find nothing of tenant A's; each keeps its own.
+        for (partition, kept) in [(tenantB, [2, 2]), (nil, [3, 3])] as [(ClusterWorkerPrefixCache?, [Int])] {
+            let other = try run(partition)
+            #expect(other.reused == [0, 0] && other.stored.allSatisfy { $0.contains(4) } && records() == kept)
+        }
+        // Cache off: nothing offered, restored, captured or stored; the frames still split.
+        let entries = caches.map(\.count), persisted = caches.map { $0.disk?.stats.persisted ?? -1 }
+        let off = try run(.disabled)
+        #expect(off.reused == [0, 0] && off.stored == [[], []] && off.split == [true, true])
+        #expect(caches.map(\.count) == entries && records() == [3, 3]
+            && caches.map { $0.disk?.stats.persisted ?? -1 } == persisted)
+        // The same tenant still hits, resident.
+        let again = try run(tenantA)
+        #expect(again.reused == [4, 4] && again.tiers == ["resident", "resident"])
+        // Without the resident tier: a new tenant finds none of the three
+        // records of its prompt, a request whose cache is off reads nothing,
+        // and tenant A restores its own from the SSD.
+        let restores = caches.map { $0.disk?.stats.restores ?? -1 }
+        for cache in caches { cache.sweep() }
+        #expect(try run(tenantC).reused == [0, 0])
+        for cache in caches { cache.sweep() }
+        #expect(try run(.disabled).reused == [0, 0])
+        #expect(caches.map { $0.disk?.stats.restores ?? -1 } == restores)
+        for cache in caches { cache.sweep() }
+        let fromDisk = try run(tenantA)
+        #expect(fromDisk.reused == [4, 4] && fromDisk.tiers == ["ssd", "ssd"])
     }
 }

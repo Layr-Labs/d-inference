@@ -276,8 +276,9 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
             wire.remainingNanoseconds = min(r.deadlineUptimeNanoseconds - now, ClusterWorkerLimits.deadlineNanoseconds)
             sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
-                // The sampling and the route cross with the reservation: both ranks get them.
-                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
+                // The sampling, the prefix partition and the route cross with the reservation: both ranks get them.
+                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, prefixCache: r.prefixCache,
+                route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
                 glmMedia: r.glmMedia, qwenMedia: r.qwenMedia))
         }
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: sent)
@@ -324,7 +325,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
         return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
             outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
+            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, prefixCache: r.prefixCache,
+            route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
             glmMedia: r.glmMedia, qwenMedia: r.qwenMedia)), frame.requestID, end.partialValue)
     }
 }

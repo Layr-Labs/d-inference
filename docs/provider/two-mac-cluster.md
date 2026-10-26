@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -314,6 +314,13 @@ encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
 sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
 attention history once per prompt and its linear-attention state per frontier.
+
+Prefixes are kept per tenant, as on one Mac: a request served through Darkbloom
+reuses only prefixes that requests with its own cache scope left, on both Macs.
+A request without a cache scope from Darkbloom, a request with its prefix cache
+off and a GLM or Qwen request with images or video reuse and keep nothing.
+Requests to the local endpoint share prefixes with one another only. How the caches are
+partitioned: [encryption and privacy](../architecture/security/encryption.md#two-mac-cluster-experimental).
 
 ## MiMo V2.6 Flash on the pair
 

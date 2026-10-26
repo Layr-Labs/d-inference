@@ -38,7 +38,7 @@ private struct Pair: Sendable {
     }
     func reservation(outputs: Int = 4, seconds: UInt64 = 20) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: outputs, chunkSize: 2,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000, capacityLimitBytes: 1800, sampling: nil)
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil)
     }
     func awaitRetirement(_ request: ClusterWorkerRequest, seconds: Double = 8) async throws {
         let end = ProcessInfo.processInfo.systemUptime + seconds

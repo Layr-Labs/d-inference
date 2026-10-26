@@ -136,7 +136,8 @@ extension GLM5NextTensorParallelResidentRuntime {
             }
             let request = try QwenLayerStageGenerationRequest(profile: descriptor.profile, requestID: requestID,
                 promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
-                stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
+                stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil,
+                prefixCache: value.prefixCache)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             let media = try reservedMedia(value)
             let mediaBytes = media?.requestBytes ?? 0
@@ -350,7 +351,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         try slices.advance(layers: frame.layers.count)
         guard frame.finishes else { try check(); return nil }
         lane.slices = nil
-        let result = try runtime.finishPrefillFrame(slices, prompt: prompt)
+        let result = try runtime.finishPrefillFrame(slices, prompt: prompt, opened: lane.opened)
         if let at = result.stored { lane.stored.append(at) }
         lane.offset = frame.end
         try check()

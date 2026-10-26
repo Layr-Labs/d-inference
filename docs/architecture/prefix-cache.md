@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -913,6 +913,54 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
 (`submitTokenized`).
 
+## Cluster prefix tenant partitions
+
+A two-Mac pair's ranks keep prompt prefixes in their own resident caches and
+SSD tiers, outside the leader's CBv2 engine, so the request's two cache fields
+reach both ranks in its reservation: `ClusterWorkerReservation.prefixCache`
+(`ClusterWorkerPrefixCache`), which the pair's owner derives from
+`CBv2Request.prefixCacheEnabled` and `CBv2Request.cacheSalt`
+(`DistributedPipeExecutionOwner.reserve`). The privacy statement is in
+[encryption](security/encryption.md#two-mac-cluster-experimental).
+
+| Request | Reservation field | Both ranks |
+|---|---|---|
+| Cache on, no salt: the local endpoint and the qualification tools | absent; the reservation's bytes are a worker's without it | the earlier scopes, which only such requests use |
+| Cache on, a salt: a coordinator request with its authenticated cache scope | `{"enabled":true,"tenantSHA256":<digest>}` | every key and SSD record scope ends in `\|tenant=<digest>`; only requests with the same salt find them |
+| Cache off: a remote request without an authenticated scope, or one with GLM or Qwen media (`EngineV2Bridge.submitTokenized` turns the cache off for those) | `{"enabled":false}` | no offer, vote, restore, capture or SSD record |
+
+- The digest is the SHA-256 of `darkbloom-cluster-prefix-tenant-v1|` and the
+  salt (`ClusterWorkerPrefixCache.tenantDigest`); the salt never leaves the
+  leader's provider process. Any salt partitions, as `CBv2Request.cacheSalt`
+  does on one Mac.
+- Every prefix path takes its scope from `ClusterWorkerPrefixCache.scope`: the
+  stage families through `qwenStagePrefixScope` (resident cache, SSD tier,
+  speculative history), GLM tensor parallel through
+  `GLM5NextTensorParallelResidentRuntime.prefixScope` (vote, restore and kept
+  boundary), and the Qwen tensor-parallel batch owner through
+  `QwenTensorParallelResidentRuntime.batchPrefixScope` (both tiers and the
+  assistant's donors).
+- A request whose cache is off keeps the frame plan a cache-on request has (the
+  stage final-token split, GLM's kept boundary) and only offers and keeps
+  nothing, so it computes exactly what a cold request computes; the batch it
+  runs in is unchanged.
+- Both ranks bind the partition into the request fingerprint
+  (`QwenLayerStageGenerationRequest.fingerprint`, field `prefix-cache=`), which
+  they compare before any prefix exchange: ranks told different partitions fail
+  the request. A reservation without one keeps the earlier fingerprint, so
+  requests without a partition and their arithmetic are unchanged.
+- A worker without the field refuses a reservation that carries it (the codec
+  refuses unknown fields), so a mixed pair fails closed instead of sharing.
+
+Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`
+(`ClusterWorkerPrefixCache`) and its codec in `ClusterWorkerCodec.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`
+(`reserve`). Tests: `PrefixTenantScopeTests`, `PrefixDiskTierTests`
+(`aTenantsRecordsAreFoundOnlyUnderThatTenant`), `QwenTensorParallelBatchSessionTests`
+(`partitionedPrefixesNeverCrossTenantsAndADisabledRequestKeepsNothing`),
+`GLM5NextPipelineGenerationTests`, `GLM5NextTensorParallelPrefixCacheTests` and
+the provider's `DistributedPrefixPartitionTests`.
+
 ## Cluster sliding prefix adoption
 
 `CBv2OwnedRequestState.adopt` allocates fresh request rows for an agreed
@@ -971,7 +1019,9 @@ authenticated source/processor/position metadata, in addition to the existing
 text request identity. Request-owned positions and feature roots are not model
 globals. Native retirement releases them only after preparation completion and
 checked drain. This preserves identity separation; it is not a full-artifact
-media-prefix performance qualification. Source:
+media-prefix performance qualification. The provider's media ingress sends
+every such request with its prefix cache off, so both ranks neither restore nor
+keep it ([tenant partitions](#cluster-prefix-tenant-partitions)). Source:
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`.
 
 The exact27 multi-lane TP owner retains one compact snapshot per completed

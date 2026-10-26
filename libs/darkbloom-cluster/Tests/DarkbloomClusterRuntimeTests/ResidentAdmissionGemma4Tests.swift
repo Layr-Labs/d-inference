@@ -336,7 +336,7 @@ struct ResidentAdmissionGemma4Tests {
                          token: Int = 262_143, stops: [Int] = [1, 106]) -> ClusterWorkerReservation {
             .init(profileID: profile ?? admission.profile.identifier, promptTokenIDs: Array(repeating: token, count: prompt),
                 stopTokenIDs: stops, outputCount: output, chunkSize: chunk,
-                deadlineUptimeNanoseconds: Self.now + 1_000_000_000, capacityLimitBytes: 1, sampling: nil)
+                deadlineUptimeNanoseconds: Self.now + 1_000_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         }
         let request = try admission.request(reservation(), id: UUID(), now: Self.now)
         #expect(request.promptCount == 16 && request.maximumTokens == 20)

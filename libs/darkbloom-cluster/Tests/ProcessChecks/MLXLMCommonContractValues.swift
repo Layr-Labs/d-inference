@@ -19,6 +19,8 @@ public struct CBv2Request: Sendable {
     public var stopTokens = Set<Int>()
     public var stopStrings: [String] = []
     public var priority = 0
+    public var cacheSalt: String?
+    public var prefixCacheEnabled = true
     public var prefixCacheReceiptID: CBv2RequestID?
     public var multimodal: Int?, positionState: Int?, tokenConstraint: Int?
     public var mimoClusterImages: Data? = nil

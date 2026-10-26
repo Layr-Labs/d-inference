@@ -38,7 +38,7 @@ private struct Harness: Sendable {
     func reservation(outputs: Int = 2, stops: [Int] = [], seconds: UInt64 = 10, capacity: Int = 1800) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
             outputCount: outputs, chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000,
-            capacityLimitBytes: capacity, sampling: nil)
+            capacityLimitBytes: capacity, sampling: nil, prefixCache: nil)
     }
     func awaitRetirement(_ request: ClusterWorkerRequest, seconds: Double = 8) async throws {
         let end = ProcessInfo.processInfo.systemUptime + seconds
@@ -105,7 +105,7 @@ private struct Harness: Sendable {
                 profileID: base.profileID, promptTokenIDs: base.promptTokenIDs, stopTokenIDs: base.stopTokenIDs,
                 outputCount: base.outputCount, chunkSize: base.chunkSize,
                 deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes, sampling: nil,
-                qwenMedia: media))
+                prefixCache: nil, qwenMedia: media))
             try require(lease.reservation.qwenMedia?.carriesEncodedBytes == true, "Owner retains encoded source through admission")
             lease.releaseResources()
             try require(lease.reservation.qwenMedia?.carriesEncodedBytes == true, "Early release cannot drop media")

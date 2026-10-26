@@ -245,6 +245,8 @@ public enum ClusterWorkerCodec {
          "deadlineUptimeNanoseconds": NSNumber(value: r.deadlineUptimeNanoseconds), "capacityLimitBytes": r.capacityLimitBytes]
         // Greedy text has no field at all, so its bytes are unchanged.
         if let sampling = r.sampling { value["sampling"] = ClusterWorkerSamplingCodec.encode(sampling) }
+        // Nor has a request whose prefix cache is on without a tenant.
+        if let cache = r.prefixCache { value["prefixCache"] = cache.wireObject }
         // The pair as placed has no field at all either.
         if let route = r.route { value["route"] = route.rawValue }
         if let media = r.stillImages {
@@ -307,6 +309,7 @@ public enum ClusterWorkerCodec {
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
         var r = WorkerObject(object)
         let sampling = r.values["sampling"] == nil ? nil : try ClusterWorkerSamplingCodec.decode(r.object("sampling"))
+        let prefixCache = r.values["prefixCache"] == nil ? nil : try ClusterWorkerPrefixCache.decode(wire: r.object("prefixCache"))
         var route: ClusterWorkerRoute?
         if r.values["route"] != nil {
             guard let value = ClusterWorkerRoute(rawValue: try r.string("route")) else { throw ClusterWorkerProtocolError.invalid("Unknown request route") }
@@ -337,7 +340,8 @@ public enum ClusterWorkerCodec {
         let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: promptTokenIDs,
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
-            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
+            sampling: sampling, prefixCache: prefixCache, route: route, mimoImages: media, stillImages: stillImages,
+            glmMedia: glmMedia, qwenMedia: qwenMedia)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {

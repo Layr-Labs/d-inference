@@ -8,8 +8,10 @@ final class QwenBatchLane {
     let slot: Int
     let order: Int
     let reserved: QwenResidentReservation
-    /// The prefix cache's key scope, the one the one-request path uses.
-    let scope: String
+    /// The prefix cache's key scope, the one the one-request path uses; nil
+    /// when the request's cache is off: the lane offers, restores, captures
+    /// and stores nothing, and still splits as the batch does.
+    let scope: String?
     /// The planned request both ranks run: from the agreed reused prefix, the
     /// last prompt token split off exactly when both prefix caches are on.
     var request: QwenLayerStageGenerationRequest
@@ -25,7 +27,7 @@ final class QwenBatchLane {
     /// confirms it.
     var confirmPending = false
 
-    init(id: UUID, slot: Int, order: Int, reserved: QwenResidentReservation, scope: String) {
+    init(id: UUID, slot: Int, order: Int, reserved: QwenResidentReservation, scope: String?) {
         self.id = id; self.slot = slot; self.order = order; self.reserved = reserved; self.scope = scope
         self.request = reserved.request
     }
@@ -205,7 +207,7 @@ extension QwenResidentRuntime {
 
     /// The prefix scope of a lane: the one-request path's agreement for this
     /// request (pipeline, serial prefill), so both paths share cache entries.
-    private func laneScope(stage: any LayerStageResidentStage, reserved: QwenResidentReservation) throws -> String {
+    private func laneScope(stage: any LayerStageResidentStage, reserved: QwenResidentReservation) throws -> String? {
         let receipt = stage.loaded.receipt
         let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
@@ -233,14 +235,14 @@ extension QwenResidentRuntime {
             let planned = try lane.reserved.request.planned(reusedPrefix: reusedPrefix, splitFinalToken: split)
             let session: QwenLayerStageSession
             if reusedPrefix > 0 {
-                guard let state = prefixCache.state(scope: lane.scope, tokens: planned.promptTokenIDs,
+                guard let scope = lane.scope, let state = prefixCache.state(scope: scope, tokens: planned.promptTokenIDs,
                                                     frontier: reusedPrefix) else { return nil }
                 session = try QwenLayerStageSession(stage: stage.loaded, plan: admission.plan,
                     generationRequest: planned, adopting: state.adopted)
             } else {
                 session = try QwenLayerStageSession(stage: stage.loaded, plan: admission.plan, generationRequest: planned)
             }
-            if split, prefixCache.enabled {
+            if split, prefixCache.enabled, lane.scope != nil {
                 session.prefixCaptureFrontiers = planned.prefixCaptureFrontiers(
                     stride: prefixCache.stride(chunkSize: planned.chunkSize))
             }
@@ -271,9 +273,9 @@ extension QwenResidentRuntime {
         try session.finishGeneration(reason, selectedTokenCount: lane.selected.count, lastTokenID: lane.selected.last!)
         guard session.isClosed, !session.isFailed else { throw ProbeError("Batch lane native state failed retirement") }
         var stored: [Int] = []
-        if prefixCache.enabled {
+        if prefixCache.enabled, let scope = lane.scope {
             let states = session.capturedPrefixStates()
-            prefixCache.insert(scope: lane.scope, tokens: lane.request.promptTokenIDs, states: states)
+            prefixCache.insert(scope: scope, tokens: lane.request.promptTokenIDs, states: states)
             stored = states.map(\.committedTokens)
         }
         session.discardCapturedPrefix()
@@ -340,8 +342,8 @@ extension QwenResidentRuntime {
                 let lane = try newLane(stage: stage, id: id, reserved: reserved, slot: slot, order: order)
                 if split {
                     // The agreement runs in this step; frames start in the next.
-                    lane.offers = Array(reserved.request.admittedPrefixFrontiers(prefixCache.frontiers(scope: lane.scope,
-                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1))
+                    lane.offers = Array(reserved.request.admittedPrefixFrontiers(lane.scope.map { prefixCache.frontiers(scope: $0,
+                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1) } ?? [])
                         .prefix(QwenBatchWire.maximumOffers))
                 } else {
                     try coldSession(stage: stage, lane: lane, split: false)
@@ -535,8 +537,8 @@ extension QwenResidentRuntime {
                 }
                 if split {
                     // The deepest frontier both hold; restored now, kept only if rank 0 confirms it.
-                    let local = Set(reserved.request.admittedPrefixFrontiers(prefixCache.frontiers(scope: lane.scope,
-                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1)))
+                    let local = Set(reserved.request.admittedPrefixFrontiers(lane.scope.map { prefixCache.frontiers(scope: $0,
+                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1) } ?? []))
                     if let frontier = value.offers.filter({ local.contains($0) }).max(),
                        let restored = laneSession(stage: stage, lane: lane, reusedPrefix: frontier, split: split) {
                         lane.restored = (frontier, restored.1); restoredNow[slot] = frontier

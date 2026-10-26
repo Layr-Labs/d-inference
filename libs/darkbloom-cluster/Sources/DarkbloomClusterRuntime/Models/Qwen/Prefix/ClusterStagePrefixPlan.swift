@@ -29,6 +29,10 @@ struct ClusterStagePrefixPlanOutcome<Session: ClusterStagePrefixSession> {
 /// prefill from zero (restore on both or neither). Both exchanges run whether
 /// or not a cache exists, so the two ranks always take the same steps.
 ///
+/// A request whose cache is off (no scope, `qwenStagePrefixScope`) offers
+/// nothing, restores nothing and captures nothing on either rank; it still
+/// splits as the caches decide, so its frames are a cold request's.
+///
 /// `restored` builds a session from a kept state for the planned request,
 /// `fresh` one that prefills from the planned request's first frame;
 /// `capture` makes the family's capture for the planned frontiers. `family`
@@ -42,7 +46,7 @@ func agreeClusterStagePrefixPlan<Session: ClusterStagePrefixSession>(family: Str
     let request = agreement.request, scope = qwenStagePrefixScope(agreement)
     let enabled = cache?.enabled ?? false
     var resident: [Int] = [], onDisk: [Int] = []
-    if enabled, let cache {
+    if enabled, let cache, let scope {
         resident = cache.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1)
         onDisk = cache.disk?.frontiers(scope: scope, tokens: request.promptTokenIDs,
             maximumFrontier: request.promptCount - 1) ?? []
@@ -57,7 +61,7 @@ func agreeClusterStagePrefixPlan<Session: ClusterStagePrefixSession>(family: Str
     var restoredSession: Session?
     var key: String?, tier: String?
     var fromDisk: QwenStagePrefixState?, restoredState: QwenStagePrefixState?
-    if choice.reusedPrefix > 0, let cache {
+    if choice.reusedPrefix > 0, let cache, let scope {
         if let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
             restoredState = state; tier = "resident"
             cache.disk?.touch(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix)
@@ -67,7 +71,7 @@ func agreeClusterStagePrefixPlan<Session: ClusterStagePrefixSession>(family: Str
             restoredState = state; fromDisk = state; tier = "ssd"
         }
     }
-    if let state = restoredState {
+    if let state = restoredState, let scope {
         key = QwenStagePrefixCache.key(scope: scope, tokens: request.promptTokenIDs[0..<choice.reusedPrefix])
         do {
             let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
@@ -98,11 +102,11 @@ func agreeClusterStagePrefixPlan<Session: ClusterStagePrefixSession>(family: Str
         // the budget) so the next offer finds it in memory (oMLX U#3327).
         let ownRestoreHeld = restoredSession != nil
         try restoredSession?.discardRestored(check: check); restoredSession = nil; tier = nil
-        if ownRestoreHeld, let fromDisk, let cache {
+        if ownRestoreHeld, let fromDisk, let cache, let scope {
             cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
             log("darkbloom-prefix-v1 rank=\(collective.rank) family=\(family) event=restore-kept frontier=\(choice.reusedPrefix) reason=peer_cold")
         }
-    } else if let fromDisk, let cache {
+    } else if let fromDisk, let cache, let scope {
         // Both ranks restored the same frontier; a state read from disk becomes
         // resident too, on both ranks alike, so the next repeat is a memory hit.
         cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
@@ -111,7 +115,7 @@ func agreeClusterStagePrefixPlan<Session: ClusterStagePrefixSession>(family: Str
     let plannedRequest = try request.planned(reusedPrefix: settled.reusedPrefix, splitFinalToken: settled.splitFinalToken)
     let plannedAgreement = try agreement.planned(plannedRequest)
     let session = try restoredSession ?? fresh(plannedRequest, plannedAgreement)
-    if enabled, let cache, settled.splitFinalToken {
+    if enabled, let cache, scope != nil, settled.splitFinalToken {
         let frontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
         if !frontiers.isEmpty { session.prefixCapture = capture(frontiers) }
     }
@@ -146,9 +150,8 @@ func storeClusterStagePrefix(cache: QwenStagePrefixCache?, capture: ClusterStage
                              agreement: QwenLayerStageGenerationAgreement, rank: Int, captureLimit: Int?,
                              family: String, skippedKey: String) -> [Int] {
     defer { capture?.discard() }
-    guard let cache, cache.enabled, let capture else { return [] }
+    guard let cache, cache.enabled, let capture, let scope = qwenStagePrefixScope(agreement) else { return [] }
     let states = capture.states()
-    let scope = qwenStagePrefixScope(agreement)
     cache.insert(scope: scope, tokens: agreement.request.promptTokenIDs, states: states, sharedBytes: capture.sharedBytes)
     cache.disk?.persist(scope: scope, tokens: agreement.request.promptTokenIDs, states: states,
         blockTokens: cache.stride(chunkSize: agreement.request.chunkSize))

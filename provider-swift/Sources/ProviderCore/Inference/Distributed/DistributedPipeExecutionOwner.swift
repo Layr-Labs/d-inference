@@ -103,9 +103,15 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             && pair.readiness?.media == ClusterQwenMedia.contract) else {
             throw DistributedEngineError.refused(.mediaUnsupported)
         }
+        // Both ranks key and gate their prompt-prefix caches by the request's
+        // own partition, as the single-Mac engine does: a tenant's salt (as a
+        // digest; the salt never leaves this process) or its cache off.
+        let prefixCache = ClusterWorkerPrefixCache.partition(prefixCacheEnabled: request.prefixCacheEnabled,
+            cacheSalt: request.cacheSalt)
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
+            prefixCache: prefixCache,
             route: media == nil && stillImages == nil && glmMedia == nil && qwenMedia == nil ? decided?.workerRoute : nil,
             mimoImages:media, stillImages:stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
         // Encode the COMPLETE bounded command before sending either rank.

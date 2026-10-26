@@ -311,7 +311,7 @@ struct MiMoResidentAdmissionTests {
         func reservation(profile: String? = nil, prompt: [Int] = [1, 2, 3], stops: [Int] = [151_643, 151_645, 151_672],
                          output: Int = 4, chunk: Int = 512, deadline: UInt64 = Self.now + 10) -> ClusterWorkerReservation {
             .init(profileID: profile ?? admission.profile.identifier, promptTokenIDs: prompt, stopTokenIDs: stops,
-                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 40, sampling: nil)
+                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 40, sampling: nil, prefixCache: nil)
         }
         let request = try admission.request(reservation(), id: UUID(), now: Self.now)
         #expect(request.promptCount == 3 && request.outputCount == 4 && request.stopTokenIDs == [151_643, 151_645, 151_672])

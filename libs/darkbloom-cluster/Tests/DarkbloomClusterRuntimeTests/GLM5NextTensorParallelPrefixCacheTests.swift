@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -109,6 +110,50 @@ struct GLM5NextTensorParallelPrefixCacheTests {
             #expect(x.count == y.count && zip(x, y).allSatisfy { Self.bytes($0) == Self.bytes($1) })
         }
         #expect(prefix.sweep() > 0 && prefix.count == 0 && prefix.bytesInUse == 0)
+    }
+
+    /// The rank's entries under the scopes the runtime votes, restores and
+    /// keeps with (`GLM5NextTensorParallelResidentRuntime.prefixScope`): a
+    /// tenant's boundary is held and restored for that tenant alone, never
+    /// for another tenant or a request without one, and a request whose
+    /// cache is off has no scope to look anything up or keep anything under.
+    @Test func entriesAreHeldOnlyForTheirTenant() throws {
+        defer {
+            do { try MLX.withError { error in Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check() } }
+            catch { Issue.record(error, "GLM prefix fixture cleanup fence failed") }
+        }
+        let artifact = try GLM5NextStageSessionTests.Artifact()
+        let loader = try artifact.loader()
+        let c = loader.configuration.textConfig
+        let stage = try loader.loadTextStage(plan: .init(configuration: c, layers: 0..<4))
+        let live = stage.newCache()
+        let output = try stage.prepareForward(tokens: MLXArray([4, 5] as [Int32], [1, 2]), cache: live)
+            .commit { arrays in try Self.fence(arrays) }
+        guard case .streams = output else { throw ProbeError("tiny first stage returned no streams") }
+        let profile = try QwenLayerStageGenerationProfile(identifier: "glm-tp-tenant-fixture", vocabularySize: c.vocabularySize,
+            hiddenSize: c.hiddenSize, activationDType: c.dtype, maximumPromptTokens: 64, maximumChunkTokens: 2,
+            maximumOutputTokens: 4, maximumContextTokens: 128, residualStreams: 4)
+        let prompt = [4, 5, 6, 7, 8], load = String(repeating: "7", count: 64)
+        func scope(_ partition: ClusterWorkerPrefixCache?) throws -> String? {
+            let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(), promptTokenIDs: prompt,
+                chunkSize: 2, outputCount: 1, stopTokenIDs: [], prefixCache: partition)
+            return GLM5NextTensorParallelResidentRuntime.prefixScope(load: load, request: request, cacheOn: true, media: false)
+        }
+        let a = try #require(try scope(.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-a"))))
+        let b = try #require(try scope(.tenant(ClusterWorkerPrefixCache.tenantDigest(salt: "tenant-b"))))
+        let plain = try #require(try scope(nil))
+        let off = try scope(.disabled)
+        #expect(plain == load && off == nil)
+        let prefix = Cache(budgetBytes: 1 << 30)
+        prefix.store(scope: a, prompt: prompt, length: 2, cache: live)
+        #expect(prefix.count == 1)
+        #expect(prefix.heldBoundaries(scope: a, prompt: prompt, chunk: 2) == [true, false])
+        for other in [b, plain] {
+            #expect(prefix.heldBoundaries(scope: other, prompt: prompt, chunk: 2) == [false, false])
+            #expect(prefix.restore(scope: other, prompt: prompt, length: 2) == nil)
+        }
+        #expect(prefix.restore(scope: a, prompt: prompt, length: 2)?.cache.offset == 2)
+        #expect(prefix.sweep() > 0 && prefix.count == 0)
     }
 
     /// A refusal gives the freed-buffer cache back before any entry, and

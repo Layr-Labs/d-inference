@@ -336,6 +336,13 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// from another (a hop, a codec, a local copy) that forgot it would
     /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
+    /// How both ranks' prompt-prefix caches treat the request: its cache off,
+    /// or its tenant's digest; nil is the cache on without a tenant, and then
+    /// the reservation's bytes are exactly those of a worker without it.
+    /// Required at every construction, with no default, for the reason
+    /// `sampling` is: a hop or copy that forgot it would let one tenant's
+    /// request reuse another's prompt prefixes.
+    public let prefixCache: ClusterWorkerPrefixCache?
     public let mimoImages: ClusterMiMoImages?
     public let stillImages: ClusterStillImages?
     /// GLM image and video input on the tensor-parallel pair; nil is text, and
@@ -349,12 +356,14 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+                sampling: ClusterWorkerSampling?, prefixCache: ClusterWorkerPrefixCache?,
+                route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
                 glmMedia: ClusterGLMMedia? = nil, qwenMedia: ClusterQwenMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
-        self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
+        self.sampling = sampling; self.prefixCache = prefixCache
+        self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
         self.glmMedia = glmMedia; self.qwenMedia = qwenMedia
     }
 }

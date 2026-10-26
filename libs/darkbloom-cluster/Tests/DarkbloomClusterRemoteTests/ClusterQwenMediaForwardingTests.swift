@@ -16,7 +16,7 @@ struct ClusterQwenMediaForwardingTests {
         for carried in [media, media.withoutEncodedBytes] {
             let reservation = ClusterWorkerReservation(profileID: "qwen-media", promptTokenIDs: [1, 2, 3],
                 stopTokenIDs: [], outputCount: 1, chunkSize: 1, deadlineUptimeNanoseconds: 900,
-                capacityLimitBytes: 100, sampling: nil, qwenMedia: carried)
+                capacityLimitBytes: 100, sampling: nil, prefixCache: nil, qwenMedia: carried)
             let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 2,
                 requestID: request, command: .reserve(reservation))
             let owner = try OwnerWire.command(frame, lease: UUID(), incarnation: UUID(), sequence: 3,

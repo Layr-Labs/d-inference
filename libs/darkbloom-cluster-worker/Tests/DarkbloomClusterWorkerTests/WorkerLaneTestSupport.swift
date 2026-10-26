@@ -244,7 +244,7 @@ final class LanePipeHarness {
     var reservation: ClusterWorkerReservation {
         .init(profileID: "test", promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 1,
             chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000,
-            capacityLimitBytes: 4096, sampling: nil)
+            capacityLimitBytes: 4096, sampling: nil, prefixCache: nil)
     }
     deinit { close(input); _ = done.wait(timeout: .now() + 5); close(output) }
 }

@@ -369,7 +369,7 @@ struct Conversation {
         try event(.ready(.init(identity: identityD, rank: rank, profile: profileD, executionPlanSHA256: planD,
                                requestCapacityBytes: 1024)), request: nil)
         try command(.reserve(.init(profileID: profileD.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2,
-            chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)))
+            chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)))
         try event(.admitted(reservedBytes: 100))
         try command(.start)
     }

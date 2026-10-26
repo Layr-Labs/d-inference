@@ -42,7 +42,7 @@ struct SSDCheckpointFleetWritePriorityTests {
         #expect(store.stats().stagedBytesInUse == 0)
     }
 
-    @Test("fleet demand keeps the two-writer bound and a refused fork can retry after contention")
+    @Test("fleet demand keeps the six-job writer bound and a refused fork can retry after contention")
     func fleetDemandCannotBypassWriterQueue() async throws {
         let fixture = try SSDHybridCheckpointTestFixture(tokenCount: 6_145)
         defer { fixture.remove() }
@@ -52,35 +52,25 @@ struct SSDCheckpointFleetWritePriorityTests {
         let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
         defer { barrier.release() }
         store.afterPublishBeforeIndexForTesting = { try? barrier.block() }
-        let firstSource = try fixture.source(position: 1_024)
-        let secondSource = try fixture.source(position: 2_048)
         store.registerDonationDemand(.init(repeatedPrefixTokens: 5_120), requestID: .init(8))
-        let first = Task {
-            await withCheckedContinuation { continuation in
-                store.donate(firstSource, requestID: .init(8), tokens: fixture.tokens, cacheSalt: "tenant-a") {
-                    continuation.resume(returning: $0)
-                }
-            }
-        }
+        // The bound counts the job being written: it plus five queued fill it.
+        let first = try fixture.startDonation(store, receipt: 8, position: 1_024)
         try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
-        let second = Task {
-            await withCheckedContinuation { continuation in
-                store.donate(secondSource, requestID: .init(8), tokens: fixture.tokens, cacheSalt: "tenant-a") {
-                    continuation.resume(returning: $0)
-                }
-            }
-        }
+        let queuedPositions = [2_048, 3_072, 4_096, 256, 512]
+        let queued = try queuedPositions.map { try fixture.startDonation(store, receipt: 8, position: $0) }
         try await SSDCheckpointCoordinationTestSupport.waitUntil {
-            store.lock.withLock { store.writing.count == 2 }
+            store.lock.withLock { store.writing.count == 6 }
         }
         #expect(try await fixture.donate(store, receipt: 8, position: 5_120).isEmpty)
         #expect(outcomes.snapshot().first { $0.outcome == .writeQueueFull }?.count == 1)
-        #expect(store.lock.withLock { store.writing.count } == 2)
+        #expect(store.lock.withLock { store.writing.count } == 6)
         barrier.release()
         #expect(await first.value == [1_024])
-        #expect(await second.value == [2_048])
+        for (task, position) in zip(queued, queuedPositions) {
+            #expect(await task.value == [position])
+        }
         #expect(try await fixture.donate(store, receipt: 8, position: 5_120) == [5_120])
-        #expect(store.stats().filesWritten == 3)
+        #expect(store.stats().filesWritten == 7)
         #expect(store.lock.withLock { store.writing.isEmpty })
         await store.closeAndWait()
         #expect(store.stats().stagedBytesInUse == 0)

@@ -105,6 +105,7 @@ extension ProviderLoop {
         // serving (test instances never flip this, so their unload paths
         // cannot clobber the real ~/.darkbloom/loaded-models.json).
         loadedModelsPersistenceEnabled = true
+        if usesHostServices { verifiedWeightHashesFile = VerifiedWeightHashStore.path() }
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -285,6 +286,7 @@ extension ProviderLoop {
         startIdleMonitor()
         startCapacityRefreshMonitor()
         startAutoUpdateMonitor()
+        startAutopilotCandidateVerification()
 
         logger.info(.coordinatorClientStarted)
 
@@ -472,6 +474,10 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
+        if let autopilotDownloadCoordinator {
+            await autopilotDownloadCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
+        autopilotCandidateVerification?.cancel()
         // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).

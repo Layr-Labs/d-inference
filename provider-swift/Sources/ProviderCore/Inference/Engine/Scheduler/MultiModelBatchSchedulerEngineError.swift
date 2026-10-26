@@ -37,18 +37,15 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// Tool-bearing chat payload violates the chat-template invariants
     /// before generation begins. Surfaced as 400 so malformed OpenAI
     /// histories do not trip model-specific Jinja assertions as provider
-    /// 500s.
-    case invalidToolPayload(String)
+    /// 500s. `refusal` names the closed reason `darkbloom logs` shows; the
+    /// message never reaches a log or the wire.
+    case invalidToolPayload(String, refusal: InferenceRefusalReason? = nil)
     /// The owned native Flash-Next or Qwen3.8-27B template does not support
     /// the resolved thinking effort. Deterministic request error, before
     /// template rendering.
     case unsupportedReasoningEffort
     /// Native binary-thinking model received an unknown effort alias.
     case unsupportedNativeReasoningEffort
-    /// The provider returns the reasoning GLM-5.3-Flash generates, so a
-    /// reasoning-exclusion request is a deterministic request error, before
-    /// template rendering. Thinking-off is served.
-    case reasoningExclusionUnsupported
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -87,6 +84,11 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The prompt plus resolved output reservation is outside this candidate's
     /// advertised context. Deterministic client fault; no request content carried.
     case advertisedContextExceeded
+    /// The slot's engine cannot honor a requested output control (logprobs or
+    /// a token constraint on a native-tracked engine). Deterministic for the
+    /// request and slot, so 400 before any reservation; never the untyped 500
+    /// that would strike the coordinator's inference-error breaker.
+    case unsupportedOutputControl(String)
     /// The history has no user query its Qwen 3.5/3.6/3.8 or Bonsai 2 template
     /// accepts. Deterministic request error, before template rendering.
     case missingUserQuery
@@ -112,14 +114,12 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "No model is loaded; cannot tokenize or apply template"
         case .invalidRole(let role):
             return "Unsupported chat message role: '\(role)'"
-        case .invalidToolPayload(let message):
+        case .invalidToolPayload(let message, _):
             return message
         case .unsupportedReasoningEffort:
             return "This model supports reasoning effort low, medium, or xhigh when thinking is enabled"
         case .unsupportedNativeReasoningEffort:
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
-        case .reasoningExclusionUnsupported:
-            return GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):
@@ -137,6 +137,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .advertisedContextExceeded:
             return Qwen4SupportPolicy.contextRejectionMessage
+        case .unsupportedOutputControl(let message):
+            return message
         case .missingUserQuery:
             return "This model requires at least one user message that is not only a tool response"
         case .platformTerminal(_, let message, _):
@@ -165,6 +167,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         }
         if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
             return .advertisedContextExceeded
+        }
+        if lowercased.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix) {
+            return .unsupportedOutputControl(message)
         }
         if lowercased == "tool_constraint_impossible_state" {
             return .toolChoiceViolation(

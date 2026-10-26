@@ -341,17 +341,25 @@ enum EngineV2SlotFactory {
         // unlike SSD L2 it owns no snapshot object that can be injected after
         // resolution. The backend consumes this only when it actually resolves
         // paged, and disables it for model capabilities that cannot restore
-        // attention-only state.
-        let residentPrefixCache = PrefixCachePolicy.residentConfig(
+        // attention-only state. GLM's protected engine hosts neither resident
+        // tier, so the operator's resident opt-in never reaches it: GLM keeps
+        // its SSD checkpoints instead of refusing the load.
+        let hostsResidentTiers = EngineV2Factory.glm5NextTarget(model: servingModel) == nil
+        if !hostsResidentTiers, PrefixCachePolicy.isMemoryEnabled(environment: environment) {
+            logWarning(
+                "engine_v2: \(modelId) has no resident prefix tier; ignoring "
+                    + "\(PrefixCachePolicy.memoryEnvironmentFlag) and keeping its SSD checkpoints")
+        }
+        let residentPrefixCache = hostsResidentTiers ? PrefixCachePolicy.residentConfig(
             modelId: modelId,
             promptContractID: promptContractID,
-            environment: environment)
-        let hybridPrefixCache = PrefixCachePolicy.hybridConfig(
+            environment: environment) : nil
+        let hybridPrefixCache = hostsResidentTiers ? PrefixCachePolicy.hybridConfig(
             modelId: modelId, promptContractID: promptContractID,
             kvBytesCapacity: engineKVBytesCapacity,
             hasMTPDrafter: assistantHandle?.drafter != nil,
             supportsMTPPrefixCheckpoint: assistantHandle?.drafter is any CBv2MTPPrefixCheckpointDrafter,
-            environment: environment)
+            environment: environment) : nil
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
@@ -436,7 +444,8 @@ enum EngineV2SlotFactory {
             replayStrategy: ssdHybridCheckpointStore == nil
                 ? PrefixCacheReplayStrategy(attentionPreparation.capability) : .direct,
             state: attentionPreparation.status.state,
-            reason: attentionPreparation.status.reason)
+            reason: attentionPreparation.status.reason,
+            detail: attentionPreparation.status.failure)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild

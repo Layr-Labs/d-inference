@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-25
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,28 +23,83 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.22` for native Bonsai 9B request,
-vision and explicit MTP sidecar support. The previous `v0.9.21` was
-[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21).
-The release candidate uses exact acceptance and drafter-required rectangular verification
-when its validated sidecar and runtime eligibility permit it. Serial verification
-is an explicit comparison override; target-only generation remains available
-without a sidecar or when speculation is ineligible.
-See the [native Bonsai contract](../architecture/inference.md) for the exact model
-identity, checkpoint constraints and defaults.
+`ProviderCore.version` is prepared as `0.10.2`, a patch release over `v0.10.1`.
+Nemotron 3.5 Super gains prefix caching through the coordinator: it advertises
+its prefix cache, sends cache receipts and reports cached prompt tokens, and it
+keeps its prefix reuse as encrypted SSD checkpoints by default. GLM-5.3-Flash
+captures checkpoints beside decoding requests on a 256-token grid and prices
+its measured restore time in ready receipts. Both models' SSD checkpoints are
+4-bit `balanced` snapshots by default; `native` keeps exact checkpoints, which
+for GLM-5.3-Flash use a half-size BF16 layout. Both SSD prefix-cache writers
+queue up to six writes on every model, and a replaced Secure Enclave key no
+longer disables the SSD cache. Nemotron 3.5 Super and GLM-5.3-Flash serve
+logprobs under one contract once each model's catalog row lists them.
+GLM-5.3-Flash accepts OpenRouter's `reasoning.context`, `reasoning.mode` and
+hidden reasoning and Anthropic's `thinking` object. It also serves
+structured-output schemas outside its grammar subset, a JSON `response_format`
+beside tools, tool results whose `name` differs from the call and legacy
+`function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
+differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
+each refusal before inference and for client errors found while a
+GLM-5.3-Flash prompt is prepared, and load refusals and `darkbloom status`
+explain the memory a load cannot reclaim: Autopilot placement holds, work in
+flight and models served outside the enabled model filter. Decoding is
+faster: Super's first token no longer stalls near the FP8 eager bound, Super
+speculates for sampled requests and tapers its draft depth on an M5, both
+models keep decoding while another request prefills, and GLM-5.3-Flash decodes
+faster at long context and speculates for two concurrent requests. The MLX
+stack moves to the 2026-10-22 upstream sync, so the release metallib changes.
+See the [`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
 
-This source preparation does not establish release qualification. Confirm final
-publisher artifacts and their explicit sidecar metadata, final distribution IDs,
-sampled-MTP correctness, model quality, physical-memory/media admission and hosted
-platform compatibility before promotion. Bounded local greedy parity and speed
-results do not close those gates. No tag, registration, upload or deployment is
-performed by this change.
+Before tagging `v0.10.2`:
 
-`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
-Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
-from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
-[published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
-from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
+- Confirm that the tagged commit pins `libs/mlx-swift-lm` to a commit on SDK
+  `main`. d-inference#1592 pins `aee6ebb6`, the head of the SDK set
+  `release/sdk-0.10.2-final`: SDK `main` with
+  [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
+  plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
+  head, and #1592 and then #1603 were squash-merged with no re-pin.
+- Confirm that the changelog's SDK note matches that pin, including every change
+  that SDK `main` gained after `6148b6da`.
+
+Enable the new behaviour in this order; each step is a separate approval, and
+only the last waits for the tag:
+
+1. Deploy a `darkbloom-platform` coordinator that includes
+   [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464)
+   before any catalog row lists `logprobs` for GLM-5.3-Flash or Nemotron 3.5
+   Super. Its floors send a logprob request on either model only to providers
+   on `0.10.2` or later.
+2. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. This
+   step does not depend on this release: GLM's SSD reuse was qualified on a
+   signed `0.10.1` provider, and the coordinator must include request
+   normalization v9.
+3. After the fleet converges on `0.10.2`, list `logprobs` in GLM-5.3-Flash's
+   catalog row. Once a signed `0.10.2` build also restores Nemotron 3.5 Super's
+   SSD checkpoints after a restart, add Super's tuple to the allowlist and list
+   `logprobs` in Super's catalog row.
+
+After the tag, the platform refreshes its provider-contract snapshot from the
+tagged commit and sets `LatestProviderVersion` to `0.10.2` in the same change;
+that fallback constant does not gate publication. Catalog changes, allowlist
+changes and model registration are separate approvals. This preparation does
+not tag, register, upload, deploy or enable anything.
+
+Platform evidence, inspected on 2026-10-25 (recheck before tagging):
+
+| Claim | Source |
+|---|---|
+| Production runs platform `master` `7bf80fdd`, which has darkbloom-platform#411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
+| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
+| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
+
+`v0.10.1` was [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`, `v0.10.0` was
+[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
+from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, and `v0.9.22` was
+[published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -129,7 +184,12 @@ release-preparation commit. Rendering itself neither edits history nor consumes
 notes. Ordinary PRs never regenerate the root history; see
 [contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 The pipeline takes its registered `changelog` from the annotated tag message,
-not `CHANGELOG.md`; derive that message from the reviewed release entry.
+not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
+it to a short summary: the release API refuses registration bodies above
+64 KiB, and that refusal comes only after signing and notarization.
+`release_changelog` in `scripts/provider-release-publication.py` removes only
+Git's identified signature suffix and trims outer whitespace. Internal line
+breaks and paragraph spacing remain unchanged.
 
 ### 3. Merge And Verify Release Preparation
 
@@ -275,6 +335,11 @@ selects the same names from the version that `/v1/releases/latest` returns
 (`scripts/install.sh`, `select_provider_identity`). The installer must work as
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON.
+
+Right after selecting the identity, the installer refuses a **new** install on
+macOS 26 or earlier (`require_supported_macos`) before downloading the bundle, so a
+release never reaches a Mac that can't become a new provider. An existing install
+of the same identity can still be updated or repaired.
 
 These values are the same for both builds:
 
@@ -441,7 +506,7 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, annotated-tag notes and source/run provenance |
+| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
 | 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update

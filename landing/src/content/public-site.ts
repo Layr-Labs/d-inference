@@ -1,7 +1,7 @@
 // Shared public facts for HTML, Markdown and discovery. Keep service behavior
 // consistent with the platform-owned API and published privacy policy.
 export const siteOrigin = "https://darkbloom.ai";
-export const publicPagePaths = ["/", "/about", "/developers", "/pricing", "/contact", "/privacy", "/terms"] as const;
+export const publicPagePaths = ["/", "/about", "/pricing", "/privacy", "/terms"] as const;
 export const siteDescription =
   "Darkbloom is a decentralized private inference network powered by Apple Silicon Macs. Consumers use an OpenAI-compatible API; providers contribute compute through the Darkbloom app and CLI.";
 

@@ -10,6 +10,7 @@ import { GridChat, type GridChatHandle } from "./GridChat";
 import { STORY_CELL } from "../content/grid";
 import { socialLinks, stories } from "../content/site";
 import { homepageOverview } from "../content/public-pages";
+import { publicLinks } from "../content/public-site";
 
 type NetworkSnapshot = {
   available: boolean;
@@ -1118,7 +1119,7 @@ export function HomeExperience() {
         <div className="closing-content">
           <div className="closing-copy">
             <h2 id="closing-title">Your Mac<br />could be part<br />of the grid.</h2>
-            <p className="closing-subhead">{homepageOverview} <a href="/developers">Explore the API</a> and <a href="/pricing">pricing</a>.</p>
+            <p className="closing-subhead">{homepageOverview} <a href={publicLinks.docs}>Explore the API</a> and <a href="/pricing">pricing</a>.</p>
             <a className="closing-join" href="https://console.darkbloom.dev/" target="_blank" rel="noreferrer">Join the grid ↗</a>
           </div>
           <div className="closing-laptop" aria-hidden="true">

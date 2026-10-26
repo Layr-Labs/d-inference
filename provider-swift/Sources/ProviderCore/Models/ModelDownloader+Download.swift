@@ -126,6 +126,16 @@ extension ModelDownloader {
             }
         }
 
+        // A file's rate clock starts when its transfer does, not when it was
+        // queued behind the concurrency limit.
+        let transfer: @Sendable ((file: ManifestFile, destination: URL, url: String)) async throws -> Void = { job in
+            progress.start(label: job.file.path)
+            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
+                progress.update(label: job.file.path, downloadedBytes: bytes)
+            })
+            progress.complete(label: job.file.path)
+        }
+
         do {
             // 4-way concurrent download; each shard streams to its own `.part` and
             // resumes from it via a `Range` request after an interruption.
@@ -134,33 +144,26 @@ extension ModelDownloader {
                 for _ in 0..<min(concurrency, pending.count) {
                     let job = pending[next]
                     next += 1
-                    group.addTask {
-                        try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
-                            progress.update(label: job.file.path, downloadedBytes: bytes)
-                        })
-                        progress.complete(label: job.file.path)
-                    }
+                    group.addTask { try await transfer(job) }
                 }
 
                 while try await group.next() != nil {
                     if next < pending.count {
                         let job = pending[next]
                         next += 1
-                        group.addTask {
-                            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
-                                progress.update(label: job.file.path, downloadedBytes: bytes)
-                            })
-                            progress.complete(label: job.file.path)
-                        }
+                        group.addTask { try await transfer(job) }
                     }
                 }
             }
 
-            // Stop the render loop and print the final summary.
+            // Stop the render loop, waiting out an in-flight frame so none can
+            // land below the final summary, then print it.
             renderTask.cancel()
+            await renderTask.value
             renderer.finish(progress.allProgress)
         } catch {
             renderTask.cancel()
+            await renderTask.value
             // One last render so the user sees where things stopped.
             renderer.render(progress.allProgress)
             // Keep staging ONLY if it holds resumable content (a completed file or

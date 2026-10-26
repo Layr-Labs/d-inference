@@ -191,7 +191,7 @@ struct QwenVLMTargetExtractionTests {
             configData: qwenTargetFixtureJSON())
         let target = Qwen35MoEModel(config)
         let language = MLXArray([Float(1), Float(2)])
-        let mapped = EngineV2VLMTextExtraction.reKeyedQwenTargetWeights(
+        let mapped = try EngineV2VLMTextExtraction.reKeyedQwenTargetWeights(
             flattenedWeights: [
                 ("language_model.model.norm.weight", language),
                 ("mtp.norm.weight", MLXArray([Float(3)])),

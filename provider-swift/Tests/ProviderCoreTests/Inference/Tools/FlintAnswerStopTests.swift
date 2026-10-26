@@ -195,6 +195,21 @@ struct FlintAnswerStopTests {
         #expect(fresh.constraint.cachedStateCount < 64)
     }
 
+    @Test func maskCacheKeysFollowTheReturnedMasks() throws {
+        let fixture = try FlintStopFixture(stops: ["END"])
+        let constraint = fixture.constraint
+        #expect(constraint.allowsChainedDecode)
+        var masksByKey: [Int: [Int]] = [:]
+        for path in ["", "Answer", "Answer E", "Answer EN", "Answer END", "<think>EN", "<think>x</think>E"] {
+            let state = try #require(fixture.walk(path), "\(path)")
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: 0) == nil)
+            let key = try #require(constraint.maskCacheKey(state: state, remainingTokens: 10), "\(path)")
+            let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
+            if let known = masksByKey[key] { #expect(known == allowed, "\(path)") } else { masksByKey[key] = allowed }
+        }
+        #expect(masksByKey[-1] == [0, 1])
+    }
+
     // MARK: Stream filter
 
     @Test func holdbackIsMinimalFlushesNonMatchesAndCutsAtTheEarliestStart() throws {

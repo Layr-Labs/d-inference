@@ -67,6 +67,29 @@ final class FlintAnswerStopConstraint: CBv2TokenConstraint, @unchecked Sendable 
         }
     }
 
+    /// Matched nodes share the answer-stop set (key -1); scanning nodes share
+    /// the base state's set whatever their stop progress, so they reuse its key.
+    func maskCacheKey(state: Int, remainingTokens: Int) -> Int? {
+        lock.lock()
+        guard !resourceExhausted, remainingTokens > 0, nodes.indices.contains(state) else {
+            lock.unlock()
+            return nil
+        }
+        let node = nodes[state]
+        lock.unlock()
+        switch node {
+        case .matched: return -1
+        case .scanning(let baseState, _):
+            guard let key = base.maskCacheKey(state: baseState, remainingTokens: remainingTokens),
+                  key >= 0 else { return nil }
+            return key
+        }
+    }
+
+    /// Masks and transitions keep the base constraint's purity; interning here
+    /// also runs only for host-confirmed tokens.
+    var allowsChainedDecode: Bool { base.allowsChainedDecode }
+
     func nextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard !resourceExhausted, nodes.indices.contains(state), pieces.indices.contains(tokenID) else { return nil }

@@ -35,7 +35,10 @@ public enum EngineV2KVBackendPolicy {
             if EngineV2SupportedModels.isQwen4ExpListingModelID(modelID) { return .paged }
             switch modelID {
             case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
-                "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit":
+                "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit",
+                // Flint is served only on paged attention; listing its catalog
+                // artifact also gives it the automatic paged serving width.
+                "RecursiveSI/flint-int4":
                 return .paged
             default:
                 return .contiguous

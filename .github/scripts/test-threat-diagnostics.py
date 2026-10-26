@@ -183,6 +183,8 @@ class ChangeContextTests(unittest.TestCase):
             return {"analysis": "compact", "findings": [],
                     "needs_deeper_review": any(item["needs_deeper_review"] for item in batch)}
         scanner.call = call
+        plans = []
+        scanner.paid = SimpleNamespace(plan_calls=plans.append)
         # Force a real intermediate reduction before the final integration.
         def small_batches(items):
             yield from (items[index:index + 2] for index in range(0, len(items), 2))
@@ -191,6 +193,7 @@ class ChangeContextTests(unittest.TestCase):
         with patch("threat_review.budget_scan.batches", small_batches):
             result = scanner.integrate(SOL, summaries)
         self.assertEqual(len(requests), 3)
+        self.assertEqual(plans, [2, 1])
         self.assertTrue(requests[-1][0]["needs_deeper_review"])
         self.assertTrue(result["needs_deeper_review"])
 

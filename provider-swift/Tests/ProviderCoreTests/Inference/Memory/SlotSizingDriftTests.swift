@@ -182,7 +182,7 @@ struct SlotSizingDriftTests {
                 let textConfigData = try JSONSerialization.data(
                     withJSONObject: root["text_config"] as! [String: Any])
                 let textConfig = try JSONDecoder().decode(
-                    Gemma4TextConfiguration.self, from: textConfigData)
+                    MLXLLM.Gemma4TextConfiguration.self, from: textConfigData)
                 engineRate = SlotSizingSnapshot.fp16KVBytesPerToken(
                     layerKinds: textConfig.cbv2LayerKinds)
             } else {

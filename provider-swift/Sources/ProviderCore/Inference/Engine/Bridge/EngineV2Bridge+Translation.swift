@@ -248,6 +248,11 @@ enum EngineV2Translation {
     /// double as its loud signal.
     static let multimodalRejectedPrefix = "multimodal_rejected"
 
+    /// Canonical marker for an output control the slot's engine cannot honor.
+    /// `MultiModelBatchSchedulerEngineError.fromSchedulerMessage` maps it to
+    /// `.unsupportedOutputControl` → 400 on the non-throwing submit path.
+    static let unsupportedOutputControlPrefix = "unsupported_output_control"
+
     static func admissionErrorMessage(for error: Error) -> String {
         if let mmError = error as? CBv2MultimodalError {
             switch mmError {

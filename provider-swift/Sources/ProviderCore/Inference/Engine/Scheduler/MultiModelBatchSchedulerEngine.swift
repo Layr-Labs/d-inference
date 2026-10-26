@@ -510,6 +510,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
+        // Only the GLM text path withholds and validates a JSON answer or a
+        // forced call.
+        if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
+            await releaseBox.fire()
+            let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
+                ? ("required/named tool_choice", .unsupportedForcedToolChoice)
+                : ("JSON response_format", .unsupportedResponseFormat)
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "GLM5: \(mode) is not supported with image or video input", refusal: refusal)
+        }
+        // Declined reasoning is classified on the native channel and dropped
+        // there, so GLM routes reasoning to that channel whenever it is withheld.
+        let withholdsReasoning = ProviderPromptContractPipeline.withholdsReasoning(
+            request, controls: templateControls, modelType: modelType)
+        let glmWithholdsReasoning = GLM5NextPromptPolicy.withholdsReasoning(templateControls, modelType: modelType)
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
@@ -752,7 +767,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         releaseBox: releaseBox,
                         usageSignal: requestUsage,
                         reasoningPrefix: reasoningPrefix,
-                        nativeReasoningPrefix: nativeMediaTools
+                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
@@ -760,7 +775,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             .init(modelId: modelId, modelType: modelType)),
                         nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
                         nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
-                            || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls)
+                            || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls),
+                        withholdReasoning: withholdsReasoning
                     )
                 } catch {
                     // Every failed media construction releases the same reservations
@@ -974,6 +990,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
+        // GLM's JSON answer and forced calls are withheld until they validate,
+        // so its reasoning must already be a separate typed channel, as on the
+        // native families.
+        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
@@ -987,10 +1007,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // without fabricating prompt/seed bytes. Output permission is the
             // independently validated Boolean, never this generic probe.
             nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
-                ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+                ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMOutput
+                || glmWithholdsReasoning
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil),
+            recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                 .init(modelId: modelId, modelType: modelType)),
             nativeGemmaChannels: modelType == "diffusion_gemma",
@@ -1001,8 +1023,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
                 .init(modelId: modelId, modelType: modelType)),
             answerStopFilter: answerStopFilter,
-            withholdReasoning: FlintRequestPolicy.withholdsReasoning(
-                request, controls: templateControls, modelType: modelType)
+            withholdReasoning: withholdsReasoning
         )
     }
 
@@ -1110,6 +1131,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
@@ -1136,6 +1158,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 usageSignal: usageSignal,
                 reasoningPrefix: reasoningPrefix,
                 nativeReasoningPrefix: nativeReasoningPrefix,
+                recordsWithheldOutput: recordsWithheldOutput,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
@@ -1169,6 +1192,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
@@ -1212,6 +1236,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
                 var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
+                var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
+                /// A GLM JSON answer leaves only after it validates; its
+                /// reasoning and every other event stream unchanged.
+                func emit(_ routed: MLXServerGenerationEvent) {
+                    formatOutput?.observe(routed)
+                    if glmAnswer == nil {
+                        continuation.yield(routed)
+                    } else if let visible = glmAnswer?.withholding(routed) {
+                        continuation.yield(visible)
+                    }
+                }
                 startedAt = Date()
 
                 #if DEBUG
@@ -1270,16 +1305,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     case .chunk(let generated):
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
+                        // Before any frame: generated output ends the
+                        // pre-content interval even while it is withheld.
+                        if recordsWithheldOutput, !generated.isEmpty { usageSignal.recordWithheldOutput() }
                         let text = answerStops?.ingest(generated) ?? generated
                         if !text.isEmpty {
                             do {
                                 let events = try router.process(text)
                                 // Before any later frame: see recordWithheldReasoning.
                                 usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
-                                for routed in events {
-                                    formatOutput?.observe(routed)
-                                    continuation.yield(routed)
-                                }
+                                for routed in events { emit(routed) }
                             } catch {
                                 await cancelUpstream()
                                 if nativeMediaTerminalDrain {
@@ -1389,10 +1424,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     events += try router.finishText()
                     usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
-                    for routed in events {
-                        formatOutput?.observe(routed)
-                        continuation.yield(routed)
-                    }
+                    for routed in events { emit(routed) }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1405,12 +1437,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // match the complete-call path below.
                     do {
                         for routed in try router.finishToolCalls(truncated: stopReason == "length") {
-                            formatOutput?.observe(routed)
-                            continuation.yield(routed)
+                            emit(routed)
                         }
                         try router.checkNativeToolFailure()
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
                         try formatOutput?.validate(finishReason: stopReason)
+                        if let answer = try glmAnswer?.finalAnswer(
+                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
+                        {
+                            continuation.yield(answer)
+                        }
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
@@ -1443,9 +1479,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    let visible = router.visibleEvent(residual)
-                    formatOutput?.observe(visible)
-                    continuation.yield(visible)
+                    emit(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
@@ -1465,6 +1499,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // Exact-Flint response_format: the completed content, not
                     // a truncated or schema-invalid prefix, reaches success.
                     try formatOutput?.validate(finishReason: stopReason)
+                    // GLM's withheld JSON answer leaves only once it validates.
+                    if let answer = try glmAnswer?.finalAnswer(
+                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
+                    {
+                        continuation.yield(answer)
+                    }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1561,13 +1601,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reasoningPrefix: String? = nil,
         toolHandler: BatchedToolStreamHandler? = nil,
         nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
-            nativeReasoningPrefix: nativeReasoningPrefix, answerStopFilter: answerStopFilter)
+            nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
+            answerStopFilter: answerStopFilter)
     }
     #endif
 

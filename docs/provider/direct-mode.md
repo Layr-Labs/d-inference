@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-24
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -47,7 +47,10 @@ Requests never leave the machine and are never billed.
    drops the MLX buffer cache once, then evicts the least recently used idle
    slot (`StandaloneServer.ensureMemoryHeadroomForLoad`). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
-   model, which still loads on request. Standalone preload does not run the
+   model, which still loads on request. A local GLM qualification load reads its
+   weights for its own per-file SHA-256 verification and the tensor reads only;
+   that verification is the artifact hash, with no separate weight-hash passes
+   (`GLM5NextManagedLoad.verifiedArtifactSHA256`). Standalone preload does not run the
    coordinator-serving one-token startup self-test. Each preloaded model does run
    the excluded [shape warmup](../architecture/inference.md#model-startup-calibration)
    before the listener opens: a short shader-cache probe, plus the shape cells
@@ -223,8 +226,11 @@ In unified mode, chat completions for `nvidia-nemotron-3.5-super` load the
 managed slot through the ordinary local acquisition and run on its owner
 (`provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalEndpointEngine.swift`):
 the controls in the table below apply, prefix reuse uses one partition per
-local endpoint (an image turn reuses only checkpoints of the same images at the
-same positions), and inline images are served as described below, target-only on
+local endpoint (text checkpoints are complete SSD checkpoints by default; an
+image turn reuses only with the resident bank, `DARKBLOOM_PREFIX_CACHE_MEMORY=1`,
+and only checkpoints of the same images at the same positions), a text
+response's `usage.prompt_tokens_details.cached_tokens` counts the prompt tokens
+it restored, and inline images are served as described below, target-only on
 the default speculating owner. Other routes for that id
 (`/v1/completions`, `/v1/responses`) are refused; the generic engine never
 serves Super. Standalone mode (`darkbloom start --local`) does not list it.
@@ -253,12 +259,14 @@ frame-timestamp label.
 | `enable_thinking: false` | All output is `content`, including literal markers |
 | `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
 | `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
-| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event |
-| Contradictory controls, `logprobs`, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
+| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
+| `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
+| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| A media request body over 8 MiB, or visual tokens or an image prompt beyond the context | 400 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
 | A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
 
 Image and video requests still refuse `tools` and `response_format`; formats outside the

@@ -1,0 +1,58 @@
+/* The disclosure and its panel join the parent's footer row: the panel wraps onto its own line. */
+.advanced {
+  display: contents;
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.disclosure:hover {
+  color: var(--text-primary);
+}
+
+.disclosure svg {
+  transition: transform 0.2s ease;
+}
+
+.advanced[data-open='true'] .disclosure svg {
+  transform: rotate(180deg);
+}
+
+.panel {
+  order: 1;
+  flex-basis: 100%;
+  padding-top: 14px;
+  animation: panelIn 0.25s ease-out both;
+}
+
+.panel h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.panel h3:not(:first-child) {
+  margin-top: 22px;
+}
+
+.panel > p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}

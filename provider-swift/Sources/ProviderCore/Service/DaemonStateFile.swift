@@ -45,6 +45,15 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// The ordinary serving selection: what the daemon started with, live
+    /// switches and declared successor builds. Autopilot adoptions and
+    /// lease-published inventory are not in it. The config's
+    /// `enabled_models` applies to it only at a (re)start. Nil for older
+    /// daemons.
+    public var servingSelection: [String]?
+    /// Resident models no load can evict now, each with every reason
+    /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
+    public var evictionExclusions: [EvictionExclusion]?
     /// Remaining startup preload plan, including the candidate currently
     /// loading. nil means an older daemon did not report this field.
     public var startupPreloadPendingModels: [String]?
@@ -114,10 +123,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var requestsServed: UInt64
         public var tokensGenerated: UInt64
         public var usageGaps: UInt64
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0) {
+        /// Nil on older runtimes; all prompt tokens including prefix-cache hits.
+        public var promptTokensProcessed: UInt64?
+        public var cachedInputTokens: UInt64?
+        public var reasoningTokens: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
+            self.promptTokensProcessed = promptTokensProcessed
+            self.cachedInputTokens = cachedInputTokens
+            self.reasoningTokens = reasoningTokens
         }
     }
 
@@ -133,6 +149,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Capacity: Codable, Sendable, Equatable {
+        /// Absent on older daemons; never infer zero activity from absence.
+        public var modelActivity: [ModelActivity]?
+        public var activityObservedAt: Double?
         public var totalMemoryGb: Double
         public var gpuMemoryActiveGb: Double
         /// Live MLX GPU cache (buffer pool) memory. Optional for backward
@@ -151,7 +170,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var loadTransitionActive: Bool?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
                     loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
-                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil,
+                    modelActivity: [ModelActivity]? = nil, activityObservedAt: Double? = nil) {
+            self.modelActivity = modelActivity
+            self.activityObservedAt = activityObservedAt
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
@@ -170,6 +192,29 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.model = model
             self.message = message
             self.at = at
+        }
+    }
+
+    /// A resident model the load gates cannot evict, and why.
+    public struct EvictionExclusion: Codable, Sendable, Equatable {
+        public var model: String
+        public var residentGb: Double
+        /// `autopilot_pin`, `autopilot_hold`, `requests_in_flight`,
+        /// `local_request`, `unloading` or `assistant_upgrade`.
+        public var reasons: [String]
+        /// Unix milliseconds at which an Autopilot placement hold ends.
+        public var holdExpiresAtMs: Int64?
+        public var requestsInFlight: Int?
+        /// Served through an Autopilot adoption, outside the serving selection.
+        public var adoptedByAutopilot: Bool?
+        public init(model: String, residentGb: Double, reasons: [String], holdExpiresAtMs: Int64? = nil,
+                    requestsInFlight: Int? = nil, adoptedByAutopilot: Bool? = nil) {
+            self.model = model
+            self.residentGb = residentGb
+            self.reasons = reasons
+            self.holdExpiresAtMs = holdExpiresAtMs
+            self.requestsInFlight = requestsInFlight
+            self.adoptedByAutopilot = adoptedByAutopilot
         }
     }
 
@@ -223,6 +268,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// Verbatim `DaemonState.ModelLoadError.message` when this entry
         /// exists BECAUSE a load failed. Non-nil ⇒ the slot is not serving.
         public var loadError: String?
+        /// The slot's SSD prefix-cache status exactly as the heartbeat reports
+        /// it (`PrefixCacheModelStatus` raw values): state, closed reason and
+        /// the typed cause behind an error. Absent in older state files.
+        public var prefixCacheState: String?
+        public var prefixCacheReason: String?
+        public var prefixCacheDetail: String?
 
         public init(
             model: String,
@@ -235,7 +286,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
-            loadError: String? = nil
+            loadError: String? = nil,
+            prefixCache: PrefixCacheModelStatus? = nil
         ) {
             self.model = model
             self.kvBackend = kvBackend
@@ -248,6 +300,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
             self.loadError = loadError
+            self.prefixCacheState = prefixCache?.state.rawValue
+            self.prefixCacheReason = prefixCache?.reason.rawValue
+            self.prefixCacheDetail = prefixCache?.detail?.rawValue
         }
     }
 
@@ -273,6 +328,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        servingSelection: [String]? = nil,
+        evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
         requestWorkPending: Bool? = nil,
@@ -304,6 +361,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.servingSelection = servingSelection
+        self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch
@@ -368,6 +427,8 @@ public enum DaemonSlotPostureBuilder {
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
+        /// The heartbeat's SSD prefix-cache status for this slot.
+        public let prefixCache: PrefixCacheModelStatus?
 
         public init(
             model: String,
@@ -378,7 +439,8 @@ public enum DaemonSlotPostureBuilder {
             checkpointBackendLayout: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
-            mtpInactiveReason: String?
+            mtpInactiveReason: String?,
+            prefixCache: PrefixCacheModelStatus? = nil
         ) {
             self.model = model
             self.kvBackend = kvBackend
@@ -389,6 +451,7 @@ public enum DaemonSlotPostureBuilder {
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
+            self.prefixCache = prefixCache
         }
     }
 
@@ -470,7 +533,8 @@ public enum DaemonSlotPostureBuilder {
                 checkpointBackendLayout: $0.checkpointBackendLayout,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
-                mtpInactiveReason: $0.mtpInactiveReason)
+                mtpInactiveReason: $0.mtpInactiveReason,
+                prefixCache: $0.prefixCache)
         }
         if let failure = lastModelLoadError,
             !live.contains(where: { $0.model == failure.model }),

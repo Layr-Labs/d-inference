@@ -128,10 +128,19 @@ struct FlintPolicyTests {
                     modelType: "flint", modelID: "arbitrary", environment: [:], purpose: purpose)
                     == .native)
             for value in ["balanced", "k8v8", "k8v4"] {
+                // The provider-wide default (balanced checkpoints) never blocks Flint.
+                #expect(try EngineV2KVQuantizationPolicy.resolve(
+                    modelType: "flint", global: value, modelID: "arbitrary", environment: [:],
+                    purpose: purpose) == .native)
                 #expect(throws: EngineV2KVQuantizationPolicy.Failure.flintRequiresNative) {
                     try EngineV2KVQuantizationPolicy.resolve(
-                        modelType: "flint", global: value, modelID: "arbitrary", environment: [:],
-                        purpose: purpose)
+                        modelType: "flint", byModel: ["arbitrary": value], modelID: "arbitrary",
+                        environment: [:], purpose: purpose)
+                }
+                #expect(throws: EngineV2KVQuantizationPolicy.Failure.flintRequiresNative) {
+                    try EngineV2KVQuantizationPolicy.resolve(
+                        modelType: "flint", modelID: "arbitrary",
+                        environment: [purpose.environmentKey: value], purpose: purpose)
                 }
             }
         }

@@ -785,6 +785,21 @@ exits non-zero on a failure. The library's XCTest targets
 tests (built for macOS 26.2) need the GPU and exclusive device access. A
 loopback or fixture pass never counts as a two-Mac hardware pass.
 
+Build the runtime tests once (`swift build --package-path libs/darkbloom-cluster
+-c release --build-tests --triple arm64-apple-macosx26.2 -Xcc -target -Xcc
+arm64-apple-macosx26.2 -Xswiftc -enable-testing`), stage the source-matched
+`mlx.metallib` in the test bundle's `Contents/MacOS/`, and run `swift test`
+with the same flags plus `--skip-build --no-parallel`. Without environment
+switches the run evaluates synthetic models on the GPU by default; the GPU-only
+cases (`QWEN_TP_BATCH_GPU=1`, `QWEN_TP_MTP_GPU=1`, `QWEN_TP_MOE_GPU=1`,
+`QWEN_TP_AQV_GPU=1`) run each in a process of their own with their filter. On
+an M5 GPU MLX computes float32 matrix products in TF32 unless the process
+starts with `MLX_ENABLE_TF32=0` (`libs/mlx-swift-lm/CONTRIBUTING.md`): the
+forward comparison in `GLM5NextStageSessionTests` asserts a float32 tolerance
+and is skipped without it. `StageLoadRealSamplerTests` reads this Mac's own
+counters; its kernel file-cache minimum check is cancelled, with the figure it
+read, when the pageout scan does not run during its four-second window.
+
 Most runners compile a model-free source closure with `swiftc`. Worker
 `CapabilityChecks` and the worker argument portion of `PrefillScheduleChecks`
 link the actual runtime catalog, including MLXLLM metadata dependencies. These
@@ -1849,7 +1864,14 @@ real-shard `QwenTensorParallelBatchSessionTests` compares cold and restored
 outputs plus attention/conv/SSM state at widths 2, 4 and 8, mixed positions,
 reordered decode and one-sided cache loss. Run it with both contiguous and
 paged backends; production recurrent kernels require the Metal invocation
-listed above. `QwenTensorParallelBatchDriverTests` checks that donation follows
+listed above. Its two ranks, like those of `QwenTensorParallelMTPSessionTests`,
+run on threads created for each test (`TensorParallelRankThreads`): MLX keys a
+compiled function's traces by the calling thread's default GPU stream, not by
+the Swift device scope, so on reused worker threads a CPU-mode rank replayed
+traces that earlier GPU suites had recorded, and a full-target run reported
+cold and restored bytes that differ (`MLX_DISABLE_COMPILE=1` removed the
+difference; alone the suite passed). `QwenTensorParallelBatchDriverTests`
+checks that donation follows
 both ranks' cleanup while the lane charge is still held, and that cancelled or
 failed lanes cannot donate. The registered-header quote test must continue
 matching the exact native LOAD budget. Full-artifact warm reuse and speed are

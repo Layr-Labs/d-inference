@@ -87,7 +87,10 @@ struct StageLoadRealSamplerTests {
         // off on a 128 GiB Mac. So: every sample must be within 20 %, and a
         // sample taken while the scan is running must be within 3 % (recorded
         // samples taken then were within 0.5 %). A different divisor in a
-        // later kernel fails one or both.
+        // later kernel fails one or both. A Mac whose scan does not run in the
+        // window has a figure from its last scan, of unknown age (45 % off on
+        // an idle 256 GiB Mac A, 100 % after a restart): there is nothing to
+        // judge, and the test says so.
         func ratio() throws -> Double {
             let os = try QwenDenseStageLoadResources.observeOS()
             let minimum = try #require(os.kernelFileCacheMinimumPages)
@@ -105,15 +108,15 @@ struct StageLoadRealSamplerTests {
             before = after
         }
         let loose = all.map { abs($0 - 1) }.max() ?? 1
-        #expect(loose <= 0.20, "kernel minimum is \(loose * 100) % from the formula")
-        if let tight = fresh.map({ abs($0 - 1) }).min() {
-            print("stage-load sampler: kernel minimum within \(tight * 100) % of the formula while the scan ran "
-                + "(\(fresh.count) of \(all.count) samples), \(loose * 100) % at worst")
-            #expect(tight <= 0.03, "kernel minimum is \(tight * 100) % from the formula while the scan runs")
-        } else {
-            print("stage-load sampler: the pageout scan did not run in 4 s; kernel minimum within \(loose * 100) % "
-                + "of the formula, only the 20 % bound was checked")
+        guard let tight = fresh.map({ abs($0 - 1) }).min() else {
+            try Test.cancel(Comment(rawValue: "the pageout scan did not run in 4 s, so the kernel's minimum is from an "
+                + "earlier scan (\(loose * 100) % from the formula now) and cannot be judged; run where the scan is "
+                + "active, with the file cache near the kernel's minimum"))
         }
+        print("stage-load sampler: kernel minimum within \(tight * 100) % of the formula while the scan ran "
+            + "(\(fresh.count) of \(all.count) samples), \(loose * 100) % at worst")
+        #expect(loose <= 0.20, "kernel minimum is \(loose * 100) % from the formula")
+        #expect(tight <= 0.03, "kernel minimum is \(tight * 100) % from the formula while the scan runs")
     }
 
     // MARK: the three gates ask the policy

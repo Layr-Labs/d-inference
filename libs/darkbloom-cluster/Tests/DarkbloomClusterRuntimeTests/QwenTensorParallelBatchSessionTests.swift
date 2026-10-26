@@ -67,9 +67,12 @@ struct QwenTensorParallelBatchSessionTests {
         var joinable: Bool { true }
     }
     private var device: Device { ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1" ? .gpu : .cpu }
+    /// Each test's own rank threads: in CPU mode a reused worker thread would
+    /// replay compiled traces an earlier GPU test recorded (`TensorParallelRankThreads`).
+    private let ranks = TensorParallelRankThreads()
     private func parallel(_ owners: [Owned], body: @escaping (Owned) throws -> Void) throws {
-        let work = Work(body)
-        DispatchQueue.concurrentPerform(iterations: 2) { rank in
+        let work = Work(body), device = self.device
+        ranks.run { rank in
             Device.withDefaultDevice(device) {
                 do { try work.body(owners[rank]) } catch { owners[rank].failure = error }
             }

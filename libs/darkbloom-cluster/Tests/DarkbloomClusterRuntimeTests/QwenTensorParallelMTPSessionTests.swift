@@ -52,9 +52,12 @@ struct QwenTensorParallelMTPSessionTests {
         let body: (Owner) throws -> Void
         init(_ body: @escaping (Owner) throws -> Void) { self.body = body }
     }
+    /// Each test's own rank threads: in CPU mode a reused worker thread would
+    /// replay compiled traces an earlier GPU test recorded (`TensorParallelRankThreads`).
+    private let ranks = TensorParallelRankThreads()
     private func parallel(_ owners: [Owner], body: @escaping (Owner) throws -> Void) throws {
         let work = Work(body), device = gpu ? Device.gpu : Device.cpu
-        DispatchQueue.concurrentPerform(iterations: 2) { rank in
+        ranks.run { rank in
             Device.withDefaultDevice(device) {
                 do { try work.body(owners[rank]) } catch { owners[rank].failure = error }
             }

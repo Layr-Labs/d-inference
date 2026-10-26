@@ -155,9 +155,9 @@ struct DistributedInstalledPlan: Sendable {
     }
 
     /// The local leader and link follower pass their own effective lane count,
-    /// optional typed synchronization choice and live and checkpoint KV
-    /// precision switches to the fixed owner child. No peer-supplied
-    /// environment is used.
+    /// optional typed synchronization choice, live and checkpoint KV
+    /// precision switches and GLM tensor-parallel decode switches to the fixed
+    /// owner child. No peer-supplied environment is used.
     func localOwnerConfiguration(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
         throws -> ClusterLocalOwnerConfiguration {
         try .init(installedDarkbloom: URL(fileURLWithPath: localPeer.ownerExecutable),
@@ -165,7 +165,8 @@ struct DistributedInstalledPlan: Sendable {
             fastSynchronization: fastSynchronization(ownerEnvironment),
             eagerFenceCommit: eagerFenceCommit(ownerEnvironment),
             kvQuantization: DistributedInstalledKVQuantization.forwardedSwitch(ownerEnvironment),
-            checkpointQuantization: DistributedInstalledKVQuantization.forwardedCheckpointSwitch(ownerEnvironment))
+            checkpointQuantization: DistributedInstalledKVQuantization.forwardedCheckpointSwitch(ownerEnvironment),
+            glmDecodeSwitches: ClusterGLMTensorParallel.forwardedDecodeSwitches(ownerEnvironment))
     }
 
     func nativeEnvironment(matrix: URL,
@@ -209,6 +210,10 @@ struct DistributedInstalledPlan: Sendable {
         for (name, values) in Self.loadDiagnosisSwitches {
             if let value = ownerEnvironment[name], values.contains(value) { environment[name] = value }
         }
+        // GLM tensor-parallel decode: how many proposals a round verifies by load
+        // (`GLM5NextTensorParallelDecodePolicy`). Both ranks bind it into their load
+        // agreement, so both owners must be given the same values.
+        environment.merge(ClusterGLMTensorParallel.forwardedDecodeSwitches(ownerEnvironment)) { current, _ in current }
         // The owner's rank-environment guards (Metal command-buffer bounds),
         // each yielding to a value the operator pinned in this owner's own
         // environment.

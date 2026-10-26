@@ -92,7 +92,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
             "scripts/test-profile-inventory-auth.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
-            "scripts/install.sh", "scripts/test-install-atomic.sh",
+            "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
             self.assertTrue(routing.classify([path])["provider"], path)

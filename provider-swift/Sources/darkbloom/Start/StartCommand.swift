@@ -171,6 +171,13 @@ struct Start: AsyncParsableCommand {
         for message in RetiredKnobWarnings.emit(config: effectiveConfig) {
             printError("warning: \(message)")
         }
+        let servedModels = advertisedModels(
+            from: snapshot.models, config: effectiveConfig, modelOverrides: model, includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities)
+        if let notice = GLMWiredLimitAdvice.startNotice(
+            hardware: hardware, servedModels: servedModels, limits: .live()) {
+            printError("warning: \(notice)")
+        }
 
         if local {
             try await runLocalStandalone(

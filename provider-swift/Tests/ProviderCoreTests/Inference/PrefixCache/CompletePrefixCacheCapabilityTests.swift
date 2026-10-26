@@ -44,6 +44,7 @@ struct CompletePrefixCacheCapabilityTests {
         }
         #expect(resolve(.none)?.backendLayout == CBv2CompleteCheckpointManifest.layout)
         #expect(resolve(.persistentCodec)?.backendLayout == CBv2CompleteCheckpointManifest.layout)
+        #expect(resolve(.persistentExactHistory)?.backendLayout == CBv2CompleteCheckpointManifest.layout)
         #expect(resolve(.stateless) == nil)
         #expect(resolve(.unsupportedPersistent) == nil)
         #expect(resolve(.persistentCodec, types: nil) == nil)

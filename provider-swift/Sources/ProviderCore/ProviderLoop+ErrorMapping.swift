@@ -33,6 +33,14 @@ extension ProviderLoop {
             attemptUsage: terminal.usage)
     }
 
+    /// The closed reason a client refusal inside the inference task logs: an
+    /// `invalid_request` failure whose error names one
+    /// (`InferenceRefusalReason(promptRefusal:)`). Every other failure keeps its
+    /// bare category line.
+    static func promptRefusal(_ failure: InferenceFailure, _ error: any Error) -> InferenceRefusalReason? {
+        failure.code == .invalidRequest ? InferenceRefusalReason(promptRefusal: error) : nil
+    }
+
     /// Map rich in-process errors onto the bounded diagnostic vocabulary. The
     /// associated strings are inspected only to recognize engine-authored
     /// markers; no source string is returned, logged, or serialized.
@@ -61,8 +69,8 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .mediaUnsupportedByModel,
-            .multimodalRejected, .advertisedContextExceeded:
+            .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel, .multimodalRejected,
+            .advertisedContextExceeded, .unsupportedOutputControl:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -158,7 +166,7 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported, .advertisedContextExceeded:
+                .unsupportedNativeReasoningEffort, .advertisedContextExceeded, .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -256,9 +264,9 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .reasoningExclusionUnsupported:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
                 return 400
-            case .advertisedContextExceeded:
+            case .advertisedContextExceeded, .unsupportedOutputControl:
                 return 400
             case .toolChoiceViolation:
                 // The MODEL failed the forced tool_choice contract — output-

@@ -33,7 +33,6 @@ struct FlintResponseFormat: Sendable {
                 throw ToolConstraintSchemaError.invalid("json_schema requires a json_schema payload")
             }
             let schema = try ToolConstraintSchemaCompiler.compileResponseSchema(payload.schema)
-            try requireExplicitTypes(payload.schema, path: "json_schema.schema")
             return FlintResponseFormat(grammar: try FlintJSONGrammar(schema: schema), schema: schema)
         } catch let error as ToolConstraintSchemaError {
             let detail: String
@@ -43,25 +42,6 @@ struct FlintResponseFormat: Sendable {
             }
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload("Flint response_format is \(detail)")
         }
-    }
-
-    /// The shared compiler infers `string` for an untyped leaf, which is the
-    /// right render type for a tool argument but would silently narrow an
-    /// untyped (accept-anything) output schema. Run after compilation, which
-    /// already bounded the depth and validated these subschema positions.
-    private static func requireExplicitTypes(_ raw: MLXLMCommon.JSONValue, path: String) throws {
-        guard case .object(let object) = raw else { return }
-        let typed = (object["type"].map { $0 != .null } ?? false)
-            || ["properties", "additionalProperties", "items", "enum", "const"].contains { object[$0] != nil }
-        guard typed else {
-            throw ToolConstraintSchemaError.unsupported("\(path) has no type and would accept any JSON value")
-        }
-        if case .object(let properties)? = object["properties"] {
-            for (name, child) in properties.sorted(by: { $0.key < $1.key }) {
-                try requireExplicitTypes(child, path: "\(path).properties.\(name)")
-            }
-        }
-        if let items = object["items"] { try requireExplicitTypes(items, path: "\(path).items") }
     }
 
     /// Defense in depth after constrained decoding. A failure, including a

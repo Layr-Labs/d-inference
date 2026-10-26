@@ -30,6 +30,43 @@ extension ModelAutopilotSnapshot {
         activeCommandId = try c.optional(String.self, .activeCommandId)
         lastCommandId = try c.optional(String.self, .lastCommandId)
         lastCommandStatus = try c.optional(ModelAutopilotStatus.State.self, .lastCommandStatus)
+        capabilities = try c.optional([String].self, .capabilities)
+        adoptedModels = try c.optional([String].self, .adoptedModels)
+        heldModels = try c.optional([ModelAutopilotHold].self, .heldModels)
+        busyReasons = try c.optional([String].self, .busyReasons)
+        busyReason = try c.optional(String.self, .busyReason)
+        busySinceMs = try c.optional(Int64.self, .busySinceMs)
+        transitionStalls = try c.optional([ModelAutopilotTransitionStall].self, .transitionStalls)
+        downloadStorage = try c.optional(ModelAutopilotDownloadStorage.self, .downloadStorage)
+    }
+}
+
+extension ModelAutopilotDownloadStorage {
+    public init(from decoder: Decoder) throws {
+        let c = try AutopilotSnapshotDecoder<CodingKeys>(decoder)
+        diskFreeBytes = try c.required(Int64.self, .diskFreeBytes)
+        reserveBytes = try c.required(Int64.self, .reserveBytes)
+        usedBytes = try c.required(Int64.self, .usedBytes)
+        usedModels = try c.required(Int.self, .usedModels)
+        limitBytes = try c.optional(Int64.self, .limitBytes)
+        limitModels = try c.optional(Int.self, .limitModels)
+    }
+}
+
+extension ModelAutopilotHold {
+    public init(from decoder: Decoder) throws {
+        let c = try AutopilotSnapshotDecoder<CodingKeys>(decoder)
+        modelId = try c.required(String.self, .modelId)
+        expiresAtMs = try c.required(Int64.self, .expiresAtMs)
+    }
+}
+
+extension ModelAutopilotTransitionStall {
+    public init(from decoder: Decoder) throws {
+        let c = try AutopilotSnapshotDecoder<CodingKeys>(decoder)
+        transition = try c.required(String.self, .transition)
+        count = try c.required(UInt64.self, .count)
+        lastAgeMs = try c.required(Int64.self, .lastAgeMs)
     }
 }
 

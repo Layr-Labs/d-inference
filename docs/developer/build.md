@@ -81,6 +81,22 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
 
+## Electron Desktop App
+
+`make desktop-install`, `make desktop-build`, and `make desktop-package` build
+and package the app without publishing. The frontend uses the Swift CLI's local
+API. See [desktop development](desktop-app.md) for the isolated preview,
+component boundary, and signed release qualification.
+
+For a Developer ID signed desktop DMG with a bundled review API, follow the
+[signed local preview procedure](desktop-app.md#signed-local-preview).
+`desktop-app/scripts/package-preview.mjs` keeps this build separate from the
+regular release app and verifies the bundled API's signing team.
+
+`make desktop-api-test` exercises the real Swift control API against isolated
+local fixtures (`scripts/test-desktop-api.py`). The fixture never starts a
+serving provider or changes its credentials.
+
 ## SDK 27 Release Builds And Caches
 
 Release compilation and SDK qualification use separate

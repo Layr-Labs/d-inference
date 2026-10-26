@@ -78,7 +78,8 @@ extension ProviderLoop {
                 if !evictable.isEmpty {
                     throw InferenceError.modelLoadFailed("Insufficient memory (\(Self.gb(room)) GB of LOAD room, "
                         + "need \(Self.gb(narrowest)) GB) even after evicting every idle model "
-                        + "(\(Self.gb(reclaimable)) GB reclaimable) — refusing without evicting")
+                        + "(\(Self.gb(reclaimable)) GB reclaimable) — refusing without evicting"
+                        + unevictableResidentsSentence())
                 }
                 // Nothing idle to evict: drop retained segments and the
                 // reclaimable pool, then resample.
@@ -87,7 +88,7 @@ extension ProviderLoop {
                 if retried >= narrowest { return }
                 throw InferenceError.modelLoadFailed("Insufficient memory (\(Self.gb(retried)) GB of LOAD room, "
                     + "need \(Self.gb(narrowest)) GB) " + (allowEviction
-                        ? "and all loaded models are actively serving"
+                        ? noEvictionCandidateClause()
                         : "to load without evicting resident models"))
             }
             if !poolDropped {

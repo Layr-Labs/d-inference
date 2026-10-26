@@ -172,7 +172,7 @@ extension SSDHybridCheckpointStore {
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
             guard !writing.contains(short) else { return .alreadyQueued }
-            guard writing.count < 2 else { return .writeQueueFull }
+            guard writing.count < SSDPrefixCachePolicy.writeQueueMaxJobs else { return .writeQueueFull }
             writing.insert(short)
             return nil
         }

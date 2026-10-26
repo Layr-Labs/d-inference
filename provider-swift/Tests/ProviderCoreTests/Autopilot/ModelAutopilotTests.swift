@@ -119,6 +119,52 @@ struct ModelAutopilotTests {
         #expect(residents.first?["resident_gb"] as? Double == 10)
     }
 
+    @Test func holdSecondsIsOptionalBoundedAndOnlyForALoadedTarget() {
+        var c = command()
+        #expect(c.holdSeconds == nil)
+        #expect(reject(c, snapshot()) == nil)
+        for valid in [0, 1, 86_400] {
+            c.holdSeconds = valid
+            #expect(reject(c, snapshot()) == nil)
+        }
+        for invalid in [-1, 86_401, Int.max] {
+            c.holdSeconds = invalid
+            #expect(reject(c, snapshot()) == "invalid_command")
+        }
+        var unloadOnly = command()
+        unloadOnly.loadModelId = nil
+        unloadOnly.holdSeconds = 0
+        #expect(reject(unloadOnly, snapshot()) == nil)
+        unloadOnly.holdSeconds = 60
+        #expect(reject(unloadOnly, snapshot()) == "invalid_command")
+    }
+
+    @Test func holdSecondsAndBusyDetailAreOptionalOnTheWire() throws {
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        let legacy = try encoder.encode(CoordinatorMessage.modelAutopilot(command()))
+        let legacyObject = try #require(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        #expect(legacyObject["hold_seconds"] == nil)
+        #expect(try decoder.decode(CoordinatorMessage.self, from: legacy) == .modelAutopilot(command()))
+
+        var held = command()
+        held.holdSeconds = 600
+        let heldWire = try encoder.encode(CoordinatorMessage.modelAutopilot(held))
+        let heldObject = try #require(JSONSerialization.jsonObject(with: heldWire) as? [String: Any])
+        #expect(heldObject["hold_seconds"] as? Int == 600)
+        #expect(try decoder.decode(CoordinatorMessage.self, from: heldWire) == .modelAutopilot(held))
+
+        let busy = ProviderMessage.modelAutopilotStatus(.init(commandId: "one", status: .failed,
+            error: "provider_busy", detail: "startup_preload", modelAutopilot: snapshot()))
+        let busyWire = try encoder.encode(busy)
+        let busyObject = try #require(JSONSerialization.jsonObject(with: busyWire) as? [String: Any])
+        #expect(busyObject["detail"] as? String == "startup_preload")
+        #expect(try decoder.decode(ProviderMessage.self, from: busyWire) == busy)
+        let plain = try encoder.encode(ProviderMessage.modelAutopilotStatus(.init(commandId: "one", status: .failed,
+            error: "minimum_dwell", modelAutopilot: snapshot())))
+        let plainObject = try #require(JSONSerialization.jsonObject(with: plain) as? [String: Any])
+        #expect(plainObject["detail"] == nil)
+    }
+
     @Test func terminalHeartbeatCannotCombineWithEarlierCapacity() {
         let state = ProviderState()
         var running = snapshot(); running.activeCommandId = "one"

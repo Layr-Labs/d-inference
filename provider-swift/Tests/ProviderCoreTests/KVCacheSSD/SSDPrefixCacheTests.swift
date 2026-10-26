@@ -3441,53 +3441,65 @@ struct SSDPrefixCacheDonationGateTests {
         await expectNoWrites(cache, dir: dir)
     }
 
+    /// The production write-behind bounds: the policy job count and the
+    /// queued-byte cap `SSDPrefixCache` derives from the default stage cap.
+    private static let productionQueuedByteCap = max(
+        SSDPrefixCachePolicy.writeQueueMaxBytes,
+        SSDPrefixCachePolicy.defaultMaxStageBytes + SSDPrefixCachePolicy.writeQueueSlackBytes)
+
+    private static func productionWriteBehind(
+        dir: URL, stats: SSDPrefixCacheStatsBox = SSDPrefixCacheStatsBox(),
+        writeBlock: (@Sendable (SSDBlockWrite, URL) throws -> Int)? = nil
+    ) -> SSDWriteBehind {
+        SSDWriteBehind(
+            config: SSDWriteBehind.Config(
+                root: dir, kekKey: SymmetricKey(size: .bits256), strictFsync: false, ttlSeconds: 0,
+                maxJobs: SSDPrefixCachePolicy.writeQueueMaxJobs,
+                maxQueuedBytes: productionQueuedByteCap,
+                diskBudgetBytes: { 1 << 40 },
+                volumeSpace: { nil },
+                nowSeconds: { 10_000 },
+                maintainWholeRoot: nil,
+                writeBlock: writeBlock),
+            rateLimiter: SSDWriteRateLimiter(capBytesPerDay: 0),
+            index: SSDBlockIndex(), diskBudget: SSDDiskBudget(), stats: stats,
+            onBlockSettled: { _ in }, sweepExpired: {})
+    }
+
+    /// A one-block job CLAIMING `claimedBytes` (tiny real chunks — admission
+    /// is what's under test).
+    private static func syntheticJob(tagByte: UInt8, claimedBytes: Int) -> SSDDonationJob {
+        let tag16 = Data(repeating: tagByte, count: 16)
+        let chunk = Data(repeating: 1, count: 256)
+        let metadata = SSDBlockMetadata(
+            lookupTag: SSDLookupKeys.hex(tag16 + tag16),
+            weightHash: "w", layoutEpoch: "e", blockSize: 8, layerCount: 2,
+            chunks: [
+                SSDBlockChunkDescriptor(
+                    layerIndex: 0, tensor: 0, shape: [1, 2, 8, 8], dtype: "float16")
+            ],
+            chunkPlaintextSizes: [256], createdAt: 10_000)
+        return SSDDonationJob(
+            blocks: [SSDBlockWrite(
+                tag16: tag16, tag16Hex: SSDLookupKeys.hex(tag16),
+                metadata: metadata, chunks: [chunk], plaintextBytes: 256)],
+            totalBytes: claimedBytes)
+    }
+
     @Test("write-behind admits one full max-size (~600 MB) donation; oversize is dropped, never stalled")
     func writeBehindBigDonationAdmission() async throws {
         let dir = try tempDir("gate-bigjob")
         defer { try? FileManager.default.removeItem(at: dir) }
         // Effective queue-byte cap must clear a ~600 MB gemma tail donation.
-        let effectiveCap = max(
-            SSDPrefixCachePolicy.writeQueueMaxBytes,
-            SSDPrefixCachePolicy.defaultMaxStageBytes + SSDPrefixCachePolicy.writeQueueSlackBytes)
+        let effectiveCap = Self.productionQueuedByteCap
         #expect(effectiveCap > 629_145_600)
 
-        let kek = SymmetricKey(size: .bits256)
         let stats = SSDPrefixCacheStatsBox()
-        let index = SSDBlockIndex()
-        let writeBehind = SSDWriteBehind(
-            config: SSDWriteBehind.Config(
-                root: dir, kekKey: kek, strictFsync: false, ttlSeconds: 0,
-                maxJobs: 2, maxQueuedBytes: effectiveCap,
-                diskBudgetBytes: { 1 << 40 },
-                volumeSpace: { nil },
-                nowSeconds: { 10_000 },
-                maintainWholeRoot: nil,
-                writeBlock: nil),
-            rateLimiter: SSDWriteRateLimiter(capBytesPerDay: 0),
-            index: index, diskBudget: SSDDiskBudget(), stats: stats,
-            onBlockSettled: { _ in }, sweepExpired: {})
+        let writeBehind = Self.productionWriteBehind(dir: dir, stats: stats)
         defer { writeBehind.close() }
 
-        // A job CLAIMING 600 MB (tiny real chunks — admission is what's
-        // under test) is admitted and consumed: graceful, no stall.
-        func syntheticJob(tagByte: UInt8, claimedBytes: Int) -> SSDDonationJob {
-            let tag16 = Data(repeating: tagByte, count: 16)
-            let chunk = Data(repeating: 1, count: 256)
-            let metadata = SSDBlockMetadata(
-                lookupTag: SSDLookupKeys.hex(tag16 + tag16),
-                weightHash: "w", layoutEpoch: "e", blockSize: 8, layerCount: 2,
-                chunks: [
-                    SSDBlockChunkDescriptor(
-                        layerIndex: 0, tensor: 0, shape: [1, 2, 8, 8], dtype: "float16")
-                ],
-                chunkPlaintextSizes: [256], createdAt: 10_000)
-            return SSDDonationJob(
-                blocks: [SSDBlockWrite(
-                    tag16: tag16, tag16Hex: SSDLookupKeys.hex(tag16),
-                    metadata: metadata, chunks: [chunk], plaintextBytes: 256)],
-                totalBytes: claimedBytes)
-        }
-        #expect(writeBehind.submit(syntheticJob(tagByte: 0xA1, claimedBytes: 629_145_600)))
+        // A job claiming 600 MB is admitted and consumed: graceful, no stall.
+        #expect(writeBehind.submit(Self.syntheticJob(tagByte: 0xA1, claimedBytes: 629_145_600)))
         let deadline = ContinuousClock.now + .seconds(10)
         while ContinuousClock.now < deadline, stats.snapshot().blocksWritten < 1 {
             try? await Task.sleep(for: .milliseconds(20))
@@ -3496,7 +3508,41 @@ struct SSDPrefixCacheDonationGateTests {
 
         // A job larger than the whole cap is rejected IMMEDIATELY
         // (deterministic regardless of consumer state) — drop, not stall.
-        #expect(!writeBehind.submit(syntheticJob(tagByte: 0xB2, claimedBytes: effectiveCap + 1)))
+        #expect(!writeBehind.submit(Self.syntheticJob(tagByte: 0xB2, claimedBytes: effectiveCap + 1)))
+    }
+
+    @Test("behind a blocked writer, six jobs queue only while their bytes fit the queued-byte cap")
+    func writeBehindQueueBounds() async throws {
+        let dir = try tempDir("gate-queue-bounds")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cap = Self.productionQueuedByteCap
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let writeBehind = Self.productionWriteBehind(dir: dir, writeBlock: { block, _ in
+            if block.tag16.first == 0 {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 10)
+            }
+            return 1
+        })
+        defer { release.signal(); writeBehind.close() }
+        func submit(_ tagByte: UInt8, claimedBytes: Int) -> SSDDonationSubmitResult {
+            writeBehind.submitWithResult(Self.syntheticJob(tagByte: tagByte, claimedBytes: claimedBytes))
+        }
+
+        // The job being written leaves the queue, so it counts against neither cap.
+        #expect(submit(0, claimedBytes: cap) == .accepted)
+        #expect(await waitForSemaphore(entered, timeout: .now() + 10) == .success)
+        for tagByte: UInt8 in 1 ... 5 {
+            #expect(submit(tagByte, claimedBytes: 1) == .accepted)
+        }
+        // A sixth job slot is free, but the queued-byte cap is not.
+        #expect(submit(6, claimedBytes: cap - 4) == .queueFull)
+        #expect(submit(6, claimedBytes: cap - 5) == .accepted)
+        // Six queued jobs fill the job bound, even for a job with no bytes.
+        #expect(submit(7, claimedBytes: 0) == .queueFull)
+        release.signal()
+        await writeBehind.waitUntilDrained()
     }
 }
 
@@ -3636,6 +3682,49 @@ struct SSDPrefixCacheDonationOutcomeTests {
             $0 + recorder.count($1)
         }
         #expect(total == 2)
+    }
+
+    @Test("six donations queue behind a blocked writer and the seventh settles write_queue_full")
+    func writeQueueFullOutcome() async throws {
+        let dir = try tempDir("donation-queue-full")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let recorder = DonationOutcomeRecorder()
+        let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release() }
+        // Whole-root maintenance runs on the serial writer after a job's
+        // blocks land, so blocking it holds that job in flight.
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            maintainWholeRoot: { try? barrier.block() },
+            donationRecorder: recorder)
+        defer { cache.close() }
+        let snapshots = fixtureSnapshots(tokenCount: 16)
+        func donate(conversation: Int) {
+            cache.donate(
+                tokens: (0 ..< 16).map { 100 * conversation + $0 },
+                snapshots: snapshots,
+                layerKinds: fixtureLayerKinds,
+                cacheSalt: nil)
+        }
+
+        donate(conversation: 0)
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
+        for conversation in 1 ... 6 { donate(conversation: conversation) }
+        #expect(recorder.count(.writeQueueFull) == 0)
+        donate(conversation: 7)
+        #expect(recorder.count(.writeQueueFull) == 1)
+
+        barrier.release()
+        await cache.waitForWritesForTesting()
+        #expect(recorder.count(.donated) == 7)
+        #expect(cache.index.count == 14)
+        // The refused conversation's blocks were released, so it can retry.
+        donate(conversation: 7)
+        await cache.waitForWritesForTesting()
+        #expect(recorder.count(.donated) == 8)
+        #expect(cache.index.count == 16)
     }
 }
 

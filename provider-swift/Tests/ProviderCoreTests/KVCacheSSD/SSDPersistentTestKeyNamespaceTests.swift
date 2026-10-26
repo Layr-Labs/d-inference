@@ -209,11 +209,11 @@ struct SSDPersistentTestKeyNamespaceTests {
             environment: context, persistentTestNamespace: selected)
         #expect(blocks == nil)
         #expect(!FileManager.default.fileExists(atPath: root.path))
-        let complete = await SSDHybridCheckpointStoreFactory.make(
+        let complete = await SSDHybridCheckpointStoreFactory.build(
             modelId: "namespace-test", identity: .init(modelAggregateHash: "test-weights",
                 promptContractID: "test-contract", buildID: "test-build", numericsFingerprint: "test-numerics"),
             kvBudget: nil, environment: context, persistentTestNamespace: selected)
-        #expect(complete == nil)
+        #expect((try? complete.get()) == nil)
         #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 

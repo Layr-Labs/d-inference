@@ -109,18 +109,28 @@ struct ResidentAdmission27BTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: large.specification)
         #expect(profile.identifier == large.profileID && profile.hiddenSize == 5120)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumPromptTokens == 32_768 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 65_536)
+        // The native context with the catalog's output limit; LOAD and the
+        // planner size the pair for the standard request under the same ID.
+        #expect(profile.maximumPromptTokens == 262_143 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 262_144)
+        let memory = try QwenResidentAdapterDefinition.memoryProfile(specification: large.specification)
+        #expect(memory.identifier == profile.identifier && memory.hiddenSize == 5120)
+        #expect(memory.maximumPromptTokens == 32_768 && memory.maximumChunkTokens == 512)
+        #expect(memory.maximumOutputTokens == 32_768 && memory.maximumContextTokens == 65_536)
+        #expect(memory.fingerprint != profile.fingerprint)
         let smallProfile = try QwenResidentAdapterDefinition.profile(specification: small.specification)
         #expect(smallProfile.identifier == QwenResidentAdapterDefinition.profileID && smallProfile.hiddenSize == 4096)
         #expect(profile.fingerprint != smallProfile.fingerprint)
+        // The 9B's memory plan is its profile, byte for byte.
+        #expect(try QwenResidentAdapterDefinition.memoryProfile(specification: small.specification) == smallProfile)
     }
 
     @Test func ceilingsBelongToEachRegisteredModel() throws {
         let large = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
         #expect(large.maximumManifestPayloadBytes == 16_320_415_757)
-        // Each model's own estimate at its derived largest context (65,536
-        // tokens); the pinned integer at the reservation's 8,320 stays checked.
+        // Each model's own estimate at its derived largest context (262,144
+        // tokens for the 27B, which serves its native context; 65,536 for the
+        // 9B); the pinned integer at the reservation's 8,320 stays checked.
         #expect(large.maximumNamedStateBytes == 1_616_248_896)
         #expect(large.namedStateByteCeiling > 4_920_836_160)
         // The 9B keeps its 8 GiB manifest bound; its state ceiling, too, is its
@@ -142,8 +152,10 @@ struct ResidentAdmission27BTests {
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8320, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == 1_616_248_896)
-        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 65_536, chunkSize: 512)
+        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 262_144, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == large.namedStateByteCeiling)
+        #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 65_536, chunkSize: 512)
+            .conservativeStateAndBoundaryBytes < large.namedStateByteCeiling)
     }
 
     @Test func registeredMetadataAdmitsOnBothRanksWithOneAgreement() throws {
@@ -382,5 +394,63 @@ struct ResidentAdmission27BTests {
         let pairs = ClusterRuntimeAdapter.qwen35Dense.registeredProfiles
         #expect(pairs.count == 2 && pairs[0].runtimeModelID == ClusterRuntimeAdapter.qwen35Dense.runtimeModelID
             && pairs[0].profileID == ClusterRuntimeAdapter.qwen35Dense.profileID)
+    }
+
+    /// The fields every resident LOAD agreed on before a row served its native context.
+    private static func standardAgreementFields(_ a: QwenResidentAdmission) -> [String] {
+        let identity = a.configuration.identity
+        return ["qwen-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
+            identity.configurationSHA256, identity.artifactSHA256, a.specification.manifestSHA256,
+            a.plan.fingerprint, a.profile.fingerprint, a.arithmeticSHA256, a.jaccl.fingerprint,
+            a.configuration.allocatorPolicy.rawValue] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
+            + QwenResidentPrefillSelection.loadAgreementFields(a.configuration.prefillSchedule)
+    }
+
+    @Test func theNativeProfileAndItsMemoryPlanAreBoundIntoOneAgreement() throws {
+        let large = try Self.admit(Self.configuration(identity: try Self.identity()))
+        #expect(large.wireProfile == ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1",
+            vocabularySize: 248_320, maximumPromptTokens: 262_143, maximumOutputTokens: 32_768,
+            maximumChunkTokens: 512, maximumContextTokens: 262_144))
+        #expect(large.memoryProfile == (try QwenResidentAdapterDefinition.memoryProfile(specification: large.specification)))
+        #expect(large.memoryProfile.maximumContextTokens == 65_536 && large.memoryProfile.identifier == large.profile.identifier)
+        // The wire profile's memory scope is the memory plan, field for field.
+        let scope = large.wireProfile.memoryScope
+        #expect(scope.id == large.memoryProfile.identifier && scope.vocabularySize == large.memoryProfile.vocabularySize)
+        #expect(scope.maximumPromptTokens == large.memoryProfile.maximumPromptTokens
+            && scope.maximumOutputTokens == large.memoryProfile.maximumOutputTokens
+            && scope.maximumChunkTokens == large.memoryProfile.maximumChunkTokens
+            && scope.maximumContextTokens == large.memoryProfile.maximumContextTokens)
+        // Both ranks agree on the profile and on the memory plan LOAD is sized for.
+        #expect(try large.loadAgreementFingerprint() == sha256(try canonicalJSONData(Self.standardAgreementFields(large)
+            + ["memory=" + large.memoryProfile.fingerprint])))
+        // The 9B's agreement keeps its bytes: its memory plan is its profile.
+        let nine = try Self.specification(.qwen35NineB)
+        let small = try QwenResidentAdmission(configuration: QwenResidentLoadConfiguration(
+                identity: ClusterWorkerIdentity(membershipEpoch: UUID(), modelID: QwenRegisteredDenseModel.qwen35NineB.rawValue,
+                    artifactSHA256: nine.artifactSHA256, configurationSHA256: nine.configurationSHA256,
+                    peers: try Self.identity().peers),
+                modelDirectory: URL(fileURLWithPath: "/tmp"), rank: 0, stageCut: 4,
+                deadlineUptimeNanoseconds: Self.now + 300_000_000_000, prefillSchedule: .serial),
+            configBytes: try Self.fixture("qwen35-9b", "configuration"), manifestBytes: try Self.fixture("qwen35-9b", "manifest"),
+            environment: Self.environment(), now: Self.now, read: { _, _ in Self.matrix })
+        #expect(small.memoryProfile == small.profile && small.wireProfile.memoryScope == small.wireProfile)
+        #expect(try small.loadAgreementFingerprint() == sha256(try canonicalJSONData(Self.standardAgreementFields(small))))
+
+        // A request past the standard one is the profile's to admit, up to the
+        // native context; the live memory gate decides at reservation.
+        func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
+            ClusterWorkerReservation(profileID: large.profile.identifier,
+                promptTokenIDs: Array(repeating: 1000, count: prompt), stopTokenIDs: [], outputCount: output, chunkSize: 512,
+                deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+        }
+        #expect(try large.request(reservation(prompt: 65_537, output: 128), id: UUID(), now: Self.now).maximumTokens == 65_665)
+        #expect(try large.request(reservation(prompt: 229_376, output: 32_768), id: UUID(), now: Self.now).maximumTokens
+            == 262_144)
+        #expect(try large.request(reservation(prompt: 262_143, output: 1), id: UUID(), now: Self.now).maximumTokens == 262_144)
+        #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 229_377, output: 32_768), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 16, output: 32_769), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { _ = try small.request(.init(profileID: small.profile.identifier,
+            promptTokenIDs: Array(repeating: 1000, count: 32_769), stopTokenIDs: [], outputCount: 1, chunkSize: 512,
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: Self.now) }
     }
 }

@@ -15,6 +15,8 @@ protocol LayerStageResidentAdmission {
     var jaccl: QwenResidentJACCLConfiguration { get }
     var plan: QwenLayerStagePlan { get }
     var profile: QwenLayerStageGenerationProfile { get }
+    /// The request every LOAD gate of the stage modes charges (default: the profile).
+    var memoryProfile: QwenLayerStageGenerationProfile { get }
     var arithmeticContract: String { get }
     var arithmeticSHA256: String { get }
     /// What both ranks compare before either stage is read. Rank, local path
@@ -33,6 +35,23 @@ extension LayerStageResidentAdmission {
         .init(id: profile.identifier, vocabularySize: profile.vocabularySize,
             maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
             maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens)
+    }
+
+    /// The profile, unless the family names a smaller memory plan
+    /// (`QwenResidentAdmission.memoryProfile`).
+    var memoryProfile: QwenLayerStageGenerationProfile { profile }
+
+    /// The layer-stage modes size LOAD for `memoryProfile`, never more: a
+    /// longer request is not served by them (their READY's serving context
+    /// says so too). Every request within the profile passes when the two are
+    /// one profile.
+    func requireWithinMemoryProfile(_ value: ClusterWorkerReservation) throws {
+        let p = memoryProfile
+        guard value.promptTokenIDs.count <= p.maximumPromptTokens, value.outputCount <= p.maximumOutputTokens,
+              value.promptTokenIDs.count <= p.maximumContextTokens - value.outputCount else {
+            throw ProbeError("A request of \(value.promptTokenIDs.count + value.outputCount) context tokens is longer"
+                + " than this mode serves (\(p.maximumContextTokens)); only tensor parallel serves the model's native context")
+        }
     }
 }
 

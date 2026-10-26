@@ -155,4 +155,16 @@ extension QwenDenseRegisteredSpecification {
         .nemotron35Lightning: 262_144,
     ]
     var declaredContextTokens: Int? { Self.declaredContextTokensByModel[model] }
+
+    /// The output limit registered for each row that serves its whole declared
+    /// context (catalog `max_output_length`), which the pair advertises as the
+    /// single-Mac product does. Its limits are the native context with this
+    /// output (`QwenResidentContextLimits.Ceiling.native`); every other row
+    /// keeps the protocol's standard request. Tensor parallel charges a request
+    /// beyond the standard one at its own context when a rank reserves it.
+    static let nativeOutputTokensByModel: [QwenRegisteredDenseModel: Int] = [
+        // Catalog `max_context_length` 262,144 and `max_output_length` 32,768.
+        .qwen38TwentySevenB: 32_768,
+    ]
+    var nativeOutputTokens: Int? { Self.nativeOutputTokensByModel[model] }
 }

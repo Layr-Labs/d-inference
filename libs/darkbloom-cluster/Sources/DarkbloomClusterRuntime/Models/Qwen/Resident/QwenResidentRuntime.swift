@@ -105,7 +105,7 @@ public final class QwenResidentRuntime {
             found = admitted.contextTokens; room = admitted.roomBytes
         } catch {
             guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
-            found = min(admission.profile.maximumContextTokens, admission.profile.maximumChunkTokens + 1)
+            found = min(admission.memoryProfile.maximumContextTokens, admission.memoryProfile.maximumChunkTokens + 1)
         }
         // The cache's budget follows the room beside the serving context now, in
         // both directions (models stay loaded until unloaded, so a dip at load
@@ -185,10 +185,10 @@ public final class QwenResidentRuntime {
     }
     private func recordingCapacity(_ policy: QwenResidentPrefillPolicy) throws -> Int {
         let base = try maximumRecordingCharge().reservedBytes
-        let extra = try prefillAllowance(policy, promptCount: admission.profile.maximumPromptTokens,
-            chunkSize: admission.profile.maximumChunkTokens)
+        let extra = try prefillAllowance(policy, promptCount: admission.memoryProfile.maximumPromptTokens,
+            chunkSize: admission.memoryProfile.maximumChunkTokens)
         let split = try Self.phaseSplitAllowance(generationMode, admission: admission, stage: stage,
-            rank: collective.rank, promptCount: admission.profile.maximumPromptTokens, speculativeTerms: speculativeTerms)
+            rank: collective.rank, promptCount: admission.memoryProfile.maximumPromptTokens, speculativeTerms: speculativeTerms)
         return try QwenLongPrefillCheckedBytes.sum([base, extra?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
     }
 
@@ -210,8 +210,8 @@ public final class QwenResidentRuntime {
                 throw ProbeError("This registered model has no speculative window geometry")
             }
             let speculative = try QwenMTPAllowance.derive(geometry: geometry, depth: speculativeTerms.depth,
-                maximumTokens: admission.profile.maximumContextTokens, promptTokens: promptCount,
-                chunkSize: admission.profile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
+                maximumTokens: admission.memoryProfile.maximumContextTokens, promptTokens: promptCount,
+                chunkSize: admission.memoryProfile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
                 bound: QwenResidentResourceEnvironment.allocationBound)
             return .init(rank: rank, extraNativeBytes: speculative.extraNativeBytes,
                 extraHostBytes: speculative.extraHostBytes)
@@ -235,8 +235,8 @@ public final class QwenResidentRuntime {
         var producerFusion = 0
         if rank == 1 {
             producerFusion = try stage.requestAllowance(plan: admission.plan,
-                rank: 0, maximumTokens: admission.profile.maximumContextTokens,
-                chunkSize: admission.profile.maximumChunkTokens,
+                rank: 0, maximumTokens: admission.memoryProfile.maximumContextTokens,
+                chunkSize: admission.memoryProfile.maximumChunkTokens,
                 bound: QwenResidentResourceEnvironment.allocationBound).fusionBytes
         }
         // The decoding rank of a speculative phase split also holds the head's
@@ -244,8 +244,8 @@ public final class QwenResidentRuntime {
         var speculative: QwenMTPAllowance?
         if rank == 1, let speculativeTerms {
             speculative = try .derive(geometry: geometry, depth: speculativeTerms.depth,
-                maximumTokens: admission.profile.maximumContextTokens, promptTokens: promptCount,
-                chunkSize: admission.profile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
+                maximumTokens: admission.memoryProfile.maximumContextTokens, promptTokens: promptCount,
+                chunkSize: admission.memoryProfile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
                 bound: QwenResidentResourceEnvironment.allocationBound)
         }
         return try .derive(rank: rank, shapes: shapes, producerFusionBytes: producerFusion, speculative: speculative,
@@ -266,20 +266,20 @@ public final class QwenResidentRuntime {
                                 reclaimableBytes: Int = 0) throws -> QwenResidentAdmittedContext {
         // The admitted profile carries the model's limits (`QwenResidentContextLimits`
         // for a registered Qwen row; the earlier reservation for a family without one).
-        let maximumContext = admission.profile.maximumContextTokens
+        let maximumContext = admission.memoryProfile.maximumContextTokens
         let policy = QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule)
         let sum = QwenLongPrefillCheckedBytes.sum
         // A charge is the same for a context on this loaded stage every time; it is derived from the plan and costs
         // tens of milliseconds (Bonsai's Prism configuration more), and the idle refresh searches it often: kept.
         let memoKey = "\(admission.plan.fingerprint)|\(rank)|\(mode)|\(speculativeTerms.map { "mtp\($0.depth)" } ?? "none")"
-            + "|\(admission.profile.maximumContextTokens)|\(admission.profile.maximumPromptTokens)"
-            + "|\(admission.profile.maximumChunkTokens)|\(admission.configuration.prefillSchedule)"
+            + "|\(admission.memoryProfile.maximumContextTokens)|\(admission.memoryProfile.maximumPromptTokens)"
+            + "|\(admission.memoryProfile.maximumChunkTokens)|\(admission.configuration.prefillSchedule)"
         func charge(_ context: Int) throws -> QwenResidentAdmittedContext {
             try QwenResidentChargeMemo.shared.value(key: memoKey, context: context) { try uncachedCharge(context) }
         }
         func uncachedCharge(_ context: Int) throws -> QwenResidentAdmittedContext {
-            let prompt = min(admission.profile.maximumPromptTokens, context - 1)
-            let chunk = min(admission.profile.maximumChunkTokens, prompt)
+            let prompt = min(admission.memoryProfile.maximumPromptTokens, context - 1)
+            let chunk = min(admission.memoryProfile.maximumChunkTokens, prompt)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: rank,
                 maximumTokens: context, chunkSize: chunk, bound: QwenResidentResourceEnvironment.allocationBound)
             let prefill = try QwenResidentPrefillSelection.allowance(policy, rank: rank, promptCount: prompt,
@@ -309,7 +309,7 @@ public final class QwenResidentRuntime {
         }
         func admits(_ context: Int) throws -> Bool { try judge(context).admitted }
         // One prefill frame and one output token: the least a loaded stage serves.
-        let minimum = min(maximumContext, admission.profile.maximumChunkTokens + 1)
+        let minimum = min(maximumContext, admission.memoryProfile.maximumChunkTokens + 1)
         let plain = try QwenResidentContextAdmission.largest(minimum: minimum, maximum: maximumContext, admits: admits)
         // A Mac whose memory bounds the context keeps room for the prompt-prefix cache when that costs at most a
         // quarter of the context: the largest context left the cache no budget at all (0.4 MB beside 29,072 tokens
@@ -335,8 +335,8 @@ public final class QwenResidentRuntime {
     private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
         guard let stage else { throw ProbeError("Resident model already released") }
         let base = try stage.requestAllowance(plan: admission.plan,
-            rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
-            chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
+            rank: collective.rank, maximumTokens: admission.memoryProfile.maximumContextTokens,
+            chunkSize: admission.memoryProfile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
         guard base.reservedBytes <= baseReady.requestCapacityBytes else {
             throw ProbeError("Recording maximum differs from the admitted resident base ceiling")
         }
@@ -364,6 +364,7 @@ public final class QwenResidentRuntime {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+        try admission.requireWithinMemoryProfile(value)
         try control.check(); try control.reserve(requestID)
         // Nothing below allocates: a throw gives the reservation back and is
         // a refusal of this request alone (`ClusterResidentRequestRefusal`).

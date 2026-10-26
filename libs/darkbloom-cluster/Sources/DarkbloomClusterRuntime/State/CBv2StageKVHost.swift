@@ -75,8 +75,10 @@ final class CBv2StageKVHostBox {
 ///
 /// The paged pool is the product's segmented pool (64 MB segments that grow
 /// with admitted demand, `PagedKVBackend` + `PagedLayerCache`). Its capacity is
-/// a ceiling for `lanes` requests of `maximumTokensPerRequest` tokens, not an
-/// allocation: pages are reserved per request at its own maximum length.
+/// a ceiling for `lanes` requests of `maximumTokensPerRequest` tokens (up to
+/// the wire's longest context, for a row that serves its native one), not an
+/// allocation: pages are reserved per request, at its own length or as it
+/// grows (`CBv2OwnedRequestState.growReservation`).
 /// Every native mutation happens on the owner's serial executor, which is the
 /// pool's thread-affinity contract.
 final class CBv2StageKVHost {
@@ -116,7 +118,7 @@ final class CBv2StageKVHost {
     init(model: any LanguageModel, kind: ClusterStageKVBackendKind, lanes: Int,
          maximumTokensPerRequest: Int, maximumChunkTokens: Int,
          quantization: PagedKVQuantizationSelection = .native) throws {
-        guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= ClusterWorkerLimits.contextTokens,
+        guard (1...8).contains(lanes), maximumTokensPerRequest > 0, maximumTokensPerRequest <= ClusterWorkerLimits.wireContextTokens,
               maximumChunkTokens > 0 else {
             throw ProbeError("Stage KV host needs 1...8 lanes and a bounded request length")
         }

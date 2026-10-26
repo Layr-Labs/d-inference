@@ -83,12 +83,16 @@ struct ResidentAdmissionBonsaiTests {
         // Above the legacy 8 GiB bound the 9B is admitted under, by 18.7 MiB.
         #expect(packed.maximumManifestPayloadBytes > LocalCorrectnessStorage.maximumManifestPayloadBytes)
         // The 27B's geometry, and a formula that already counts four bytes per state element.
-        // At the earlier reservation the pinned figure; at the derived 65,536-token context the 27B's own ceiling.
+        // At the earlier reservation the pinned figure; at the derived 65,536-token context the
+        // 27B geometry's estimate there (the dense 27B, which serves its native context, has its
+        // ceiling at 262,144 tokens).
         let dense = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
         #expect(packed.maximumNamedStateBytes == 1_616_248_896)
-        #expect(packed.namedStateByteCeiling == dense.namedStateByteCeiling)
         let spec = try F.specification()
         #expect(try spec.expectedGeometry() == F.specification(.qwen38TwentySevenB).expectedGeometry())
+        #expect(packed.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
+            maximumTokens: 65_536, chunkSize: 512).conservativeStateAndBoundaryBytes))
+        #expect(packed.namedStateByteCeiling < dense.namedStateByteCeiling)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(), maximumTokens: 8193, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
         // The other rows are untouched.

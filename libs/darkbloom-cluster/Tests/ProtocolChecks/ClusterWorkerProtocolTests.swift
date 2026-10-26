@@ -58,6 +58,7 @@ struct ClusterWorkerProtocolTests {
         try tensorParallelModes()
         try logprobs()
         try nativeContext()
+        try qwenNativeContext()
         try mtpTelemetry()
         try tensorAssistantReadiness()
         print("{\"passed\":true,\"groups\":18,\"modelExecution\":false,\"localPipeIO\":true}")
@@ -189,6 +190,71 @@ struct ClusterWorkerProtocolTests {
             capacityLimitBytes: 900, sampling: nil)
         try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
             requestID: requestID, command: .reserve(long))) }
+    }
+
+    /// Qwen3.8 27B's native profile (262,144 context, 32,768 output) on the
+    /// wire: its longest reservations (the whole context, past 65,536 tokens)
+    /// fit one command and one pipe record and both ranks' sessions admit
+    /// them; one token past the context is refused by the session, as is a
+    /// serving context past it. Its memory scope is the standard request.
+    static func qwenNativeContext() throws {
+        let p = ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248_320,
+            maximumPromptTokens: 262_143, maximumOutputTokens: 32_768,
+            maximumChunkTokens: 512, maximumContextTokens: 262_144)
+        try check(p.memoryScope == ClusterWorkerProfile(id: p.id, vocabularySize: 248_320, maximumPromptTokens: 32_768,
+            maximumOutputTokens: 32_768, maximumChunkTokens: 512, maximumContextTokens: 65_536), "The 27B's memory scope")
+        let standard = ClusterWorkerProfile(id: "standard", vocabularySize: 248_320, maximumPromptTokens: 32_768,
+            maximumOutputTokens: 32_768, maximumChunkTokens: 512, maximumContextTokens: 65_536)
+        try check(standard.memoryScope == standard, "A standard profile is its own memory scope")
+        func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
+            .init(profileID: p.id, promptTokenIDs: Array(repeating: 248_319, count: prompt),
+                stopTokenIDs: Array(248_064..<248_320), outputCount: output, chunkSize: 512,
+                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+        }
+        for (prompt, output) in [(229_376, 32_768), (262_143, 1), (65_537, 32_768)] {
+            let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(Int64.max) - 1,
+                requestID: requestID, command: .reserve(reservation(prompt: prompt, output: output)))
+            let bytes = try ClusterWorkerCodec.encode(frame)
+            try check(bytes.count <= ClusterWorkerLimits.commandBytes, "A 27B native reservation fits one command")
+            try check(try ClusterWorkerCodec.decodeCommand(bytes) == frame, "A 27B native reservation round-trips")
+            var lines = ClusterWorkerLineDecoder(commandStream: true), records: [Data] = []
+            for start in stride(from: 0, to: bytes.count, by: ClusterWorkerLineDecoder.readChunkBytes) {
+                records += try lines.append(bytes.subdata(in: start ..< min(bytes.count, start + ClusterWorkerLineDecoder.readChunkBytes)))
+            }
+            try check(records == [bytes], "A 27B native command is one pipe record")
+            for rank in 0...1 {
+                var session = try ClusterWorkerSession(identity: identity, rank: rank, profile: p,
+                    executionPlanSHA256: ready.executionPlanSHA256)
+                try session.accept(ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(ClusterWorkerEventFrame(
+                    membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(.init(identity: identity, rank: rank,
+                        profile: p, executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024,
+                        servingContextTokens: 200_000))))), now: 10)
+                try session.accept(ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(
+                    membershipEpoch: epoch, sequence: 0, requestID: requestID,
+                    command: .reserve(reservation(prompt: prompt, output: output))))), now: 10)
+                // The rank's admission is held to the profile.
+                try session.accept(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: requestID,
+                    event: .admitted(reservedBytes: 900)), now: 10)
+            }
+        }
+        // One token past the native context, and one output past the profile's:
+        // carried by the wire, refused at the rank's admission.
+        for (prompt, output) in [(229_377, 32_768), (16, 32_769)] {
+            var session = try ClusterWorkerSession(identity: identity, rank: 0, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256)
+            try session.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(.init(identity: identity,
+                rank: 0, profile: p, executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024))), now: 10)
+            try session.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: requestID,
+                command: .reserve(reservation(prompt: prompt, output: output))), now: 10)
+            try refuses { try session.accept(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: requestID,
+                event: .admitted(reservedBytes: 900)), now: 10) }
+        }
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+            requestID: nil, event: .ready(.init(identity: identity, rank: 0, profile: p,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, servingContextTokens: 262_145)))) }
+        let last = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID,
+            event: .committedToken(ordinal: 32_767, tokenID: 248_319, committedTokens: 262_144))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(last)) == last, "The 27B's last position")
     }
 
     /// Round-2 fixes: the serving context travels in readiness and in every

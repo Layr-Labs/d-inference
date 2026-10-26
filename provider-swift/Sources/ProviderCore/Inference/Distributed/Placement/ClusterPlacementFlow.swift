@@ -168,9 +168,12 @@ public enum ClusterPlacementFlow {
             throw ClusterConfigurationError.invalid("Placement cannot combine singleton and concurrent assistant quotes")
         }
         if let requestScope = batchScope?.request ?? tensorAssistantQuote?.request ?? requestScope {
-            guard requestScope.maximumPromptTokens == capability.profile.maximumPromptTokens,
-                  requestScope.maximumOutputTokens == capability.profile.maximumOutputTokens,
-                  requestScope.maximumContextTokens == capability.profile.maximumContextTokens else {
+            // Scopes and quotes size the memory plan's request: the profile,
+            // or the standard request for a row that serves its native context.
+            let memory = capability.profile.memoryScope
+            guard requestScope.maximumPromptTokens == memory.maximumPromptTokens,
+                  requestScope.maximumOutputTokens == memory.maximumOutputTokens,
+                  requestScope.maximumContextTokens == memory.maximumContextTokens else {
                 throw ClusterConfigurationError.invalid("The request scope and worker capability have different profile limits")
             }
             // A singleton tensor quote prices the native profile's complete envelope, which

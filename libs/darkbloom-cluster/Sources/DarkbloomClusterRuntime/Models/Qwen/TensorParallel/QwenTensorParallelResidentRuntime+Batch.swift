@@ -6,6 +6,9 @@ struct QwenTensorParallelOwnedBatchReservation: QwenTensorParallelBatchReservati
     let request: QwenLayerStageGenerationRequest
     let deadline: UInt64
     let laneStateBytes: Int
+    /// The shared workspaces at this request's context, never below LOAD's
+    /// (`QwenTensorParallelRequestCharge`); the owner holds the largest of them.
+    let sharedStateBytes: Int
     let media: QwenMediaRequestWork?
     // Preparation starts bilaterally in open; no unsynchronized model/tower
     // work is scheduled by admission or by the control thread.
@@ -31,30 +34,22 @@ extension QwenTensorParallelResidentRuntime {
 
     public func reserveLane(requestID: UUID, request value: ClusterWorkerReservation) throws -> Int {
         try withBatchOperation {
-            let plan = try batchPlan()
-            guard value.route == nil, let batchBudget, let batchHost, batchBook.count < batchLanes else {
+            _ = try batchPlan()
+            guard value.route == nil, let batchBudget, batchHost != nil, batchBook.count < batchLanes else {
                 throw ProbeError("Tensor-parallel batch lanes are unavailable or routed")
             }
             let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds,
                 allowsQwenMedia: baseReady.media == ClusterQwenMedia.contract)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            let local = try QwenTensorParallelBatchBudget.derive(geometry: profile.geometry, plan: plan,
-                tensors: profile.canonicalTensors, maximumTokens: request.maximumTokens,
-                chunkSize: min(request.chunkSize, request.promptCount), lanes: batchLanes,
-                paged: batchHost.kind == .paged, rank: collective.rank,
-                allocationBound: QwenResidentResourceEnvironment.allocationBound)
-            let localAssistant = try mtpTerms.map { terms in
-                try QwenTensorParallelBatchMTPBudget.derive(geometry: profile.geometry, plan: plan,
-                    tensors: profile.canonicalTensors, maximumTokens: request.maximumTokens,
-                    promptTokens: request.promptCount,
-                    chunkSize: min(request.chunkSize, request.promptCount), lanes: batchLanes, depth: terms.depth,
-                    maximumSpeculativeWidth: batchMTPBudget?.maximumSpeculativeWidth ?? 1, rank: collective.rank,
-                    allocationBound: QwenResidentResourceEnvironment.allocationBound)
-            }
             guard (mtpTerms == nil) == (batchMTPBudget == nil) else { throw ProbeError("Qwen TP batch assistant quotation is missing") }
-            let laneBytes = localAssistant?.perLaneStateBytes ?? local.perLaneStateBytes
+            // Charged at its own context: its lane, and the shared workspaces
+            // at the longest context held (never below LOAD's).
+            let charge = try requestCharge.charge(maximumTokens: request.maximumTokens,
+                promptTokens: request.promptCount, chunkSize: min(request.chunkSize, request.promptCount))
+            let laneBytes = charge.laneBytes
+            // Within the memory plan, a lane fits the quote LOAD admitted it under.
             let loadLaneBytes = batchMTPBudget?.perLaneStateBytes ?? batchBudget.perLaneStateBytes
-            guard laneBytes <= loadLaneBytes else {
+            guard request.maximumTokens > admission.memoryProfile.maximumContextTokens || laneBytes <= loadLaneBytes else {
                 throw ProbeError("Tensor-parallel lane state exceeds its LOAD budget")
             }
             let mediaBudget: QwenMediaBudget?
@@ -73,17 +68,15 @@ extension QwenTensorParallelResidentRuntime {
                     sealedFrameOverhead: QwenTensorParallelSealCodec.frameOverhead,
                     allocationBound: QwenResidentResourceEnvironment.allocationBound)
             } else { mediaBudget = nil }
-            let shared = try QwenLongPrefillCheckedBytes.sum([
-                batchMTPBudget?.sharedBytesExcludingCollectives ?? batchBudget.sharedBytesExcludingCollectives,
-                (batchMTPBudget?.allowance ?? batchBudget.allowance).collectiveScratchBytes])
+            let shared = try QwenLongPrefillCheckedBytes.sum([charge.sharedBytes, requestCharge.collectiveScratchBytes])
             let total = try QwenLongPrefillCheckedBytes.sum([laneBytes, shared,
                 mediaBudget?.nativeBytes ?? 0, mediaBudget?.hostBytes ?? 0])
             guard total <= value.capacityLimitBytes, total <= baseReady.requestCapacityBytes else {
-                throw ProbeError("Qwen TP batch reservation exceeds its owner ceiling")
+                throw ProbeError("Qwen TP batch reservation of \(request.maximumTokens) context tokens exceeds its owner ceiling")
             }
             // Gate the entire future state before constructing positions,
             // pixels, features, cache rows or request samplers' native graphs.
-            try requireBatchMemory(extraState: laneBytes,
+            try requireBatchMemory(extraState: laneBytes, extraShared: charge.sharedBytes,
                 extraNative: mediaBudget?.nativeBytes ?? 0, extraHost: mediaBudget?.hostBytes ?? 0, entering: true)
             let media: QwenMediaRequestWork?
             if let envelope = value.qwenMedia, let budget = mediaBudget, let visionInventory {
@@ -93,7 +86,7 @@ extension QwenTensorParallelResidentRuntime {
             } else { media = nil }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try batchBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
-                laneStateBytes: laneBytes, media: media), lanes: batchLanes)
+                laneStateBytes: laneBytes, sharedStateBytes: charge.sharedBytes, media: media), lanes: batchLanes)
             return total
         }
     }
@@ -118,13 +111,15 @@ extension QwenTensorParallelResidentRuntime {
     /// Full named future charge minus allocations already made by this sole
     /// native owner; retained casts/fusion and materialized pages are not charged
     /// twice in the allocator ceiling. Host media keeps its separate full bound.
-    private func requireBatchMemory(extraState: Int = 0, extraNative: Int = 0, extraHost: Int = 0,
+    /// The shared workspaces are held once, at the longest context any held
+    /// (or entering) request has: LOAD's within the memory plan.
+    private func requireBatchMemory(extraState: Int = 0, extraShared: Int = 0, extraNative: Int = 0, extraHost: Int = 0,
                                     entering: Bool = false) throws {
-        guard let budget = batchBudget else { throw ProbeError("Qwen TP batch LOAD quote is missing") }
+        guard batchBudget != nil else { throw ProbeError("Qwen TP batch LOAD quote is missing") }
         let sum = QwenLongPrefillCheckedBytes.sum
         let held = batchBook.reservations()
-        let native = try sum([batchMTPBudget?.sharedBytesExcludingCollectives ?? budget.sharedBytesExcludingCollectives,
-            (batchMTPBudget?.allowance ?? budget.allowance).collectiveScratchBytes,
+        let shared = ([requestCharge.loadSharedBytes, extraShared] + held.map(\.sharedStateBytes)).max()!
+        let native = try sum([shared, requestCharge.collectiveScratchBytes,
             sum(held.map(\.laneStateBytes)), sum(held.map { $0.media?.budget.nativeBytes ?? 0 }), extraState, extraNative])
         let host = try sum([sum(held.map { $0.media?.budget.hostBytes ?? 0 }), extraHost])
         let remaining = try QwenResidentRequestAllowance.continuingRequirement(reservedBytes: native,

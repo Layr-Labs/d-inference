@@ -597,8 +597,10 @@ final class LiveContext: @unchecked Sendable {
                     if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
                        let policy = settings.tensorAssistants[model.modelID] {
                         assistantQuote = .success(try ClusterPlacementTensorAssistantSelection.read(tool: tool,
-                            modelDirectory: directory.path, policy: policy, promptTokens: admitted.profile.maximumPromptTokens,
-                            outputTokens: admitted.profile.maximumOutputTokens, lanes: 1, chunkTokens: chunk, deadline: deadline()))
+                            modelDirectory: directory.path, policy: policy,
+                            promptTokens: admitted.profile.memoryScope.maximumPromptTokens,
+                            outputTokens: admitted.profile.memoryScope.maximumOutputTokens, lanes: 1, chunkTokens: chunk,
+                            deadline: deadline()))
                     } else {
                         let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
                             modelDirectory: directory, publicModelID: model.modelID, capability: admitted,

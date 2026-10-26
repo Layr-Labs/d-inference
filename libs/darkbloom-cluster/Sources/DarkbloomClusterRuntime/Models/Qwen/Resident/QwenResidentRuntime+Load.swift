@@ -186,7 +186,7 @@ extension QwenResidentRuntime {
                         // The link, before any weight is read: both ranks agreed above that they measure it.
                         linkProbe = try QwenTensorParallelLinkProbe.measure(onPipeline: collective, keyed: credential != nil,
                             loadAgreement: loadAgreement, hiddenSize: admission.profile.hiddenSize,
-                            chunkTokens: admission.profile.maximumChunkTokens, check: checked)
+                            chunkTokens: admission.memoryProfile.maximumChunkTokens, check: checked)
                         if let linkProbe { log(QwenTensorParallelLinkProbe.line(linkProbe, rank: collective.rank)) }
                     }
                     let beforeLoad = Memory.snapshot()
@@ -287,15 +287,15 @@ extension QwenResidentRuntime {
                     // families keep their per-request contiguous storage).
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
                         try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
-                            maximumTokensPerRequest: admission.profile.maximumContextTokens,
-                            maximumChunkTokens: admission.profile.maximumChunkTokens, quantization: kvQuantization)
+                            maximumTokensPerRequest: admission.memoryProfile.maximumContextTokens,
+                            maximumChunkTokens: admission.memoryProfile.maximumChunkTokens, quantization: kvQuantization)
                     }
                     if batch.batching, loaded.loaded.kvHost.host == nil {
                         throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
                     }
                     let maximum = try loaded.requestAllowance(plan: admission.plan,
-                        rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
-                        chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
+                        rank: collective.rank, maximumTokens: admission.memoryProfile.maximumContextTokens,
+                        chunkSize: admission.memoryProfile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
                     try configuration.allocatorPolicy.prepareReady(
                         synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                         snapshot: {
@@ -305,12 +305,12 @@ extension QwenResidentRuntime {
                         }, clearCache: { Memory.clearCache() }, check: checked)
                     let prefill = try QwenResidentPrefillSelection.allowance(
                         QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
-                        promptCount: admission.profile.maximumPromptTokens, chunkSize: admission.profile.maximumChunkTokens,
+                        promptCount: admission.memoryProfile.maximumPromptTokens, chunkSize: admission.memoryProfile.maximumChunkTokens,
                         hiddenSize: admission.profile.hiddenSize,
                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                         bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
-                        stage: loaded, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens,
+                        stage: loaded, rank: collective.rank, promptCount: admission.memoryProfile.maximumPromptTokens,
                         speculativeTerms: speculativeTerms)
                     // The gate at load: the largest context this Mac admits now,
                     // with the stage resident. Refused only below the smallest
@@ -324,7 +324,7 @@ extension QwenResidentRuntime {
                     log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
                         + " room_bytes=\(admitted.roomBytes)")
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.runtimeModelID)"
-                        + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.contextTokens)"
+                        + " limit=\(admission.memoryProfile.maximumContextTokens) admitted=\(admitted.contextTokens)"
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
                         + " transient_at_admitted=\(admitted.allowance.transientBytes)")
                     try checked()

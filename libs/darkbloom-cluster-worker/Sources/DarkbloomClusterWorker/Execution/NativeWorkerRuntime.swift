@@ -129,8 +129,17 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()
         case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
-        case .qwenTensorParallel, .mimoV26, .glm5Next: nil
+        // Nil for a row whose profile is its memory plan.
+        case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
+        case .mimoV26, .glm5Next: nil
         }
+    }
+    /// Qwen tensor parallel's lanes re-derive their serving context on a
+    /// keep-warm answer too (a row that serves its native context); every
+    /// other lane owner keeps the one its readiness reported.
+    func refreshLaneServingContext() -> Int? {
+        guard case .qwenTensorParallel(let runtime) = owner else { return nil }
+        return runtime.refreshServingContext()
     }
     // Batch lanes are supplied by each admitted native owner.
     var batchLanes: Int {

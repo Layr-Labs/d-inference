@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLMCommon
@@ -107,10 +108,13 @@ struct CBv2StageKVAllowanceTests {
         }
         let old = try pages(32_768), full = try pages(65_536), lastPage = try pages(65_535)
         #expect(full == 2 * old && lastPage == full)
+        // Each profile holds its requests to its own context (a native row's
+        // past 65,536 tokens); the estimate is bounded by the wire's.
         for (_, geometry) in try Self.geometries {
+            _ = try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 262_144, chunkSize: 512)
             #expect(throws: (any Error).self) {
                 _ = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-                    maximumTokens: 65_537, chunkSize: 512)
+                    maximumTokens: ClusterWorkerLimits.wireContextTokens + 1, chunkSize: 512)
             }
         }
     }

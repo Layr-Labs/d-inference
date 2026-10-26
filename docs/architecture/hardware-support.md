@@ -294,6 +294,29 @@ On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
   advertised capacity do not change. A lower live transient shows up only
   through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
 
+### Gemma 4 dispatch qualification
+
+The [Gemma 4 native dispatch change](inference.md#gemma-4-native-dispatch)
+uses the existing scoped command-buffer policy with `operations: 100` and
+`megabytes: 512` for eligible GPU models. Despite the second API field's name,
+the current MLX backend counts distinct input elements in units of 2^20, not
+bytes; both thresholds are checked after a primitive. They are submission
+heuristics, not memory caps. Later submission can retain resources longer, so
+the provider's OS reserve, activation floor, LOAD quotation, KV grants, admission
+and memory-pressure safeguards remain unchanged. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`
+(`Gemma4DecodeCommandBuffers`),
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`
+(`CommandEncoder::set_input_array`, `CommandEncoder::needs_commit`).
+
+The linked endpoint screen measured repeat RSS of about 16.269 GiB for the
+candidate and 16.266 GiB for the baseline. The first candidate leg's lifetime
+physical-footprint peak included a cold prewarm and reached 20.06 GiB, versus
+17.54 GiB in the later warmed candidate leg. This is not a matched warm peak-memory
+comparison, and the endpoint did not expose MLX allocator peak. These results
+do not qualify lower reserves, higher admission limits, other chipsets or
+clustered execution.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage

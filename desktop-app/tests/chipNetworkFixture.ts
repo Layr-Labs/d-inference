@@ -45,3 +45,24 @@ export function chipNetwork(): NetworkData {
     },
   };
 }
+
+// Macs with this fixture's chip have rows only for a model too large for the pool's Mac and for
+// one that paid them nothing, so no model this Mac can serve has per-chip earnings.
+export function uncoveredChipNetwork(): NetworkData {
+  const network = chipNetwork();
+  const earnings = network.model_earnings!;
+  return {
+    model_earnings: {
+      ...earnings,
+      models: earnings.models.map((model) => ({
+        ...model,
+        by_chip:
+          model.id === 'kimi-k2.6'
+            ? [...model.by_chip!, row('Apple M4 Max', 3, '2000000', '2500000')]
+            : model.by_chip!.filter(
+                (entry) => entry.chip !== 'Apple M4 Max' || model.id === 'qwen-3.6-35b',
+              ),
+      })),
+    },
+  };
+}

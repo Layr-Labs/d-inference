@@ -418,9 +418,11 @@ from a first install, and cancels a link in progress.
     for this Mac's chip (`Machine.chip`, `by_chip_window: "24h"`), rank by what
     Macs with that chip earned per day from each model, the median then the mean,
     keeping models whose mean is above zero (`chipEarnings`, `recommendedModels` in
-    `desktop-app/src/renderer/features/models/recommendations.ts`). Otherwise rank
-    by the seven-day network totals. `downloads` contains only chosen models
-    missing from disk. Swift completes downloads before enrollment.
+    `desktop-app/src/renderer/features/models/recommendations.ts`). Otherwise,
+    including when those rows recommend no model this Mac can serve
+    (`chipRanking`), rank by the seven-day network totals and say so. `downloads`
+    contains only chosen models missing from disk. Swift completes downloads
+    before enrollment.
   - `models` is the startup selection: the pins or one chosen model. Other cached
     network models are verified and enrolled without pinning or loading all three
     together. Without ranking data, the existing single-model start remains available.

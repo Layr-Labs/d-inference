@@ -11,6 +11,7 @@ import { useStartServing } from './useStartServing';
 import styles from './startServing.module.css';
 import {
   chipEarnings,
+  chipRanking,
   networkEarnings,
   recommendedModels,
 } from '../../features/models/recommendations';
@@ -61,7 +62,10 @@ export function StartServing({
   const text = copy[method];
   const pins = usablePins(snapshot, pinned);
   const network = networkEarnings(backend.network);
-  const perChip = chipEarnings(backend.network, snapshot.machine.chip);
+  const perChip = chipRanking(
+    snapshot.models,
+    chipEarnings(backend.network, snapshot.machine.chip),
+  );
   const recommended =
     method === 'autopilot' && !pins.length
       ? recommendedModels(snapshot.models, network, perChip)

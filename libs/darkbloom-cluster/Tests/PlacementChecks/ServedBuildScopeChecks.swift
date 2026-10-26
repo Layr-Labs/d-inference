@@ -168,8 +168,12 @@ private func checkServedBuildRegression(_ inputs: RetainedQwenInputs, golden: UR
     }
     let stampedFile = try write(JSONSerialization.data(withJSONObject: stamped, options: [.sortedKeys]), "served-stamped.json")
     let served = try ClusterPlacementTool.servedEntries([fixture.path], ranks: nil)
-    checks.require("served build regression: the leader's file reads as \(served.count) speed records of the pair, none naming a build",
-        served.count == records.count && served.allSatisfy { $0.setup.ranks == ["m3", "m5"] && $0.setup.rankBuildSHA256 == nil })
+    // Every record of the file completed cold and alone; those that answered fewer tokens than a speed record has
+    // (`ClusterServedSpeedRule`: the pair's 7-token prefill probes, its short chats) are probe-sized and no sample.
+    let speedRecords = records.filter { ($0["completionTokens"] as! Int) >= ClusterServedSpeedRule.minimumCompletionTokens }.count
+    checks.require("served build regression: the leader's file reads as \(served.count) speed records of the pair, none naming a build; its \(records.count - speedRecords) probe-sized answers are none",
+        served.count == speedRecords && speedRecords == 184 && records.count == 293
+            && served.allSatisfy { $0.setup.ranks == ["m3", "m5"] && $0.setup.rankBuildSHA256 == nil && $0.sample.outputTokens >= 64 })
 
     let probed = try plan([])
     let asCurrent = try plan(["--served", stampedFile, "--served-build", current])
@@ -182,15 +186,15 @@ private func checkServedBuildRegression(_ inputs: RetainedQwenInputs, golden: UR
             && asCurrent.lines.contains { $0.contains("pipeline_v1 cut 0-60|60-64 (m3, m5)") })
     checks.require("served build regression: as they are (no build), the records are ignored and the plan is byte for byte the one on the probes alone (got \(fixed.shares))",
         fixed.shares == probed.shares && fixed.result == probed.result)
-    checks.require("served build regression: the plan says in one line why the \(records.count) records were not used",
+    checks.require("served build regression: the plan says in one line why the \(speedRecords) speed records were not used",
         fixed.lines.contains("Speed records from served requests")
-            && fixed.lines.contains("  \(records.count) record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build cccccccccccc)")
+            && fixed.lines.contains("  \(speedRecords) record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build cccccccccccc)")
             && !fixed.lines.contains { $0.contains("request(s) ->") })
     checks.require("served build regression: with no --served-build the tool cannot know the build and uses none of the records, and says so",
-        unnamed.result == probed.result && unnamed.lines.contains { $0.contains("\(records.count) record(s) ignored") && $0.contains("no --served-build") })
+        unnamed.result == probed.result && unnamed.lines.contains { $0.contains("\(speedRecords) record(s) ignored") && $0.contains("no --served-build") })
     let otherBuild = try plan(["--served", stampedFile, "--served-build", buildB])
     checks.require("served build regression: records another build served are ignored by a plan for this one",
-        otherBuild.result == probed.result && otherBuild.lines.contains { $0.hasPrefix("  \(records.count) record(s) from other worker builds ignored") })
+        otherBuild.result == probed.result && otherBuild.lines.contains { $0.hasPrefix("  \(speedRecords) record(s) from other worker builds ignored") })
     checks.refuses("served build regression: --served-build must be a build's SHA-256", because: "--served-build is a worker build's SHA-256") {
         _ = try plan(["--served", fixture.path, "--served-build", "c41"])
     }
@@ -207,6 +211,7 @@ private func checkServedBuildRegression(_ inputs: RetainedQwenInputs, golden: UR
     }
     let routed = (try route(["--served", stampedFile, "--served-build", current]), try route(["--served", fixture.path, "--served-build", current]),
                   try route(["--served", stampedFile]))
-    checks.require("served build regression: the route prices the pipeline from this build's six records only (got \(routed))",
-        routed == (6, 0, 0))
+    // The pipeline at cut 60 served six requests; four answered 7 to 26 tokens.
+    checks.require("served build regression: the route prices the pipeline from this build's two speed records of it only (got \(routed))",
+        routed == (2, 0, 0))
 }

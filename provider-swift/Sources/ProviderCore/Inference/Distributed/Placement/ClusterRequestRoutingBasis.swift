@@ -5,7 +5,8 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 
 /// The device profiles of a pair's members as the last plan read them (each
-/// Mac's `darkbloom-cluster-plan device --json --index`), by member ID, in
+/// Mac's `darkbloom-cluster-plan device --json` with its speed index,
+/// `ClusterLocalDeviceProfile`), by member ID, in
 /// `~/.darkbloom/cluster/member-profiles.json` (owner-only). Planning writes
 /// it, whichever way it ran (the guided flow, `darkbloom cluster plan`); the
 /// serving leader reads it to price each request's route. System facts only:

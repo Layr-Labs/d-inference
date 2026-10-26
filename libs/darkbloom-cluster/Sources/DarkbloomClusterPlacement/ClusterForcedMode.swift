@@ -45,6 +45,7 @@ extension ClusterLinkCosts {
     func assumingForcedReduction() -> ClusterLinkCosts {
         guard reduction?.keyed != true else { return self }
         return .init(measured: measured, perChunkSeconds: perChunkSeconds, perDecodeStepSeconds: perDecodeStepSeconds,
-            handoffSecondsPerByte: handoffSecondsPerByte, provenance: provenance, reduction: ClusterForcedMode.assumedReduction)
+            handoffSecondsPerByte: handoffSecondsPerByte, provenance: provenance, reduction: ClusterForcedMode.assumedReduction,
+            recordFixedSeconds: recordFixedSeconds)
     }
 }

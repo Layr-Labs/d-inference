@@ -28,6 +28,9 @@ public enum ClusterPlacementFlow {
         /// The metadata helper must return this exact inventory and depth.
         public var tensorAssistant: ClusterQwenTensorAssistantPolicy? = nil
         public var regime = ClusterPlacementPolicy.Regime.rested
+        /// A model is loaded or loading on this Mac now (`ClusterService.modelLoaded()`): this Mac's profile then
+        /// carries the speed index it last measured instead of measuring one beside the model (`ClusterLocalDeviceProfile`).
+        public var modelLoaded = false
         /// A new directory for the two setups and the plan, created owner-only.
         public var output: URL
         public init(pairDescription: URL, capability: URL, capabilitySHA256: String, localMemberID: String,

@@ -325,26 +325,47 @@ public struct ClusterDeviceSpeed: Codable, Equatable, Sendable {
 /// and the framing, not of a model or a Mac. Measured across the link.
 public struct ClusterLinkCosts: Codable, Equatable, Sendable {
     public let measured: Bool
-    /// Added to the first token per prompt chunk and hop.
+    /// A prompt chunk's hop when the records' fixed part is not known
+    /// (`chunkHopSeconds`): the probe's one large record, as a link an
+    /// earlier build wrote priced every hop.
     public let perChunkSeconds: Double
     /// Added to every decode step, by generation mode.
     public let perDecodeStepSeconds: [String: Double]
-    /// Hand-off after the first token under a phase split: seconds per byte of state.
+    /// Hand-off after the first token under a phase split: seconds per byte of
+    /// state. The per-byte slope of a one-way record between the probe's two
+    /// record sizes, which also prices a prompt chunk's hop.
     public let handoffSecondsPerByte: Double
     public let provenance: String
     /// One reduction of two ranks' tensor-parallel partials, when measured
     /// (`ClusterReductionCost`). Nil: no tensor-parallel mode is predicted.
     public let reduction: ClusterReductionCost?
+    /// A one-way record's fixed part: the probe's small record less its bytes
+    /// at the records' per-byte slope (`handoffSecondsPerByte`). Nil in a link
+    /// an earlier build wrote or one constructed without it (omitted then, so
+    /// such a link encodes as before): its every chunk hop is `perChunkSeconds`.
+    public let recordFixedSeconds: Double?
 
     public init(measured: Bool, perChunkSeconds: Double, perDecodeStepSeconds: [String: Double],
-                handoffSecondsPerByte: Double, provenance: String, reduction: ClusterReductionCost? = nil) {
+                handoffSecondsPerByte: Double, provenance: String, reduction: ClusterReductionCost? = nil,
+                recordFixedSeconds: Double? = nil) {
         self.measured = measured; self.perChunkSeconds = perChunkSeconds
         self.perDecodeStepSeconds = perDecodeStepSeconds; self.handoffSecondsPerByte = handoffSecondsPerByte
-        self.provenance = provenance; self.reduction = reduction
+        self.provenance = provenance; self.reduction = reduction; self.recordFixedSeconds = recordFixedSeconds
     }
 
     public static let unmeasured = ClusterLinkCosts(measured: false, perChunkSeconds: 0, perDecodeStepSeconds: [:],
         handoffSecondsPerByte: 0, provenance: "not measured: transfers are counted as free, so pipeline decode is an upper bound")
+
+    /// One prompt chunk's hop across a cut: the `bytes` that cross (the
+    /// chunk's rows of the residual, `ClusterModelLayout.boundaryBytesPerToken`
+    /// each) at the records' per-byte slope, plus a record's fixed part, both
+    /// from the probe's two record sizes. A GLM chunk crosses 2,048 x 32,768 B
+    /// = 64 MiB, sixteen times the probe's 4 MiB record, which priced every hop
+    /// before. Without the fixed part (an earlier link): `perChunkSeconds`.
+    public func chunkHopSeconds(bytes: Int) -> Double {
+        guard let fixed = recordFixedSeconds else { return perChunkSeconds }
+        return fixed + Double(max(0, bytes)) * handoffSecondsPerByte
+    }
 }
 
 /// Turns what has been measured into one speed per device, most trusted
@@ -459,8 +480,9 @@ extension ClusterLinkCosts {
     /// decode step pays two one-way small records (the step's hand-off and the
     /// token back), or `servedPipelineStepSeconds` when the pair served the
     /// pipeline and its owner derived the step's link share from that; a
-    /// prefill chunk's hop one large record; a hand-off the records' per-byte
-    /// slope. Nil for a malformed probe. Nothing here is per chip or per model.
+    /// prefill chunk's hop its bytes on the line through the two record sizes
+    /// (`chunkHopSeconds`); a hand-off the records' per-byte slope. Nil for a
+    /// malformed probe. Nothing here is per chip or per model.
     public init?(probe: ClusterWorkerLinkProbe, measuredUTC: String, servedPipelineStepSeconds: Double? = nil) {
         guard probe.valid, servedPipelineStepSeconds.map({ $0.isFinite && $0 >= 0 && $0 < 10 }) ?? true else { return nil }
         let us = 1e-6
@@ -469,6 +491,7 @@ extension ClusterLinkCosts {
         let fixed = max(0, Double(probe.allSumSmallMicroseconds) * us - Double(probe.allSumSmallBytes) * slope)
         let recordSlope = max(0, Double(probe.pointToPointLargeMicroseconds - probe.pointToPointSmallMicroseconds) * us
             / Double(probe.pointToPointLargeBytes - probe.pointToPointSmallBytes))
+        let recordFixed = max(0, Double(probe.pointToPointSmallMicroseconds) * us - Double(probe.pointToPointSmallBytes) * recordSlope)
         let step = servedPipelineStepSeconds ?? 2 * Double(probe.pointToPointSmallMicroseconds) * us
         let provenance = "measured at load over \(probe.transport) (\(probe.keyed ? "keyed, sealed all-sums" : "plaintext"))"
             + " at \(measuredUTC): all-sum \(probe.allSumSmallMicroseconds) us at \(probe.allSumSmallBytes) B and"
@@ -479,6 +502,7 @@ extension ClusterLinkCosts {
             perDecodeStepSeconds: Dictionary(uniqueKeysWithValues: ClusterGenerationMode.allCases
                 .filter { !$0.usesTensorParallelPrefill }.map { ($0.rawValue, step) }),
             handoffSecondsPerByte: recordSlope, provenance: String(provenance.prefix(1024)),
-            reduction: .init(fixedSeconds: fixed, secondsPerByte: slope, keyed: probe.keyed, provenance: String(provenance.prefix(1024))))
+            reduction: .init(fixedSeconds: fixed, secondsPerByte: slope, keyed: probe.keyed, provenance: String(provenance.prefix(1024))),
+            recordFixedSeconds: recordFixed)
     }
 }

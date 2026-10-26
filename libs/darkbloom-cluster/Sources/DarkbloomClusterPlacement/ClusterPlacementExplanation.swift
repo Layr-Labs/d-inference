@@ -107,6 +107,11 @@ public enum ClusterPlacementExplanation {
             + (layout.structuralCuts == layout.admittedCuts ? "." : "; its stage plan could cut at \(cuts(layout.structuralCuts))."))
         lines.append("  Modes: \(layout.generationModes.map(\.rawValue).joined(separator: ", ")). "
             + "Largest request: \(layout.maximumPromptTokens) prompt and \(layout.maximumOutputTokens) output tokens.")
+        if let head = layout.tensorParallel?.speculativeHead(mode: .tensorParallel, layout: layout) {
+            lines.append("  Tensor parallel decodes in speculative rounds of up to \(head.plan.depth) proposals: every rank holds the model's head "
+                + "whole (\(gibText(head.part.loadedBytes))) and \(gibText(head.plan.requestBytes)) of its request state, and decode is credited "
+                + "\(number(head.plan.decodeSpeedup, 2))x one token per step, as the rounds measured.")
+        }
         return lines
     }
 

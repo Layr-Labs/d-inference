@@ -123,6 +123,35 @@ struct ClusterObservabilityTests {
         #expect(!shared.isSpeedRecord && ClusterServedSpeedFile.adding(shared, to: []).isEmpty)
     }
 
+    /// Probe-sized requests never steer a plan (`ClusterServedSpeedRule`): every request Darkbloom sends to check a
+    /// pair asks for fewer answer tokens than a speed record has (the warm-up canary, the setup's check and the
+    /// onboarding's test answer), and a record of one, written by an earlier build, is no speed record when the
+    /// leader's history is read back for a plan or a route.
+    @Test func darkbloomsOwnProbesAreNeverSpeedRecords() throws {
+        let minimum = ClusterServedSpeedRule.minimumCompletionTokens
+        let probes = [ProviderLoop.clusterWarmupMaxTokens, ClusterSetupState.checkTokens, ClusterService.testAnswerTokens]
+        #expect(minimum == 64 && probes == [8, 8, 48] && probes.allSatisfy { $0 < minimum })
+        func record(_ id: String, _ tokens: Int) -> ClusterPairRequestTelemetry {
+            .init(requestID: id, finishedAt: Date().timeIntervalSince1970, modelID: "fixture-model", mode: "tensor_parallel_v1",
+                cut: "0-45|0-45", promptTokens: 30, cachedTokens: 0, completionTokens: tokens, firstTokenMilliseconds: 200,
+                decodeTokensPerSecond: 40, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
+                outcome: "length", ranks: ["a", "b"], concurrentRequests: 0,
+                rankBuildSHA256: [String(repeating: "a", count: 64), String(repeating: "a", count: 64)])
+        }
+        #expect(probes.allSatisfy { !record("p", $0).isSpeedRecord } && record("f", minimum).isSpeedRecord)
+        // A file an earlier build kept, with its probes among the speed records: read back, only the full answer counts.
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let kept = [record("canary", 8), record("probe", 16), record("test", 48), record("chat", 128)]
+        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
+            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(kept))]
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        let entries = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        #expect(entries.map(\.sample.outputTokens) == [128])
+    }
+
     /// A request whose end was lost (an overflowing sink drops observations) stops counting against later ones.
     @Test func aLostEndDoesNotMarkEveryLaterRequest() {
         let now = LockedClock(1_000)

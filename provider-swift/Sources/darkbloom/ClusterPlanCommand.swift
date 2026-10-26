@@ -52,6 +52,7 @@ extension Cluster {
             inputs.speedMeasurements = speed.map { URL(fileURLWithPath: $0) }
             inputs.promptTokens = promptTokens; inputs.outputTokens = outputTokens
             inputs.regime = sustained ? .sustained : .rested
+            inputs.modelLoaded = ClusterService.modelLoaded()
             let outcome = try ClusterPlacementFlow.run(inputs, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
             for line in outcome.lines { print(line) }
             if outcome.setup == nil { throw ExitCode(2) }

@@ -74,7 +74,7 @@ import Foundation
         let tool = """
             #!/bin/sh
             case "$1" in
-              device) exec /bin/cat "\(root.path)/local-profile.json" ;;
+              device) echo "$*" >> "\(root.path)/device-calls.txt"; exec /bin/cat "\(root.path)/local-profile.json" ;;
               layout) [ "$3" = /Users/fixture/model ] && exec /bin/cat "\(root.path)/layout.json" ;;
               request-scope) [ "$3" = /Users/fixture/model ] && [ "$4" = --prompt-tokens ] && [ "$6" = --output-tokens ] && exec /bin/cat "\(root.path)/scope-$5-$7.json" ;;
             esac
@@ -115,6 +115,18 @@ import Foundation
         require("the printed lines say what was detected, what each Mac holds and what happens next",
             outcome.lines.contains("What each Mac detected") && outcome.lines.contains { $0.contains("While the session is up") }
                 && outcome.lines.contains("What happens next") && outcome.lines.contains { $0.contains("Wrote a setup for each Mac") })
+        func deviceCalls() -> [String] {
+            ((try? String(contentsOf: root.appendingPathComponent("device-calls.txt"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        }
+        require("with no model loaded here, this Mac's profile measures its speed index", deviceCalls() == ["device --json --index"])
+        var beside = ClusterPlacementFlow.Inputs(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+            localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent("beside-out"))
+        beside.modelLoaded = true
+        let besideOutcome = try ClusterPlacementFlow.run(beside, deadline: deadline())
+        require("beside a loaded model the step plans the same and runs no GPU benchmark",
+            besideOutcome.setup != nil && besideOutcome.result.chosen?.cuts == outcome.result.chosen?.cuts
+                && deviceCalls() == ["device --json --index", "device --json"])
 
         // The leader's served-speed file, as the product writes it: records of this pair and model from before builds
         // were recorded (no `rankBuildSHA256`), from another worker build, and from the build the pair description
@@ -130,10 +142,13 @@ import Foundation
             if let builds { record["rankBuildSHA256"] = builds }
             return record
         }
-        let stale = (0..<3).map { served("old-\($0)", prompt: 4_000, output: 20, builds: nil) }
-            + (0..<2).map { served("other-\($0)", prompt: 4_000, output: 20, builds: [hash("9"), hash("9")]) }
+        let stale = (0..<3).map { served("old-\($0)", prompt: 4_000, output: 64, builds: nil) }
+            + (0..<2).map { served("other-\($0)", prompt: 4_000, output: 64, builds: [hash("9"), hash("9")]) }
         let current = [(64, 100), (128, 120), (96, 110)].enumerated().map { served("now-\($0.offset)", prompt: $0.element.0,
             output: $0.element.1, builds: [hash("a"), hash("a")]) }
+        // Darkbloom's own checks of the pair (the warm-up canary's 8 tokens, the onboarding's 48-token test answer), as
+        // an earlier build kept them: probe-sized (`ClusterServedSpeedRule`), so neither a speed nor a request length.
+        let probes = [8, 48].map { served("probe-\($0)", prompt: 30, output: $0, builds: [hash("a"), hash("a")]) }
         let servedFile = cluster.appendingPathComponent("served-speed.json")
         func writeServed(_ records: [[String: Any]]) throws {
             try JSONSerialization.data(withJSONObject: ["schema": "darkbloom_served_speed_v1", "updatedAt": 1_792_900_001,
@@ -144,7 +159,7 @@ import Foundation
             try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
                 localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent(name)), deadline: deadline())
         }
-        try writeServed(stale + current)
+        try writeServed(stale + current + probes)
         let scoped = try planned("served-out")
         let ignoredLine = "  5 record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build aaaaaaaaaaaa)"
         require("the step reads the leader's served-speed file and calibrates this build's three records only",

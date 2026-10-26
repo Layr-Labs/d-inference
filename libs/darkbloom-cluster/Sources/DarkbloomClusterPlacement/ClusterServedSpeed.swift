@@ -391,6 +391,9 @@ public enum ClusterServedCalibration {
         guard !pair.isEmpty else { return [] }
         var policy = ClusterPlacementPolicy()
         let reductionStep = tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true, reduction: reduction)
+        // Served and predicted alike decode in the head's rounds (`ClusterTensorParallelSpeculativeHead`): over its
+        // speed-up, a token's time is the one-token step that the shares and the reductions make up.
+        let speedup = tp.speculativeHead(mode: placement.mode, layout: layout)?.plan.decodeSpeedup ?? 1
         var decodeFactors: [Double] = [], prefillFactors: [Double] = []
         for s in pair {
             policy.promptTokens = s.promptTokens; policy.outputTokens = max(1, s.outputTokens)
@@ -398,8 +401,8 @@ public enum ClusterServedCalibration {
                 prefillSchedule: placement.schedule, layout: layout, policy: policy, link: placement.link,
                 tensorShares: placement.tensorShares).rested
             if let observed = s.decodeTokensPerSecond {
-                let compute = 1 / predicted.decodeTokensPerSecond - reductionStep
-                if compute > 0 { decodeFactors.append(max(1e-6, 1 / observed - reductionStep) / compute) }
+                let compute = speedup / predicted.decodeTokensPerSecond - reductionStep
+                if compute > 0 { decodeFactors.append(max(1e-6, speedup / observed - reductionStep) / compute) }
             }
             if placement.mode.usesTensorParallelPrefill {
                 prefillFactors.append(s.firstTokenSeconds / predicted.firstTokenSeconds)

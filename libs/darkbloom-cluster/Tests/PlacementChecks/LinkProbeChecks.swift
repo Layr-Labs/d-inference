@@ -38,7 +38,7 @@ private func checkProbeHistory(_ checks: PlacementChecks) throws {
     func figures(_ c: ClusterLinkCosts?) -> [Double] {
         guard let c, let r = c.reduction else { return [] }
         return [r.fixedSeconds, r.secondsPerByte, c.perChunkSeconds, c.handoffSecondsPerByte,
-                c.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? -1]
+                c.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? -1, c.recordFixedSeconds ?? -1]
     }
     func same(_ a: [Double], _ b: [Double]) -> Bool { a.count == b.count && !a.isEmpty && zip(a, b).allSatisfy { abs($0 - $1) <= 1e-12 * max(1, abs($1)) } }
     checks.require("link history: one load gives exactly that load's probe costs",
@@ -240,11 +240,30 @@ private func checkProbeCosts(_ checks: PlacementChecks) throws {
             && abs((costs.reduction?.secondsPerByte ?? 0) - perByte) < 1e-15
             && abs((costs.reduction?.seconds(bytes: 20_480) ?? 0) - 33e-6) < 1e-9
             && abs((costs.reduction?.seconds(bytes: 10_485_760) ?? 0) - 4_000e-6) < 1e-9)
-    checks.require("link probe: a pipeline decode step pays two one-way records; a chunk hop one large record",
+    checks.require("link probe: a pipeline decode step pays two one-way records; a record costs a fixed part and the records' per-byte slope",
         abs((costs.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0) - 40e-6) < 1e-9
             && abs((costs.perDecodeStepSeconds[ClusterGenerationMode.pipelineCompactDecode.rawValue] ?? 0) - 40e-6) < 1e-9
             && abs(costs.perChunkSeconds - 1_100e-6) < 1e-9
             && abs(costs.handoffSecondsPerByte - (1_100e-6 - 20e-6) / Double((4 << 20) - 64)) < 1e-15)
+    // A prefill chunk's hop is its bytes on the line through the probe's two records, not one large record whatever
+    // its size: a GLM chunk carries 2,048 x 32,768 B = 64 MiB, sixteen of the probe's 4 MiB records.
+    let recordFixed = 20e-6 - 64 * costs.handoffSecondsPerByte
+    checks.require("link probe: a record's fixed part is the small record less its bytes at the slope, so a 4 MiB hop costs the large record",
+        abs((costs.recordFixedSeconds ?? -1) - recordFixed) < 1e-15 && abs(costs.chunkHopSeconds(bytes: 4 << 20) - 1_100e-6) < 1e-12
+            && abs(costs.chunkHopSeconds(bytes: 64) - 20e-6) < 1e-12)
+    checks.require("link probe: a 64 MiB chunk hop costs the fixed part and 64 MiB at the slope, not the one 4 MiB record it was priced at",
+        abs(costs.chunkHopSeconds(bytes: 2_048 * 32_768) - (recordFixed + Double(64 << 20) * costs.handoffSecondsPerByte)) < 1e-12
+            && costs.chunkHopSeconds(bytes: 2_048 * 32_768) > 15 * costs.perChunkSeconds)
+    // A link an earlier build wrote (a `--link` file) has no fixed part: every hop stays its large record, and it
+    // encodes as it did.
+    let earlier = ClusterLinkCosts(measured: true, perChunkSeconds: costs.perChunkSeconds, perDecodeStepSeconds: costs.perDecodeStepSeconds,
+        handoffSecondsPerByte: costs.handoffSecondsPerByte, provenance: costs.provenance, reduction: costs.reduction)
+    let earlierJSON = try JSONEncoder().encode(earlier)
+    checks.require("link probe: a link without the records' fixed part prices every hop as its large record and encodes without the field",
+        earlier.chunkHopSeconds(bytes: 64 << 20) == costs.perChunkSeconds
+            && !String(decoding: earlierJSON, as: UTF8.self).contains("recordFixedSeconds")
+            && (try? JSONDecoder().decode(ClusterLinkCosts.self, from: earlierJSON)) == earlier
+            && (try? JSONDecoder().decode(ClusterLinkCosts.self, from: JSONEncoder().encode(costs))) == costs)
     checks.require("link probe: a served pipeline step overrides the probe's raw record time",
         ClusterLinkCosts(probe: probe, measuredUTC: "t", servedPipelineStepSeconds: 0.008)?
             .perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] == 0.008)

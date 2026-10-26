@@ -68,7 +68,9 @@ replaces the records' figure in the choice once the pair has served the same
 placement both with and without the rounds. Speeds the pair served count only
 for the Darkbloom build that served them: after an update, speeds an earlier
 build served no longer steer the plan (`darkbloom cluster plan` says how many
-records it left out).
+records it left out). A request that answers fewer than 64 tokens (the setup's
+test answer, a quick "Say hi") is not counted as a speed and does not shape
+the plan.
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
@@ -196,13 +198,16 @@ Check the printed mode and reason before starting. TP eligibility comes from
 the model's tensor layout, the runtime's advertised modes and supported rank
 counts; this check reads metadata and does not load the weights. TP does not
 require a pipeline layer cut. An unsupported model or rank count falls back
-to pipeline when eligible and fitting, without requesting a link measurement. For a compatible TP
-runtime, automatic selection still requires measured encrypted-link costs,
-memory fit and a predicted advantage over pipeline. A new pair without those
-link measurements uses an eligible fitting pipeline; a supported worker's first load records
-the measurements for later planning, and each later load adds one. Plans use the median of the
-pair's last eight measurements from the last 30 days, so one fast or slow load does not switch
-the mode. GLM currently has a pipeline adapter only.
+to pipeline when eligible and fitting, without requesting a link measurement.
+Where tensor parallel fits both Macs' memory as they are now, it is chosen,
+also on a new pair whose link no load has measured yet. A pipeline is chosen
+when only a pipeline fits now, and stays until the pair is planned again (`m`
+in `darkbloom cluster`, or after a Darkbloom update). Every load records the
+encrypted link's cost for later predictions; plans use the median of the
+pair's last eight measurements from the last 30 days. GLM-5.3 Flash on two M5
+Ultra 256 GB runs tensor parallel on equal shares with eight concurrent
+requests; the plan counts its NextN (MTP) layer on both Macs and its
+speculative decoding ([GLM tensor parallel](../architecture/inference.md#exact-quote-placement)).
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 
@@ -343,7 +348,10 @@ After a restart or power cut a Mac serves again once it is logged in. With
 automatic login on (System Settings → Users & Groups; needs FileVault off) that
 happens by itself; `darkbloom cluster` says which applies to each Mac. After a
 Darkbloom update, the cluster sets itself up again by itself ("Updating the
-cluster setup after a Darkbloom update.").
+cluster setup after a Darkbloom update."). The leader checks for an update
+every minute; while a Mac serves, those checks and any plan made then use the
+speed it measured while idle and never run a GPU benchmark beside the model
+([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
 
 ## When something is in the way
 

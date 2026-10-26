@@ -447,10 +447,12 @@ final class LiveContext: @unchecked Sendable {
         case .failure(let error):
             savedSetup = .init(state: .unreadable, error: ClusterConsoleText.bounded(error), configurationSHA256: nil, pairing: nil, model: nil, installed: nil)
         }
+        // A serving Mac answers the other Mac's update check every minute: no GPU benchmark beside its model.
         return ClusterSetupLocalReader.report(link: link, doctor: doctor.checks.map(ClusterSetupCheck.init), version: settings.version,
             saved: savedSetup, savedConfiguration: saved.configuration, inbox: inbox, description: input.description,
             localMemberID: input.pair?.memberID, overrides: overrides, journal: doctor.deviceJournal,
-            fallbackModelStore: modelsDirectory().map { URL(fileURLWithPath: $0) }).cleaned(clean)
+            fallbackModelStore: modelsDirectory().map { URL(fileURLWithPath: $0) },
+            modelLoaded: ClusterService.modelLoaded()).cleaned(clean)
     }
 
     /// The pinned route to the other Mac and where its installation is.
@@ -531,8 +533,8 @@ final class LiveContext: @unchecked Sendable {
         let deadline = { DispatchTime.now().uptimeNanoseconds + 15_000_000_000 }
         let localProfile: ClusterDeviceProfile
         do {
-            localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json", "--index"],
-                deadline: deadline(), maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+            localProfile = try ClusterLocalDeviceProfile.read(tool: tool, deadline: deadline(), homeDirectory: paths.homeDirectory,
+                modelLoaded: ClusterService.modelLoaded())
         } catch {
             return .failed("this Mac's plan tool did not answer: \(clean(ClusterConsoleText.bounded(error)))")
         }

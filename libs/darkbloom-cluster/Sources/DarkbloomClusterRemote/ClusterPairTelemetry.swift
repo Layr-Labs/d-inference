@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Darwin
 import Foundation
 
@@ -88,15 +89,24 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
-    /// A speed record: a completed request that computed its whole prompt
-    /// (nothing restored from a prefix cache), timed its first token, and had
-    /// the pair to itself. One that shared it with other requests ran at a
-    /// fraction of the pair's speed (eight lanes: 12 tok/s each where one
-    /// request alone decodes 90): the planner would take that for the mode's
-    /// speed and plan the next start away from it.
-    public var isSpeedRecord: Bool {
+    /// A completed request that computed its whole prompt (nothing restored
+    /// from a prefix cache), timed its first token, and had the pair to itself.
+    /// One that shared it with other requests ran at a fraction of the pair's
+    /// speed (eight lanes: 12 tok/s each where one request alone decodes 90):
+    /// the planner would take that for the mode's speed and plan the next start
+    /// away from it. The first such request a session serves on a route warms
+    /// that route, whatever its length (`ClusterPairTelemetryLog.record`).
+    var ranAloneCold: Bool {
         cachedTokens == 0 && (outcome == "stop" || outcome == "length") && firstTokenMilliseconds != nil && promptTokens > 0
             && (concurrentRequests ?? 0) == 0
+    }
+
+    /// A speed record: `ranAloneCold`, and an answer of at least
+    /// `ClusterServedSpeedRule.minimumCompletionTokens`, so a probe-sized
+    /// request (a readiness probe, the onboarding's test answer, a short chat)
+    /// never steers a plan.
+    public var isSpeedRecord: Bool {
+        ranAloneCold && completionTokens >= ClusterServedSpeedRule.minimumCompletionTokens
     }
 }
 
@@ -246,9 +256,11 @@ public final class ClusterPairTelemetryLog: @unchecked Sendable {
             // The first request a session serves on a route pays that path's
             // one-time costs (kernel builds, first allocations at its shapes):
             // seconds on the pair, which would make the route look slower than
-            // it serves. It stays in the telemetry, not in the speed records.
-            guard value.isSpeedRecord else { return }
-            guard warmedRoutes.insert(value.route ?? "pair").inserted == false else { return }
+            // it serves. It stays in the telemetry, not in the speed records,
+            // and warms the route even when it is too short to be one (the
+            // warm-up canary that opens every pair's admission).
+            guard value.ranAloneCold else { return }
+            guard warmedRoutes.insert(value.route ?? "pair").inserted == false, value.isSpeedRecord else { return }
             let history = file.deletingLastPathComponent().appendingPathComponent("served-speed.json")
             let kept = ClusterServedSpeedFile.read(history)?.records ?? []
             let updated = ClusterServedSpeedFile(schema: ClusterServedSpeedFile.schemaName, updatedAt: clock(),

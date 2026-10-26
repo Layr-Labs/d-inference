@@ -29,15 +29,18 @@ enum ClusterSetupLocalReader {
     }
 
     /// One report of this Mac. `doctor` and `version` come from the caller,
-    /// which has the whole provider.
+    /// which has the whole provider; so does `modelLoaded` (a model is loaded
+    /// or loading on this Mac: its profile then measures no speed index,
+    /// `ClusterLocalDeviceProfile`).
     static func report(link: ClusterLinkReadinessReport, doctor: [ClusterSetupCheck], version: String,
                        saved: ClusterConsoleSavedSetup, savedConfiguration: ClusterConfiguration?,
                        inbox: (summary: ClusterSetupSetupSummary?, configuration: ClusterConfiguration?, error: String?),
                        description: ClusterPairDescription?, localMemberID: String?, overrides: Installation = .init(),
-                       journal: ClusterDeviceJournalObservation, now: Date = Date(), fallbackModelStore: URL? = nil) -> ClusterSetupReport {
+                       journal: ClusterDeviceJournalObservation, now: Date = Date(), fallbackModelStore: URL? = nil,
+                       modelLoaded: Bool) -> ClusterSetupReport {
         let installation = installation(saved: savedConfiguration, inbox: inbox.configuration, description: description,
             localMemberID: localMemberID, overrides: overrides)
-        let mac = readMac(installation: installation)
+        let mac = readMac(installation: installation, modelLoaded: modelLoaded)
         let thunderbolt = readThunderbolt()
         var models = [ClusterSetupLocalModel](), modelsError: String?
         // With no setup naming a folder, the cluster's own model store (no `--model-dir` needed).
@@ -104,13 +107,14 @@ enum ClusterSetupLocalReader {
 
     // MARK: - Hardware
 
-    static func readMac(installation: Installation) -> ClusterSetupMac {
+    static func readMac(installation: Installation, modelLoaded: Bool,
+                        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> ClusterSetupMac {
         var profile: ClusterDeviceProfile?, profileError: String?
         if let worker = installation.workerExecutable {
             let tool = URL(fileURLWithPath: worker).deletingLastPathComponent().appendingPathComponent(ClusterPlacementFlow.toolName)
             do {
-                profile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json", "--index"],
-                    deadline: DispatchTime.now().uptimeNanoseconds + toolNanoseconds, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+                profile = try ClusterLocalDeviceProfile.read(tool: tool, deadline: DispatchTime.now().uptimeNanoseconds + toolNanoseconds,
+                    homeDirectory: homeDirectory, modelLoaded: modelLoaded)
             } catch {
                 profileError = "\(ClusterPlacementFlow.toolName) beside the worker: " + ClusterConsoleText.bounded(String(describing: error), maximum: 160)
             }

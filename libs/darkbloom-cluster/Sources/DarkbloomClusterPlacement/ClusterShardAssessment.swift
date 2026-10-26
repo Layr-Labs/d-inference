@@ -333,7 +333,7 @@ extension ClusterPlacementPlanner {
         let chunks = (context.prompt + chunk - 1) / chunk
         let slowest = prefill.max() ?? 0, sum = prefill.reduce(0, +)
         let first = Double(context.prompt) * slowest + Double(chunk) * (sum - slowest)
-            + Double(chunks * (stages.count - 1)) * context.link.perChunkSeconds
+            + Double(chunks * (stages.count - 1)) * context.link.chunkHopSeconds(bytes: chunk * layout.boundaryBytesPerToken)
         let step = decode.reduce(0, +) + (context.link.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0)
         return (members, tier, hardwareFits, .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
             prefillTokensPerSecond: Double(context.prompt) / first, decodeTokensPerSecond: 1 / step,

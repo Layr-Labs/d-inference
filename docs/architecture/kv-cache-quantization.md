@@ -1,6 +1,6 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-24
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints. Explicit live packed
@@ -37,7 +37,7 @@ Each encoded head stores older coded rows followed by its exact native recent
 band; it does not store a redundant packed mirror of that band. Recurrent,
 convolution and permitted auxiliary state remain native. The
 [SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)
-defines the four separate lossy layout identities and conversion bounds.
+defines the six separate lossy layout identities and conversion bounds.
 
 ```mermaid
 flowchart LR
@@ -64,11 +64,23 @@ rows are copied without numerical conversion.
 
 The effective storage profile can be native even when the request is
 `balanced`: unsupported dtype/geometry/profile, no eligible encoded owner,
-persistent assistant state, Qwen4 selected-index/QSA state, MiMo and
-native-block diffusion retain native encoding. Short windows and native-exempt
-owners stay native even when other owners are encoded. A stateless assistant
-does not itself exclude storage compression. Family and complete-cache
-eligibility checks still apply; fallback does not enable a previously unsupported cache.
+persistent assistant state (except exact assistant history, below), Qwen4
+selected-index/QSA state, MiMo and native-block diffusion retain native
+encoding. Short windows and native-exempt owners stay native even when other
+owners are encoded. A stateless assistant does not itself exclude storage
+compression. Family and complete-cache eligibility checks still apply; fallback
+does not enable a previously unsupported cache.
+
+An assistant whose checkpoint is its own state, never re-derived from stored
+target rows, declares `CBv2MTPExactHistoryPrefixCheckpointCoding`: the
+Nemotron Super and GLM5-Next MTP owners. Beside a paged recurrent target its
+tensors stay exact auxiliary state, as recurrent state does, in the distinct
+`native-paged-affine-checkpoint-full-recurrent-mtp-v1` layout
+(`CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget`). Every other
+persistent assistant (Qwen, Nemotron Lightning, MiMo) keeps native storage.
+GLM5-Next keeps its own full-state layout: a profile codes only the older
+latent rows, because its index/gate/validity row is not group-aligned and its
+KDA and MTP state are auxiliary (`resolveGLM5Next`).
 An explicitly live-packed pool retains its existing packed checkpoint format,
 including when the separate checkpoint request is `native` or another profile.
 Effective diagnostics describe that actual format, not the ignored request.

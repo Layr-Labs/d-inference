@@ -177,13 +177,6 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            // This refusal's fixed text names the accepted controls; the closed
-            // failure-code message alone would not tell the caller what to send.
-            if case .reasoningExclusionUnsupported? = error as? MultiModelBatchSchedulerEngineError {
-                return Self.openAIErrorResponse(
-                    status: status, message: GLM5NextPromptPolicy.reasoningExclusionUnsupportedMessage,
-                    code: "unsupported_value")
-            }
             return Self.openAIErrorResponse(status: status, message: failure.message)
         }
     }

@@ -12,6 +12,9 @@ import os
 public final class AtomicProviderStats: Sendable {
     private let _requestsServed = ManagedAtomic<UInt64>(0)
     private let _tokensGenerated = ManagedAtomic<UInt64>(0)
+    private let _promptTokensProcessed = ManagedAtomic<UInt64>(0)
+    private let _cachedInputTokens = ManagedAtomic<UInt64>(0)
+    private let _reasoningTokens = ManagedAtomic<UInt64>(0)
     private let _cancellationsReceived = ManagedAtomic<UInt64>(0)
     private let _cancellationsBeforeOutput = ManagedAtomic<UInt64>(0)
     private let _cancellationsPartialComplete = ManagedAtomic<UInt64>(0)
@@ -117,6 +120,18 @@ public final class AtomicProviderStats: Sendable {
         _requestsServed.add(1)
     }
 
+    /// Includes cached prompt tokens; output usage already contains reasoning.
+    public var promptTokensProcessed: UInt64 { _promptTokensProcessed.load() }
+
+    public func addPromptTokensProcessed(_ count: UInt64) {
+        _promptTokensProcessed.add(count)
+    }
+
+    public var cachedInputTokens: UInt64 { _cachedInputTokens.load() }
+    public var reasoningTokens: UInt64 { _reasoningTokens.load() }
+    public func addCachedInputTokens(_ count: UInt64) { _cachedInputTokens.add(count) }
+    public func addReasoningTokens(_ count: UInt64) { _reasoningTokens.add(count) }
+
     public func addTokensGenerated(_ count: UInt64) {
         _tokensGenerated.add(count)
     }
@@ -187,6 +202,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _backendCapacity: BackendCapacity? = nil
     private var _modelAutopilot: ModelAutopilotSnapshot? = nil
     private var _autopilotInventory: [ModelInfo]? = nil
+    private var _registeredAutopilotInventoryIDs: Set<String>? = nil
     private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
@@ -227,9 +243,25 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _currentModelHash = newValue } }
     }
 
-    var autopilotInventory: [ModelInfo]? {
-        get { lock.withLock { _autopilotInventory } }
-        set { lock.withLock { _autopilotInventory = newValue } }
+    /// One Autopilot state and the inventory built with it. A registration
+    /// reads both at once, so its inventory always matches the
+    /// `selected_models` it is filtered by.
+    func publishModelAutopilot(_ snapshot: ModelAutopilotSnapshot, inventory: [ModelInfo]) {
+        lock.withLock {
+            _modelAutopilot = snapshot
+            _autopilotInventory = inventory
+        }
+    }
+
+    var modelAutopilotRegistration: (snapshot: ModelAutopilotSnapshot?, inventory: [ModelInfo]?) {
+        lock.withLock { (_modelAutopilot, _autopilotInventory) }
+    }
+
+    /// Autopilot inventory IDs the last registration actually carried; nil
+    /// before the first.
+    var registeredAutopilotInventoryIDs: Set<String>? {
+        get { lock.withLock { _registeredAutopilotInventoryIDs } }
+        set { lock.withLock { _registeredAutopilotInventoryIDs = newValue } }
     }
 
     public var modelAutopilot: ModelAutopilotSnapshot? {

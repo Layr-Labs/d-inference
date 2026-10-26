@@ -10,8 +10,6 @@ VERSION = "budgeted-v3"
 SONNET = "anthropic/claude-sonnet-5.5"
 OPUS = "anthropic/claude-opus-5.5"
 SOL = "openai/gpt-6.1-sol"
-RISK = re.compile(r"auth|attest|encrypt|crypt|billing|payment|ledger|mdm|enroll|secret|token|permission|\.github/", re.I)
-CRITICAL = re.compile(r"attest|encrypt|crypt|\.github/workflows/", re.I)
 
 
 def digest(value):

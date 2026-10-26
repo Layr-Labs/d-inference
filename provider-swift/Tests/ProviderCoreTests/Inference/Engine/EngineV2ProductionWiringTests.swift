@@ -155,7 +155,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
 /// Never forward-passed: the slot-build tests run with hooks installed
 /// (container snapshot skipped) and the routing tests never touch it.
 private final class WiringStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
@@ -309,7 +310,7 @@ private func recordServerStream(
             events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
-        case .toolCall:
+        case .toolCall, .toolCallDelta:
             continue
         }
     }
@@ -1305,7 +1306,7 @@ struct EngineV2RequestRoutingTests {
     /// prompt tail, backed by a scripted close-only (Qwen3.6-style)
     /// thinking stream.
     private func makeThinkProbeEngine(
-        decodedTail: String
+        decodedTail: String, modelType: String = "qwen3_next"
     ) -> (WiringScriptedEngine, MultiModelBatchSchedulerEngine) {
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "step one ", tokens: [10], logprobs: nil),
@@ -1319,7 +1320,7 @@ struct EngineV2RequestRoutingTests {
                     "qwen3.6-test": .init(
                         tokenizer: TokenizerHandle(
                             WiringStubTokenizer(decodeOverride: decodedTail)),
-                        modelType: "qwen3_next",
+                        modelType: modelType,
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1360,6 +1361,33 @@ struct EngineV2RequestRoutingTests {
         let stream = try await providerEngine.streamChatCompletion(request: request)
         let events = try await recordServerStream(stream)
         #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain tail keeps close-only Qwen output undecided", arguments: ["qwen3_5", "qwen3_5_moe"])
+    func plainPromptTailKeepsCloseOnlyQwenUndecided(modelType: String) async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: modelType)
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain Qwen3-VL Instruct tail seeds content state ahead of output")
+    func plainQwen3VLPromptTailSeedsContent() async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: "qwen3_vl_moe")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("<think></think>"))
+        #expect(events.dropFirst().first == .content("step one "))
     }
 
     @Test("no injection for a non-think reasoning parser even with a pre-opened tail")

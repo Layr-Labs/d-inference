@@ -69,7 +69,11 @@ final class GLM5NextRealModelHarness: @unchecked Sendable {
             attributes: [.posixPermissions: 0o700])
     }
 
-    func load(concurrency: Int = 1, ssd: Bool = false) async throws {
+    /// `checkpointQuantization` is the slot's checkpoint precision request; the
+    /// store's effective profile is resolved from it as in production.
+    func load(concurrency: Int = 1, ssd: Bool = false, checkpointQuantization: String = "native")
+        async throws
+    {
         try #require(container == nil && session == nil)
         try #require((1...4).contains(concurrency))
         try #require(CBv2MTPConfig.envEnabled, "GLM serves only with its native MTP owner; set DARKBLOOM_CBV2_MTP=1")
@@ -132,7 +136,7 @@ final class GLM5NextRealModelHarness: @unchecked Sendable {
                 container: container, tokenizer: tokenizer, sizing: sizing,
                 kvBytesCapacity: grant.grantBytes, maxConcurrentRequests: concurrency, constructionPurpose: .benchmark,
                 kvBudget: budget, activationReserveBytes: reserve, kvBackendConfig: "paged",
-                kvQuantizationConfig: "native", checkpointQuantizationConfig: "native",
+                kvQuantizationConfig: "native", checkpointQuantizationConfig: checkpointQuantization,
                 modelArtifactSHA256: plan.weights.manifest.aggregateSHA256,
                 weightHash: ssd ? plan.weights.manifest.aggregateSHA256 : nil,
                 specDecPreparation: preparation, environment: env, startServingTelemetry: false)
@@ -191,10 +195,12 @@ final class GLM5NextRealModelHarness: @unchecked Sendable {
     }
 
     static func withLoaded(concurrency: Int = 1, ssd: Bool = false,
+        checkpointQuantization: String = "native",
         _ body: (GLM5NextRealModelHarness) async throws -> Void) async throws {
         let harness = try Self()
         let result: Result<Void, any Error>
-        do { try await harness.load(concurrency: concurrency, ssd: ssd)
+        do { try await harness.load(concurrency: concurrency, ssd: ssd,
+                checkpointQuantization: checkpointQuantization)
             try await body(harness); result = .success(()) }
         catch {
             let failure = await GLM5NextRetirement.validatedFailure(error, retaining: [harness])
@@ -293,6 +299,8 @@ struct GLM5NextRealRun: Sendable {
     let stageDisposition: String
     let stopTokens: Set<Int>
     let mtp: GLM5NextRealMTPDelta?
+    /// The engine's own entries when the run asked for `topLogprobs`.
+    let logprobs: [CBv2TokenLogprob]
 }
 
 struct GLM5NextRealMTPDelta: Sendable {
@@ -312,10 +320,13 @@ struct GLM5NextRealMTPDelta: Sendable {
 extension GLM5NextRealModelHarness {
     /// Raw engine request. Stop tokens are the production EOS set unless the
     /// caller explicitly asks for a fixed-length probe. The MTP delta is only
-    /// attributable when no other request overlaps (`attributeMTP`).
+    /// attributable when no other request overlaps (`attributeMTP`). A cached
+    /// request in `cacheSalt`'s scope donates its checkpoints unless `donates`
+    /// is false, which marks it fleet-novel (lookup only).
     func run(_ prompt: [Int], id: UInt64, output: Int, cache: Bool = false,
         cancelAfterFirst: Bool = false, multimodal: CBv2MultimodalInput? = nil,
-        suppressEOS: Bool = false, attributeMTP: Bool = true) async throws -> GLM5NextRealRun {
+        suppressEOS: Bool = false, attributeMTP: Bool = true, topLogprobs: Int = 0,
+        cacheSalt: String = "isolated-real-model-tenant", donates: Bool = true) async throws -> GLM5NextRealRun {
         let session = try #require(session)
         try GLM5NextExecutionBound.validateRequest(promptTokens: prompt.count,
             maximumOutputTokens: output, limit: maximumContext)
@@ -327,18 +338,19 @@ extension GLM5NextRealModelHarness {
         let before = attributeMTP ? session.rawEngine.mtpMetricsSnapshot() : nil
         let start = DispatchTime.now().uptimeNanoseconds
         let submission = try await session.submit(.init(id: .init(id), promptTokens: prompt,
-            sampling: .init(temperature: 0), maxTokens: output, stopTokens: stopTokens,
-            cacheSalt: cache ? "isolated-real-model-tenant" : nil, prefixCacheEnabled: cache,
-            multimodal: multimodal, prefixCheckpointTargetTokens: cache ? 1024 : nil))
+            sampling: .init(temperature: 0, topLogprobs: topLogprobs), maxTokens: output, stopTokens: stopTokens,
+            cacheSalt: cache ? cacheSalt : nil, prefixCacheEnabled: cache,
+            multimodal: multimodal, prefixCheckpointTargetTokens: cache ? (donates ? 1024 : 0) : nil))
         var tokens: [Int] = [], text = ""
+        var logprobs: [CBv2TokenLogprob] = []
         var first: UInt64?, last: UInt64?, finished: UInt64?
         var reason: CBv2FinishReason?, usage: CBv2Usage?
         for await event in submission.events {
             switch event {
-            case .delta(let delta, let ids, _):
+            case .delta(let delta, let ids, let entries):
                 if first == nil { first = DispatchTime.now().uptimeNanoseconds }
                 last = DispatchTime.now().uptimeNanoseconds
-                tokens += ids; text += delta
+                tokens += ids; text += delta; logprobs += entries ?? []
                 if cancelAfterFirst { session.rawEngine.cancel(.init(id)) }
             case .finished(let terminal, let count):
                 finished = DispatchTime.now().uptimeNanoseconds
@@ -360,7 +372,7 @@ extension GLM5NextRealModelHarness {
             lastDeltaSeconds: last.map { Double($0 - start) / 1e9 },
             finishedSeconds: finished.map { Double($0 - start) / 1e9 },
             wallSeconds: Double(end - start) / 1e9,
-            stageDisposition: submission.stageDisposition, stopTokens: stopTokens, mtp: delta)
+            stageDisposition: submission.stageDisposition, stopTokens: stopTokens, mtp: delta, logprobs: logprobs)
     }
 }
 

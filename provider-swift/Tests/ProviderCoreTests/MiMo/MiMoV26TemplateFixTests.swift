@@ -115,8 +115,23 @@ final class MiMoV26TemplateFixTests: XCTestCase {
         ] {
             XCTAssertThrowsError(try ChatTemplateFixes.normalizeMessages(messages, context: context))
         }
-        var wrongName = result("a"); wrongName["name"] = "not_f"
-        XCTAssertThrowsError(try ChatTemplateFixes.normalizeMessages([assistant([call("a")]), wrongName], context: context))
+    }
+
+    /// A result pairs with its call by ID, so its `name` (matching, empty, or
+    /// the unprefixed name an MCP client reports) is kept unchanged and never
+    /// compared with the call's function.
+    func testToolResultNameIsNotComparedWithItsCall() throws {
+        for name in ["f", "", "functions.f", "read"] {
+            var named = result("b"); named["name"] = name
+            let output = try ChatTemplateFixes.normalizeMessages(
+                [assistant([call("a"), call("b")]), named, result("a")], context: context)
+            XCTAssertEqual(output.map { $0["tool_call_id"] as? String }, [nil, "a", "b"], name)
+            XCTAssertEqual(output[2]["name"] as? String, name)
+            XCTAssertNoThrow(try MiMoV26TemplateFix.validateRequest(.init(model: "m", messages: [
+                .init(role: .assistant, content: .null, toolCalls: [.init(id: "a", function: .init(name: "f", arguments: "{}"))]),
+                .init(role: .tool, content: .text("done"), name: name, toolCallID: "a"),
+            ])), name)
+        }
     }
 
     func testAllCallsAreValidatedNotOnlyFirstAndIDsAreUnique() {

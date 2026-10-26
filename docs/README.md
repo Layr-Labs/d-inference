@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-18
 
 This repository documents the Swift provider, local native inference, landing,
 and retained console snapshot. New backend, console and admin development and
@@ -17,6 +17,7 @@ backend operating guides belong to
 - [Local direct mode](provider/direct-mode.md) and [network self-route](provider/self-route.md)
 - [Fan control](provider/fan-control.md) and [beta features](provider/beta-features.md)
 - [Always-on cluster members](provider/cluster-always-on.md): link wait, restart budget, coordinated update, permissions asked once
+- [Desktop app development](developer/desktop-app.md): build and validate the Electron frontend and its Swift CLI/backend interface
 
 ## Understand And Develop
 

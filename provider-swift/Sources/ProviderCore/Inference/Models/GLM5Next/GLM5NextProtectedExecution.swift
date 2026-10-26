@@ -78,6 +78,11 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
     /// / `no` / `off` selects the serial single-proposal profile instead.
     static let rectangularVerifyEnvironmentKey = "DARKBLOOM_GLM_RECTANGULAR_VERIFY"
     static let rectangularDepth = 3
+    /// Decode rows one rectangular window verifies together. On an M5 Ultra two
+    /// speculating rows decode about 20% faster than two target-only rows, but
+    /// speculating three or four rows cost about 5% of aggregate throughput (the
+    /// wider verify outweighs the accepted drafts), so wider steps decode target-only.
+    static let rectangularSpeculativeBatch = 2
 
     static func verification(
         configuration: GLM5NextTextConfiguration, environment: [String: String]
@@ -102,7 +107,7 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
             throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
         }
         var config = config
-        config.maxSpeculativeBatch = 1
+        config.maxSpeculativeBatch = execution.maximumSpeculativeBatch
         config.verificationMode = execution.verification.engineMode
         switch execution.verification {
         case .serialTarget:
@@ -131,22 +136,25 @@ final class GLM5NextProtectedModel: Module, LanguageModel, CBv2CompleteCheckpoin
             modelMaximum: root.configuration.textConfig.maxPositionEmbeddings)
         self.root = root
         self.maximumContextLength = bound
+        let verification = Self.verification(
+            configuration: root.configuration.textConfig, environment: environment)
         execution = try GLM5NextMTPExecution(
             target: root.textTower, predictor: predictor,
-            maximumInputs: bound, storage: .contiguous,
-            verification: Self.verification(
-                configuration: root.configuration.textConfig, environment: environment))
+            maximumInputs: bound, storage: .contiguous, verification: verification,
+            maximumSpeculativeBatch: verification == .serialTarget ? 1 : Self.rectangularSpeculativeBatch)
         assistant = try GLM5NextMTPAdapter(
             target: root.textTower, predictor: predictor, factory: execution)
         super.init()
     }
 
-    func prepare(_ input: LMInput, cache: [any KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(
+        _ input: LMInput, cache: [any KVCache], state: LMOutput.State?, prefill: PrefillParameters
+    ) throws -> PrepareResult {
         try requireInput(input.text.tokens, cache: cache)
-        return try root.prepare(input, cache: cache, windowSize: windowSize)
+        return try root.prepare(input, cache: cache, state: state, prefill: prefill)
     }
-    func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        root.newCache(parameters: parameters)
+    func newCache(parameters: GenerateParameters?) throws -> [any KVCache] {
+        try root.newCache(parameters: parameters)
     }
     /// The non-throwing LanguageModel step entry points have no provider caller:
     /// serving runs only through the issued native steppable, whose admission
@@ -242,7 +250,7 @@ final class GLM5NextProtectedResources {
                 store.identity.modelAggregateHash, store.identity.promptContractID,
                 store.identity.buildID, store.identity.numericsFingerprint,
             ].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
-            store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout
+            CBv2CompleteCheckpointManifest.isGLM5NextLayout(store.config.backendLayout)
         else {
             throw EngineV2ProductionError.pagedUnavailable(
                 "GLM requires its budget-bound encrypted full-state store")

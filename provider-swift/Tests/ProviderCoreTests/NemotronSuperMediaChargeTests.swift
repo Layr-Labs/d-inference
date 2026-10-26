@@ -39,7 +39,7 @@ struct NemotronSuperMediaChargeTests {
             #expect(other.heightPatches * other.widthPatches <= 13_312, "\(width)x\(height)")
         }
         #expect(admitted >= 3)
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.bodyTooLarge) {
             try Binding.encodedHeaderQuote(bodyBytes: Policy.maximumEncodedBodyBytes + 1,
                                            templateBytes: Policy.pinnedTemplateBytes)
         }
@@ -52,6 +52,25 @@ struct NemotronSuperMediaChargeTests {
         #expect(template.count == Policy.pinnedTemplateBytes)
         #expect(SHA256.hash(data: template).map { String(format: "%02x", $0) }.joined()
             == NemotronSuperPromptContract.templateSHA256)
+    }
+
+    /// A body carrying one part at the shared ingest's decoded cap, and any
+    /// body either provider transport delivers, passes the ingress bound.
+    @Test func bodyBoundHoldsOneSharedIngestPart() throws {
+        let uri = "data:video/mp4;base64," + Data(count: MediaIngest.maxMediaDecodedBytes).base64EncodedString()
+        #expect(try MediaIngest.dataFromDataURI(uri).count == MediaIngest.maxMediaDecodedBytes)
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": Policy.modelID, "max_tokens": 4096,
+            "messages": [["role": "user", "content": [
+                ["type": "text", "text": String(repeating: "Describe every scene. ", count: 100_000)],
+                ["type": "video_url", "video_url": ["url": uri]],
+            ]]],
+        ] as [String: Any])
+        #expect(body.count <= Policy.maximumEncodedBodyBytes)
+        _ = try Binding.encodedHeaderQuote(bodyBytes: body.count, templateBytes: Policy.pinnedTemplateBytes)
+        #expect(try Binding.parseEncodedBody(body, modelID: Policy.modelID).video == uri)
+        #expect(localInferenceMaxUploadBytes <= Policy.maximumEncodedBodyBytes)
+        #expect(CoordinatorClient.maxInboundMessageBytes <= Policy.maximumEncodedBodyBytes)
     }
 
     @Test func decodeBoundCoversTheLargestAdmittedRasters() throws {
@@ -92,8 +111,8 @@ struct NemotronSuperMediaChargeTests {
     @Test func chargeBoundsEveryAdmittedRequest() throws {
         #expect(Policy.mediaChargeBytes(imageCount: 0) == nil)
         #expect(Policy.mediaChargeBytes(imageCount: Policy.maximumImages + 1) == nil)
-        #expect(Policy.mediaChargeBytes(imageCount: 1) == 3_888_385_020)
-        #expect(Policy.mediaChargeBytes(imageCount: 16) == 26_317_356_540)
+        #expect(Policy.mediaChargeBytes(imageCount: 1) == 5_012_458_492)
+        #expect(Policy.mediaChargeBytes(imageCount: 16) == 27_441_430_012)
         // Sixteen largest grids (53,248 visual tokens) fit the served context,
         // so every image adds its workspace and all 3,328 of its tokens.
         #expect(16 * 3_328 < Policy.contextTokens)

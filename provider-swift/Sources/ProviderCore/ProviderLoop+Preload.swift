@@ -28,7 +28,7 @@ extension ProviderLoop {
     /// "ensure warm" call.
     internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
         if isClusterMember { rejectClusterMemberLoad(modelId, send: send); return }
-        guard autopilotAllowsModel(modelId) else {
+        guard autopilotServesModel(modelId) else {
             send.send(.loadModelStatus(modelId: modelId, status: .failed, error: "model_not_selected"))
             return
         }
@@ -117,7 +117,7 @@ extension ProviderLoop {
         }
     }
 
-    private func finishPreloadTask(
+    func finishPreloadTask(
         modelId: String,
         taskId: UUID,
         status: ProviderMessage.LoadModelStatus.Status,

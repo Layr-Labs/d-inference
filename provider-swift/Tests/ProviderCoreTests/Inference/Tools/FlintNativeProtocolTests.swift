@@ -206,6 +206,25 @@ struct FlintNativeProtocolTests {
         }
     }
 
+    @Test func maskCacheKeysIdentifyIdenticalMasksAndOptIntoChaining() throws {
+        for mode in [ToolConstraintMode.auto, .none, .required] {
+            let constraint = try make(mode)
+            #expect(constraint.allowsChainedDecode)
+            #expect(constraint.maskCacheKey(state: 0, remainingTokens: 0) == nil)
+            #expect(constraint.maskCacheKey(state: constraint.cachedStateCount, remainingTokens: 10) == nil)
+            var masksByKey: [Int: [Int]] = [:]
+            for path in ["", "<", "<think>reason", "<think>reason</think>Answer",
+                         "<tool_call>weather<arg_key>city</arg_key><arg_value>Paris", frame()] {
+                guard let state = walk(path, constraint) else { continue }
+                for remaining in [1, 2, 100] {
+                    let key = try #require(constraint.maskCacheKey(state: state, remainingTokens: remaining))
+                    let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: remaining)
+                    if let known = masksByKey[key] { #expect(known == allowed) } else { masksByKey[key] = allowed }
+                }
+            }
+        }
+    }
+
     @Test func longOpaqueTextReusesCanonicalStates() throws {
         let constraint = try make(.required)
         let state = try #require(walk("<tool_call>weather<arg_key>city</arg_key><arg_value>", constraint))
@@ -245,6 +264,7 @@ struct FlintNativeProtocolTests {
         #expect(exhausted)
         #expect(constraint.cachedStateCount == FlintNativeProtocolConstraint.maximumStates)
         #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 100).isEmpty)
+        #expect(constraint.maskCacheKey(state: state, remainingTokens: 100) == nil)
         #expect(constraint.nextState(state: state, tokenID: 2) == nil)
     }
 }
@@ -278,14 +298,20 @@ struct FlintNativeProtocolFactoryTests {
         }
     }
 
-    @Test func customStopsAndBadBoundariesAreRefusedOnlyForExactFlint() throws {
+    @Test func customStopsUseTheAnswerChannelAndBadBoundariesAreRefusedOnlyForExactFlint() throws {
         let request = try request(stop: #", "stop":["done"]"#)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "flint")
         let handle = TokenizerHandle(FlintProtocolTestTokenizer())
+        let stops: Set<Int> = [150001, 150003, 150005, 150018]
+        let constraint = try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,
+            modelContext: .init(modelId: request.model, modelType: "flint"),
+            defaultMaxTokens: 100, stopTokenIDs: stops, nativePromptTokens: [150004])
+        #expect(constraint is FlintAnswerStopConstraint)
+        #expect(constraint?.mode == .auto)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,
                 modelContext: .init(modelId: request.model, modelType: "flint"),
-                defaultMaxTokens: 100, stopTokenIDs: [150001], nativePromptTokens: [150004])
+                defaultMaxTokens: 100, stopTokenIDs: stops, nativePromptTokens: [150006])
         }
         for type in ["other", "Flint", " flint "] {
             #expect(try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,

@@ -109,8 +109,9 @@ enum LocalServingPostureRenderer {
             let prefix = posture.prefix
             var prefixLabels = model + ",state=\"\(prefix.state.rawValue)\",reason=\"\(prefix.reason.rawValue)\""
             // `reason` keeps the coordinator's closed heartbeat vocabulary;
-            // `detail` names the local typed refusal behind an error status.
-            if prefix.state == .error, let failure = posture.prefixConstructionFailure {
+            // `detail` names the typed cause behind an error status, as the
+            // heartbeat's `detail` does.
+            if prefix.state == .error, let failure = prefix.detail ?? posture.prefixConstructionFailure {
                 prefixLabels += ",detail=\"\(failure.rawValue)\""
             }
             add("prefix_cache_status", prefixLabels, 1)

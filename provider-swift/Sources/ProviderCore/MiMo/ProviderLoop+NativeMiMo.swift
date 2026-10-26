@@ -240,6 +240,7 @@ extension ProviderLoop {
         try load.commitPublication { modelSlots[modelID] = candidate }
         nativeMiMoCandidates.removeValue(forKey: modelID)
         // This post-publication handoff stays in the same real owned Task.
+        reportPrefixCacheFailure(candidate.engineV2.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: candidate.engineV2)
         try Task.checkCancellation()
         try transaction.requireServingWorkAllowed()

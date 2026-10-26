@@ -13,6 +13,7 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     case noKVHeadroom
     case pagedUnavailable(String)
     case invalidPagedPoolDType(String)
+    case invalidDecodeStepsBetweenChunks(key: String, value: String, maximum: Int)
 
     var description: String {
         switch self {
@@ -26,6 +27,9 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .invalidPagedPoolDType(let raw):
             return "engine_v2: \(EngineV2Factory.pagedPoolDTypeEnvKey)=\"\(raw)\" is not a "
                 + "recognized paged page dtype (expected float16 or float32)"
+        case .invalidDecodeStepsBetweenChunks(let key, let value, let maximum):
+            return "engine_v2: \(key)=\"\(value)\" is not a decode-step count "
+                + "(expected an integer from 0 to \(maximum))"
         }
     }
 }
@@ -112,6 +116,9 @@ extension EngineV2Factory {
         public let kvQuantization: EngineV2KVQuantizationSelection
         /// Effective complete-checkpoint encoding, independent of live precision.
         public let kvCheckpointQuantization: EngineV2KVQuantizationSelection
+        /// Prompt geometry of the scheduler handed to the engine, after serving,
+        /// calibration and GLM policy. Nil for scripted/test builds.
+        public let prefillGeometry: PrefillGeometry?
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -131,7 +138,8 @@ extension EngineV2Factory {
             effectiveMaxConcurrentRequests: Int = 0,
             kvQuantization: EngineV2KVQuantizationSelection = .native,
             kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
-            admissionWatermarkFraction: Double? = nil
+            admissionWatermarkFraction: Double? = nil,
+            prefillGeometry: PrefillGeometry? = nil
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
@@ -145,6 +153,7 @@ extension EngineV2Factory {
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
             self.kvQuantization = kvQuantization
             self.kvCheckpointQuantization = kvCheckpointQuantization
+            self.prefillGeometry = prefillGeometry
         }
     }
 
@@ -199,12 +208,23 @@ extension EngineV2Factory {
             if model is FlintModel, requested != .native {
                 throw EngineV2KVQuantizationPolicy.Failure.flintRequiresNative
             }
-            storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
-                requested.configuration, layerKinds: preparedBackend.layerKinds,
-                layerDTypes: preparedBackend.nativeLayerDTypes,
-                pagedConfig: preparedBackend.pagedPoolConfig,
-                hasAssistantState: mtpDrafter is any CBv2MTPPrefixCheckpointCoding
-                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter)
+            if model is GLM5NextProtectedModel {
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    pagedConfig: preparedBackend.pagedPoolConfig, assistant: mtpDrafter)
+            } else {
+                let persistent = mtpDrafter is any CBv2MTPPrefixCheckpointCoding
+                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter
+                storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+                    requested.configuration, layerKinds: preparedBackend.layerKinds,
+                    layerDTypes: preparedBackend.nativeLayerDTypes,
+                    pagedConfig: preparedBackend.pagedPoolConfig,
+                    hasAssistantState: persistent
+                        && !CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget(
+                            besideAssistant: mtpDrafter,
+                            pagedRecurrent: preparedBackend.kind == .paged
+                                && preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse))
+            }
         } else {
             storageQuantization = nil
         }
@@ -246,9 +266,11 @@ extension EngineV2Factory {
         }
         var mtpConfig = mtpConfig
         if let protected = model as? GLM5NextProtectedModel {
+            // A checkpoint profile only ever accompanies its complete store.
             guard preparedBackend.glm5NextModel === protected,
                 prefixCache == nil, !preparedBackend.residentPrefixCacheEnabled,
-                preparedBackend.hybridPrefixCache == nil, checkpointQuantization == nil else {
+                preparedBackend.hybridPrefixCache == nil,
+                checkpointQuantization == nil || completePrefixCache != nil else {
                 throw EngineV2ProductionError.pagedUnavailable("GLM protected execution tuple changed")
             }
             mtpConfig = try protected.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter)
@@ -283,6 +305,8 @@ extension EngineV2Factory {
             benchmarkDemandedCheckpointPartitionIncludesLongPrompts(
                 model: model, backend: preparedBackend.kind, store: completePrefixCache,
                 constructionPurpose: constructionPurpose, checkpointPartition: checkpointPartition)
+        schedulerConfig.demandedCaptureBoundaryMinimumTokens = demandedCaptureBoundaryMinimumTokens(
+            model: model, store: completePrefixCache)
         let processOwner: (any CBv2ProcessMemoryOwner)?
         if let glmNative {
             guard glmNative.resources.backend === backend,
@@ -393,7 +417,8 @@ extension EngineV2Factory {
                 : checkpointQuantization.flatMap { configuration in
                     EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
                 } ?? preparedBackend.kvQuantization,
-            admissionWatermarkFraction: admissionConfig.watermarkFraction)
+            admissionWatermarkFraction: admissionConfig.watermarkFraction,
+            prefillGeometry: PrefillGeometry(scheduler: schedulerConfig))
         build.glm5NextNativeOwner = glmOwner
         if glmOwner != nil {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength

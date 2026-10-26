@@ -50,6 +50,37 @@ struct ReasoningPromptProbeTests {
         #expect(prefix(parser: .qwen3, tokens: [], tail: tail) == nil)
     }
 
+    private func plainTailPrefix(
+        _ tail: String = "<|im_start|>assistant\n", parser: ReasoningParserFormat = .qwen3,
+        modelType: String?, seeds: Bool = true
+    ) -> String? {
+        ReasoningPromptProbe.streamingPrefix(
+            reasoningParser: parser, stream: true, promptTokens: [1], modelType: modelType,
+            seedsPlainTailContent: seeds, decodeTail: { _ in tail })
+    }
+
+    @Test("a plain Qwen3-VL tail starts in content; a Qwen3-VL think tail still opens reasoning")
+    func plainQwen3VLTailSeedsContent() {
+        #expect(plainTailPrefix(modelType: "qwen3_vl_moe") == "<think></think>")
+        #expect(plainTailPrefix(modelType: " Qwen3_VL_MoE\n") == "<think></think>")
+        #expect(plainTailPrefix("<|im_start|>assistant\n<think>\n", modelType: "qwen3_vl_moe") == "<think>")
+    }
+
+    @Test("close-only and other model types keep undecided parsing after a plain tail",
+          arguments: ["qwen3_next", "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "llama"])
+    func plainTailWithoutSeed(modelType: String) {
+        #expect(plainTailPrefix(modelType: modelType) == nil)
+        // A close-only reasoner after a pre-opened tail is unchanged.
+        #expect(plainTailPrefix("<|im_start|>assistant\n<think>\n", modelType: modelType) == "<think>")
+    }
+
+    @Test("the plain-tail seed needs the qwen3 parser, a model type and the switch")
+    func plainTailSeedGates() {
+        #expect(plainTailPrefix(parser: .deepseekR1, modelType: "qwen3_vl_moe") == nil)
+        #expect(plainTailPrefix(modelType: nil) == nil)
+        #expect(plainTailPrefix(modelType: "qwen3_vl_moe", seeds: false) == nil)
+    }
+
     @Test("the probe decodes only a bounded prompt tail")
     func boundedTailDecode() {
         let tokens = Array(0..<4096)

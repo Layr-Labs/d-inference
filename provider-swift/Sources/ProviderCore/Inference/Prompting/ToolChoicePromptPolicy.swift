@@ -10,16 +10,17 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
-        /// A GLM request served by a cluster pair: required/named tool choice
-        /// and JSON output are prompt-forced and post-validated (fail closed)
-        /// instead of refused. Set by the scheduler from the acquired slot's
-        /// engine, never from the request; the single-Mac GLM path keeps its
-        /// refusals.
+        /// Exact-Flint JSON content contract. When present, no call is allowed.
+        var responseFormat: FlintResponseFormat? = nil
+        /// GLM JSON content contract: the answer is withheld and validated.
+        var glmResponseFormat: GLM5NextResponseFormat? = nil
+        /// A GLM request served by a cluster pair. Set by the scheduler from
+        /// the acquired slot's engine, never from the request. Forced tool
+        /// choice, JSON output and withheld reasoning are served alike on
+        /// every GLM slot; a pair also asks for at most one call when
+        /// automatic choice has `parallel_tool_calls: false`
+        /// (`singleCallInstruction`), which the validator holds it to.
         var glm5PairPostValidation = false
-        /// A GLM request served by a cluster pair that asked not to see its
-        /// reasoning (`reasoning.exclude`, `include_reasoning: false`): the
-        /// reasoning is generated, counted and withheld.
-        var glm5PairExcludesReasoning = false
 
         var requiresToolCall: Bool {
             switch mode {
@@ -35,25 +36,38 @@ enum ToolChoicePromptPolicy {
         allowInternalSchemaMetadata: Bool = true,
         glm5PairPostValidation: Bool = false
     ) throws -> Prepared {
-        var prepared = try preparing(request, modelType: modelType,
-            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-        prepared.glm5PairPostValidation = glm5PairPostValidation
+        let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
+        var choice = try prepareToolChoice(
+            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
         // GLM on a pair: `parallel_tool_calls: false` with automatic choice
         // asks for at most one call, which the validator then holds it to.
-        if glm5PairPostValidation, prepared.mode == .auto, !prepared.allowsParallelCalls,
-           prepared.tools?.isEmpty == false {
-            prepared = Prepared(messages: appendingToLastUser(singleCallInstruction, in: prepared.messages),
-                tools: prepared.tools, mode: prepared.mode, compiledTools: prepared.compiledTools,
-                allowsParallelCalls: false, allowedToolNames: prepared.allowedToolNames,
-                glm5PairPostValidation: true)
+        if glm5PairPostValidation, choice.mode == .auto, !choice.allowsParallelCalls,
+           choice.tools?.isEmpty == false {
+            choice = Prepared(messages: appendingToLastUser(singleCallInstruction, in: choice.messages),
+                tools: choice.tools, mode: choice.mode, compiledTools: choice.compiledTools,
+                allowsParallelCalls: false, allowedToolNames: choice.allowedToolNames)
         }
+        choice.glm5PairPostValidation = glm5PairPostValidation
+        choice.glmResponseFormat = try GLM5NextResponseFormat.resolve(request, modelType: modelType)
+        guard let responseFormat else { return choice }
+        // Recursive's Flint contract: tools plus a response format get only the
+        // response format, whatever tool_choice asked for. The prompt renders
+        // exactly as it would without the format (Flint keeps the original
+        // messages and the declared tools), so the coordinator sidecar's mirror
+        // needs no format rule; only generation changes: no call is allowed.
+        var prepared = choice.tools?.isEmpty == false
+            ? Prepared(
+                messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
+                allowsParallelCalls: false, allowedToolNames: [])
+            : choice
+        prepared.responseFormat = responseFormat
         return prepared
     }
 
     static let singleCallInstruction =
         "If you call a tool in this response, call exactly one tool once; make any further call after its result."
 
-    private static func preparing(
+    private static func prepareToolChoice(
         _ request: OpenAIChatCompletionRequest,
         modelType: String?,
         allowInternalSchemaMetadata: Bool
@@ -99,7 +113,7 @@ enum ToolChoicePromptPolicy {
         case .mode(.required):
             guard let tools = request.tools, !tools.isEmpty else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice 'required' needs at least one declared tool")
+                    "tool_choice 'required' needs at least one declared tool", refusal: .invalidToolChoice)
             }
             let instruction: String
             if tools.count == 1, let name = tools.first?.function.name {
@@ -144,7 +158,7 @@ enum ToolChoicePromptPolicy {
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice names an undeclared function")
+                    "tool_choice names an undeclared function", refusal: .invalidToolChoice)
             }
             let instruction: String
             if allowsParallelCalls {
@@ -188,11 +202,11 @@ enum ToolChoicePromptPolicy {
         for tool in tools ?? [] {
             guard isValidFunctionName(tool.function.name) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$", refusal: .invalidToolDeclaration)
             }
             guard names.insert(tool.function.name).inserted else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must be unique")
+                    "tool function names must be unique", refusal: .invalidToolDeclaration)
             }
         }
     }
@@ -217,7 +231,7 @@ enum ToolChoicePromptPolicy {
             return try ToolConstraintSchemaCompiler.compile(tools: tools, mode: mode)
         } catch let error as ToolConstraintSchemaError {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                error.localizedDescription)
+                error.localizedDescription, refusal: .unsupportedForcedToolChoice)
         }
     }
 

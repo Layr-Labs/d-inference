@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-25
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -83,10 +83,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
+| `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
 | `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
-`darkbloom verify` runs the same set and exits 1 on any ⚠.
+`darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
+and exits 1 on any ⚠.
 
 The process-table, local-port and sleep probes have a five-second execution
 deadline, followed by bounded child termination. Large output is captured in
@@ -162,10 +164,41 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 |---|---|---|
 | `model fits in RAM` FAIL / `Cold load blocked (memory)` in status | The live no-eviction load budget is below the scanner's complete model estimate plus activation and minimum-KV serving reserve, and request-time idle eviction cannot close the gap. The nominal `Inference memory` hardware figure is not live free RAM. Status and doctor show both the preload gap and the smaller eviction-aware cold-load gap ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A busy machine with an active request gets a temporary verdict instead | Free at least the **cold-load** shortfall with margin, rerun `darkbloom doctor`, then `darkbloom restart` to retry preload when enabled; or select a smaller model ([hardware requirements](./hardware-requirements.md)). A request cannot cold-load at the same memory level. |
 | `Preload skipped (no eviction)` in status | The model does not fit alongside the current resident slots. The request-time allowance can fit it by evicting idle models; startup preload deliberately avoids that churn | Keep the current serving set, or free memory if both models should stay resident. |
+| A load refusal says `Not evictable: <model> (… GB: …)`, or status says `Not evictable for a load now: …` | That resident model cannot be evicted for the load: an Autopilot placement hold (until the UTC time shown), requests in flight, a local request, an Autopilot pin, an unload or an MTP upgrade in progress. `adopted by Autopilot outside the selected models` means an Autopilot operation placed it there, not your selection ([placements](../architecture/model-autopilot.md#placements-after-an-operation)) | Wait for the hold to expire or the requests to finish, then retry the load; a hold also ends when an operation unloads the model or Autopilot is disabled. |
+| `Serving outside the enabled model filter: <model>` in status | The running daemon serves a model your saved `enabled_models` omits: an Autopilot operation adopted it, it is in the running daemon's selection (a changed filter applies only at the next start), or a live Autopilot lease published it | For an adoption see `darkbloom autopilot status`; otherwise `darkbloom restart` applies the saved filter. |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
 | Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
+| GLM-5.3-Flash requests or loads fail and the log mentions Metal `Insufficient Memory` | The macOS GPU wired-memory limit is below what GLM plans at full KV | [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
+| Failed jobs on the console's Jobs card; `darkbloom logs` shows `Inference failure: invalid request (…)` lines | Each line is one request the provider refused before running it; the reason names the request shape ([refusal lines](./cli-reference.md#refusal-lines)). Request text is never logged | Nothing to change on the Mac. The client must change the request; a model that refuses the shape refuses it on every provider |
+
+## GLM-5.3-Flash GPU wired-memory limit
+
+The [requirement and values](./hardware-requirements.md) apply to a 256 GB M5
+Mac serving GLM-5.3-Flash. The commands need an administrator; the provider
+never runs `sudo` itself.
+
+1. Run `darkbloom doctor`. A `glm wired limit` ⚠ prints the current limits and
+   these commands.
+2. Apply the limits until the next reboot:
+
+   ```bash
+   sudo sysctl -w iogpu.wired_limit_mb=245760 vm.global_user_wire_limit=261134011596 vm.user_wire_limit=261134011596
+   ```
+
+3. Restart the provider so MLX reads the new limit: `darkbloom restart`.
+4. To reapply them at every boot, paste the LaunchDaemon block that `doctor`
+   prints after its detailed checks. It writes
+   `/Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`, which runs
+   `/usr/sbin/sysctl -w` with the three values at load, and bootstraps it with
+   `sudo launchctl bootstrap system /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist`.
+
+Verify: `sysctl iogpu.wired_limit_mb vm.global_user_wire_limit vm.user_wire_limit`
+prints the three values, and `darkbloom doctor` shows `glm wired limit` ✓ with
+them. To roll back, run
+`sudo launchctl bootout system/com.layrlabs.glm53-wired-limits`, delete the
+plist and reboot.
 
 ## KV-backend crash-loop guard
 

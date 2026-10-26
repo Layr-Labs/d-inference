@@ -34,7 +34,10 @@ where Inner.Context == BasicRequestContext {
     let reasoningParserFor: (@Sendable (String) async -> ReasoningParserFormat?)?
     /// What `previous_response_id` continues; the fork's typed Responses request does not carry the field.
     let responseConversations: LocalResponseConversationStore
-    let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)?
+    /// A raw-body owner's service (Super). Its `logprobs` requests return
+    /// entries on the channel this responder passes and splices.
+    let serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
+        -> MLXOpenAIService?)?
     /// The cluster's API: the service for a chat request that asks for
     /// logprobs (OpenAI `logprobs`/`top_logprobs`, read from the raw body as
     /// the coordinator path reads them); nil serves none, as single-Mac.
@@ -53,7 +56,8 @@ where Inner.Context == BasicRequestContext {
         responseConversations: LocalResponseConversationStore = LocalResponseConversationStore(),
         serviceForLogprobs: (@Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService)? = nil,
         reasoningTokenCounter: (@Sendable (String) async -> (@Sendable (String) -> Int)?)? = nil,
-        serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest) -> MLXOpenAIService?)? = nil
+        serviceForRawChat: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
+            -> MLXOpenAIService?)? = nil
     ) {
         self.serviceForLogprobs = serviceForLogprobs
         self.reasoningTokenCounter = reasoningTokenCounter
@@ -190,18 +194,26 @@ where Inner.Context == BasicRequestContext {
         // Its owner splits its own reasoning channel and refuses a request
         // parser, so the inferred parser applies only to the generic service
         // (the coordinator path likewise sets none for a Super owner).
+        // Only a raw-body owner and the cluster's API (`serviceForLogprobs`,
+        // which never has a raw-body owner) return logprobs; the generic
+        // service ignores them.
         let requestService: MLXOpenAIService
-        var logprobs: EngineV2LogprobsPlumbing?
-        if let rawService = serviceForRawChat?(Data(buffer: buffer), item.request) {
+        let logprobs: EngineV2LogprobsChannel?
+        var clusterLogprobs: EngineV2LogprobsPlumbing?
+        let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
+        if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
-        } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: Data(buffer: buffer)) {
+            logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil
+        } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: raw) {
             await resolveReasoningParser(&item)
             let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs, channel: EngineV2LogprobsChannel())
-            logprobs = plumbing
+            clusterLogprobs = plumbing
             requestService = serviceForLogprobs(item.templateControls, plumbing)
+            logprobs = nil
         } else {
             await resolveReasoningParser(&item)
             requestService = serviceForTemplateControls(item.templateControls)
+            logprobs = nil
         }
         let countTokens = await reasoningTokenCounter?(item.request.model)
         // Same service entry points as the upstream handler; pre-stream
@@ -228,20 +240,21 @@ where Inner.Context == BasicRequestContext {
                             request: item.request, frameGenerationErrors: true)
                     }
                     return DistributedHTTPEventStream.response(
-                        Self.decorating(frames, logprobs: logprobs, countTokens: countTokens), control: response)
+                        Self.decorating(frames, logprobs: clusterLogprobs, countTokens: countTokens), control: response)
                 } catch {
                     response.disconnect(); response.finish(); throw error
                 }
             }
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
-            return Self.sseResponse(frames)
+            return Self.sseResponse(logprobs.map { Self.splicingLogprobs(frames, from: $0) } ?? frames)
         }
-        let completion = try await requestService.createChatCompletion(request: item.request)
-        if logprobs != nil || countTokens != nil {
-            return try Self.jsonResponse(completion, logprobs: logprobs, countTokens: countTokens)
+        let response = try await requestService.createChatCompletion(request: item.request)
+        if let logprobs { return try Self.jsonResponse(response, logprobs: logprobs.drain()) }
+        if clusterLogprobs != nil || countTokens != nil {
+            return try Self.jsonResponse(response, logprobs: clusterLogprobs, countTokens: countTokens)
         }
-        return try Self.jsonResponse(completion)
+        return try Self.jsonResponse(response)
     }
 
     /// The OpenAI entries a request asked for: `top_logprobs` alternatives
@@ -315,6 +328,57 @@ where Inner.Context == BasicRequestContext {
             object["usage"] = usage
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+    }
+
+    /// A raw-body owner's frames with its logprob entries spliced into the
+    /// content and reasoning chunks that carry their tokens, as the coordinator
+    /// relay splices a Super owner's (`ProviderLoop.injectLogprobs`): entries
+    /// wait for the next such frame, and those no such frame follows end with
+    /// the stream.
+    static func splicingLogprobs(_ frames: AsyncThrowingStream<String, Error>,
+                                 from channel: EngineV2LogprobsChannel) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                var pending: [SSETokenLogprob] = []
+                do {
+                    for try await frame in frames {
+                        pending += channel.drain()
+                        _ = EngineV2LogprobsChannel.capPending(&pending)
+                        if !pending.isEmpty, let spliced = ProviderLoop.injectLogprobs(
+                            into: frame, entries: pending, includingReasoning: true) {
+                            pending = []
+                            continuation.yield(spliced)
+                        } else {
+                            continuation.yield(frame)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// `response` with a raw-body owner's entries as `choices[0].logprobs.content`.
+    /// The owner leaves on the channel exactly the entries its stream would
+    /// carry (`NemotronSuperCompleteLogprobs`). The upstream response has no
+    /// logprobs field, so the encoded JSON is edited.
+    static func jsonResponse(_ response: OpenAIChatCompletionResponse,
+                             logprobs entries: [SSETokenLogprob]) throws -> Response {
+        guard !entries.isEmpty else { return try jsonResponse(response) }
+        let data = try JSONEncoder.openAIServer.encode(response)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            var choices = object["choices"] as? [[String: Any]], var choice = choices.first
+        else { return try jsonResponse(response) }
+        choice["logprobs"] = ["content": entries.map(\.jsonObject)]
+        choices[0] = choice
+        object["choices"] = choices
+        let spliced = try JSONSerialization.data(withJSONObject: object,
+                                                 options: [.sortedKeys, .withoutEscapingSlashes])
+        return Response(status: .ok, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: ByteBuffer(bytes: spliced)))
     }
 
     /// This responder sits outside the router that normally maps decode errors

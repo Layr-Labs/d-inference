@@ -3,8 +3,9 @@
 import Foundation
 
 /// Framing state only. No argument value or reasoning text is accumulated.
-/// JSON boundary rules deliberately match MLXLMCommon's
+/// Argument JSON boundary rules deliberately match MLXLMCommon's
 /// FlintArgumentValueScanner; semantic JSON/schema validation stays downstream.
+/// A response format instead constrains content with FlintJSONState.
 struct FlintNativeProtocolBoundary: Hashable {
     enum Phase: Hashable {
         case initial, content, reasoning, name, nameSpace, arguments, key, keyEnd, valueStart, value, afterCall
@@ -20,6 +21,7 @@ struct FlintNativeProtocolBoundary: Hashable {
     var quoted = false
     var escaped = false
     var leadingUTF8: [UInt8] = []
+    var json: FlintJSONState?
 
     static let maxKeyBytes = 1024
     static let maxJSONDepth = 128
@@ -42,12 +44,17 @@ struct FlintNativeProtocolBoundary: Hashable {
         let allowsParallel: Bool
         let names: Set<String>
         let rawKeys: [String: Set<String>]
+        /// Response-format content grammar; no call frame is then allowed.
+        let json: FlintJSONGrammar?
     }
 
     func canStop(_ id: Int, vocabulary: FlintNativeVocabulary, rules: Rules) -> Bool {
         // In ordinary text, an unfinished marker prefix is literal content.
         // Only a complete opening moves us into a frame that must close.
         if phase == .initial || phase == .content {
+            if let grammar = rules.json {
+                return jsonContentComplete(grammar) && vocabulary.answerStops.contains(id)
+            }
             return !rules.requiresCall && vocabulary.answerStops.contains(id)
         }
         guard marker.isEmpty else { return false }
@@ -62,6 +69,7 @@ struct FlintNativeProtocolBoundary: Hashable {
         switch phase {
         case .reasoning: return vocabulary.markerCompleters
         case .initial, .content:
+            if rules.json != nil { return json?.inStringBody == true ? vocabulary.jsonStringSensitive : nil }
             return rules.requiresCall ? nil : vocabulary.markerCompleters
         case .value:
             return value == .raw || value == .scalar ? vocabulary.markerCompleters : vocabulary.jsonSensitive
@@ -112,15 +120,17 @@ struct FlintNativeProtocolBoundary: Hashable {
         return true
     }
 
-    private mutating func consume(_ byte: UInt8, rules: Rules) -> Bool {
+    mutating func consume(_ byte: UInt8, rules: Rules) -> Bool {
         switch phase {
         case .reasoning:
             if let match = scan(byte, candidates: Self.reasoningMarkers) {
                 guard match == Self.thinkEnd else { return false }
                 phase = .content
+                if let grammar = rules.json { json = FlintJSONState(grammar: grammar) }
             }
             return true
         case .initial, .content:
+            if let grammar = rules.json { return consumeJSONContent(byte, grammar: grammar) }
             if rules.requiresCall { return consumeOpening(byte, rules: rules) }
             // Displaced marker-prefix bytes are ordinary content. Whitespace
             // before an optional opening thought does not disable that channel.

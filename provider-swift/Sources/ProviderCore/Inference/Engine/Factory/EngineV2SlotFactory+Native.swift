@@ -288,7 +288,8 @@ extension EngineV2SlotFactory {
                 retainMemoryPrefixes: prefix.retainMemory, prefillChunkSize: diffusionPrefillChunkSize,
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
                     replayStrategy: prefix.store == nil ? .none : .direct,
-                    state: prefix.status.state, reason: prefix.status.reason), pageBacked: pageBacked,
+                    state: prefix.status.state, reason: prefix.status.reason, detail: prefix.status.failure),
+                pageBacked: pageBacked,
                 kvBackendFallbackReason: fallbackReason,
                 kvQuantization: precision, pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch { await prefix.store?.closeAndWait(); throw error }
@@ -532,7 +533,7 @@ extension EngineV2SlotFactory {
                         ssdHybridCheckpointStore: prefix.store,
                         prefixCacheStatus: .init(modelId: modelId, backend: .contiguous,
                             replayStrategy: prefix.store == nil ? .none : .direct,
-                            state: prefix.status.state, reason: prefix.status.reason),
+                            state: prefix.status.state, reason: prefix.status.reason, detail: prefix.status.failure),
                         emitTelemetry: emitTelemetry) {
                         .init(engine: engine, fixedRequestBytes: sharedFixed,
                             kvBackendKind: .contiguous, kvBackendFallbackReason: nil,
@@ -742,7 +743,7 @@ extension EngineV2SlotFactory {
                         kvBudget: kvBudget, ssdHybridCheckpointStore: paging.store,
                         prefixCacheStatus: .init(modelId: modelId, backend: .paged,
                             replayStrategy: paging.store == nil ? .none : .direct,
-                            state: prefix.status.state, reason: prefix.status.reason),
+                            state: prefix.status.state, reason: prefix.status.reason, detail: prefix.status.failure),
                         emitTelemetry: emitTelemetry) {
                         .init(engine: engine, fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
                             kvBackendKind: .paged, kvBackendFallbackReason: nil,

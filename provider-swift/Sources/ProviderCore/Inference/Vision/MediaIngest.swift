@@ -419,7 +419,7 @@ public enum MediaIngest {
                     // header was readable both are equal; when it was nil the
                     // extent is the real charge. Re-check so a nil-header image
                     // can't slip an over-aggregate raster through.
-                    if case .ciImage(let ci) = image {
+                    if case .ciImage(let ci) = image.source {
                         let realized = safeExtentPixels(ci.extent)
                         let charge = max(headerPixels, realized)
                         let (sum, overflow) =

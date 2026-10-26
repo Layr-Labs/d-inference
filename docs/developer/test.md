@@ -1779,6 +1779,13 @@ test in the target it needs the source-matched `mlx.metallib` beside the test
 executable. `PREFIX_RECORD_ENCODE_BENCH=1` adds a timing of one 27B rank layer
 at 32,768 tokens. `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
 writes a balanced record through the batch owner and adopts it on both ranks.
+`GLM5NextTensorParallelPrefixRecordEncodingTests` writes a GLM tensor-parallel
+rank's record through its row readers at the artifact's widths (only the DSA
+latents encoded; the NextN history native) and adopts it;
+`GLM53_PREFIX_SSD=1` adds
+`GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
+(GPU, about 1 GB of synthetic weights: real paged histories through a balanced
+record, then the restored request prefills on).
 
 On real weights, compare a plain run with a run through a record:
 

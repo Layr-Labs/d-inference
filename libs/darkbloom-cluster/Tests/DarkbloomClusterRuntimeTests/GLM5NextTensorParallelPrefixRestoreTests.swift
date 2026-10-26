@@ -21,7 +21,9 @@ import Testing
 /// Opt-in (`GLM53_PREFIX_SSD=1`, GPU, about 1 GB of synthetic weights): the
 /// same on the synthetic serving-policy stage at the artifact's widths
 /// (`GLM5NextTensorParallelSpeculationRowsTests`), paged at the runtime's
-/// page size, with prompt and boundary of hundreds of tokens.
+/// page size, with prompt and boundary of hundreds of tokens; and there,
+/// through a balanced record, whose latents the codec encodes
+/// (`checkBalanced`).
 @Suite("GLM tensor-parallel prefix SSD restore", .serialized)
 struct GLM5NextTensorParallelPrefixRestoreTests {
     typealias Record = GLM5NextTensorParallelPrefixRecord
@@ -101,10 +103,11 @@ struct GLM5NextTensorParallelPrefixRestoreTests {
     }
 
     /// Captures the memory tier's entry at `boundary` as `persistPrefix`
-    /// does, writes it, and reads it back from a new tier on the same
-    /// directory (another session) as `restoreAgreedFromEitherTier` does.
+    /// does, writes it under `records` (as `GLM5NextTensorParallelPrefixDisk.open`
+    /// applies it), and reads it back from a new tier on the same directory
+    /// (another session) as `restoreAgreedFromEitherTier` does.
     static func throughTheSSD(_ memory: GLM5NextTensorParallelPrefixCache, prompt: [Int], chunk: Int, boundary: Int,
-                              layout: Record.Layout) throws -> Record.Restorable {
+                              layout: Record.Layout, records: QwenStagePrefixDiskEncoding = .native) throws -> Record.Restorable {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("glm-prefix-restore-\(UUID().uuidString)",
             isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -115,7 +118,8 @@ struct GLM5NextTensorParallelPrefixRestoreTests {
             rankBuildSHA256: [String(repeating: "1", count: 64), String(repeating: "2", count: 64)], mtpDepth: 2)
         func open() throws -> GLM5NextTensorParallelPrefixDisk {
             let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration, planScope: planScope,
-                rank: 0, stagingEpoch: UUID().uuidString.lowercased()))
+                rank: 0, encoding: GLM5NextTensorParallelPrefixDisk.encoding(records, layout: layout),
+                stagingEpoch: UUID().uuidString.lowercased()))
             return .init(tier: tier, planScope: planScope, layout: layout)
         }
         let entry = try #require(memory.entry(scope: "session", prompt: prompt, length: boundary))
@@ -197,6 +201,66 @@ struct GLM5NextTensorParallelPrefixRestoreTests {
         }
         #expect(rounds[1] == rounds[0] && rounds[2] == rounds[0], "rounds \(rounds)")
         #expect(try same(fromDisk.state(), prefilled.state()), "ssd state after a round")
+    }
+
+    /// The same through a record of the pair's default precision (balanced,
+    /// `GLM5NextTensorParallelPrefixDisk.encoding`): the writer read each DSA
+    /// history's rows from the entry's pages and encoded the latents on its
+    /// threads, the restore wrote them into fresh pages. What a request is
+    /// written is the entry's bytes except each DSA layer's older latent rows
+    /// (the record's newest 128 exact); the NextN history and KDA states are
+    /// exact. The restored request prefills on with finite logits; their
+    /// largest difference from the prefilled request's is printed.
+    static func checkBalanced(stage: GLM5NextTextStage, mtp: GLM5NextMTP, pool: GLM5NextDSAPagePool?, prompt: [Int],
+                              chunk: Int, bulk: Int, boundary: Int) throws {
+        let saved = stage.dsaPagePool
+        stage.dsaPagePool = pool
+        defer { stage.dsaPagePool = saved }
+        let layout = try Record.Layout(stage: stage, mtp: mtp)
+        let memory = GLM5NextTensorParallelPrefixCache(budgetBytes: 8 << 30)
+        let prefilled = try Request(stage: stage, mtp: mtp, pool: pool, prompt: prompt, chunk: chunk, bulk: bulk,
+            boundary: boundary, start: .cold, memory: memory)
+        let entry = try #require(memory.entry(scope: "session", prompt: prompt, length: boundary))
+        let record = try throughTheSSD(memory, prompt: prompt, chunk: chunk, boundary: boundary, layout: layout,
+            records: QwenStagePrefixDiskEncoding(quantization: .balanced, family: .glm5NextDSA))
+        let pages = try reserve(pool, stage: stage, tokens: prompt.count + 16)
+        let written = stage.newCache(account: pages?.account)
+        let history = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: 2, rank: 0, ranks: 1, primeRows: 64,
+            pagePool: pool, pageAccount: pages?.account, agree: { $0 })
+        try record.write(into: written, layout: layout, speculation: history)
+        let reference = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: 2, rank: 0, ranks: 1, primeRows: 64,
+            pagePool: pool, pageAccount: nil, agree: { $0 })
+        try reference.restore(entry.mtp)
+        #expect(try same(history.state.history, reference.state.history), "NextN history")
+        let band = boundary - 128
+        var errors: [(error: Float, scale: Float)] = []
+        for (index, (a, b)) in zip(written.copy().layers, entry.cache.copy().layers).enumerated() {
+            #expect(a.offset == boundary && b.offset == boundary)
+            guard layout.dsaLayers.contains(layout.firstLayer + index) else {
+                #expect(try same(a.state, b.state), "KDA layer \(index)")
+                continue
+            }
+            #expect(try same(Array(a.state.dropFirst()), Array(b.state.dropFirst())), "index keys, gates, validity \(index)")
+            let restored = a.state[0], kept = b.state[0]
+            try fence([restored, kept])
+            #expect(restored.shape == kept.shape && restored.dtype == kept.dtype)
+            #expect(bytes(restored[0..., band..., 0...]) == bytes(kept[0..., band..., 0...]), "latent band \(index)")
+            let older = abs(restored[0..., ..<band, 0...].asType(.float32) - kept[0..., ..<band, 0...].asType(.float32)).max()
+            let scale = abs(kept[0..., ..<band, 0...].asType(.float32)).max()
+            errors.append((older.item(Float.self), scale.item(Float.self)))
+        }
+        #expect(errors.count == layout.dsaLayers.count && errors.contains { $0.error > 0 })
+        #expect(errors.allSatisfy { $0.error <= 0.25 * $0.scale }, "\(errors)")
+        let fromDisk = try Request(stage: stage, mtp: mtp, pool: pool, prompt: prompt, chunk: chunk, bulk: bulk,
+            boundary: boundary, start: .ssd(record, layout))
+        let cold = prefilled.logits.asType(.float32), warm = fromDisk.logits.asType(.float32)
+        #expect(all(isFinite(warm)).item(Bool.self))
+        let difference = abs(cold - warm).max().item(Float.self), scale = abs(cold).max().item(Float.self)
+        let latentType = layout.historyTypes[0]
+        print("glm-tp balanced record (\(pool == nil ? "contiguous" : "paged"), \(latentType) latents, boundary \(boundary)):"
+            + " worst latent error \(errors.map(\.error).max() ?? 0) of max |x| \(errors.map(\.scale).max() ?? 0);"
+            + " last-position logits max difference \(difference) of max |logit| \(scale);"
+            + " argmax equal \(argMax(cold, axis: -1).item(Int32.self) == argMax(warm, axis: -1).item(Int32.self))")
     }
 
     @Test(arguments: [true, false])
@@ -288,6 +352,21 @@ struct GLM5NextTensorParallelPrefixRestoreTests {
             let prompt = (0 ..< 1_500).map { ($0 * 104_729 + 17) % text.vocabularySize }
             try Self.check(stage: stage, mtp: mtp, pool: pool, prompt: prompt, chunk: 600, bulk: 1_200, boundary: 1_200)
             try Self.check(stage: stage, mtp: mtp, pool: nil, prompt: prompt, chunk: 600, bulk: 1_200, boundary: 1_200)
+        }
+    }
+
+    /// The serving-policy stage at the artifact's widths (512-wide latents,
+    /// which the codec encodes) through a balanced record: `checkBalanced`.
+    @Test(.enabled(if: servingEnabled))
+    func aServingStageRestoresFromABalancedRecord() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let (stage, mtp) = try GLM5NextTensorParallelPagedKVTests.model()
+            let text = stage.plan.configuration
+            #expect(text.kvLoraRank == 512)
+            let pool = try stage.makeDSAPagePool(pageSize: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+            let prompt = (0 ..< 1_500).map { ($0 * 104_729 + 17) % text.vocabularySize }
+            try Self.checkBalanced(stage: stage, mtp: mtp, pool: pool, prompt: prompt, chunk: 600, bulk: 1_200, boundary: 1_200)
+            try Self.checkBalanced(stage: stage, mtp: mtp, pool: nil, prompt: prompt, chunk: 600, bulk: 1_200, boundary: 1_200)
         }
     }
 }

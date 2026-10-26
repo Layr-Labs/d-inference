@@ -318,8 +318,10 @@ keeps its attention history once per prompt and its linear-attention state per
 frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
 last whole 4,096-token chunk before its final token: each Mac writes its own
 share of it to the SSD once the request has finished, and a later prompt is
-restored from it only when both Macs hold it, with the same tokens as a request
-that prefilled the whole prompt ([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
+restored from it only when both Macs hold it, close to a request that
+prefilled the whole prompt at the default record precision below, and with
+its tokens when records are `native`
+([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
 
 The SSD tier stores older attention rows compactly at the same checkpoint
 precision as a single Mac (`balanced` by default; a Qwen 3.8 27B record's

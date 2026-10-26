@@ -3255,7 +3255,7 @@ flowchart LR
   | Family | Encoded | Native |
   |---|---|---|
   | `qwenAttention` (Qwen 3.5 9B, 3.8 27B, 3.5 and 3.6 35B A3B, Bonsai; tensor parallel and pipeline) | Full-attention keys and values | Linear-attention convolution and SSM state, assistant history |
-  | `glm5NextDSA` (GLM-5.3-Flash pipeline stage) | DSA latents (`keys` slot, `kv_lora_rank` 512) | Index keys and pool gates (`values` slot): they choose each query's top-k rows, and an approximate index key can choose another row; KDA state; MTP history |
+  | `glm5NextDSA` (GLM-5.3-Flash pipeline stage and tensor-parallel rank) | DSA latents (`keys` slot, `kv_lora_rank` 512) | Index keys and pool gates (`values` slot): they choose each query's top-k rows, and an approximate index key can choose another row; KDA state; the NextN history, which a tensor-parallel record keeps as an attention entry under its own layer (`GLM5NextTensorParallelPrefixDisk.encoding` names that layer native) |
   | `native` (MiMo, as on one Mac; Gemma 4; Nemotron; any tier that names no family) | Nothing | Everything |
 
 - **Frontiers.** A record holds rows `[0, N)` of the prompt's deepest kept
@@ -3280,7 +3280,8 @@ flowchart LR
   profile identity and the family. An encoding that encodes nothing adds
   nothing to any of the three. Qwen tensor parallel binds it while the prefix
   cache is on, the Qwen pipeline while it keeps prefixes, the GLM pipeline
-  stage while its cache is on. Native layers bind nothing of their own: the
+  stage and GLM tensor parallel while their caches are on. Native layers bind
+  nothing of their own: the
   model and the build fix them and both name the directory, and a record whose
   entries were encoded under another set is refused at restore.
 - **Size.** From the record layout: a Qwen 3.8 27B tensor-parallel rank (two
@@ -3322,12 +3323,18 @@ selects the workers' encoding; the tier's `persist` lines log
 | Encoding, family eligibility, row layout | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskEncoding.swift` (`QwenStagePrefixDiskEncoding`, `QwenStagePrefixDiskFamily`, `QwenStagePrefixDiskEncodedRows`) |
 | Record writer and reader | `QwenStagePrefixDiskRecord.swift` (`QwenStagePrefixDiskJob`, `QwenStagePrefixDiskRestoreWork.place`) and `QwenStagePrefixDiskTier.swift` in the same directory |
 | Measurement | `QwenStagePrefixDiskMeasurement.swift` there; `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPrefixRecordCheck.swift` |
+| GLM tensor parallel | `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelPrefixDisk.swift` (`GLM5NextTensorParallelPrefixDisk.encoding`; its records' rows read through `QwenStagePrefixDiskRows`) |
 | Row codec | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeCheckpointRowCodec.swift` (`CBv2CheckpointRowCodec`) |
 | Owner resolution | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledKVQuantization.swift` (`recordsEnvironment`), `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedInstalledKVQuantization+Product.swift` (`recordsResolver`) |
 
-Tests: `PrefixDiskEncodingTests` and
+Tests: `PrefixDiskEncodingTests`,
 `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
-(both ranks adopt a balanced record; the band equals a cold prefill).
+(both ranks adopt a balanced record; the band equals a cold prefill),
+`GLM5NextTensorParallelPrefixRecordEncodingTests` (a GLM tensor-parallel rank's
+record read row by row: only the DSA latents encoded, and it adopts) and, with
+`GLM53_PREFIX_SSD=1`,
+`GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
+(the serving-width stage's paged histories through a balanced record).
 
 ## GPT-OSS cluster paged KV
 

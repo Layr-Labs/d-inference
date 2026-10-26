@@ -1069,9 +1069,17 @@ the NextN history the same way under the NextN layer's own index
 | Vote | Each rank offers 1 for a boundary in memory and 3 for one held only as a complete record (`QwenTensorParallelPrefixCache.offer`); one sealed sum chooses the deepest boundary both offer (2, 4 or 6). Without records the words and the decision are the memory-only vote's, and a memory agreement restores as before. |
 | SSD restore | When either rank takes the agreed boundary from SSD, each rank takes it from memory when it holds it there, else reads its record and checks every layer's shape and element type before anything is written (`Restorable`). A second sealed exchange (`QwenTensorParallelPrefixCache.confirm`) shows both ranks have it; only then are the record's rows written into fresh pages of the request's page account and the NextN history into its MTP state, and the memory tier keeps the result. Otherwise both prefill from zero. An unreadable record is deleted by the tier, one that does not adopt by the rank, and a request that stops while its record is read declines without deleting it. |
 
-A restored state holds the bits the memory entry held, so a request restored
-from SSD produces the tokens and logits of the same request prefilled from
-zero. The load agreement carries `glm5-next-tensor-parallel-prefix-v2`. The
+A record stores every DSA layer's latents at the pair's checkpoint precision
+(`balanced` by default; `GLM5NextTensorParallelPrefixDisk.encoding`): a
+restored state holds the bits the memory entry held except the latents' older
+rows, which are approximate (the record's newest 128 rows are exact), so a
+request restored from SSD is close to, not identical with, the same request
+prefilled from zero. Index keys, pool gates, the NextN history and the KDA
+state are always exact, and with `native` records a restore produces the
+tokens and logits of the request prefilled from zero
+([record encoding](inference.md#cluster-ssd-prefix-record-encoding)). The load
+agreement carries `glm5-next-tensor-parallel-prefix-v2` and, while the cache
+is on, the record encoding. The
 configuration, budgets, TTL, daily write cap, free-space floor and per-rank
 owner-only directories are the Qwen TP tier's (`QwenStagePrefixDiskConfiguration`),
 with the key the owner sends on the worker's input. Media requests neither
@@ -1091,6 +1099,9 @@ Code: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Te
 the same directory, and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM5NextPagedDSA.swift`
 (`GLM5NextDSAHistoryRows`). Tests: `GLM5NextTensorParallelPrefixDiskTests`
 (records across a restart, scopes, budgets and expiry, the vote and its
-confirmation across two ranks) and `GLM5NextTensorParallelPrefixRestoreTests`
-(paged and contiguous rank states restored and continued bit for bit;
-`GLM53_PREFIX_SSD=1` on the serving-width synthetic stage).
+confirmation across two ranks), `GLM5NextTensorParallelPrefixRestoreTests`
+(paged and contiguous rank states restored and continued bit for bit from
+native records; `GLM53_PREFIX_SSD=1` on the serving-width synthetic stage,
+also through a balanced record) and
+`GLM5NextTensorParallelPrefixRecordEncodingTests` (a balanced record encodes
+only the DSA latents and adopts).

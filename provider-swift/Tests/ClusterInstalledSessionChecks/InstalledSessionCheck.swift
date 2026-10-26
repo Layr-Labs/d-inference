@@ -485,6 +485,9 @@ final class EndpointBox: @unchecked Sendable {
         let strayDecode=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
             ownerEnvironment:Dictionary(uniqueKeysWithValues:decodeSwitches.map{($0,"0")}))
         try require(strayDecode==environment,"a decode arithmetic switch reached a native rank's environment")
+        let strayWindow=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION":"0"])
+        try require(strayWindow==environment,"the window submission switch reached a native rank's environment")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
         // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).

@@ -154,7 +154,10 @@ struct QwenTensorParallelComputeBenchTests {
                 + " swiglu=\(AffineQuantizedVectors.fusesSwiGLU(vectors: 1)):\(AffineQuantizedVectors.fusesSwiGLU(vectors: 4))"
                 + " fast_synch=\(environment["MLX_METAL_FAST_SYNCH"] ?? "unset")")
             let maxColumns = columnsList.max() ?? 4
-            let outputs = 64 + 2 * rounds * (1 + maxColumns) * (columnsList.count + 1)
+            // The interleaved mode's one session takes every treatment's steps and windows.
+            let treatmentCount = environment["QWEN_TP_COMPUTE_BENCH_AB"].map { $0.split(separator: ",").count } ?? 0
+            let outputs = 64 + max(2 * rounds * (1 + maxColumns) * (columnsList.count + 1),
+                                   (rounds + 2) * treatmentCount * (1 + columnsList.reduce(0, +)))
             let host = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: 1,
                 maximumTokensPerRequest: promptCount + outputs, maximumChunkTokens: max(min(promptCount, 512), maxColumns))
             let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-compute-bench",
@@ -171,6 +174,92 @@ struct QwenTensorParallelComputeBenchTests {
                     host: host, request: request)
                 while session.schedule.committedPromptTokens < request.promptCount { _ = try session.prefill(check: {}) }
                 return session
+            }
+
+            // 0a. Cohorts (QWEN_TP_COMPUTE_BENCH_ROWS=1,2,4,8): B rows' plain step and S-column verify
+            // window, interleaved per round over layout tables (QWEN_TP_COMPUTE_BENCH_COHORT=family,tiles4,...:
+            // `family` this family's own, `tiles4` c44's tiles of four past five vectors, any other name the
+            // table QWEN_TP_COMPUTE_BENCH_COHORT_TABLE_<name>). Layouts never change a result. Product path.
+            if let rowsList = environment["QWEN_TP_COMPUTE_BENCH_ROWS"] {
+                let widths = rowsList.split(separator: ",").compactMap { Int($0) }.filter { (1...8).contains($0) }
+                let tables = (environment["QWEN_TP_COMPUTE_BENCH_COHORT"] ?? "family,tiles4").split(separator: ",")
+                    .map(String.init)
+                func table(_ name: String) throws -> AffineQuantizedVectors.LayoutTable? {
+                    switch name {
+                    case "family": return nil
+                    case "tiles4": return AffineQuantizedVectors.LayoutTable(parsing: "1=a:4:4:1/4=a:2:4:4/5=a:2:4:5/6=a:2:4:4")
+                    default:
+                        guard let text = environment["QWEN_TP_COMPUTE_BENCH_COHORT_TABLE_\(name)"],
+                              let parsed = AffineQuantizedVectors.LayoutTable(parsing: text)
+                        else { throw ProbeError("unknown cohort table \(name)") }
+                        return parsed
+                    }
+                }
+                let resolved = try tables.map { ($0, try table($0)) }
+                let perSession = 8 + (rounds + 2) * resolved.count * (1 + columnsList.reduce(0, +))
+                let cohortHost = try CBv2StageKVHost(model: model.model, kind: .paged, lanes: widths.max() ?? 1,
+                    maximumTokensPerRequest: promptCount + perSession, maximumChunkTokens: max(min(promptCount, 512), maxColumns))
+                let cohortProfile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-compute-cohort-bench",
+                    vocabularySize: model.plan.vocabularySize, hiddenSize: model.plan.hiddenSize, activationDType: "bfloat16",
+                    maximumPromptTokens: promptCount, maximumChunkTokens: min(promptCount, 512), maximumOutputTokens: perSession,
+                    maximumContextTokens: promptCount + perSession)
+                for (name, value) in resolved {
+                    let described = AffineQuantizedVectors.$layoutsOverride.withValue(value) {
+                        [1, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32].map {
+                            "\($0)=\(AffineQuantizedVectors.layout(vectors: $0, inputs: model.plan.hiddenSize, outputs: 1 << 20, bits: model.plan.bits))"
+                        }.joined(separator: ",")
+                    }
+                    report("\(label) cohort_table=\(name) layouts=\(described)")
+                }
+                for width in widths {
+                    var sessions: [QwenTensorParallelBatchSession] = []
+                    for row in 0 ..< width {
+                        let request = try QwenLayerStageGenerationRequest(profile: cohortProfile, requestID: UUID(),
+                            promptTokenIDs: (0..<promptCount).map { ($0 * 131 + row * 29 + 17) % model.plan.vocabularySize },
+                            chunkSize: min(promptCount, 512), outputCount: perSession, stopTokenIDs: [])
+                        let session = try QwenTensorParallelBatchSession(model: model, configuration: configuration,
+                            host: cohortHost, request: request)
+                        while session.schedule.committedPromptTokens < request.promptCount { _ = try session.prefill(check: {}) }
+                        sessions.append(session)
+                    }
+                    var samples: [String: [Double]] = [:]
+                    func timed(_ key: String, record: Bool, _ body: () throws -> Void) throws {
+                        let started = Self.now()
+                        try GPU.withCommandBufferLimits(QwenTensorParallelBatchSession.decodeCommandBuffers) { try body() }
+                        if record { samples[key, default: []].append(Self.ms(started, Self.now())) }
+                    }
+                    for round in 0 ..< (rounds + 2) {
+                        // ABBA order per round, so drift falls on every table alike.
+                        let order = round % 2 == 0 ? resolved : Array(resolved.reversed())
+                        for (name, value) in order {
+                            try AffineQuantizedVectors.$layoutsOverride.withValue(value) {
+                                try timed("\(name) plain", record: round >= 2) {
+                                    _ = try QwenTensorParallelBatchSession.decode(sessions,
+                                        tokens: sessions.map { _ in next() }, check: {})
+                                }
+                                for columns in columnsList {
+                                    let tokens = MLXArray((0 ..< width * columns).map { _ in Int32(next()) })
+                                        .reshaped([width, columns])
+                                    try timed("\(name) window\(columns)", record: round >= 2) {
+                                        let built = try QwenTensorParallelBatchSession.beginWindows(sessions, tokens: tokens)
+                                        eval(built.outputs + built.roots)
+                                        try QwenTensorParallelBatchSession.confirmWindows(sessions, check: {})
+                                        eval(try QwenTensorParallelBatchSession.settleWindows(sessions,
+                                            keeping: Array(repeating: columns, count: width)))
+                                        try QwenTensorParallelBatchSession.confirmSettledWindows(sessions, check: {})
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for key in samples.keys.sorted() {
+                        let parts = key.split(separator: " ")
+                        report("\(label) cohort rows=\(width) table=\(parts[0]) step=\(parts[1]) wall_ms \(Self.stats(samples[key]!))")
+                    }
+                    for session in sessions { try session.retire() }
+                }
+                guard cohortHost.isDrained else { throw ProbeError("cohort bench kept its pages") }
+                return
             }
 
             // 0. Interleaved treatments (QWEN_TP_COMPUTE_BENCH_AB=new,off,...): every round runs each

@@ -78,15 +78,38 @@ It uses the full
 listener request envelope because acquisition precedes tokenization; raw body
 size never reduces the memory charge. `ClusterPlacementBatchScope` prices
 independent state on both ranks, trying widths 8, 4 and 2 in that order once
-real concurrent pressure exists. Each width retains the full listener envelope;
+real concurrent pressure exists (8, 6, 4 and 2 for a request-owned Qwen TP row,
+whose owner prices any width from its own geometry;
+`ClusterPlacementBatchScope.tensorParallelWidths`). Each width retains the full listener envelope;
 the largest separately priced fit avoids repeated reloads as a burst grows.
 For a Qwen TP row, the read-only preview requires that both ranks fit their current
 memory observations, including the simultaneous LOAD reservation described in
 [hardware support](hardware-support.md#automatic-qwen27-tp-width-quotation).
 A higher width that fits only idle hardware does not displace a smaller width
-that fits now. No arithmetic credits the old shard's memory before release.
-After release, the planner rechecks the exact proposed width with fresh profiles;
-it cannot silently adopt a different width from the listener's retained intent.
+that fits now. The preview credits back one thing only: when the replacement
+keeps the running owner's exact tensor-parallel shares, a rank that does not fit
+now is still proposed if its need fits once the running owner's resident
+weights on that Mac are free, as they are before the replacement loads (the same
+split, so the candidate's own `weightsBytes`). The owner's unallocated request
+reservation is never credited and no hardware bound moves
+(`DistributedAutomaticBatchPlanner.acceptsCreditingIncumbentWeights`). After
+release, the planner rechecks the exact proposed width with fresh profiles and
+nothing credited; it cannot silently adopt a different width from the
+listener's retained intent. A credited width that this recheck refuses is
+previewed without credit for 10 minutes for that setup
+(`DistributedAutomaticBatchCreditRefusals`), so steady demand cannot cycle
+release and restore.
+
+Every refused width logs one line, `cluster.batch_replan refused lanes=N`, in
+the preview and in the post-release recheck
+(`DistributedAutomaticBatchPlanner.refusalFields`). Its fields are `phase`
+(`preview` or `post_release`), `reason` (`not_now`, `not_possible`,
+`outside_gpu_working_set`, `not_accepted`, `no_setup` or `no_placement`),
+`requested_lanes`, `previous_lanes`, `require_now`, `credits_incumbent_weights`,
+`mode`, `tensor_shares` and, for each rank N, `rankN_need_bytes`,
+`rankN_load_need_bytes`, `rankN_request_need_bytes`,
+`rankN_admissible_now_bytes`, `rankN_short_bytes` (need minus admissible-now,
+never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
@@ -2792,13 +2815,17 @@ dequantized weights, each weight `s * q + b` rounded once and then one fused
 multiply-add per weight and vector) and the words a lane takes per step (capped
 to the weight's quantization group). The M3 Ultra (family 15) and the M5 Max
 (17) take the dequantized weights at one word per lane, with layouts `a:4:4:1`
-for one vector, `a:2:4:4` for two to four (and tiles of four past five) and
-`a:2:4:5` for five; other families take the scaled inputs and the generic
-layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read)
-never changes a result. The kernel source pins the order of every operation
+for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five; past five, a
+call reads each weight once for a whole cohort's vectors: one tile of eight
+(`b:4:4:8`) for six to eight vectors and tiles of sixteen (`b:2:4:16`) beyond,
+so an eight-row cohort's four-column window (32 vectors) reads the weights
+twice instead of eight times. A tile that runs past the call's end skips its
+missing vectors. Other families take the scaled inputs and the generic
+layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read,
+up to 32) never changes a result. The kernel source pins the order of every operation
 (contraction off, explicit `fma`, safe math), and byte-parity tests compare every
 vector with its own call at rows 1-8 by columns 1-6, 2/4/8 bits, groups of
-32/64/128, every layout and both forms. On the shard shapes, four vectors run
+32/64/128, every layout (tiles of 1-32 vectors) and both forms. On the shard shapes, four vectors run
 1.5-2.6x faster than MLX's own calls on the M3 Ultra (bf16 projections and the
 FP32 row-parallel partials alike) and level to 20% faster on the M5 Max; one
 vector runs level with qmv.
@@ -2831,6 +2858,42 @@ developer's own process; an installed owner never forwards it to a rank (the
 rank environment is an allowlist, checked by `InstalledSessionCheck`). Kernel
 studies override the arithmetic and layouts through task-local values only;
 no environment variable changes them.
+
+Speculative drafts take the same kernel (`QwenTensorParallelMTPDecoder.draftsOnExactVectors`,
+on by default). Every draft head call projects the rank's vocabulary shard
+through `AffineQuantizedVectors` (`QwenTensorParallelMTPProjection.exactRows`),
+and a round's later draft steps run all of a cohort's requests through one
+assistant forward (`Qwen35InlineMTPAssistant.draftHiddens`,
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTPDraftRows.swift`): one
+embedding, pre-FC norm pair, FC, decoder layer and final norm for the rows
+together, every projection through the kernel with one vector per row, and
+attention per row against that row's own pages and offset. A draft step
+therefore reads each assistant and head weight once for the cohort instead of
+once per row. A request drafting alone runs the same function with one row. A
+round's first step keeps the request's own forward on MLX's kernels (it also
+feeds the request's trusted history), with its head call on the kernel. A row
+therefore proposes the same tokens alone and in a cohort of any width, byte for
+byte on both ranks (`QwenTensorParallelExactDraftRowsTests`,
+`QwenTensorParallelMTPHeadRowsTests`, and
+`QwenTensorParallelBatchMTPTransitionTests.exactDraftRowsEqualTheirSoloRunsAndThePlainTargetAtEveryWidth`
+at one to eight rows, with every proposal accepted and with proposals rejected).
+This changes the drafts' arithmetic relative to MLX's kernels, so a proposal can
+differ at a near-tie. Target verification decides every emitted token, so the
+output stays the plain target's greedy tokens. Measured on one M5 Max rank
+(2026-10-25, treatments interleaved, a thermally throttled machine), a cohort's
+draft phase per round fell from 19.5 to 12.8 ms at four 27B rows and from 37.9
+to 23.5 ms at eight (9B: 14.9 to 9.2 and 24.6 to 15.6 ms); one row stayed
+within run-to-run noise. It covers assistants of one decoder layer with a dense
+MLP whose projections are affine `QuantizedLinear` (2, 4 or 8 bits, groups of
+32, 64 or 128): the 9B and 27B heads. Any other assistant drafts each row
+through its own forward, as before. The pair binds the draft kernel into its MTP
+load agreement (`draft-vectors=batch-invariant-affine`), so two ranks that
+resolved it differently refuse to load. `DARKBLOOM_QWEN_TP_MTP_EXACT_DRAFTS=0`
+keeps MLX's kernels for a diagnosis in a developer's own process; an installed
+owner never forwards it to a rank. The single-Mac engine's drafts are
+unchanged: it never calls `draftHiddens` and does not use the tensor-parallel
+head.
+
 Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/AffineQuantizedVectors.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ResidualRMSNorm.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDeltaConvolution.swift`,
@@ -3014,6 +3077,8 @@ GLM's decode and prefill kernels changed only in ways that keep every output bit
 What a tensor-parallel setup served corrects only its shard rates (`ClusterServedCalibration.tensorParallelMeasurements`); the whole-model rates it carries are the estimate it started from. `ClusterSpeedEstimator` therefore takes a device's whole-model rates from its best other measurement (a probe, or what a pipeline or one Mac served) and lays the served shard rates on top (`ClusterSpeedMeasurement.correctsShardRatesOnly`). Before, the tensor-parallel record, being nearest the request mix, replaced a pipeline's served rates with the prior and priced a serial pipeline as fast as one Mac.
 
 Each sealed sum is a GPU -> CPU -> GPU chain. With `MLX_METAL_FAST_SYNCH=1` the GPU waits for the CPU result in a spinning kernel; the core now orders that kernel's pass after every pending pass on its queue (`CommandEncoder::wait_for_all_pending`), because Metal could otherwise start it before an earlier pass the CPU work depends on and spin forever.
+
+A Qwen tensor-parallel rank waits for each all-sum the same way GLM's does: the residual step (`ResidualRMSNorm`, which reads the FP32 all-sum of every row-parallel projection) declares the sum a fenced input, and the worker turns `MLX_METAL_FENCED_INPUTS` on for every tensor-parallel family whose kernels read their sums that way (`ClusterResidentModelCatalog.Family.tensorParallelSumsAreFencedInputs`: GLM and the Qwen dense family; a launcher's own value is kept, and the fused fence update stays its choice). The kernel then waits for the CPU itself instead of a separate spinning launch before it: 128 fewer launches in a 27B verify window, two a layer. MLX consults the setting only for inputs a kernel declares fenced, so every other launch, including other rows of the family, is unchanged, and only where the GPU waits changes, never a value (GPU checks compare each fenced residual step, and a 128-step chain of CPU hops, bitwise with the unfenced result, with and without the setting). Each rank logs the choice (`fenced_sums=` in `darkbloom-aqv-kernel-v1`) and binds it into the load agreement (`qwen-tensor-parallel-fenced-sums-v1`). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ResidualRMSNorm.swift`, `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Startup/WorkerCollectiveSynchronization.swift`.
 
 The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5NextQualificationPlacement.evaluateLocal`. It supplies serial PP only; TP, lookahead and speculative execution are not part of that calibration seam. The cost layout leaves public admitted cuts empty. Existing keyed measurements feed `ClusterSpeedEstimator`; absent measurements remain priors, and the uniform layer-cost and unmeasured-link assumptions are reported. Predicted fastest is not measured-best pair throughput. Experimental workspace allowances never become measured or calibrated serving evidence.
 
@@ -3768,6 +3833,34 @@ decode step took 24.1 ms before these changes and 7.9 ms after: row-major cuts
 9.8 ms, then 100-operation buffers and layer submission 7.9 ms. The pair's
 rate, with its sealed exchanges, needs the pair.
 
+A prompt frame is submitted while it is built, too: every four decoder layers
+(`QwenTensorParallelBatchSession.prefillLayerStride`; a packed-KV frame is
+evaluated whole), so the GPU and the first layers' collectives start before the
+host has built the rest of the frame (on the pair, building a 27B frame took
+about 7 ms at 4K tokens and 24-41 ms at 32K). On a GPU without neural accelerators (the
+M3 Ultra rank, and any M1-M4 Mac on any path), MLX's steel affine quantized
+matmul computes prompt-sized products (256 rows or more, 64-aligned outputs) in
+64-row x 32-column output tiles for 16-bit inputs and 32 x 64 for FP32 partials
+instead of 32 x 32 (`MLX_QMM_STEEL_TILE`); each element still accumulates the
+same K slabs in the same order, and the tile tests and the prefill bench compare
+every tile's bytes. On the M3 Ultra alone a 4,096-token prompt of the 27B took
+12.37 s at 32 x 32 and 12.06 s at the new tiles (the 9B: 3.55 and 3.46 s), with
+the same tokens. On the pair at the 1:1 split, the 27B's time to first token
+with both changes was 1.4% lower at 1K tokens, 1.6% at 4K (8.22 -> 8.08 s), 3.1%
+at 16K (36.7 -> 35.5 s) and 2.2% at 32K (81.8 -> 80.0 s), interleaved with the
+previous scheduling, with the same tokens (the 9B at 1:1: 1.1% at 4K, 1.9% at 16K,
+2.3% at 32K). A row-parallel partial summed in output-feature blocks (so a
+block's collective could overlap the next block's matmul) was measured slower
+on the pair (+12% time to first token at 3:2: each extra CPU-stream crossing and
+collective costs more than the overlap saves) and is not used.
+`DARKBLOOM_QWEN_TP_PREFILL_STRIDE=0` and `MLX_QMM_STEEL_TILE=32` restore the
+previous scheduling for diagnosis (`pair-check --worker-environment` forwards
+them; an installed worker always uses the defaults), and
+`DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1` makes each rank log one
+`qwen-tp-prefill-v1` line per prompt (build, staging, evaluation and commit
+microseconds). `darkbloom-cluster-tp-check qwen-prefill` measures one rank's
+prompt frames, layers and projections with no peer.
+
 The driver coordinates join, one prefill frame and a decode cohort on both
 ranks. A held token credit blocks only its request. When some decode rows are
 ready and others await nearby owner acknowledgments, the driver reuses
@@ -3860,11 +3953,11 @@ The Qwen3.5 9B's artifact ships the same dense one-layer inline head, so its ten
 
 For the exact registered Qwen3.8 27B artifact, normal cluster planning discovers the embedded assistant from the catalog manifest, capability identity and bounded inline header inspection. With `backend.mtp_mode` set to `auto` or `on`, `ClusterPlacementTensorAssistantSelection.readAutomatic` asks the native metadata helper for a complete depth-two cohort quote. The returned inventory fingerprint becomes the saved bilateral policy; the provider does not infer it from a model name. Explicit `off`, the existing MTP kill switch, or an absent head retains the completely quoted ordinary TP owner. A malformed declared assistant refuses planning. This policy does not create a hand-off or phase-split deployment.
 
-The assistant stays resident across admitted widths. Each request owns its history, assistant pages, target frontier and bounded accepted-token queue. The trained SDK head still drafts each row through its own B=1 state, with the same graphs as alone, and each row's draft step is evaluated on its own in request order: it holds two collectives (rank zero's hidden row, then the score exchange), and rows evaluated together would leave the order of independent rows' collectives to each rank's graph schedule, which differs by rank. Both ranks read every proposal from the same exchanged (maximum, index) pairs, so no proposal broadcast is needed. Eligible requests then share one captured target rectangle: `QwenTensorParallelMTPDecoder.stepBatch` verifies their seed and proposals, settles every row to its independently accepted prefix, and confirms the entire ordered cohort before publishing any result. Accepted suffixes consume the existing per-token credits without another native step. Request RNG and stopping remain independent.
+The assistant stays resident across admitted widths. Each request owns its history, assistant pages, target frontier and bounded accepted-token queue. Each row's round starts with its own B=1 assistant step over its own history (the step that also feeds its trusted history); the round's later steps run every row of a cohort through one assistant forward (`Qwen35InlineMTPAssistant.draftHiddens`, see [Batch-invariant tensor-parallel decode projections](#batch-invariant-tensor-parallel-decode-projections)). In a cohort, one head call per draft step chooses every row's proposal (`QwenTensorParallelMTPDecoder.stepBatch`; the SDK's `Qwen35InlineMTPAssistant.draftHidden`, `draftHiddens` and `recordDraft`): the rows' hidden states go through the vocabulary-sharded head together, and the cohort's draft step is one evaluation holding two collectives (rank zero's hidden rows, then the score exchange) in the same order on both ranks, instead of one evaluation and two collectives per row. Each row's choice equals its own call's: both collectives are element-wise, the head shard computes every row with the batch-invariant kernel (`QwenTensorParallelMTPProjection.exactRows`; with exact drafts off, each row as its own single-vector MLX product, `rowsAlone`, because one plain multi-row call would let MLX pick `qmv_wide` on Apple GPU family 15 and later and change rows), and the first maximum is taken per row. `QwenTensorParallelMTPHeadRowsTests` checks the head rows byte for byte for two to eight rows, and `QwenTensorParallelBatchMTPTransitionTests.batchedCohortDraftsMatchRowByRowDraftsWithOneHeadCallPerStep` checks tokens, MTP statistics and native state against row-by-row drafting (collective reductions per run: 577 to 401 at two rows, 1,633 to 401 at eight). A one-row round runs the same per-step functions with one row, so a request proposes the same tokens alone and in a cohort. Both ranks read every proposal from the same exchanged (maximum, index) pairs, so no proposal broadcast is needed. Eligible requests then share one captured target rectangle: `QwenTensorParallelMTPDecoder.stepBatch` verifies their seed and proposals, settles every row to its independently accepted prefix, and confirms the entire ordered cohort before publishing any result. Accepted suffixes consume the existing per-token credits without another native step. Request RNG and stopping remain independent.
 
 Rows stay in one cohort (`QwenTensorParallelNativeBatchExecutor.cohortFrontiers`): when any row with an empty accepted queue starts a speculative round, every other row that still holds at most `depth` queued selections joins it from its own settled carry (`QwenTensorParallelMTPDecoder.settledFrontier`: the input and output allowance it would use once its queue drained, never past a stop token), and its queue then holds up to two settled rounds (`QwenTensorParallelAcceptedSelections.capacity`, 2 x depth + 1). Without it, rows that started a step apart verified alternately, one row per round, for as long as both ran: on the installed pair 1,677 of 1,863 capacity-2 rounds verified one row. A joined row runs the same round with the same per-row arithmetic it would run later, so every row's tokens and state stay byte-equal to its solo run (`QwenTensorParallelBatchMTPTransitionTests`: staggered rows, all-accept and rejecting heads, a row stopped while ahead). The cohort is still capped by the quoted maximum speculative width.
 
-Both ranks hold the verified assistant. Rank zero's assistant hidden row crosses the sealed collective before either rank projects its real vocabulary shard. The head drafts greedily, so each rank reduces its shard's scores to (maximum, first global index) and one four-value exchange gives both ranks the complete row's first maximum (`QwenTensorParallelMTPProjection`); no full vocabulary row crosses the link, and the selected proposals are agreed before the next draft. Greedy verification rounds choose their target tokens the same way, from a (maximum, index, non-finite count) exchange per column (`QwenTensorParallelMTPDecoder.greedyChoices`): both ranks derive identical choices, so there is no logits gather and no second broadcast. Sampled rounds still gather complete rows for rank zero's sampler. Media, requested logprobs and history-dependent filters keep their existing target execution paths and remain admitted capabilities. They do not become eligible speculative rows merely because the assistant is resident. The ordinary rectangular target path and eligible speculative cohort can coexist in one owner.
+Both ranks hold the verified assistant. Rank zero's assistant hidden rows (one per drafting row) cross the sealed collective before either rank projects its real vocabulary shard. The head drafts greedily, so each rank reduces its shard's scores to (maximum, first global index) per row and one exchange of four values per row gives both ranks each complete row's first maximum (`QwenTensorParallelMTPProjection`); no full vocabulary row crosses the link, and the selected proposals are agreed before the next draft. Greedy verification rounds choose their target tokens the same way, from a (maximum, index, non-finite count) exchange per column (`QwenTensorParallelMTPDecoder.greedyChoices`): both ranks derive identical choices, so there is no logits gather and no second broadcast. Sampled rounds still gather complete rows for rank zero's sampler. Media, requested logprobs and history-dependent filters keep their existing target execution paths and remain admitted capabilities. They do not become eligible speculative rows merely because the assistant is resident. The ordinary rectangular target path and eligible speculative cohort can coexist in one owner.
 
 Saved policy, admitted capacity and actual maximum speculative width must agree across metadata quotation, LOAD agreement and both workers' READY before the installed bridge is published. Cancellation and resource pressure become bilateral votes between completed native phases. A failed cohort publishes nothing and remains owned until checked retirement. Warm-prefix reuse carries compatible target and assistant state together; see [prefix ownership](prefix-cache.md#qwen27-tp-assistant-prefix-ownership).
 
@@ -3907,11 +4000,11 @@ Automatic capacity-only replacements retain the current ordered tensor shares fo
 
 Because the retained split binds every later capacity, initial automatic placement also reads the owner's two-lane quote (`ClusterPlacementTensorAssistantSelection.readAutomatic` with `lanes: 2`) and passes it as `tensorParallelWideningQuote`. `ClusterPlacementPlanner` then keeps only the splits whose two-lane replacement could load beside the running owner on every rank now (owner weights plus the replacement's need within the rank's admissible memory); when no split qualifies, every split stays, and the live replacement gate remains authoritative. The singleton quote prices the native profile's complete request envelope and covers the served or planned reference request (`ClusterPlacementRequestScope.applyCovering`) instead of replacing it. When an automatically discovered embedded assistant cannot be placed with its complete reservation, onboarding plans the ordinary request-owned target instead and says so (`ClusterSetupPlanning.assistantOrTarget`); an explicitly requested assistant keeps its refusal.
 
-The resident assistant's trusted history is bounded the same way. `Qwen35InlineMTPAssistant.historyFlushRows` (512 for the tensor-parallel owner, `QwenTensorParallelMTPPolicy.historyFlushRows`) makes the first draft move leading trusted rows into the head's paged K/V in evaluated 512-row blocks, and an ordinary decode stretch moves its whole backlog once it reaches the bound (`flushTrustedHistory`). Prompt-prefix checkpoints still capture unflushed history, because flushing never runs during prefill. `QwenTensorParallelMTPBudget` therefore prices one block plus the proposal row instead of a whole-context FP32 rectangle, and at most one bound of one-token roots beside the prompt's chunk roots. A captured verify window writes its columns into the row's own pages and rolls back by moving the frontier (`PagedSequenceKV.rollback` releases whole pages); its attention gathers per layer, which the target ledger's gather bank already prices. The window supplement is therefore partial-page replacements and segment slack only: `QwenTensorParallelMTPSessionTests.capturedWindowsAllocateNoSecondHistory` measures a four-column window over an 8K paged history at about 2.3 MB across both ranks. At the 64K Qwen27 profile, the whole-model bound for one speculating request fell from about 66 GiB to 22 GiB, and for two from 96 GiB to 36 GiB; the rank ledger below then charges each rank only its own share.
+The resident assistant's trusted history is bounded the same way. `Qwen35InlineMTPAssistant.historyFlushRows` (512 for the tensor-parallel owner, `QwenTensorParallelMTPPolicy.historyFlushRows`) makes the first draft move leading trusted rows into the head's paged K/V in evaluated 512-row blocks, and an ordinary decode stretch moves its whole backlog once it reaches the bound (`flushTrustedHistory`). Prefill moves the same leading blocks earlier: once past any prompt-prefix checkpoint (whose capture still holds the unflushed history up to its frontier), `QwenTensorParallelMTPDecoder.prefill` moves the leading complete 512-row blocks into head K/V as the prompt is observed (`Qwen35InlineMTPAssistant.flushCompleteHistoryBlocks`). These are exactly the blocks, in the same order and shapes, that the first draft would flush first, so every proposal is unchanged (`QwenTensorParallelMTPSessionTests.promptHistoryFlushesKeepDraftsAndBoundTheBacklog`; a 67-token prompt in 8-row blocks peaks at 6 queued rows instead of 66). `QwenTensorParallelMTPBudget` therefore prices one block plus the proposal row instead of a whole-context FP32 rectangle, the prompt's trusted rows only up to the larger of the checkpoint frontier and one block plus one prompt frame, and at most one bound of one-token roots. A captured verify window writes its columns into the row's own pages and rolls back by moving the frontier (`PagedSequenceKV.rollback` releases whole pages); its attention reads the pages in place (the multi-query paged kernel, or one fused paged decode per column), so it gathers no history. The window supplement is therefore partial-page replacements and segment slack only: `QwenTensorParallelMTPSessionTests.capturedWindowsAllocateNoSecondHistory` measures a four-column window over an 8K paged history at about 2.3 MB across both ranks. At the 64K Qwen27 profile, the whole-model bound for one speculating request fell from about 66 GiB to 22 GiB, and for two from 96 GiB to 36 GiB; the rank ledger below then charges each rank only its own share.
 
 The leader reads its rank-0 session through `ClusterStatusCodec`. The saved setup's `ClusterStatusBinding` carries the speculation the session itself derives (`DistributedInstalledSpeculation(configuration:capability:)`), and the codec compares the session's report with it. A pair serving the resident assistant therefore reads as ready. Deriving it from the generation mode alone, which names no head for tensor parallel, rejected every MTP-serving status as stale, so automatic setup never finished. At capacity one, a request the owner cannot reserve is refused alone as `capacity` or `deadline`, as the lane path names it, never as `unsupported`. The resident owner's live memory gate (`QwenDenseStageLoadWatch`, checked every 250 ms while serving) withdraws file cache from admissible memory once more than 512 MiB was compressed or 64 MiB swapped out since its baseline sample. A drained batch scope restarts that window (`restartWindow`), so the next admission's first sample is the baseline. Measured from the first sample of an owner that serves for hours, ordinary background compression on a busy Mac eventually refused every later request even with tens of GiB of file cache available. The limits themselves are unchanged.
 
-Each tensor-parallel rank reserves only the request state it holds (`QwenTensorParallelRankLedger`). That is its own KV heads with the query heads that read them, its own linear-attention key and value heads, and its own rows or input columns of the fused projections and FP32 projection constants, exactly as `QwenTensorParallelPlan` cuts them for its split. The replicated assistant, hidden-width buffers and logits gathered to the whole vocabulary stay whole on both ranks. LOAD, the singleton assistant reservation and every lane reservation derive the rank's figure. `tensor-batch-scope` quotes both ranks of the equal split and of every supported unequal split (`ClusterPlacementTensorRankQuote`); the whole-model allowance remains the bound either rank stays under. Under a quoted split the planner charges each rank its own figure and its share of every lane's state, not the whole-model every-rank charge. Widening is previewed while the running owner still serves, with nothing credited back. So onboarding keeps a split for a later widening only when, on each rank, the running owner's weights and its own request reservation, plus the widened load's need, fit what that Mac admits now. At the 64K Qwen27 profile with the resident assistant, one request reserves 7.9 GiB on a rank holding one of four KV heads and 17.0 GiB on one holding three (21.7 GiB on both before). Two requests reserve 13.5 and 28.4 GiB (36.1 before), and 21.0 GiB each at an equal split. Installed at a 1:2 split, a 32K-token request grew 2.4 GiB on the one-head rank and 5.6 GiB on the three-head rank. On a busy 128 GB Mac admitting about 50 GiB, only splits that give it the smaller share can widen with the assistant, and onboarding now places one of those.
+Each tensor-parallel rank reserves only the request state it holds (`QwenTensorParallelRankLedger`). That is its own KV heads with the query heads that read them, its own linear-attention key and value heads, and its own rows or input columns of the fused projections and FP32 projection constants, exactly as `QwenTensorParallelPlan` cuts them for its split. The replicated assistant, hidden-width buffers and logits gathered to the whole vocabulary stay whole on both ranks. LOAD, the singleton assistant reservation and every lane reservation derive the rank's figure. `tensor-batch-scope` quotes both ranks of the equal split and of every supported unequal split (`ClusterPlacementTensorRankQuote`); the whole-model allowance remains the bound either rank stays under. Under a quoted split the planner charges each rank its own figure and its share of every lane's state, not the whole-model every-rank charge. Widening is previewed while the running owner still serves; only that owner's resident weights are credited back, and only to a replacement with the same split ([automatic batching](#automatic-local-cluster-batching)). Onboarding still keeps a split for a later widening only when, on each rank, the running owner's weights and its own request reservation, plus the widened load's need, fit what that Mac admits now. At the 64K Qwen27 profile (32K prompt and 32K output tokens per request) with the resident assistant, one request reserves 6.5 GiB on a rank holding one of four KV heads and 15.7 GiB on one holding three. Two requests reserve 9.7 and 22.6 GiB, and 16.1 GiB each at an equal split; four and eight requests reserve 25.7 and 45.5 GiB each at an equal split. Before the shared gather bank, per-row cohort state and prompt-time history flush these were 7.8 and 17.1 GiB, 13.7 and 29.1 GiB, 21.4 GiB, and 40.5 and 86.0 GiB. Installed at a 1:2 split, a 32K-token request grew 2.4 GiB on the one-head rank and 5.6 GiB on the three-head rank. On a busy 128 GB Mac admitting about 50 GiB, only splits that give it the smaller share can widen with the assistant, and onboarding now places one of those.
 
 Concurrent speculative requests verify their draft windows in one target forward, and each request must emit exactly the tokens it emits alone. MLX picks a quantized matmul kernel from the product's total row count. Up to the device's vector limit (`get_qmv_batch_limit`: 12 rows at Qwen27's widths on the M3 Ultra, 13 on the M5 Max) a product runs `qmv_wide`; at or beyond it, split-K QMM, with a different reduction order. One request's three-column window is 3 rows; four requests' windows in one product are 12, so on the M3 they took the other kernel. In an installed run before this change, 5 of 30 concurrent requests, all in waves with four-request cohorts, chose a different near-tie token. `QwenTensorParallelTargetWindow.beginBatch` therefore runs the batched verify forward under `Qwen35BatchDecodeScope.verifyRows`. Every projection computes each request's `[1, S, H]` rows as that request's own window would, the row-parallel projections concatenate those partials into one collective per projection (two per dense layer), and the LM head follows the same rule. Below the vector limit, `qmv_wide` (and `qmv` before Apple GPU family 15) computes each vector the same way at any vector count: its tile size only decides which vectors share a weight read. So requests share a quantized call while their windows' total rows stay below the limit (`Qwen35QuantizedVectorLimit`, which mirrors `get_qmv_batch_limit` for the device MLX reads, including `MLX_METAL_GPU_ARCH`). At Qwen27's widths with depth 3 that is two four-column windows per call on the M3 Ultra and three on the M5 Max. `qmv_wide` still reads the weights once per tile of up to five vectors, so sharing saves launches and some weight reads rather than whole passes; the installed round profile (`darkbloom-tp-mtp-profile-v1`, c35) still shows about 44 ms of verify time per additional row. Only exact base `QuantizedLinear` modules in affine mode on the GPU share calls; the CPU, other quantizers, overridden forwards and MLX's 64/128-wide quad kernel keep one call per row. `QwenTensorParallelBatchMTPWindowTests.sharedWindowCallsKeepEveryRowsQuantizedArithmetic` checks the shared calls byte for byte against each row's own call at Qwen27's projection shapes. Attention and the recurrent layers were already per-request, so only the projection row count changed between alone and together. `QwenTensorParallelBatchMTPWindowTests.everyRectangleRowEqualsItsOwnSingleRequestWindowBitwise` compares every row of eight-request rectangles with its own window, byte for byte, on both ranks. The agreement carries `verify-rows=single-window-v1`.
 

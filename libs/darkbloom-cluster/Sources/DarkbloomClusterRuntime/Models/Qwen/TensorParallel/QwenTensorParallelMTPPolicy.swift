@@ -38,6 +38,8 @@ enum QwenTensorParallelMTPPolicy {
         guard let inventory else { throw ProbeError("Tensor assistant inventory is missing") }
         return [agreement, "depth=\(terms.depth)", "inventory=\(inventory.fingerprint)",
             "target=captured-rectangle", "head=rank0-hidden-sharded-vocabulary", "draft-ids=rank0",
-            "assistant-kv=paged64", QwenTensorParallelMTPPrefixBudget.policy, "media=target-only", "speculative-width=assistant-policy", "decode-history=observed", "history-flush=\(historyFlushRows)", "request-ledger=rank-heads-v1", "verify-rows=single-window-v1", "accepted-credit=bounded-suffix-v1", "shortlist=off"]
+            "assistant-kv=paged64", QwenTensorParallelMTPPrefixBudget.policy, "media=target-only", "speculative-width=assistant-policy", "decode-history=observed", "history-flush=\(historyFlushRows)", "request-ledger=rank-heads-v1", "verify-rows=single-window-v1", "accepted-credit=bounded-suffix-v1", "shortlist=off",
+            // Both ranks draft with the same projection arithmetic, or the pair refuses to load.
+            "draft-vectors=\(QwenTensorParallelMTPDecoder.draftsOnExactVectors ? "batch-invariant-affine" : "mlx-kernels")"]
     }
 }

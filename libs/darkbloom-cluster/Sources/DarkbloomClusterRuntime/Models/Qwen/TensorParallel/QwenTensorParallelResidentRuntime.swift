@@ -174,6 +174,7 @@ public final class QwenTensorParallelResidentRuntime {
                     ?? [])
                 + batch.agreementFields + kvQuantization.loadAgreementFields + mode.loadAgreementFields
                 + loadAgreementFields(shares: shares)
+                + QwenTensorParallelTargetWindow.agreementFields
                 + QwenTensorParallelPlan.arithmeticAgreementFields(routedExperts: admission.specification.routedExperts != nil)
                 + QwenTensorParallelBatchSession.decodeAgreementFields
                 + ["qwen-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]

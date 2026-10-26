@@ -23,9 +23,10 @@ Automatic local cluster batching prices each lane's full registered request
 state on each rank, verifies that quote covers the layout's complete layer
 state, and retains ordinary shared work, prefill transients, LOAD and headroom
 charges. After real concurrent pressure it tries bounded widths 8, 4 and 2 in
-that order, resamples both Macs after old-owner release, and requires the new placement to fit current admissible memory and
-GPU working set. It never credits old weights back into a stale free-memory
-snapshot. A retained read-only proposal cannot discount memory or switch to a
+that order (8, 6, 4 and 2 for a Qwen TP row), resamples both Macs after old-owner release, and requires the new placement to fit current admissible memory and
+GPU working set. Only the read-only preview of a Qwen TP replacement that keeps
+the running split credits anything back, and only the running owner's resident
+weights; the check after release credits nothing. A retained read-only proposal cannot discount memory or switch to a
 smaller width after promising a larger one: failure of that exact fresh quote
 uses the existing rollback path. A family without a positive conservative batch
 quote is excluded.
@@ -942,8 +943,12 @@ live native/OS gate. See [request-owned media](inference.md#request-owned-qwen27
 registered canonical tensor inventory. One shared maximum covers the original
 prefill workspace, widest decode graph and logits gather. Retained scalar FP32
 projection constants and the transient batch conversion bank are charged
-separately, including unequal shards. Paged backing includes replacement/gather
-banks, segment slack and allocator overhead. Collective scratch prices complete
+separately, including unequal shards. Paged backing charges each lane its own
+BF16 page bank and partial-page replacement, and one full-history gather bank
+once for the owner: decode steps and verify windows attend pages in place, and
+the driver runs at most one prompt frame per step, so only a prompt frame
+gathers a history (`QwenTensorParallelBatchMemoryTests.fullHistoryGatherIsOnePromptFramesTransient`
+measures both). Segment slack and allocator overhead stay charged. Collective scratch prices complete
 sealed frames, including authentication overhead, through the existing request
 allowance. Media and assistant charges are not hidden in this text quote.
 
@@ -977,14 +982,15 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Res
 Qwen TP automatic batching (every registered TP row, each priced by its own
 geometry) retains the feature-preserving TP mode filter.
 TP uses the same canonical-inventory full request allowance as its native owner
-at widths 2, 4 and 8; a narrower reference request or installed chunk does not
+at widths 2, 4, 6 and 8; a narrower reference request or installed chunk does not
 shrink that floor. During LOAD, this complete future reservation coexists with
 the shard, two whole host tensors, aligned-read scratch and loading headroom.
 The placement and shard assessment add it to the LOAD peak and allocator ask;
 resident and request phases are not substitutes for that simultaneous peak.
 No native gate or headroom threshold is reduced. Both ranks must fit current
-observations before replacement is proposed and again after previous ownership
-releases. Source-bound metadata and child-launch checks establish budget and
+observations before replacement is proposed (crediting at most the running
+owner's resident weights on that Mac, and only for a replacement with the same
+split) and again after previous ownership releases, with nothing credited. Source-bound metadata and child-launch checks establish budget and
 width propagation, not full-artifact TP throughput, media parity or native
 concurrent execution. See [automatic batching](inference.md#automatic-local-cluster-batching).
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift`
@@ -1026,7 +1032,7 @@ acceptance does not qualify actual image/schema model answers.
 
 `QwenTensorParallelMTPInventory` pins all 31 assistant arrays to the registered artifact and configuration before payload reads. Replicated packed weights, constructor bounds, two largest read buffers and aligned-read scratch remain additive during LOAD. Metadata quotation and native LOAD derive the same complete per-rank allowance; admitted request capacity never follows an unpriced speculative width.
 
-`QwenTensorParallelBatchMTPBudget` prices each request's full assistant history/pages, retained target state, copy-on-write pages and accepted-token queue. A slice can retain the whole backing of an earlier target cohort after its peers retire, so the full cohort backing is charged per independently surviving lane. A separate new verification cohort and its workspace remain charged at the same time. Collective and carry backing use the admitted width times verification length, including the seed; a tiny prefill chunk cannot shrink that reservation. First-draft scratch is shared once because assistant drafts execute serially, while the assistant weights load once per owner.
+`QwenTensorParallelBatchMTPBudget` prices each request's assistant history and pages (the prompt's trusted rows bounded as in [inference](inference.md#qwen27-capacity-changes-preserve-request-arithmetic)), retained target state, copy-on-write pages and accepted-token queue. After a cohort round a row keeps only its own recurrent SSM state: it replays from its own committed input, and a fully accepted state is copied out of the cohort's final states (Qwen35 GatedDeltaNet compact replay, copies only). So each surviving lane is charged its own S window rows of SSM state, not B x S (`QwenTensorParallelBatchMemoryTests.cohortSurvivorKeepsOnlyItsOwnRows` measures them). Every other retained term of the earlier cohort (convolution-sized window inputs that may still view the cohort's arrays, hidden rows, logits and scalars) stays charged at the whole B x S backing per surviving lane. A separate new verification cohort, its whole B x S rectangle and its workspace remain charged once, shared, at the same time. Collective and carry backing use the admitted width times verification length, including the seed; a tiny prefill chunk cannot shrink that reservation. First-draft scratch is shared once because assistant drafts execute serially, while the assistant weights load once per owner.
 
 The owner retains its full reservation through checked target and assistant retirement. Failed LOAD roots keep process-lifetime custody and cannot be refunded after an unsuccessful native drain. Metadata fit and tiny fixtures remain distinct from measured full-artifact memory or throughput qualification.
 

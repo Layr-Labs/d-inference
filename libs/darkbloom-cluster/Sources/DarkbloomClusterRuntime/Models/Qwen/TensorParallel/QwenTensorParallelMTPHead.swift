@@ -43,7 +43,8 @@ final class QwenTensorParallelMTPProjection: Linear {
         let contribution = reduction.rank == 0 ? input.asType(.float32)
             : -MLXArray.zeros(input.shape, dtype: .float32)
         let authoritative = reduction.allSum(contribution).asType(input.dtype)
-        let selected = Self.rowsAlone(local, authoritative)
+        let selected = (Self.exactRows ? Self.exactProduct(local, authoritative) : nil)
+            ?? Self.rowsAlone(local, authoritative)
         // FP32 exactly represents every BF16/F16 head result and index.
         let values = selected.asType(.float32)
         let mine = concatenated([values.max(axis: -1, keepDims: true),
@@ -54,6 +55,20 @@ final class QwenTensorParallelMTPProjection: Linear {
         let winner = which(upper, both[.ellipsis, 3 ..< 4], both[.ellipsis, 1 ..< 2])
         let maximum = which(upper, both[.ellipsis, 2 ..< 3], both[.ellipsis, 0 ..< 1])
         return which(positions .== winner, maximum, MLXArray(-Float.infinity)).asType(selected.dtype)
+    }
+
+    /// Draft head calls take `AffineQuantizedVectors` (set by
+    /// `QwenTensorParallelMTPDecoder` around every draft head call, solo and
+    /// cohort alike): one weight read serves every row, and each row gets the
+    /// bits it gets alone, so a row's proposal does not depend on its cohort.
+    @TaskLocal static var exactRows = false
+
+    /// `head`'s product of every row of `x` through `AffineQuantizedVectors`;
+    /// nil for a head the kernel does not cover (the caller keeps `rowsAlone`).
+    static func exactProduct(_ head: Linear, _ x: MLXArray) -> MLXArray? {
+        guard type(of: head) == QuantizedLinear.self, let packed = head as? QuantizedLinear,
+              let product = AffineQuantizedVectors.project(x, packed) else { return nil }
+        return packed.bias.map { product + $0 } ?? product
     }
 
     /// The head's product for each row exactly as that row's own call computes

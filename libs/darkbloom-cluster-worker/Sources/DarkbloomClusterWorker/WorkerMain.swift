@@ -45,7 +45,7 @@ import Foundation
                                                           environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
-            // Before anything native: GLM tensor parallel's fused sum fences (read once too).
+            // Before anything native: where a tensor-parallel family's kernels wait for their sums (read once too).
             if let line = WorkerFenceFusion.apply(mode: configuration.generationMode, family: configuration.family,
                                                   environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))

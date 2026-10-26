@@ -104,7 +104,8 @@ import DarkbloomClusterProtocol
                 }
             }
         }
-        for invalid: Any in [NSNull(), true, false, 0, 1, 3, 7, 9, Int.max, "8", [8]] {
+        // Six lanes are a tensor-parallel width; this pipeline setup refuses it.
+        for invalid: Any in [NSNull(), true, false, 0, 1, 3, 6, 7, 9, Int.max, "8", [8]] {
             var bad = object; bad["batchLanes"] = invalid; try rejected { _ = try decode(bad) }
         }
         var namedPipeline = object; namedPipeline["generationMode"] = "pipeline_v1"

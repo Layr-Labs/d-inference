@@ -32,6 +32,7 @@ import Darwin
         declinedCode()
         linkNotReady()
         memberAgain()
+        resumedMacsOpenWithTheMark()
         memberChangesModel()
         memberVerifiesTeardown()
         leaderAgainServing()
@@ -745,6 +746,47 @@ import Darwin
         expect(run.finish() == 0, "teardown: exit 0")
         expect(run.text.contains("  Apple M5 Ultra, 256 GB: nothing left running"), "teardown: each Mac's summary")
         expect(recorder.all == ["ensureService", "status", "verifyTeardown"], "teardown: \(recorder.all)")
+    }
+
+    /// `darkbloom cluster` run again on a Mac already in a cluster (the leader or a member) opens with the same
+    /// Darkbloom mark as the setup, with what can be done here, before anything else is said: the mark and the
+    /// name on a colour UTF-8 terminal, the two heading lines in a plain transcript.
+    static func resumedMacsOpenWithTheMark() {
+        let D = ClusterOnboardingDriver.self
+        let resumes: [(String, ClusterOnboardingResume, String)] = [
+            ("member", memberResume(), "This Mac is a member of the cluster led by Apple M3 Ultra, 256 GB."),
+            ("leader", .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
+             "This Mac leads the cluster."),
+        ]
+        for (label, resume, first) in resumes {
+            for colour in [true, false] {
+                let recorder = Recorder()
+                let environment = colour ? ["TERM": "xterm-256color", "LANG": "en_US.UTF-8", "DARKBLOOM_NO_ANIMATION": "1"]
+                                         : ["NO_COLOR": "1"]
+                let run = TerminalRun(operations(recorder, resume: resume, pairEvents: [], pairResult: .failed([])),
+                                      environment: environment)
+                expect(run.waitFor("Enter  Leave setup unchanged"), "\(label) again (\(colour ? "colour" : "plain")): the menu")
+                run.type("\r")
+                expect(run.finish() == 0, "\(label) again (\(colour ? "colour" : "plain")): enter leaves")
+                let screen = visible(run.text)
+                // Beside the mark the name wraps a word per row ("Darkbloom", then "cluster"); plain text keeps one line.
+                let name = colour ? String(D.resumeTitle.split(separator: " ")[0]) : D.resumeTitle
+                guard let title = screen.firstIndex(where: { $0.contains(name) }),
+                      let opening = screen.firstIndex(where: { $0.contains(first) }) else {
+                    expect(false, "\(label) again (\(colour ? "colour" : "plain")): the title and the opening line: \(screen)")
+                    continue
+                }
+                expect(title < opening && screen.contains { $0.contains(D.resumeSubtitle) },
+                       "\(label) again (\(colour ? "colour" : "plain")): the name and what can be done open the screen")
+                if colour {
+                    expect(ClusterOnboardingBrand.rows().allSatisfy { row in screen.contains { $0.contains(row) } },
+                           "\(label) again (colour): the whole mark")
+                } else {
+                    expect(!run.text.contains("\u{1B}["), "\(label) again (plain): no escape sequences")
+                }
+                expect(!recorder.all.contains("pair"), "\(label) again: no pairing: \(recorder.all)")
+            }
+        }
     }
 
     static func leaderAgainServing() {

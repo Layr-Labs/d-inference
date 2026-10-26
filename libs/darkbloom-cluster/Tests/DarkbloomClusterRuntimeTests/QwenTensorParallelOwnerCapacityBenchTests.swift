@@ -40,7 +40,11 @@ struct QwenTensorParallelOwnerCapacityBenchTests {
             var assistantWeights: [String: MLXArray] = [:]
             for file in try FileManager.default.contentsOfDirectory(atPath: directory.path)
             where file.hasPrefix("mtp-") && file.hasSuffix(".safetensors") {
-                for (name, value) in try loadArrays(url: directory.appendingPathComponent(file)) { assistantWeights[name] = value }
+                // The owner indexes the assistant without its checkpoint prefix
+                // (`QwenTensorParallelMTPInventory`: "mtp.fc.weight" -> "fc.weight").
+                for (name, value) in try loadArrays(url: directory.appendingPathComponent(file)) {
+                    assistantWeights[name.hasPrefix("mtp.") ? String(name.dropFirst("mtp.".count)) : name] = value
+                }
             }
             eval(Array(assistantWeights.values))
             let head = try QwenTensorParallelMTPHead(model: model, configuration: configuration,

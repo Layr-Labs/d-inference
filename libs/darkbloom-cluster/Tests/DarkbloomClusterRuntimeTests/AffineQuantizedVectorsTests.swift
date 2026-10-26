@@ -41,9 +41,20 @@ struct AffineQuantizedVectorsTests {
                 let layout = AffineQuantizedVectors.layout(vectors: vectors, inputs: 5120, outputs: 6144, bits: 4,
                     architecture: architecture)
                 #expect([1, 2, 4, 8].contains(layout.rowsPerSimdgroup) && [1, 2, 4, 8].contains(layout.simdgroups)
-                    && (1...8).contains(layout.vectorsPerTile), "\(architecture) M=\(vectors) \(layout)")
+                    && (1...AffineQuantizedVectors.Layout.maximumVectorsPerTile).contains(layout.vectorsPerTile)
+                    && layout.schedule != .sharedInputs, "\(architecture) M=\(vectors) \(layout)")
             }
         }
+        // The measured families read the weights once for a whole cohort's vectors (up to sixteen a
+        // tile past five), instead of once per four.
+        for architecture in ["applegpu_g15d", "applegpu_g17s"] {
+            for vectors in 6...48 {
+                let layout = AffineQuantizedVectors.layout(vectors: vectors, inputs: 5120, outputs: 6144, bits: 4,
+                    architecture: architecture)
+                #expect(layout.vectorsPerTile >= min(vectors, 8), "\(architecture) M=\(vectors) \(layout)")
+            }
+        }
+        #expect(AffineQuantizedVectors.parseLayout("b:2:4:32") != nil && AffineQuantizedVectors.parseLayout("b:2:4:33") == nil)
         #expect(AffineQuantizedVectors.family("applegpu_g15d") == 15)
         #expect(AffineQuantizedVectors.family("applegpu_g17s") == 17)
         #expect(AffineQuantizedVectors.family("") == 0)
@@ -146,7 +157,9 @@ struct AffineQuantizedVectorsTests {
         }
     }
 
-    /// Every layout (rows per SIMD group, SIMD groups, vectors per tile) gives the same bits.
+    /// Every layout (rows per SIMD group, SIMD groups, vectors per tile) gives the same bits, with
+    /// 37 vectors: whole tiles and a last tile past the call's end (a tile wider than its whole call:
+    /// the family layouts in `everyVectorEqualsItsOwnSingleVectorCall`).
     @Test(.enabled(if: Self.gpu), arguments: [1, 8], AffineQuantizedVectors.Arithmetic.allCases)
     func everyLayoutGivesTheSameBits(wordsPerLane: Int, arithmetic: AffineQuantizedVectors.Arithmetic) throws {
         try AffineQuantizedVectors.$arithmeticOverride.withValue(arithmetic) {
@@ -154,14 +167,17 @@ struct AffineQuantizedVectorsTests {
             for (index, (inputs, outputs, bits)) in [(5120, 520, 4), (3072, 333, 4), (2048, 264, 8)].enumerated() {
                 let layer = Self.linear(outputs, inputs, bits: bits, group: 64, scaleType: .bfloat16, seed: UInt64(300 + index))
                 for input in [DType.bfloat16, .float32] {
-                    let x = Self.random([13, inputs], seed: UInt64(400 + index), scale: 1).asType(input)
+                    let x = Self.random([37, inputs], seed: UInt64(400 + index), scale: 1).asType(input)
                     let base = try #require(AffineQuantizedVectors.project(x, layer,
                         layout: AffineQuantizedVectors.Layout(rowsPerSimdgroup: 1, simdgroups: 1, vectorsPerTile: 1)))
                     eval(base)
                     let expected = Self.bytes(base)
                     // Every schedule at rows per SIMD group 1...8, SIMD groups 1...8 and
-                    // tiles 1...8 (each value at least once), and the bit-built decode.
-                    let shapes = [(1, 1, 1), (2, 4, 3), (4, 2, 5), (8, 4, 8), (8, 1, 4), (1, 8, 2), (4, 4, 4)]
+                    // tiles 1...32 (each value at least once, tiles of 1-8, 12, 16, 24 and
+                    // 32), and the bit-built decode.
+                    let shapes = [(1, 1, 1), (2, 4, 3), (4, 2, 5), (8, 4, 8), (8, 1, 4), (1, 8, 2), (4, 4, 4),
+                                  (2, 4, 6), (1, 2, 7), (4, 4, 8), (4, 4, 12), (2, 4, 16), (4, 4, 16), (8, 2, 16), (2, 1, 24),
+                                  (1, 4, 32), (2, 4, 32), (2, 8, 32)]
                     for schedule in AffineQuantizedVectors.Layout.Schedule.allCases {
                         for (rows, groups, tile) in shapes {
                             for magic in (rows == 4 || rows == 8 ? [false, true] : [false]) {

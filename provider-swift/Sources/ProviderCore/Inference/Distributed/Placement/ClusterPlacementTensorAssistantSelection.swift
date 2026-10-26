@@ -8,7 +8,8 @@ enum ClusterPlacementTensorAssistantSelection {
     static func arguments(modelDirectory: String, policy: ClusterQwenTensorAssistantPolicy,
                           promptTokens: Int, outputTokens: Int, lanes: Int, chunkTokens: Int) throws -> [String] {
         try policy.validate()
-        guard [1, 2, 4, 8].contains(lanes), promptTokens > 0, outputTokens > 0, (1...512).contains(chunkTokens) else {
+        guard lanes == 1 || ClusterPlacementBatchScope.tensorParallelWidths.contains(lanes),
+              promptTokens > 0, outputTokens > 0, (1...512).contains(chunkTokens) else {
             throw ClusterConfigurationError.invalid("Invalid tensor assistant quotation scope")
         }
         return ["tensor-batch-scope", "--model-dir", modelDirectory,
@@ -60,7 +61,8 @@ enum ClusterPlacementTensorAssistantSelection {
 
     static func discoveryArguments(modelDirectory: String, promptTokens: Int, outputTokens: Int,
                                    chunkTokens: Int, assistant: Bool = true, lanes: Int = 1) throws -> [String] {
-        guard promptTokens > 0, outputTokens > 0, (1...512).contains(chunkTokens), [1, 2, 4, 8].contains(lanes) else {
+        guard promptTokens > 0, outputTokens > 0, (1...512).contains(chunkTokens),
+              lanes == 1 || ClusterPlacementBatchScope.tensorParallelWidths.contains(lanes) else {
             throw ClusterConfigurationError.invalid("Invalid automatic tensor assistant quotation scope")
         }
         return ["tensor-batch-scope", "--model-dir", modelDirectory,

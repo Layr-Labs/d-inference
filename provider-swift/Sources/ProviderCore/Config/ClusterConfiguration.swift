@@ -143,7 +143,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
                     default: false
                     }
                 } == true
-            try require([2, 4, 8].contains(batchLanes) && (pipeline || tensor)
+            // Six lanes are a tensor-parallel owner's width (pipeline stages price
+            // 2, 4 and 8; `ClusterPlacementBatchScope` lists both).
+            try require([2, 4, 6, 8].contains(batchLanes) && (pipeline || tensor) && (tensor || batchLanes != 6)
                 && selectedPrefillSchedule == .serial && !capability.hasPrivateImages,
                 "A planned batch width requires a supported pipeline or Qwen tensor mode with serial prefill")
         }

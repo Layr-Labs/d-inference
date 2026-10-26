@@ -478,6 +478,10 @@ enum CompareCommand {
                 try GLMBench.run(Array(CommandLine.arguments.dropFirst(2)))
                 return
             }
+            if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "qwen-prefill" {
+                try QwenPrefillBench.run(Array(CommandLine.arguments.dropFirst(2)))
+                return
+            }
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

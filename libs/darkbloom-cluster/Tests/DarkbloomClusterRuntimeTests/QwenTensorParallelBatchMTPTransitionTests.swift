@@ -64,6 +64,9 @@ struct QwenTensorParallelBatchMTPTransitionTests {
         var captures: [Int: Int] = [:], released = Set<UUID>()
         var failResourceRelease = false
         var failure: Error?
+        /// This owner's draft kernels (`draftsOnExactVectorsOverride`; nil: the product's).
+        var exactDrafts: Bool?
+        var speculative = true
         init(rank: Int, model: QwenTensorParallelModel, host: CBv2StageKVHost, head: QwenTensorParallelMTPHead) {
             self.rank = rank; self.model = model; self.host = host; self.head = head
         }
@@ -77,7 +80,9 @@ struct QwenTensorParallelBatchMTPTransitionTests {
         for owner in owners { owner.failure = nil }
         DispatchQueue.concurrentPerform(iterations: 2) { rank in
             Device.withDefaultDevice(.gpu) {
-                do { try work.body(owners[rank]) } catch { owners[rank].failure = error }
+                QwenTensorParallelMTPDecoder.$draftsOnExactVectorsOverride.withValue(owners[rank].exactDrafts) {
+                    do { try work.body(owners[rank]) } catch { owners[rank].failure = error }
+                }
             }
         }
         for owner in owners { if let error = owner.failure { throw error } }
@@ -117,7 +122,8 @@ struct QwenTensorParallelBatchMTPTransitionTests {
     /// `heads` query heads over two key/value heads: four is the suites'
     /// tiny geometry, eight the 9B's ratio of four query heads per KV head.
     private func pair(capacity: Int, cohort: Bool = false, heads: Int = 4, head kind: HeadFixture = .accepting,
-                      joinsAhead: Bool = true, batchesDrafts: Bool = true) throws -> (owners: [Owner], wire: Wire) {
+                      joinsAhead: Bool = true, batchesDrafts: Bool = true,
+                      speculative: Bool = true) throws -> (owners: [Owner], wire: Wire) {
         let budget: QwenTensorParallelBatchMTPBudget?
         if cohort { budget = try cohortQuote(capacity: capacity) } else { budget = nil }
         let checkpoint = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4,
@@ -169,13 +175,14 @@ struct QwenTensorParallelBatchMTPTransitionTests {
                 completedPrefill: {}, releaseResources: { [unowned owner] reservation in
                     if owner.failResourceRelease { throw ProbeError("Injected host-resource drain failure") }
                     #expect(owner.released.insert(reservation.request.requestID).inserted)
-                }, assistant: .init(head: head, depth: 4, prefix: nil, prefixBudget: prefixBudget,
-                    allocationBound: { $0 }, cohortBudget: budget),
+                }, assistant: speculative ? QwenTensorParallelBatchAssistant(head: head, depth: 4, prefix: nil,
+                    prefixBudget: prefixBudget, allocationBound: { $0 }, cohortBudget: budget) : nil,
                 openedLane: { [unowned owner] id, route in owner.routes[id] = route },
                 completedSpeculation: { [unowned owner] id, width, stats in
                     owner.rounds[id, default: []].append(stats)
                     owner.verifiedWidths[id, default: []].append(width)
                 }, cohortJoinsAhead: joinsAhead, cohortBatchesDrafts: batchesDrafts)
+            owner.speculative = speculative
             return owner
         }
         return (owners, wire)
@@ -201,7 +208,7 @@ struct QwenTensorParallelBatchMTPTransitionTests {
             let value = try request(id: id, row: row, outputs: outputs, capture: capture, history: history)
             owner.lanes[row] = try owner.executor.open(.init(request: value), check: {})
             owner.tokens[row] = []
-            #expect((owner.lanes[row]!.assistant != nil) == (!capture && !history))
+            #expect((owner.lanes[row]!.assistant != nil) == (owner.speculative && !capture && !history))
         }
         while owners[0].lanes[row]!.nextFrame?.phase == .prefill {
             try paired(owners) { owner in
@@ -591,7 +598,7 @@ struct QwenTensorParallelBatchMTPTransitionTests {
     func staggeredRowsVerifyAsOneCohortAndMatchTheirSoloRuns() throws {
         try Device.withDefaultDevice(.gpu) {
             for head in [HeadFixture.accepting, .twoChoice] {
-                for capacity in [2, 4] {
+                for capacity in [2, 4, 6] {
                     let outputs = 30
                     var solo: [RowRun] = []
                     for row in 0..<capacity {
@@ -690,7 +697,7 @@ struct QwenTensorParallelBatchMTPTransitionTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
     func batchedCohortDraftsMatchRowByRowDraftsWithOneHeadCallPerStep() throws {
         try Device.withDefaultDevice(.gpu) {
-            for capacity in [2, 4, 8] {
+            for capacity in [2, 4, 6, 8] {
                 let outputs = 26
                 var runs: [Bool: (rows: [RowRun], reductions: Int, rounds: Int)] = [:]
                 for batched in [false, true] {
@@ -715,6 +722,87 @@ struct QwenTensorParallelBatchMTPTransitionTests {
                 #expect(together.rows == alone.rows, "capacity \(capacity): batched drafts changed a row")
                 #expect(together.rounds == alone.rounds)
                 #expect(together.reductions < alone.reductions)
+            }
+        }
+    }
+
+    /// Exact drafts (`QwenTensorParallelMTPDecoder.draftsOnExactVectors`):
+    /// with every proposal accepted (each round's later steps kept in the
+    /// assistant's history) and with proposals rejected, every row of cohorts
+    /// of two to eight requests equals its own solo run (tokens, MTP statistics
+    /// and final native state on both ranks), and every row of one to eight
+    /// emits exactly the plain target's greedy tokens (an owner without an
+    /// assistant). The same holds with MLX's draft kernels; each mode's
+    /// acceptance is reported for comparison.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_MTP_GPU"] == "1"))
+    func exactDraftRowsEqualTheirSoloRunsAndThePlainTargetAtEveryWidth() throws {
+        try Device.withDefaultDevice(.gpu) {
+            let outputs = 30
+            for head in [HeadFixture.accepting, .twoChoice] {
+              for capacity in [1, 2, 4, 6, 8] {
+                let cohort = capacity > 1
+                let (plain, _) = try pair(capacity: capacity, cohort: cohort, head: head, speculative: false)
+                for row in 0..<capacity { try open(plain, row: row, outputs: outputs, zeroTokens: head == .accepting) }
+                while true {
+                    let rows = (0..<capacity).filter { plain[0].tokens[$0]!.count < outputs }
+                    if rows.isEmpty { break }
+                    try step(plain, rows: rows)
+                }
+                let expected = (0..<capacity).map { plain[0].tokens[$0]! }
+                for owner in plain {
+                    for row in 0..<capacity {
+                        let lane = owner.lanes[row]!
+                        try owner.executor.retire(lane, reason: .length, selected: owner.tokens[row]!.count,
+                            last: owner.tokens[row]!.last)
+                        try owner.executor.confirmedRetirement(lane, clean: true)
+                    }
+                    #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0)
+                }
+                var report: [String] = []
+                for exact in [true, false] {
+                    // Each row alone in an owner of this capacity: its solo run.
+                    var solo: [RowRun] = []
+                    if cohort {
+                        for row in 0..<capacity {
+                            let (owners, _) = try pair(capacity: capacity, cohort: true, head: head)
+                            for owner in owners { owner.exactDrafts = exact }
+                            try open(owners, row: row, outputs: outputs, zeroTokens: head == .accepting)
+                            while owners[0].tokens[row]!.count < outputs { try step(owners, rows: [row]) }
+                            solo.append(try finish(owners, row: row))
+                            for owner in owners { #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0) }
+                        }
+                    }
+                    let (owners, _) = try pair(capacity: capacity, cohort: cohort, head: head)
+                    for owner in owners { owner.exactDrafts = exact }
+                    for row in 0..<capacity { try open(owners, row: row, outputs: outputs, zeroTokens: head == .accepting) }
+                    var runs = [RowRun?](repeating: nil, count: capacity)
+                    while runs.contains(where: { $0 == nil }) {
+                        let rows = (0..<capacity).filter { runs[$0] == nil }
+                        try step(owners, rows: rows)
+                        for row in rows where owners[0].tokens[row]!.count == outputs { runs[row] = try finish(owners, row: row) }
+                    }
+                    for row in 0..<capacity {
+                        let run = try #require(runs[row])
+                        #expect(run.tokens == expected[row],
+                            "\(head) capacity \(capacity) row \(row) exact \(exact): MTP output differs from the plain target")
+                        if cohort {
+                            #expect(run == solo[row], "\(head) capacity \(capacity) row \(row) exact \(exact): the cohort changed the row")
+                        }
+                    }
+                    for owner in owners {
+                        // The rows verified together at least once.
+                        #expect(!cohort || owner.widths.contains(capacity))
+                        #expect(owner.host.isDrained && owner.host.backend.bytesReserved == 0)
+                    }
+                    let rounds = runs.reduce(0) { $0 + $1!.rounds }, emitted = runs.reduce(0) { $0 + $1!.emitted }
+                    let accepted = runs.reduce([0, 0, 0, 0]) { total, run in zip(total, run!.accepted).map { $0 + $1 } }
+                    let mode = exact ? "exact" : "mlx"
+                    report.append("\(mode)_rounds=\(rounds) \(mode)_tokens_per_round="
+                        + String(format: "%.3f", Double(emitted) / Double(max(1, rounds)))
+                        + " \(mode)_accepted_by_position=\(accepted.map(String.init).joined(separator: "-"))")
+                }
+                print("darkbloom-exact-drafts-lossless-v1 head=\(head) capacity=\(capacity) " + report.joined(separator: " "))
+              }
             }
         }
     }

@@ -690,11 +690,20 @@ public enum ClusterOnboardingDriver {
             console.say("Private unqualified MiMo PNG candidate selected; actual image and all applicable modality gates remain open.")
         }
         switch resume.role {
-        case .member: return member(resume, operations, console, request: request)
-        case .leader: return leader(resume, operations, console, justPaired: false, request: request)
+        case .member:
+            console.banner(resumeTitle, resumeSubtitle)
+            return member(resume, operations, console, request: request)
+        case .leader:
+            console.banner(resumeTitle, resumeSubtitle)
+            return leader(resume, operations, console, justPaired: false, request: request)
         case nil: return onboard(operations, console, request: request)
         }
     }
+
+    /// The opening on a Mac that is already in a cluster (`darkbloom cluster` run again, on the leader or a member):
+    /// the same mark as the setup, with what can be done from here.
+    public static let resumeTitle = "Darkbloom cluster"
+    public static let resumeSubtitle = "Status / Test / Change model / Stop"
 
     /// macOS asks once, the first time Darkbloom's service talks over the cable. Said before it can appear.
     public static let localNetworkLine = "macOS may ask once to allow Darkbloom on the local network. Allow it."

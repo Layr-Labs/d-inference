@@ -100,13 +100,16 @@ CHECK_MODEL=registered_qwen38_27b check qwen27-batch-invalid-lanes 1 "outside 1.
 check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-command-buffer-size 1 "darkbloom-command-buffer-budget-v1 max_mb=50 source=launcher" "" MLX_MAX_MB_PER_BUFFER=50 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-the-command-buffer-size-alone 1 "" "darkbloom-command-buffer-budget-v1" --
-# GLM tensor parallel waits for its sums in the reading kernel by default;
-# the fused fence update stays a launcher's choice (kept and logged). Qwen
-# tensor parallel and GLM pipelines leave both alone.
+# GLM and Qwen tensor parallel wait for their sums in the reading kernel by
+# default (both families read every sum as a fenced input); the fused fence
+# update stays a launcher's choice (kept and logged). Pipelines leave both alone.
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-opted-in-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
-check qwen-tensor-parallel-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" -- --generation-mode tensor_parallel_v1
+check qwen-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" DARKBLOOM_CLUSTER_BATCH_LANES=2 -- --generation-mode tensor_parallel_v1
+check qwen-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=0 source=mixed" "MLX_METAL_FUSED_FENCE_UPDATE" MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
+check qwen-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --
 CHECK_MODEL=registered_glm53_flash check glm-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --
 check tensor-shares-refused-without-tensor-parallel 1 "--tensor-shares takes two canonical weights" "" -- --tensor-shares 1:3
 check tensor-shares-refused-malformed 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:03

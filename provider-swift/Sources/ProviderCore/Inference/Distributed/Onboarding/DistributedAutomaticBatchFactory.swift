@@ -34,7 +34,8 @@ public actor DistributedAutomaticBatchFactory {
               let child = ClusterService.publishedLive()?.child,
               child.running, child.pid == getpid(), child.configurationSHA256 != nil else { return nil }
         let total = min(8, max(0, demand.activeRequests)) + min(8, demand.waitingRequests)
-        let widths = ClusterPlacementBatchScope.candidateWidths(waitingRequests: total)
+        let widths = ClusterPlacementBatchScope.candidateWidths(waitingRequests: total,
+            tensorParallel: ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(demand.runtimeModelID))
             .filter { $0 > demand.currentCapacity }
         guard !widths.isEmpty, attempts.begin() else { return nil }
         let planner = DistributedAutomaticBatchPlanner(providerConfiguration: providerConfiguration, paths: paths)

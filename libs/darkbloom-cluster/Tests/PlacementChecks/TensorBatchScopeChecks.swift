@@ -90,7 +90,7 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         prefillSchedule: .serial, layout: layout, policy: p, link: link)
     checks.require("TP batch: allocator limit includes native future request before LOAD",
         allocatorBounded.ranks[0].hardwareFits == false && allocatorBounded.ranks[1].hardwareFits == true)
-    for lanes in [2, 4, 8] {
+    for lanes in [2, 4, 6, 8] {
         let value = try quote(lanes), policy = try policy(value)
         let candidate = try ClusterPlacementPlanner.evaluate(devices: fast, cuts: [], mode: .tensorParallel,
             prefillSchedule: .serial, layout: layout, policy: policy, link: link)
@@ -134,7 +134,7 @@ func checkTensorBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         inventorySHA256: String(repeating: "a", count: 64))
     let assistant = try ClusterPlacementTensorAssistantQuote(policy: assistantPolicy,
         residentBytes: gib, loadBytes: 5 * gib, largestAllocationBytes: gib)
-    for lanes in [1, 2, 4, 8] {
+    for lanes in [1, 2, 4, 6, 8] {
         let base = try quote(max(2, lanes))
         let value = try ClusterPlacementTensorBatchQuote(request: request, lanes: lanes, chunkTokens: 128,
             perLaneStateBytes: 4 * gib, sharedBytesExcludingCollectives: 80 * gib,

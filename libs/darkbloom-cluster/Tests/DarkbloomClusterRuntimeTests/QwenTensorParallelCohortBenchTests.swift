@@ -51,7 +51,11 @@ struct QwenTensorParallelCohortBenchTests {
             var assistantWeights: [String: MLXArray] = [:]
             for file in try FileManager.default.contentsOfDirectory(atPath: directory.path)
             where file.hasPrefix("mtp-") && file.hasSuffix(".safetensors") {
-                for (name, value) in try loadArrays(url: directory.appendingPathComponent(file)) { assistantWeights[name] = value }
+                // The owner indexes the assistant without its checkpoint prefix
+                // (`QwenTensorParallelMTPInventory`: "mtp.fc.weight" -> "fc.weight").
+                for (name, value) in try loadArrays(url: directory.appendingPathComponent(file)) {
+                    assistantWeights[name.hasPrefix("mtp.") ? String(name.dropFirst("mtp.".count)) : name] = value
+                }
             }
             eval(Array(assistantWeights.values))
             let head = try QwenTensorParallelMTPHead(model: model, configuration: configuration,
@@ -67,10 +71,22 @@ struct QwenTensorParallelCohortBenchTests {
             func median(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.sorted()[values.count / 2] }
             let names = ["draft", "build", "verify", "gather", "choose", "settle"]
             var pooled: [String: [String: [Double]]] = [:]
+            // Treatments: row-by-row drafts on MLX's kernels, one head call on
+            // MLX's kernels, and exact drafts (`draftsOnExactVectors`: the head
+            // and the round's later steps on `AffineQuantizedVectors`, all rows
+            // in one forward). One row compares MLX's and the exact kernels.
+            struct Treatment { let batched: Bool; let exact: Bool
+                var name: String { exact ? "exact" : (batched ? "one-head-call" : "row-by-row") } }
+            func treatments(_ width: Int) -> [Treatment] {
+                width > 1 ? [.init(batched: false, exact: false), .init(batched: true, exact: false), .init(batched: true, exact: true)]
+                    : [.init(batched: true, exact: false), .init(batched: true, exact: true)]
+            }
             for (repeatIndex, width) in (0..<repeats).flatMap({ index in widths.map { (index, $0) } }) {
-                // ABBA: row-by-row first on even repetitions, one head call first on odd ones.
-                let order = width > 1 ? (repeatIndex % 2 == 0 ? [false, true] : [true, false]) : [true]
-                for batched in order {
+                // ABBA: the treatments in order on even repetitions, reversed on odd ones.
+                let order = repeatIndex % 2 == 0 ? treatments(width) : Array(treatments(width).reversed())
+                for treatment in order {
+                  try QwenTensorParallelMTPDecoder.$draftsOnExactVectorsOverride.withValue(treatment.exact) {
+                    let batched = treatment.batched
                     var decoders: [QwenTensorParallelMTPDecoder] = [], last: [Int] = []
                     for row in 0..<width {
                         let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
@@ -108,17 +124,18 @@ struct QwenTensorParallelCohortBenchTests {
                     }
                     let parts = names.map { "\($0)_ms=\(String(format: "%.2f", median(phases[$0] ?? [])))" }.joined(separator: " ")
                     let total = names.reduce(0) { $0 + median(phases[$1] ?? []) }
-                    let key = "rows=\(width) drafts=\(batched ? "one-head-call" : "row-by-row")"
+                    let key = "rows=\(width) drafts=\(treatment.name)"
                     for name in names { pooled[key, default: [:]][name, default: []] += phases[name] ?? [] }
                     report("qwen-tp-cohort-bench repeat=\(repeatIndex) \(key)"
                         + " draft_evaluations_per_round=\(batched || width == 1 ? depth : depth * width) \(parts)"
                         + " round_ms=\(String(format: "%.2f", total)) emitted=\(emitted)")
                     for decoder in decoders { try decoder.retire() }
+                  }
                 }
             }
             for width in widths {
-                for batched in width > 1 ? [false, true] : [true] {
-                    let key = "rows=\(width) drafts=\(batched ? "one-head-call" : "row-by-row")"
+                for treatment in treatments(width) {
+                    let key = "rows=\(width) drafts=\(treatment.name)"
                     let phases = pooled[key] ?? [:]
                     let parts = names.map { "\($0)_ms=\(String(format: "%.2f", median(phases[$0] ?? [])))" }.joined(separator: " ")
                     let total = names.reduce(0) { $0 + median(phases[$1] ?? []) }
@@ -133,8 +150,10 @@ struct QwenTensorParallelCohortBenchTests {
     /// Opt-in: the complete native LOAD quote this build prices for a real
     /// artifact, by width (QWEN_TP_QUOTE_MODEL=<model dir>, optional
     /// QWEN_TP_QUOTE_DEPTH=3, QWEN_TP_QUOTE_PROMPT=32768, QWEN_TP_QUOTE_OUTPUT=32768,
-    /// QWEN_TP_QUOTE_LANES=1,2,4,8),
-    /// the same derivation as `darkbloom-cluster-plan tensor-batch-scope`.
+    /// QWEN_TP_QUOTE_LANES=1,2,4,8, QWEN_TP_QUOTE_CHUNK=512),
+    /// the same derivation as `darkbloom-cluster-plan tensor-batch-scope`; the
+    /// `-bytes` line gives each split's LOAD reservation per rank in bytes
+    /// (`rankReservedBytes`: collective scratch included), as the planner reads it.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_QUOTE_MODEL"] != nil))
     func completeLoadQuoteByWidth() throws {
         let environment = ProcessInfo.processInfo.environment
@@ -142,12 +161,13 @@ struct QwenTensorParallelCohortBenchTests {
         let depth = Int(environment["QWEN_TP_QUOTE_DEPTH"] ?? "3") ?? 3
         let prompt = Int(environment["QWEN_TP_QUOTE_PROMPT"] ?? "32768") ?? 32768
         let output = Int(environment["QWEN_TP_QUOTE_OUTPUT"] ?? "32768") ?? 32768
+        let chunk = Int(environment["QWEN_TP_QUOTE_CHUNK"] ?? "512") ?? 512
         let gib = Double(1 << 30)
         let widths = (environment["QWEN_TP_QUOTE_LANES"] ?? "").split(separator: ",").compactMap { Int($0) }
         for lanes in widths.isEmpty ? [1, 2, 4, 8] : widths {
             // Depth 0: the plain target quote (rows without a tensor-parallel assistant).
             let quote = try ClusterPlacementArtifact.requestedTensorBatchQuote(directory: directory,
-                promptTokens: prompt, outputTokens: output, chunkTokens: 512, lanes: lanes,
+                promptTokens: prompt, outputTokens: output, chunkTokens: chunk, lanes: lanes,
                 assistantDepth: depth > 0 ? depth : nil,
                 assistantVerification: depth > 0 && lanes > 1 ? .admittedCohort : .singleton,
                 allocationBound: { try Memory.allocationFootprintUpperBound(byteCount: $0) })
@@ -158,6 +178,15 @@ struct QwenTensorParallelCohortBenchTests {
             print("qwen-tp-load-quote lanes=\(lanes) depth=\(depth) per_lane_gib=\(String(format: "%.2f", Double(quote.perLaneStateBytes) / gib))"
                 + " shared_gib=\(String(format: "%.2f", Double(quote.sharedBytesExcludingCollectives) / gib))"
                 + " whole_gib=\(String(format: "%.2f", Double(quote.allowance.requestBytesExcludingCollectives) / gib)) ranks \(ranks)")
+            let reserved = (quote.rankQuotes ?? []).map { entry in
+                "\(entry.shares.map(String.init).joined(separator: ":"))="
+                    + (0..<2).map { String(quote.rankReservedBytes(rank: $0, shares: entry.shares) ?? -1) }.joined(separator: "/")
+            }.joined(separator: " ")
+            print("qwen-tp-load-quote-bytes lanes=\(lanes) depth=\(depth) prompt=\(prompt) output=\(output) chunk=\(chunk)"
+                + " per_lane=\(quote.perLaneStateBytes) shared=\(quote.sharedBytesExcludingCollectives)"
+                + " collective_scratch=\(quote.allowance.collectiveScratchBytes) whole_reserved=\(quote.allowance.reservedBytes)"
+                + " assistant_resident=\(quote.assistant?.residentBytes ?? 0) assistant_load=\(quote.assistant?.loadBytes ?? 0)"
+                + " rank_reserved \(reserved)")
         }
     }
 }

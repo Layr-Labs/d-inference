@@ -1,3 +1,4 @@
+import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -101,7 +102,21 @@ final class QwenTensorParallelTargetWindow {
     /// window is evaluated whole (its refused writes are checked after the
     /// graph is built and before any of it runs, `checkStepWrites`).
     static func layerStride(packed: Bool) -> Int {
-        QwenTensorParallelBatchSession.layerStride ?? (packed ? 0 : QwenTensorParallelBatchSession.decodeLayerStride)
+        QwenTensorParallelBatchSession.layerStride
+            ?? (packed || !submitsByLayer ? 0 : QwenTensorParallelBatchSession.decodeLayerStride)
+    }
+
+    /// Diagnostic only: `DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION=0` evaluates
+    /// every window whole, as before layer-by-layer submission, for an A/B on
+    /// the pair. An installed owner never forwards it to a rank; both ranks
+    /// bind the choice into their load agreement (`agreementFields`), so a
+    /// pair never mixes them. Evaluation order only: the same values.
+    static let submitsByLayer =
+        ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION"] != "0"
+
+    /// Bound into the tensor-parallel load agreement.
+    static var agreementFields: [String] {
+        ["qwen-tensor-parallel-window-submission-v1", submitsByLayer ? "by-layer" : "whole"]
     }
 
     /// A single target forward owns all rows; the assistant's draft state is

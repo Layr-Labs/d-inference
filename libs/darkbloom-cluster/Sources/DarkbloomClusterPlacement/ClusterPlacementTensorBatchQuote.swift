@@ -60,7 +60,8 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         let total = state.partialValue.addingReportingOverflow(sharedBytesExcludingCollectives)
         guard schema == (assistant == nil ? Self.schemaName : Self.assistantSchemaName),
               Self.runtimeModelIDs.contains(request.runtimeModelID),
-              [1, 2, 4, 8].contains(lanes), (1...512).contains(chunkTokens), perLaneStateBytes > 0,
+              lanes == 1 || ClusterPlacementBatchScope.tensorParallelWidths.contains(lanes),
+              (1...512).contains(chunkTokens), perLaneStateBytes > 0,
               sharedBytesExcludingCollectives > 0, !state.overflow, !total.overflow,
               total.partialValue == allowance.requestBytesExcludingCollectives,
               allowance.maximumContextTokens == request.maximumContextTokens,

@@ -102,7 +102,9 @@ start fails and says why. To serve without any coordinator, use
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.
 
-Running `darkbloom cluster` again on either Mac shows the same menu: the
+Running `darkbloom cluster` again on either Mac opens with the same Darkbloom
+mark, beside "Darkbloom cluster" and what can be done there ("Status / Test /
+Change model / Stop"), and shows the same menu: the
 cluster's state (the deployment line first), a test request (`t`), another
 model (`m`), stopping (`s`) and a check that both Macs released their memory
 (`v`). When it is stopped, `m` chooses a model and serves again. On a Mac that

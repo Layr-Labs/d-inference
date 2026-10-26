@@ -27,6 +27,8 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     private let captureLimitBytes: Int
     private let allocationBound: (Int) throws -> Int
     private var captured: QwenTensorParallelBatchPrefixState?
+    /// `frameTiming` only: this prompt's frames so far.
+    private var promptClock: QwenTensorParallelPromptClock?
     private(set) var schedule: QwenLayerStageGenerationSchedule
     private(set) var retired = false
     var committedTokens: Int { state.committedTokens }
@@ -104,7 +106,21 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             }
             let final = range.upperBound == request.promptCount
             var hidden: MLXArray?
-            let output = try state.run(tokenCount: frame.tokenCount, check: checked, forward: { caches, evaluation in
+            let started = DispatchTime.now().uptimeNanoseconds
+            var phases: CBv2OwnerPhaseObserver?
+            var timing: QwenTensorParallelPrefillFrameClock?
+            if let observe = Self.prefillPhases {
+                phases = { observe($0) }
+            } else if Self.frameTiming {
+                let clock = QwenTensorParallelPrefillFrameClock()
+                timing = clock
+                phases = { clock.mark($0.phase) }
+            }
+            // A packed frame is evaluated whole (its refused writes are checked
+            // before any of it runs), as a packed decode step is.
+            let stride = Self.prefillStride ?? (state.packedStorage ? 0 : Self.prefillLayerStride)
+            let output = try state.run(tokenCount: frame.tokenCount, observer: phases, check: checked, forward: { caches, evaluation in
+              Qwen35LayerSubmission.$stride.withValue(stride) { () -> MLXArray in
                 let native = self.model.model
                 if capturingHidden {
                     let result = native.cbv2ForwardWithHidden(input,
@@ -128,6 +144,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                         recurrentState: [evaluation], positionIds: positions)
                 }
                 return output[0..., -1, 0...]
+              }
             }, validateOutput: { output in
                 if final { try Self.validateLogits(output, rows: 1, model: self.model, request: self.request) }
                 else if !capturingHidden && output.shape != [1, 1] && output.shape != [1, 1, 1] {
@@ -143,6 +160,15 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             }
             try schedule.commit(frame)
             if committedTokens == captureFrontier { try capturePrefix(check: checked) }
+            if let timing, case .shard(let rank, _) = model.role {
+                let clock = promptClock ?? QwenTensorParallelPromptClock()
+                promptClock = clock
+                clock.add(timing, tokens: frame.tokenCount, started: started)
+                if final {
+                    FileHandle.standardError.write(Data((clock.line(rank: rank, stride: stride) + "\n").utf8))
+                    promptClock = nil
+                }
+            }
             return (hidden, final ? output : nil)
         }
     }
@@ -154,6 +180,29 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     static let decodeLayerStride = 1
     /// A bench or test's own stride (0: the whole forward in one evaluation).
     @TaskLocal static var layerStride: Int?
+    /// A prompt frame is submitted to the GPU every this many decoder layers
+    /// as the host builds it (`Qwen35LayerSubmission`), so the GPU and the
+    /// collectives start on the first layers while the host builds the rest,
+    /// instead of after the whole frame's graph. Evaluation order only: every
+    /// primitive, input and rounded value is the whole frame's.
+    /// `DARKBLOOM_QWEN_TP_PREFILL_STRIDE` (diagnostic: 0 = the whole frame at once, as before).
+    static let prefillLayerStride: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_PREFILL_STRIDE"],
+              let value = Int(raw), (0 ... 64).contains(value) else { return 4 }
+        return value
+    }()
+    /// A bench or test's own prompt stride (0: the whole frame in one evaluation).
+    @TaskLocal static var prefillStride: Int?
+    /// Diagnostic, `DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1`: every prompt
+    /// writes one `qwen-tp-prefill-v1` line to stderr at its last frame (its
+    /// frames' graph construction, root staging, evaluation with its
+    /// collectives, validation and commit, summed; `QwenTensorParallelPromptClock`).
+    /// Never on in production.
+    static let frameTiming = ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING"] == "1"
+    /// Diagnostic (benches only): each prompt frame's owner phases (graph
+    /// construction, root staging, evaluation, validation and commit), as
+    /// `CBv2OwnedRequestState.run` reports them. nil changes nothing.
+    @TaskLocal static var prefillPhases: (@Sendable (CBv2OwnerPhaseObservation) -> Void)?
     /// Command-buffer limits of a decode step, an assistant round and their
     /// selection on the thread that encodes them (the native executor's
     /// decode), as GLM's TP decode keeps them: the worker's 16-operation guard
@@ -180,7 +229,18 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     /// configuration). Each rank's words per lane is its own arithmetic
     /// (a rank sums only its own partials) and is not bound.
     static var decodeAgreementFields: [String] {
-        ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels"]
+        ["qwen-tensor-parallel-decode-projections-v1", usesExactVectors ? "batch-invariant-affine" : "mlx-kernels",
+         "qwen-tensor-parallel-fenced-sums-v1", sumsAreFencedInputs ? "on" : "off"]
+    }
+
+    /// Whether the residual step's kernel waits for each all-sum itself: MLX
+    /// takes fenced inputs only with `MLX_METAL_FENCED_INPUTS` and fast fences
+    /// both set (read as MLX reads them, an integer, nonzero on). Both ranks
+    /// must agree: bound into the load agreement.
+    static var sumsAreFencedInputs: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        func on(_ name: String) -> Bool { environment[name].flatMap { Int($0) }.map { $0 != 0 } ?? false }
+        return on("MLX_METAL_FENCED_INPUTS") && on("MLX_METAL_FAST_SYNCH")
     }
 
     /// The decode arithmetic a loaded shard runs, logged once per load so
@@ -193,6 +253,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             + " bits=\(plan.bits) group_size=\(plan.groupSize) "
             + AffineQuantizedVectors.resolvedDescription(bits: plan.bits, groupSize: plan.groupSize, inputs: plan.hiddenSize)
             + " residual_rms_norm=\(ResidualRMSNorm.isEnabled && ResidualRMSNorm.verifiedFamilies.contains(AffineQuantizedVectors.family()) ? "on" : "off")"
+            + " fenced_sums=\(sumsAreFencedInputs ? "on" : "off")"
     }
 
     static func decode(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
@@ -396,5 +457,40 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             inputs = nil; window = nil
             retired = true
         }
+    }
+}
+
+/// One prompt frame's owner phases on this rank (`QwenTensorParallelBatchSession.frameTiming`).
+final class QwenTensorParallelPrefillFrameClock {
+    private(set) var marks: [CBv2OwnerPhase: UInt64] = [:]
+    func mark(_ phase: CBv2OwnerPhase) { marks[phase] = DispatchTime.now().uptimeNanoseconds }
+    func span(_ begin: CBv2OwnerPhase, _ end: CBv2OwnerPhase) -> UInt64 {
+        guard let b = marks[begin], let e = marks[end], e >= b else { return 0 }
+        return e - b
+    }
+}
+
+/// One prompt's frames on this rank, summed: one `qwen-tp-prefill-v1` line
+/// at its last frame (digits and lowercase only, as a pair-check keeps
+/// runtime lines).
+final class QwenTensorParallelPromptClock {
+    private var frames = 0, tokens = 0
+    private var build: UInt64 = 0, stage: UInt64 = 0, evaluation: UInt64 = 0, commit: UInt64 = 0, total: UInt64 = 0
+    private var slowest: UInt64 = 0
+
+    func add(_ frame: QwenTensorParallelPrefillFrameClock, tokens count: Int, started: UInt64) {
+        frames += 1; tokens += count
+        build += frame.span(.graphConstructionBegin, .graphConstructionEnd)
+        stage += frame.span(.rootStagingBegin, .rootStagingEnd)
+        evaluation += frame.span(.evaluationBegin, .evaluationEnd)
+        commit += frame.span(.validationCommitBegin, .validationCommitEnd)
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started
+        total += elapsed; slowest = max(slowest, elapsed)
+    }
+
+    func line(rank: Int, stride: Int) -> String {
+        "qwen-tp-prefill-v1 rank=\(rank) tokens=\(tokens) frames=\(frames) stride=\(stride)"
+            + " build_us=\(build / 1000) stage_us=\(stage / 1000) eval_us=\(evaluation / 1000)"
+            + " commit_us=\(commit / 1000) frames_us=\(total / 1000) slowest_frame_us=\(slowest / 1000)"
     }
 }

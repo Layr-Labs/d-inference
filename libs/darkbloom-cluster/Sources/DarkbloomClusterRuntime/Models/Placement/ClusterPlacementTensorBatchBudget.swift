@@ -43,7 +43,7 @@ extension ClusterPlacementArtifact {
         }
         guard ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(family.runtimeModelID),
               let plan = family.tensorParallel,
-              [1, 2, 4, 8].contains(lanes),
+              lanes == 1 || ClusterPlacementBatchScope.tensorParallelWidths.contains(lanes),
               (1...family.profile.maximumChunkTokens).contains(chunkTokens) else {
             throw ProbeError("Tensor batch quotation requires a registered Qwen TP row and a supported width/chunk")
         }

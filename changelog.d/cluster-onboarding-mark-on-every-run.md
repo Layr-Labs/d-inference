@@ -1,0 +1,3 @@
+### Darkbloom mark on every `darkbloom cluster` run
+
+Running `darkbloom cluster` again on a Mac that is already in a cluster (the leader or a member) now opens with the same Darkbloom mark as the first setup, beside "Darkbloom cluster" and what can be done there (status, test, change model, stop). It follows the same terminal rules as the setup: color UTF-8 terminals with room for the mark draw it, `DARKBLOOM_NO_ANIMATION` or `CI` keep it still, and `NO_COLOR`, `TERM=dumb` and redirected output print the two heading lines as plain text. The onboarding checks cover the leader and the member, in color and plain.

@@ -3,6 +3,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 
 /// Wall-clock split of one speculative round on this rank, for the
 /// `darkbloom-tp-mtp-profile-v1` diagnostic (never fields of the audited
@@ -74,6 +75,9 @@ final class QwenTensorParallelMTPDecoder {
     private(set) var statistics: QwenMTPStatistics
     /// The last speculative round this request took part in.
     private(set) var lastProfile: QwenTensorParallelMTPRoundProfile?
+    /// The proposals of this request's last round (empty after a plain step),
+    /// for acceptance diagnostics.
+    private(set) var lastDraftIDs: [Int] = []
     private var request: QwenLayerStageGenerationRequest { target.request }
 
     init(target: any QwenTensorParallelMTPTarget, head: QwenTensorParallelMTPHead,
@@ -178,9 +182,8 @@ final class QwenTensorParallelMTPDecoder {
                 // ahead. The collectives keep their order (each rank submits
                 // the same steps in the same order); only waits move.
                 let pipelined = Self.pipelinesDrafts
-                for _ in 0..<count {
-                    let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden!, shortlist: nil,
-                        requestState: state)
+                for index in 0..<count {
+                    let next = draftOne(index: index, tokens: feed.tokens, hidden: feed.hidden!)
                     let roots = [next.tokens, next.hidden] + head.assistant.evaluationTargets(for: state)
                     if pipelined { asyncEval(roots) } else { eval(roots) }
                     try checked()
@@ -216,6 +219,7 @@ final class QwenTensorParallelMTPDecoder {
                 }
                 let targetIDs = selected.asArray(Int32.self).map(Int.init)
                 let draftIDs = drafts?.asArray(Int32.self).map(Int.init) ?? []
+                lastDraftIDs = draftIDs
                 let decision = try Self.accept(drafts: draftIDs, targets: targetIDs, remaining: remaining,
                     stopTokens: stops, vocabularySize: request.profile.vocabularySize)
                 let emitted = decision.tokens.count
@@ -285,6 +289,52 @@ final class QwenTensorParallelMTPDecoder {
     @TaskLocal static var pipelinesDraftsOverride: Bool?
     static var pipelinesDrafts: Bool { pipelinesDraftsOverride ?? pipelinesDraftsByEnvironment }
 
+    /// Whether drafts run on `AffineQuantizedVectors` (on; diagnostic only:
+    /// `DARKBLOOM_QWEN_TP_MTP_EXACT_DRAFTS=0` keeps MLX's kernels): every draft
+    /// head call, and a round's later draft steps (`draftsRowsTogether`
+    /// assistants) through `Qwen35InlineMTPAssistant.draftHiddens`, solo and
+    /// cohort alike. Each vector gets the bits it gets alone, so a row drafts
+    /// the same in any cohort, and a cohort reads each weight once per step
+    /// instead of once per row. Proposals only: target verification decides
+    /// every emitted token. Both ranks must agree on it.
+    static let draftsOnExactVectorsByEnvironment =
+        ProcessInfo.processInfo.environment["DARKBLOOM_QWEN_TP_MTP_EXACT_DRAFTS"] != "0"
+    /// A test's or bench's own choice (nil: the environment's).
+    @TaskLocal static var draftsOnExactVectorsOverride: Bool?
+    static var draftsOnExactVectors: Bool { draftsOnExactVectorsOverride ?? draftsOnExactVectorsByEnvironment }
+
+    /// One projection for a draft step's rows, each row with the bits it gets
+    /// alone: an exact affine `QuantizedLinear` through `AffineQuantizedVectors`
+    /// (one weight read for every row), anything else one call per row.
+    static func exactDraftProjection(_ linear: Linear, _ x: MLXArray) -> MLXArray {
+        if type(of: linear) == QuantizedLinear.self, let packed = linear as? QuantizedLinear,
+           let product = AffineQuantizedVectors.project(x, packed) {
+            return packed.bias.map { product + $0 } ?? product
+        }
+        let rows = x.dim(0)
+        guard rows > 1 else { return linear(x) }
+        return concatenated((0..<rows).map { linear(x[$0 ..< $0 + 1]) }, axis: 0)
+    }
+
+    /// This request's draft step `index` of its round, alone, as a cohort runs
+    /// the same step for it: the round's first step through the assistant's
+    /// own per-request forward (its trusted history feed), later steps through
+    /// `draftHiddens` with one row; every head call under the same kernel as
+    /// a cohort's (`QwenTensorParallelMTPProjection.exactRows`).
+    private func draftOne(index: Int, tokens: MLXArray, hidden: MLXArray) -> (tokens: MLXArray, hidden: MLXArray) {
+        let exact = Self.draftsOnExactVectors
+        return QwenTensorParallelMTPProjection.$exactRows.withValue(exact) {
+            guard exact, index > 0, head.assistant.draftsRowsTogether else {
+                return head.assistant.draftStep(tokens: tokens, hidden: hidden, shortlist: nil, requestState: state)
+            }
+            let lastHidden = head.assistant.draftHiddens(tokens: [tokens], hiddens: [hidden],
+                requestStates: [state], project: Self.exactDraftProjection)
+            let draft = argMax(head.projection(lastHidden)[0..., -1, 0...], axis: -1).asType(.int32)
+            head.assistant.recordDraft(lastHidden: lastHidden, draft: draft, requestState: state)
+            return (draft, lastHidden)
+        }
+    }
+
     /// Draft each request through its existing B=1 assistant state, then
     /// verify the entire cohort in one captured target rectangle. This does
     /// not widen the assistant SDK's supported draft shape. Admission must
@@ -321,7 +371,8 @@ final class QwenTensorParallelMTPDecoder {
                 let seeds = lastTokens.map { MLXArray([Int32($0)]).reshaped([1, 1]) }
                 var feeds = decoders.indices.map { (tokens: seeds[$0], hidden: decoders[$0].carry!.hidden) }
                 var proposed = [[MLXArray]](repeating: [], count: decoders.count)
-                for _ in 0..<first.depth {
+                let exact = Self.draftsOnExactVectors
+                for index in 0..<first.depth {
                     var next: [(tokens: MLXArray, hidden: MLXArray)] = []
                     if batchesDrafts, first.head.assistant.splitsDrafts {
                         // Each row's assistant forward is its own B=1 graph over
@@ -334,11 +385,26 @@ final class QwenTensorParallelMTPDecoder {
                         // multiplies its rows with MLX's vector kernel (below the
                         // vector limit every vector's reduction is the same at
                         // any count) and the first maximum is taken per row.
-                        let hiddens = decoders.indices.map { row in
-                            decoders[row].head.assistant.draftHidden(tokens: feeds[row].tokens,
-                                hidden: feeds[row].hidden, requestState: decoders[row].state)
+                        // With exact drafts (`draftsOnExactVectors`), the round's
+                        // later steps run every row through one assistant forward
+                        // (`draftHiddens`) and the head on `AffineQuantizedVectors`:
+                        // one weight read per step for the cohort, each row with
+                        // the bits its own solo step (`draftOne`) gets.
+                        let hiddens: [MLXArray]
+                        if exact, index > 0, first.head.assistant.draftsRowsTogether {
+                            let together = first.head.assistant.draftHiddens(tokens: feeds.map { $0.tokens },
+                                hiddens: feeds.map { $0.hidden }, requestStates: decoders.map { $0.state },
+                                project: Self.exactDraftProjection)
+                            hiddens = decoders.indices.map { together[$0 ..< $0 + 1] }
+                        } else {
+                            hiddens = decoders.indices.map { row in
+                                decoders[row].head.assistant.draftHidden(tokens: feeds[row].tokens,
+                                    hidden: feeds[row].hidden, requestState: decoders[row].state)
+                            }
                         }
-                        let scores = first.head.projection(concatenated(hiddens, axis: 0))
+                        let scores = QwenTensorParallelMTPProjection.$exactRows.withValue(exact) {
+                            first.head.projection(concatenated(hiddens, axis: 0))
+                        }
                         let choices = argMax(scores[0..., -1, 0...], axis: -1).asType(.int32)
                         var roots = [choices]
                         for (row, decoder) in decoders.enumerated() {
@@ -354,8 +420,7 @@ final class QwenTensorParallelMTPDecoder {
                         // its two collectives must not interleave with another
                         // row's in a schedule that can differ by rank.
                         for (row, decoder) in decoders.enumerated() {
-                            let step = decoder.head.assistant.draftStep(tokens: feeds[row].tokens, hidden: feeds[row].hidden,
-                                shortlist: nil, requestState: decoder.state)
+                            let step = decoder.draftOne(index: index, tokens: feeds[row].tokens, hidden: feeds[row].hidden)
                             eval([step.tokens, step.hidden] + decoder.head.assistant.evaluationTargets(for: decoder.state))
                             try checked()
                             next.append(step)
@@ -397,11 +462,13 @@ final class QwenTensorParallelMTPDecoder {
                     selected = try first.broadcast(choices, count: decoders.count * columns, check: checked)
                         .reshaped([decoders.count, columns])
                 }
+                let draftIDs = drafts.map { $0.asArray(Int32.self).map(Int.init) }
                 let decisions = try decoders.enumerated().map { row, decoder in
-                    try accept(drafts: drafts[row].asArray(Int32.self).map(Int.init),
+                    try accept(drafts: draftIDs[row],
                         targets: selected[row].asArray(Int32.self).map(Int.init), remaining: remaining[row],
                         stopTokens: decoder.stops, vocabularySize: decoder.request.profile.vocabularySize)
                 }
+                for (row, decoder) in decoders.enumerated() { decoder.lastDraftIDs = draftIDs[row] }
                 let evaluated = DispatchTime.now().uptimeNanoseconds
                 profile.choose = clock.lap()
                 var roots = try QwenTensorParallelBatchSession.settleWindows(sessions,

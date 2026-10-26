@@ -59,8 +59,8 @@ public enum ClusterConfigurationCodec {
             expected.insert("tensorShares")
         }
         if let lanes = object["batchLanes"] {
-            guard let value = lanes as? Int, [2, 4, 8].contains(value) else {
-                throw ClusterConfigurationError.invalid("A planned batch width must be 2, 4 or 8")
+            guard let value = lanes as? Int, [2, 4, 6, 8].contains(value) else {
+                throw ClusterConfigurationError.invalid("A planned batch width must be 2, 4, 6 or 8")
             }
             expected.insert("batchLanes")
         }

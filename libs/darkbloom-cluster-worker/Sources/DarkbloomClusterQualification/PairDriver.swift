@@ -73,7 +73,9 @@ public struct PairDriver: Sendable {
         "darkbloom-stage-loaded-range-v1 ", "darkbloom-prefix-v1 ", "darkbloom-prefix-ssd-v1 ",
         // Tensor parallel: the load (plan, shares, sealed all-sum), each request, the link probe and the collective wait.
         "darkbloom-tensor-parallel-load-v1 ", "darkbloom-tensor-parallel-request-v1 ", "darkbloom-link-probe-v1 ",
-        "darkbloom-collective-sync-v1 "]
+        "darkbloom-collective-sync-v1 ",
+        // Diagnostic (`DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1`): each prompt's frames on a Qwen TP rank.
+        "qwen-tp-prefill-v1 "]
     /// The two workers' credential lines for one run (S16).
     static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
         let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]

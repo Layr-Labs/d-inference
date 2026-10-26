@@ -50,6 +50,9 @@ import Foundation
               [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file;
                                                                      the key reaches the worker on its input)
               [--prefix-ssd off (diagnosis: both workers keep nothing on disk and delete what they kept)]
+              [--worker-environment NAME=DIGITS (repeatable, diagnosis: both workers get a timing or scheduling knob,
+               one of MLX_MAX_OPS_PER_BUFFER, MLX_QMM_STEEL_TILE, DARKBLOOM_QWEN_TP_PREFILL_STRIDE,
+               DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
               [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
@@ -225,9 +228,9 @@ import Foundation
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
             "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
-            "--remote-prefix-ssd-key-file"]
+            "--remote-prefix-ssd-key-file", "--worker-environment"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
-            "--batch-request", "--batch-wave"])
+            "--batch-request", "--batch-wave", "--worker-environment"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
             return value
@@ -306,6 +309,15 @@ import Foundation
         if let cache = fields["--prefix-cache"]?.first {
             guard ["on", "off"].contains(cache) else { throw Failure("--prefix-cache takes on or off") }
             configuration.prefixCacheOff = cache == "off"
+        }
+        for entry in fields["--worker-environment"] ?? [] {
+            let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2, PairConfiguration.diagnosticWorkerEnvironment.contains(parts[0]),
+                  !parts[1].isEmpty, parts[1].utf8.count <= 12, parts[1].utf8.allSatisfy({ (48...57).contains($0) }) else {
+                throw Failure("--worker-environment takes NAME=DIGITS for "
+                    + PairConfiguration.diagnosticWorkerEnvironment.sorted().joined(separator: ", "))
+            }
+            configuration.workerEnvironment.append((parts[0], parts[1]))
         }
         if let lanes = try integer(fields, "--batch-lanes") {
             guard (1...8).contains(lanes) else { throw Failure("--batch-lanes takes 1...8") }

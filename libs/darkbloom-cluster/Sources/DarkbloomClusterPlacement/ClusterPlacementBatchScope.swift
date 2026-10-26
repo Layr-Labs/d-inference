@@ -20,7 +20,8 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
     public init(request: ClusterPlacementRequestScope, lanes: Int,
                 tensorParallelQuote: ClusterPlacementTensorBatchQuote? = nil) throws {
         try request.validate()
-        guard [2, 4, 8].contains(lanes), request.requestChargeEveryRankBytes > 0,
+        guard (tensorParallelQuote == nil ? Self.pipelineWidths : Self.tensorParallelWidths).contains(lanes),
+              request.requestChargeEveryRankBytes > 0,
               let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: request.runtimeModelID),
               Self.adapters.contains(adapter) else {
             throw ClusterPlacementError("This model has no priced native pipeline batch scope")
@@ -55,13 +56,25 @@ public struct ClusterPlacementBatchScope: Equatable, Sendable {
         .qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard, .nemotronH, .gemma4LayerStage,
     ]
 
+    /// Native batch widths. A request-owned Qwen TP owner prices any width at
+    /// LOAD from its own geometry, so it also offers six lanes: the widest that
+    /// fits when eight do not. Pipeline stages keep their priced 2, 4 and 8.
+    public static let pipelineWidths = [2, 4, 8]
+    public static let tensorParallelWidths = [2, 4, 6, 8]
+
     /// A singleton keeps its existing mode choice. Real concurrent pressure
     /// considers the largest bounded native width first to avoid repeated
     /// reloads as a burst grows. Every offered width carries the full listener
     /// profile and is separately priced again after both old owners release.
     public static func candidateWidths(waitingRequests: Int) -> [Int] {
+        candidateWidths(waitingRequests: waitingRequests, tensorParallel: false)
+    }
+
+    /// `candidateWidths(waitingRequests:)` for a row whose replacement is a
+    /// request-owned tensor-parallel owner (its widths include six).
+    public static func candidateWidths(waitingRequests: Int, tensorParallel: Bool) -> [Int] {
         guard waitingRequests > 1 else { return [] }
-        return [8, 4, 2]
+        return (tensorParallel ? tensorParallelWidths : pipelineWidths).reversed()
     }
 
     /// A native workspace quote may not be replayed after chunk derivation or

@@ -10,7 +10,24 @@ public enum ClusterResidentModelCatalog {
     /// The runtime that executes a family's models. `qwenDense` is the
     /// layer-stage resident runtime: the Qwen catalog (dense, routed-expert,
     /// Prism and Nemotron rows) and Gemma 4 through its own layer-stage seam.
-    public enum Family: String, Sendable { case qwenDense, gptoss, mimoV26, glm5Next }
+    public enum Family: String, Sendable {
+        case qwenDense, gptoss, mimoV26, glm5Next
+
+        /// Whether this family's tensor-parallel kernels read each all-sum as a
+        /// fenced input (`MLXFast.metalKernel(...fencedInputs:)`), so a rank may
+        /// let the kernel that reads a sum wait for the CPU itself instead of
+        /// MLX's separate fence-wait launch (`MLX_METAL_FENCED_INPUTS`): GLM's
+        /// hyper-connection sites, and the Qwen 3.5 residual step
+        /// (`ResidualRMSNorm`, which reads the FP32 all-sum of every
+        /// row-parallel projection). Families whose sums only MLX's own kernels
+        /// read gain nothing from it. Only where the GPU waits changes.
+        public var tensorParallelSumsAreFencedInputs: Bool {
+            switch self {
+            case .glm5Next, .qwenDense: return true
+            case .gptoss, .mimoV26: return false
+            }
+        }
+    }
 
     /// The largest `config.json` any family reads: GLM NVFP4 declares
     /// per-expert packing in about 10 MiB. Each family's pins still decide.

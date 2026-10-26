@@ -130,6 +130,12 @@ public struct PairConfiguration: Sendable {
     public var followRequests: [QualificationRequest] = []
     /// Diagnosis: both workers keep no prompt prefixes (cold prefill always).
     public var prefixCacheOff = false
+    /// Diagnosis: knobs both workers get in their exact environment
+    /// (`diagnosticWorkerEnvironment` names only, decimal values): scheduling
+    /// and timing switches whose results keep every bit, never a credential.
+    public var workerEnvironment: [(String, String)] = []
+    public static let diagnosticWorkerEnvironment: Set<String> = ["MLX_MAX_OPS_PER_BUFFER", "MLX_QMM_STEEL_TILE",
+        "DARKBLOOM_QWEN_TP_PREFILL_STRIDE", "DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING"]
     /// Whether the pair refuses a request longer than its serving context
     /// before asking either rank (the product's behaviour). Off to qualify a
     /// rank's own gate refusal at reservation (`--serving-context-check off`).
@@ -512,6 +518,7 @@ public struct PairConfiguration: Sendable {
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
         if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
+        environment += workerEnvironment.filter { Self.diagnosticWorkerEnvironment.contains($0.0) }
         if batchLanes > 1 { environment.append(("DARKBLOOM_CLUSTER_BATCH_LANES", String(batchLanes))) }
         if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
         if batchTrace { environment.append(("DARKBLOOM_CLUSTER_BATCH_TRACE", "1")) }

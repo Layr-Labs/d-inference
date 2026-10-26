@@ -46,8 +46,12 @@ func checkBatchScopes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks) t
     for demand in [-1, 0, 1, 2, 3, 4, 5, 8, Int.max] {
         let expected = demand <= 1 ? [] : [8, 4, 2]
         checks.require("batch demand \(demand): bounded native candidates", ClusterPlacementBatchScope.candidateWidths(waitingRequests: demand) == expected)
+        // A request-owned tensor-parallel owner also offers six lanes.
+        checks.require("batch demand \(demand): tensor-parallel candidates include six",
+            ClusterPlacementBatchScope.candidateWidths(waitingRequests: demand, tensorParallel: true)
+                == (demand <= 1 ? [] : [8, 6, 4, 2]))
     }
-    for width in [Int.min, 0, 1, 3, 7, 9, Int.max] {
+    for width in [Int.min, 0, 1, 3, 6, 7, 9, Int.max] {
         checks.refuses("batch invalid width \(width)", because: "priced native") {
             _ = try ClusterPlacementBatchScope(request: request, lanes: width)
         }

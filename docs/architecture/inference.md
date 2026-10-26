@@ -2819,8 +2819,13 @@ forwards fuse, on the families measured byte-equal to the unfused operations
 the Gated DeltaNet convolution step (concatenation, depthwise convolution and
 SiLU) and its q/k normalization, the attention output gate, the SwiGLU product,
 and a single vector's gate, up and SwiGLU in one launch (a window keeps the two
-projections: the fused kernel measured slower there). A 27B step runs 934
-non-view kernels instead of 1,862. Measured locally on the M3 Ultra's 27B shard
+projections: the fused kernel measured slower there). A residual stream
+narrower than its norms (the Prism/Bonsai packs: FP16 packed embedding rows
+under FP32 norms and projections) keeps the unfused sum that promotes it to
+FP32 on every family (`Qwen35DecoderLayer.residualNorm`); the fused step
+rounds a wider branch to the stream's dtype, which would keep such a stream in
+FP16 and leave a producer stage's residual outside its FP32 contract. A 27B
+step runs 934 non-view kernels instead of 1,862. Measured locally on the M3 Ultra's 27B shard
 at 3/5 (2026-10-25, product path): the four-token verify window 24.3 ms against
 37.3 ms on the c41 kernels, the plain step 16.9 against 18.2 ms. The change of
 rounding means tensor-parallel references recorded before it are regenerated

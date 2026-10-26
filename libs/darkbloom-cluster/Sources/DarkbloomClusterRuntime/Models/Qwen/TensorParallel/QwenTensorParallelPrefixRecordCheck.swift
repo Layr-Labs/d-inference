@@ -49,7 +49,7 @@ extension QwenTensorParallelModel {
         if recordTop > 0, case .shard = role { throw ProbeError("Prefix record measurement: a shard does not record logits") }
         guard recordTop <= 64 else { throw ProbeError("Prefix record measurement: at most 64 logits per step") }
         let frontier = (prompt.count - 1) / chunk * chunk
-        let source = model.newCache(parameters: nil)
+        let source = try model.newCache(parameters: nil)
         _ = prefill(Array(prompt[0 ..< frontier]), chunk: chunk, cache: source)
         eval(source.flatMap { $0.innerState() })
         var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
@@ -80,7 +80,7 @@ extension QwenTensorParallelModel {
 
     /// A new cache holding `state`, as a restore adopts it.
     private func adopted(_ state: QwenStagePrefixState) throws -> [KVCache] {
-        let cache = model.newCache(parameters: nil)
+        let cache = try model.newCache(parameters: nil)
         for (layer, fresh) in cache.enumerated() {
             var target = fresh
             if let pair = state.attention[layer], fresh is KVCacheSimple { target.state = [pair.keys, pair.values] }

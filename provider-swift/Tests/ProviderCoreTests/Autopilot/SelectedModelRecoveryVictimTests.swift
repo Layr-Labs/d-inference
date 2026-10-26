@@ -14,27 +14,6 @@ import Testing
 struct SelectedModelRecoveryVictimTests {
     private typealias Fixture = UnreclaimableLoadMemoryFixture
 
-    /// GLM adopted outside the selection (optionally held), resident and idle
-    /// for two hours, and Super waiting; Super's load installs a stub slot.
-    private func superWaitingBehindAdoptedGLM(holdSeconds: Int? = nil) async throws -> Fixture {
-        let fixture = try await Fixture.make(glm: .autopilotInventory)
-        let loop = fixture.loop
-        await loop.settleAutopilotOperationForTesting(target: Fixture.glmID, holdSeconds: holdSeconds)
-        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in await fixture.install(id) }
-        await loop.enqueueSelectedModelRecovery([Fixture.superID])
-        #expect(await loop.selectedModelRecovery.entries.keys.sorted() == [Fixture.superID])
-        return fixture
-    }
-
-    private func check(_ loop: ProviderLoop, at now: ContinuousClock.Instant) async {
-        await loop.checkSelectedModelRecoveryIfDue(now: now)
-        await loop.awaitSelectedModelRecoveryAttemptForTesting()
-    }
-
-    private func entry(_ loop: ProviderLoop) async throws -> SelectedModelRecovery.Entry {
-        try #require(await loop.selectedModelRecovery.entries[Fixture.superID])
-    }
-
     /// The operation Mark's coordinator sends: load GLM with a placement hold,
     /// unloading Super first, with no lease.
     private static func operation(expecting residents: [String]) -> ModelAutopilotCommand {
@@ -45,6 +24,32 @@ struct SelectedModelRecoveryVictimTests {
     }
 
     // MARK: - Operation victims
+
+    /// The reported operation, with Super resident and its explicit victim:
+    /// Super waits, and GLM's hold keeps it for its ten minutes.
+    @Test(.timeLimit(.minutes(1)))
+    func anOperationThatUnloadsSuperForGLMQueuesSuper() async throws {
+        let fixture = try await Fixture.make(glm: .autopilotInventory)
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        await fixture.install(Fixture.superID, idleFor: .seconds(3_600))
+        await loop.ageAutopilotResidentsForTesting()
+        await loop.activateAutopilotForTesting()
+        let status = try #require(await fixture.withModelCache {
+            await loop.runAutopilotCommandForTesting(
+                Self.operation(expecting: [Fixture.gemmaID, Fixture.glmID, Fixture.superID]))
+        })
+        #expect(status.status == .succeeded, "\(status.error ?? "")")
+        await loop.clearAutopilotControl()
+        #expect(fixture.shutdownCalls(Fixture.superID) == 1)
+        #expect(await loop.selectedModelRecovery.entries.keys.sorted() == [Fixture.superID])
+
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in await fixture.install(id) }
+        await checkSelectedModelRecovery(loop, at: .now)
+        let held = try await superRecoveryEntry(loop)
+        #expect(held.blocker?.contains("Autopilot hold until ") == true, "\(held.blocker ?? "")")
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+    }
 
     /// The operation unloads Super, then GLM's own load fails: nothing took
     /// Super's memory, yet nothing retried it. Super now waits from the moment
@@ -67,7 +72,7 @@ struct SelectedModelRecoveryVictimTests {
         #expect(await loop.selectedModelRecovery.entries.keys.sorted() == [Fixture.superID])
 
         await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in await fixture.install(id) }
-        await check(loop, at: .now)
+        await checkSelectedModelRecovery(loop, at: .now)
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
         #expect(await loop.selectedModelRecovery.isEmpty)
     }
@@ -103,12 +108,12 @@ struct SelectedModelRecoveryVictimTests {
         await loop.setAutopilotHoldForTesting(Fixture.glmID, until: start.advanced(by: .seconds(-7_200)))
         await loop.setIdleForTesting(Fixture.glmID, since: start.advanced(by: .seconds(-7_200)))
         for offset in [0, 3_600, 86_400] {
-            await check(loop, at: start.advanced(by: .seconds(offset)))
+            await checkSelectedModelRecovery(loop, at: start.advanced(by: .seconds(offset)))
         }
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
         #expect(fixture.shutdownCalls(Fixture.gemmaID) == 0)
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.glmID])
-        let waiting = try await entry(loop)
+        let waiting = try await superRecoveryEntry(loop)
         #expect(waiting.blocker == "needs 83.6 GB; 36.8 GB usable; glm-5.3-flash stays in the running daemon's "
             + "selection until a restart applies the saved enabled_models", "\(waiting.blocker ?? "")")
     }
@@ -120,20 +125,20 @@ struct SelectedModelRecoveryVictimTests {
     /// recovery waits for it too.
     @Test(.timeLimit(.minutes(1)))
     func anAdoptionYoungerThanTheMinimumDwellStays() async throws {
-        let fixture = try await superWaitingBehindAdoptedGLM()
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
         defer { Task { await fixture.remove() } }
         let loop = fixture.loop
         let start = ContinuousClock.now
         await loop.setAutopilotResidentSinceForTesting(Fixture.glmID, start.advanced(by: .seconds(-600)))
         await loop.setIdleForTesting(Fixture.glmID, since: start.advanced(by: .seconds(-600)))
 
-        await check(loop, at: start)
+        await checkSelectedModelRecovery(loop, at: start)
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
-        let waiting = try await entry(loop)
+        let waiting = try await superRecoveryEntry(loop)
         #expect(waiting.blocker?.contains("waiting for glm-5.3-flash (resident 10m of Autopilot's 30m minimum dwell)")
             == true, "\(waiting.blocker ?? "")")
 
-        await check(loop, at: start.advanced(by: .seconds(1_200)))
+        await checkSelectedModelRecovery(loop, at: start.advanced(by: .seconds(1_200)))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
         #expect(fixture.shutdownCalls(Fixture.gemmaID) == 0)
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
@@ -145,7 +150,7 @@ struct SelectedModelRecoveryVictimTests {
     /// runs from the hold's expiry, so recovery waits five more minutes.
     @Test(.timeLimit(.minutes(1)))
     func idleRunsFromTheHoldExpiryForAutopilotsMinimumIdle() async throws {
-        let fixture = try await superWaitingBehindAdoptedGLM(holdSeconds: 3_600)
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM(holdSeconds: 3_600)
         defer { Task { await fixture.remove() } }
         let loop = fixture.loop
         await loop.updateAutopilotSettingsForTesting { $0.minIdleSeconds = 600 }
@@ -153,13 +158,13 @@ struct SelectedModelRecoveryVictimTests {
         let expiry = start.advanced(by: .seconds(-300))
         await loop.setAutopilotHoldForTesting(Fixture.glmID, until: expiry)
 
-        await check(loop, at: start)
+        await checkSelectedModelRecovery(loop, at: start)
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
-        let waiting = try await entry(loop)
+        let waiting = try await superRecoveryEntry(loop)
         #expect(waiting.blocker?.contains("waiting for glm-5.3-flash (idle 5m of the 10m recovery waits for)") == true,
                 "\(waiting.blocker ?? "")")
 
-        await check(loop, at: expiry.advanced(by: .seconds(600)))
+        await checkSelectedModelRecovery(loop, at: expiry.advanced(by: .seconds(600)))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
     }
@@ -168,58 +173,34 @@ struct SelectedModelRecoveryVictimTests {
     /// victim lists (`active_lease`); recovery honours it the same way.
     @Test(.timeLimit(.minutes(1)))
     func aPerModelLeaseKeepsTheAdoption() async throws {
-        let fixture = try await superWaitingBehindAdoptedGLM()
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
         defer { Task { await fixture.remove() } }
         let loop = fixture.loop
         let start = ContinuousClock.now
         await loop.setAutopilotLeaseForTesting(Fixture.glmID, until: start.advanced(by: .seconds(900)))
 
-        await check(loop, at: start)
+        await checkSelectedModelRecovery(loop, at: start)
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
-        let waiting = try await entry(loop)
+        let waiting = try await superRecoveryEntry(loop)
         #expect(waiting.blocker?.contains("waiting for glm-5.3-flash (Autopilot lease for another 15m)") == true,
                 "\(waiting.blocker ?? "")")
 
-        await check(loop, at: start.advanced(by: .seconds(900)))
+        await checkSelectedModelRecovery(loop, at: start.advanced(by: .seconds(900)))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
     }
 
     @Test(.timeLimit(.minutes(1)))
     func aPinnedModelIsNeverEvicted() async throws {
-        let fixture = try await superWaitingBehindAdoptedGLM()
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
         defer { Task { await fixture.remove() } }
         let loop = fixture.loop
         await loop.updateAutopilotSettingsForTesting { $0.pinnedModels = [Fixture.glmID] }
-        await check(loop, at: .now.advanced(by: .seconds(86_400)))
+        await checkSelectedModelRecovery(loop, at: .now.advanced(by: .seconds(86_400)))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
-        let waiting = try await entry(loop)
+        let waiting = try await superRecoveryEntry(loop)
         #expect(waiting.blocker?.hasSuffix("no model outside the selection can be evicted to make room") == true,
                 "\(waiting.blocker ?? "")")
-    }
-
-    /// The release of a busy adoption after its hold (policy) waits for the
-    /// same minimum dwell: GLM, resident fifteen minutes, goes at thirty.
-    @Test(.timeLimit(.minutes(1)))
-    func aBusyAdoptionIsNotReleasedBeforeItsMinimumDwell() async throws {
-        let fixture = try await Fixture.make(glm: .autopilotInventory)
-        defer { Task { await fixture.remove() } }
-        let loop = fixture.loop
-        await loop.settleAutopilotOperationForTesting(target: Fixture.glmID, holdSeconds: 600)
-        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in await fixture.install(id) }
-        await loop.enqueueSelectedModelRecovery([Fixture.superID])
-        let start = ContinuousClock.now
-        await loop.setAutopilotHoldForTesting(Fixture.glmID, until: start.advanced(by: .seconds(-660)))
-        await loop.setAutopilotResidentSinceForTesting(Fixture.glmID, start.advanced(by: .seconds(-900)))
-        await fixture.beginGLMRequest()
-
-        await check(loop, at: start)
-        await check(loop, at: start.advanced(by: .seconds(601)))
-        #expect(await loop.autopilotServesModel(Fixture.glmID))
-        await check(loop, at: start.advanced(by: .seconds(901)))
-        #expect(await loop.autopilotServesModel(Fixture.glmID) == false)
-        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
-        await fixture.endGLMRequest()
     }
 
     // MARK: - Refusals
@@ -245,24 +226,14 @@ struct SelectedModelRecoveryVictimTests {
             environment: [:])
         await loop.enqueueSelectedModelRecovery([Fixture.superID])
 
-        await fixture.withModelCache { await check(loop, at: .now) }
+        await fixture.withModelCache { await checkSelectedModelRecovery(loop, at: .now) }
         #expect(attempts.value == 1)
         #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
         #expect(fixture.shutdownCalls(Fixture.gemmaID) == 0)
         #expect(await loop.modelLoadingLastLoadError()?.message == refusal)
         #expect(await loop.selectedModelRecovery.isEmpty)
 
-        await fixture.withModelCache { await check(loop, at: .now.advanced(by: .seconds(86_400))) }
+        await fixture.withModelCache { await checkSelectedModelRecovery(loop, at: .now.advanced(by: .seconds(86_400))) }
         #expect(attempts.value == 1)
-    }
-}
-
-extension ProviderLoop {
-    func setAutopilotResidentSinceForTesting(_ id: String, _ since: ContinuousClock.Instant) {
-        autopilotResidentSince[id] = since
-    }
-
-    func setAutopilotLeaseForTesting(_ id: String, until: ContinuousClock.Instant) {
-        autopilotLeaseUntil[id] = until
     }
 }

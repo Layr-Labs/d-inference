@@ -86,7 +86,7 @@ extension ProviderLoop {
     /// (`autopilotIdleSince`), for the longer of `victimMinimumIdle` and
     /// `min_idle_seconds`. Returns what is unmet and when all of it will be;
     /// nil when the rules let recovery evict it now.
-    func selectedModelRecoveryVictimWait(_ id: String, slot: ModelSlot, now: ContinuousClock.Instant)
+    private func selectedModelRecoveryVictimWait(_ id: String, slot: ModelSlot, now: ContinuousClock.Instant)
         -> (reasons: [String], until: ContinuousClock.Instant)? {
         let settings = autopilotSettings
         var reasons: [String] = []
@@ -173,7 +173,8 @@ extension ProviderLoop {
     /// Whether `target` fits now or after evicting the shortest
     /// least-recently-used run of idle unselected models, on the gate's own
     /// figures; else what keeps it out and when that may change.
-    func selectedModelRecoveryPlan(for target: String, now: ContinuousClock.Instant) async -> SelectedModelRecoveryPlan {
+    private func selectedModelRecoveryPlan(for target: String, now: ContinuousClock.Instant) async
+        -> SelectedModelRecoveryPlan {
         guard let info = advertisedModels[target] else { return .blocked("not advertised", retryAt: nil) }
         let exclusions = evictionExclusions(now: now)
         var victims: [(id: String, bytes: UInt64)] = []
@@ -259,7 +260,9 @@ extension ProviderLoop {
     /// A victim that no longer qualifies ends the attempt before any further
     /// unload; the next check plans again. A refusal for memory, a slot or a
     /// transient state keeps the target waiting; any other failure ends its
-    /// recovery (the request path still loads it on demand).
+    /// recovery (the request path still loads it on demand). The load's own
+    /// checks run after the evictions, so such a failure has still evicted
+    /// this attempt's victims.
     private func attemptSelectedModelRecovery(_ target: String, evicting victims: [String],
                                               plannedAt: ContinuousClock.Instant) async {
         defer {
@@ -309,8 +312,11 @@ extension ProviderLoop {
     }
 
     /// Refusals that a later check can clear: memory, a slot, or a
-    /// transition in progress.
-    static func recoveryMayRetry(_ error: any Error) -> Bool {
+    /// transition in progress. The startup preload's classifier also covers
+    /// memory refusals without an "Insufficient memory" prefix: the post-load
+    /// KV headroom guard, the serviceability-floor and fixed-workspace
+    /// re-slice checks, and MiMo's memory grant.
+    private static func recoveryMayRetry(_ error: any Error) -> Bool {
         if StartupPreloader.isInsufficientMemoryLoad(error) { return true }
         switch error as? InferenceError {
         case .modelLoadFailed(let message)?, .invalidModelDirectory(let message)?:

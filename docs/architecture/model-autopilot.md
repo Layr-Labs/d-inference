@@ -198,9 +198,9 @@ The operator's selection outranks a placement outside it once the placement's
 hold is over (policy pending owner review,
 `ProviderLoop+SelectedModelPlacementPolicy.swift`). When an adopted, unheld
 target keeps a waiting selected model out only because it serves requests,
-recovery releases the adoption ten minutes after the hold expired, or after the
-selected model began waiting when there was no hold, and never before the
-target's `min_dwell_seconds` or per-model lease ends
+recovery releases the adoption ten minutes after the later of its hold's expiry
+(when it had a hold) and the moment the selected model began waiting, and never
+before the target's `min_dwell_seconds` or per-model lease ends
 (`adoptionReleaseTime`, `adoptionReleaseDelay`), and only if evicting it would
 make the room. The released model is withdrawn and refuses new requests as
 `model_not_selected`; its requests in flight finish, and the next check evicts

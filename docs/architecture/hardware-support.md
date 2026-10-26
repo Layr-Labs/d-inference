@@ -394,13 +394,17 @@ Autopilot's own victim rules (`selectedModelRecoveryVictimWait`): resident for
 `min_dwell_seconds`, no unexpired per-model lease, and idle, from its last
 request or its hold's expiry, for the longer of two minutes
 (`SelectedModelRecovery.victimMinimumIdle`) and `min_idle_seconds`. The attempt
-rechecks each victim against the plan's instant right before its unload. It never evicts a selected model, so it cannot
-churn against the operator's own models. It waits while a live Autopilot lease
-or a pause manages residency, and during any load, unload, operation, switch,
-startup preload or drain. A refusal for memory, a slot or a transient state
-keeps the model waiting; any other load failure ends its recovery and leaves
-the request path. The daemon state reports each waiting model, its next check
-and the last blocker (`selected_model_recovery`).
+rechecks each victim against the plan's instant right before its unload. It
+never evicts a selected model, so it cannot churn against the operator's own
+models. It waits while a live Autopilot lease or a pause manages residency,
+and during any load, unload, operation, switch, startup preload or drain. A
+refusal for memory, a slot or a transient state keeps the model waiting; any
+other load failure ends its recovery and leaves the model to the request path.
+Victims are evicted before the load's own checks run, so a load that then fails
+for another reason (missing files, an unpinned checkpoint) has still evicted
+them; that failure ends the model's recovery, so it costs at most one attempt's
+evictions. The daemon state reports each waiting model, its next check and the
+last blocker (`selected_model_recovery`).
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)

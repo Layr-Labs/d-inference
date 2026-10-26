@@ -54,7 +54,7 @@ extension Status {
         var changes: [String] = []
         if !added.isEmpty { changes.append("adds \(added.joined(separator: ", "))") }
         if !removed.isEmpty { changes.append("removes \(removed.joined(separator: ", "))") }
-        if changes.isEmpty || applied.isEmpty || enabledModels.isEmpty {
+        if applied.isEmpty || enabledModels.isEmpty {
             let when = state.enabledModelsAtLastSwitch == nil ? "at start" : "at the last switch"
             changes = ["was [\(applied.joined(separator: ", "))] \(when), is [\(enabledModels.joined(separator: ", "))] now"]
         }

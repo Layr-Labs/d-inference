@@ -92,10 +92,11 @@ struct RequestScopedRefusalTests {
     /// refuses; a request admitted earlier that still needs it all asks for the
     /// 7.90 GiB alone and goes on; the harm guard still stops it.
     @Test func theContinuingFloorIsTheTrulyFreeTripwire() throws {
-        // 46.8 GiB file-backed: 6.8 GiB above the 40 GiB reserve, 5.1 GiB counted.
-        let fileBacked = (40 * Self.gib + 6 * Self.gib + 819 * Self.mib) / ConstructedMac.page
+        // Every file-backed page counts now, so the Mac that had 5.09 GiB counted
+        // is one with 5.09 GiB of file cache in all.
+        let fileBacked = (5 * Self.gib + 92 * Self.mib) / ConstructedMac.page
         let observation = Mac.observation(freeBytes: 6 * Self.gib + 300 * Self.mib, anonymousGiB: 55,
-            inactiveFileBackedBytes: 30 * Self.gib, fileBackedPages: fileBacked)
+            fileBackedPages: fileBacked)
         let reserved = 7 * Self.gib + 921 * Self.mib
         let admission = try QwenDenseStageLoadPolicy.decide(observation,
             requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes, purpose: "Resident request", now: Mac.now)
@@ -103,16 +104,24 @@ struct RequestScopedRefusalTests {
             now: Mac.now, floor: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes)
         #expect(!admission.admitted && running.admitted)
         #expect(running.requiredBytes == reserved && admission.requiredBytes == reserved + 4 * Self.gib)
+        #expect(admission.admissibleBytes == 6 * Self.gib + 300 * Self.mib + fileBacked * ConstructedMac.page)
+        // Mac B itself held 46.8 GiB of file cache; all of it counted admits the reservation outright.
+        let roundTwo = Mac.observation(freeBytes: 6 * Self.gib + 300 * Self.mib, anonymousGiB: 55,
+            fileBackedPages: (46 * Self.gib + 819 * Self.mib) / ConstructedMac.page)
+        #expect(try QwenDenseStageLoadPolicy.decide(roundTwo,
+            requiredBytes: reserved + QwenDenseStageLoadPolicy.loadingHeadroomBytes, purpose: "Resident request",
+            now: Mac.now).admitted)
         // Almost all allocated: a load or reservation floor (6 GiB) would refuse; continuing does not.
-        let tail = try QwenDenseStageLoadPolicy.decide(Mac.observation(freeBytes: 512 * Self.mib, fileBackedGiB: 20,
-            anonymousGiB: 70, inactiveFileBackedBytes: 0), requiredBytes: 100 * Self.mib, purpose: "Resident request",
+        let full = Mac.observation(freeBytes: 512 * Self.mib, fileBackedGiB: 5, anonymousGiB: 85, inactiveFileBackedBytes: 0)
+        #expect(!(try QwenDenseStageLoadPolicy.decide(full, requiredBytes: 100 * Self.mib, purpose: "Resident request",
+            now: Mac.now).admitted))
+        let tail = try QwenDenseStageLoadPolicy.decide(full, requiredBytes: 100 * Self.mib, purpose: "Resident request",
             now: Mac.now, floor: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes)
         #expect(tail.admitted)
         // Harm since the request's first sample still withdraws the cache.
         let first = QwenDenseStageLoadBaseline(observation)
         let harmed = try QwenDenseStageLoadPolicy.decide(Mac.observation(freeBytes: 6 * Self.gib + 300 * Self.mib,
-            anonymousGiB: 55, inactiveFileBackedBytes: 30 * Self.gib,
-            compressedBytes: QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes + 16_384,
+            anonymousGiB: 55, compressedBytes: QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes + 16_384,
             fileBackedPages: fileBacked),
             requiredBytes: reserved, purpose: "Resident request", now: Mac.now, since: first,
             floor: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes)

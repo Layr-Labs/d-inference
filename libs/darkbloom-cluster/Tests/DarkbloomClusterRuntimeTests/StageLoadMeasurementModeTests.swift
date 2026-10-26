@@ -32,7 +32,7 @@ struct StageLoadMeasurementModeTests {
         // Off: the committed rule refuses exactly as it always did, and nothing is recorded.
         let watch = QwenDenseStageLoadWatch("Test load", list: nil, measurement: measurement)
         let refused = Self.thrown { try watch.admits(Mac.observation(), bytes: 100 * Self.gib, now: Mac.now) }
-        #expect(refused?.hasPrefix("Test load needs 100.00 GiB of admissible memory and has 30.25 GiB") == true)
+        #expect(refused?.hasPrefix("Test load needs 100.00 GiB of admissible memory and has 80.25 GiB") == true)
         #expect(measurement.report == nil && watch.summary.refusals == 1)
         // The process's own instance is off in a test run.
         #expect(!QwenDenseStageLoadMeasurement.shared.isEnabled)
@@ -56,7 +56,7 @@ struct StageLoadMeasurementModeTests {
 
     @Test func aRefusalForAdmissibleMemoryAloneIsRecordedAndNotEnforced() throws {
         let (measurement, watch) = try Self.measuring()
-        // 0.25 GiB free and 30 GiB counted against 100 GiB: the committed rule refuses.
+        // 0.25 GiB free and all 80 GiB of file cache counted against 100 GiB: the committed rule refuses.
         #expect(try watch.admits(Mac.observation(), bytes: 100 * Self.gib, now: Mac.now))
         // An admitted decision is recorded too, as enforced.
         #expect(try watch.admits(Mac.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), bytes: 16 * Self.gib, now: Mac.now))
@@ -68,8 +68,8 @@ struct StageLoadMeasurementModeTests {
         #expect(report.decisionRows.map(\.ruleAdmitted) == [false, true])
         #expect(report.decisionRows.map(\.enforced) == [false, true])
         #expect(report.decisionRows[0].requiredBytes == 100 * Self.gib
-            && report.decisionRows[0].admissibleBytes == 30 * Self.gib + 256 * Self.mib
-            && report.decisionRows[0].countedReclaimableBytes == 30 * Self.gib)
+            && report.decisionRows[0].admissibleBytes == 80 * Self.gib + 256 * Self.mib
+            && report.decisionRows[0].countedReclaimableBytes == 80 * Self.gib)
         #expect(report.tightestDecision?.requiredBytes == 100 * Self.gib)
         #expect(report.fewestFreeDecision?.actualFreeBytes == 256 * Self.mib)
         #expect(report.samples.isEmpty && report.samplerFailure == nil)
@@ -116,7 +116,7 @@ struct StageLoadMeasurementModeTests {
         try measurement.enable(.record, permittedBy: .permittedByExplicitFlag)
         // The committed rule refuses, and the refusal stands.
         let refused = Self.thrown { try watch.admits(Mac.observation(), bytes: 100 * Self.gib, now: Mac.now) }
-        #expect(refused?.hasPrefix("Test load needs 100.00 GiB of admissible memory and has 30.25 GiB") == true)
+        #expect(refused?.hasPrefix("Test load needs 100.00 GiB of admissible memory and has 80.25 GiB") == true)
         // An admitted decision is admitted.
         #expect(try watch.admits(Mac.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), bytes: 16 * Self.gib, now: Mac.now))
         let report = try #require(measurement.report)

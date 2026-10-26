@@ -869,7 +869,12 @@ per-token KDA and selection graphs exceed MLX's Metal resource limit at real
 prompt lengths. Routed-expert prefill on Neural-Accelerator GPUs runs the NAX
 expert kernel for affine 4-bit and NVFP4 banks (`RoutedExperts.fusedDecodeNAXPrefill`;
 other GPUs keep MLX's sorted gather), and prefill chunks past position 2,048 run the
-native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). The policy is part of the encrypted checkpoint storage identity
+native sparse-attention prefill kernel (`SparsePrefill.nativeKernel`). A prefill
+chunk's KDA recurrence runs the pipelined value-row ranges
+(`GLM5NextKDAPrefillKernel.Launch.pipelined`): on an 80-core M5 Ultra the model's
+64 heads take a 56/56/32/56/56 cut per head pair, two ranges per GPU core, with
+every row's FP32 steps in the same order as the even per-core split, so the
+bits are unchanged. The policy is part of the encrypted checkpoint storage identity
 (`storage.executionPolicy`, `CompleteCheckpointStorageIdentity`). The native
 engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
@@ -957,7 +962,9 @@ verifies them in one captured target forward over the window, whose KDA layers
 stage every position's recurrent state so any accepted prefix commits without a
 repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
-acceptance. The window runs the batched multi-token kernels, so greedy output is
+acceptance. Each draft step is submitted to the GPU as soon as it is built
+(`GLM5NextMTPAdapter.submitsEveryDraftStepEarly`), so the proposals draft while
+the engine still builds the verification forward; the graphs are the same. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
 batch is 1, and the profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).

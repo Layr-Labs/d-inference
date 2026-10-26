@@ -1416,7 +1416,7 @@ caching and SSD write policy are unchanged. See the
 for the thresholds and their resource-lifetime limits. Source:
 `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4DecodeCommandBuffers.swift`.
 
-An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/df1347852b8db09207232040668202fd3df856ed/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
+An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/a63b4c69b73f05ff3e08ed51d22bcbb60a2a1447/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
 `gemma-4-26b-qat-4bit` on one M5 Max measured a 3.45% and 3.90% improvement in
 the two paired orderings of the HTTP decode proxy: approximately 99.2–99.6 to
 103.0–103.1 tok/s. Each leg used two fixed single-request prompts with 8,192

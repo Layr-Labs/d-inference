@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -84,7 +84,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
 | `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
-| `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
+| `usage reporting` | Requests completed since the daemon started whose usage chunk was missing (`usageGaps > 0`); the pass line counts this daemon's completions, not paid jobs | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
@@ -141,6 +141,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
 | Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
+| `Requests served` in `status` is higher than the jobs in the console's Earnings | The status count covers only the current daemon process and includes requests that ended early on a coordinator cancel or a dropped connection, which the coordinator may not pay for, and free requests to your own machine. Earnings lists only paid jobs (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`) | Compare Earnings over the same period; the machine card's Tokens/reqs add the status counters up across sessions |
 
 ## Updates
 

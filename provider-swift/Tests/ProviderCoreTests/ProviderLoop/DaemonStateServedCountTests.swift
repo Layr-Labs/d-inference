@@ -44,5 +44,6 @@ struct DaemonStateServedCountTests {
         #expect(written["requests_served"] as? Int == 3)
         #expect(written["tokens_generated"] as? Int == 120)
         #expect(written["cancellations_partial_complete"] as? Int == 1)
+        #expect(DaemonStateFile.read(from: file)?.stats.cancellationsPartialComplete == 1)
     }
 }

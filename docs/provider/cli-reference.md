@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -987,6 +987,14 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Requests served since the daemon started (… ago)`: coordinator requests
+  this daemon process finished since its last start, with output tokens only.
+  The count restarts at zero with the daemon. It includes requests that ended
+  early on a coordinator cancel or a dropped connection (counted on the next
+  line; the coordinator may not pay for them) and free requests routed to your
+  own machine. Paid jobs are on the console's Earnings page; the console's
+  machine card adds these counters up across sessions
+  (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Serving outside the enabled
   model filter` names each warm or advertised model the filter omits and why it

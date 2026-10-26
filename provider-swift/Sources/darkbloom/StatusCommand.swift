@@ -171,7 +171,11 @@ struct Status: AsyncParsableCommand {
         }
         for line in Self.evictionExclusionLines(state: state) { print(line) }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
-        print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
+        for line in Self.servedRequestLines(
+            state.stats, uptime: Self.compactDuration(state.uptimeSeconds(now: now)))
+        {
+            print(line)
+        }
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
             print("  Recorded \(Self.compactDuration(now - err.at)) ago")

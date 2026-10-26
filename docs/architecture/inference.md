@@ -3541,12 +3541,13 @@ dequantized weights, each weight `s * q + b` rounded once and then one fused
 multiply-add per weight and vector) and the words a lane takes per step (capped
 to the weight's quantization group). The M3 Ultra (family 15) and the M5 Max
 (17) take the dequantized weights at one word per lane, with layouts `a:4:4:1`
-for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five; past five, a
-call reads each weight once for a whole cohort's vectors: one tile of eight
-(`b:4:4:8`) for six to eight vectors and tiles of sixteen (`b:2:4:16`) beyond,
-so an eight-row cohort's four-column window (32 vectors) reads the weights
-twice instead of eight times. A tile that runs past the call's end skips its
-missing vectors. Other families take the scaled inputs and the generic
+for one vector, `a:2:4:4` for two to four and `a:2:4:5` for five, and tiles of
+four (`a:2:4:4`) past five. The kernel also serves whole-cohort tiles (one tile
+of eight, `b:4:4:8`, or tiles of sixteen, `b:2:4:16`, reading the weights once
+for up to 32 vectors; a tile that runs past the call's end skips its missing
+vectors), but no family selects them: on two M5 Ultra 256 GB serving the 27B
+pair they lowered the four-request aggregate by 19 % (73.1 against 90.1 tok/s,
+identical outputs). Other families take the scaled inputs and the generic
 layouts. A layout (rows per SIMD group, SIMD groups, vectors per weight read,
 up to 32) never changes a result. The kernel source pins the order of every operation
 (contraction off, explicit `fma`, safe math), and byte-parity tests compare every

@@ -47,11 +47,13 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
                 speculativeDepth: speculativeTerms?.depth, qualification: qualification, dataPlane: dataPlane,
                 prefixSSDKey: prefixSSDKey))
         case .glm5Next where generationMode == .tensorParallel:
-            // Every layer on both ranks, half of each split weight, sealed sums.
+            // Every layer on both ranks, half of each split weight, sealed sums;
+            // its prompt-prefix cache keeps an SSD tier with the owner's key.
             guard speculativeTerms == nil, let dataPlane else {
                 throw WorkerFailure.invalid("GLM tensor parallel runs over a keyed data plane without speculation")
             }
-            owner = .glm5NextTensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane))
+            owner = .glm5NextTensorParallel(try .load(configuration, qualification: qualification, dataPlane: dataPlane,
+                prefixSSDKey: prefixSSDKey))
         case .glm5Next:
             // The registered GLM row: plain pipeline over the keyed data plane,
             // with its prompt-prefix cache and SSD tier as every family keeps them.

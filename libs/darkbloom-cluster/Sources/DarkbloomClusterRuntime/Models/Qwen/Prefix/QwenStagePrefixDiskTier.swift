@@ -351,8 +351,12 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// (the deepest frontier's attention copy and the recurrent state at the
     /// deepest frontier and at each frontier on the disk grid). Prepares the
     /// bytes here, on the serving thread, and writes behind. An existing
-    /// record of the same prompt is only touched.
-    func persist(scope: String, tokens: [Int], states: [QwenStagePrefixState], blockTokens: Int) {
+    /// record of the same prompt is only touched. `attentionRows`: deepest
+    /// attention entries the writer reads unit by unit
+    /// (`QwenStagePrefixDiskJob.prepare`); what they keep alive counts in the
+    /// queue's byte bound.
+    func persist(scope: String, tokens: [Int], states: [QwenStagePrefixState], blockTokens: Int,
+                 attentionRows: [Int: (keys: QwenStagePrefixDiskRows, values: QwenStagePrefixDiskRows)] = [:]) {
         guard let deepest = states.max(by: { $0.committedTokens < $1.committedTokens }),
               deepest.committedTokens >= configuration.minimumTokens, blockTokens > 0,
               deepest.committedTokens <= tokens.count else { return }
@@ -371,6 +375,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let estimate = chosen.reduce(0) { total, state in
             total + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
         } + deepest.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            + attentionRows.values.reduce(0) { $0 + $1.keys.heldBytes + $1.values.heldBytes }
             + (chosen.compactMap(\.speculativeHistory).map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes }.max() ?? 0)
         enum Decision { case touch, drop(String), write }
         let decision: Decision = lock.withLock {
@@ -391,7 +396,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let job: QwenStagePrefixDiskJob
         do {
             job = try QwenStagePrefixDiskJob.prepare(scope: scope, recordKey: recordKey, fileName: name, rank: rank, deepest: deepest,
-                frontiers: chosen.map { ($0, frontierKeys[$0.committedTokens]!) }, blockTokens: blockTokens, encoding: encoding)
+                frontiers: chosen.map { ($0, frontierKeys[$0.committedTokens]!) }, blockTokens: blockTokens,
+                attentionRows: attentionRows, encoding: encoding)
         } catch {
             lock.withLock { statistics.droppedPersists += 1 }
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=persist-dropped reason=unstorable")

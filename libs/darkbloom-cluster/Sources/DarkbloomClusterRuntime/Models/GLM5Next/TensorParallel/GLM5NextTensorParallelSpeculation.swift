@@ -218,6 +218,10 @@ final class GLM5NextTensorParallelSpeculation {
         try mtp.restore(checkpoint, into: state)
     }
 
+    /// Restores a prefix's history from an SSD record's rows
+    /// (`GLM5NextMTP.restoreHistory`): what the checkpoint at that boundary holds.
+    func restore(history rows: [MLXArray]) throws { try mtp.restoreHistory(rows, into: state) }
+
     // MARK: - Decode
 
     /// The first generated token (both ranks agreed it) and the last prompt

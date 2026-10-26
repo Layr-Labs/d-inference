@@ -125,13 +125,28 @@ enum QwenStagePrefixDiskFormat {
     static func headerNonce() throws -> AES.GCM.Nonce { try AES.GCM.Nonce(data: [UInt8](repeating: 0xFF, count: 12)) }
 }
 
+/// An attention entry `[1, 1, tokens, width]` that the writer reads unit by
+/// unit instead of a job holding its bytes: a paged history's rows, which
+/// `read` copies (rows `[first, end)`, densely) into a unit's plaintext on
+/// the writer thread, without MLX. Whatever it reads is kept unchanged until
+/// the job is done; `heldBytes` is what that keeps alive, for the queue bound.
+struct QwenStagePrefixDiskRows: @unchecked Sendable {
+    let dtype: DType
+    let tokens: Int
+    let width: Int
+    let heldBytes: Int
+    let read: (_ rows: Range<Int>, _ destination: UnsafeMutableRawPointer) throws -> Void
+}
+
 /// Bytes of evaluated arrays prepared on the serving thread and written by
 /// the background writer. The arrays are kept alive (and unchanged: they are
 /// a request's confirmed copies) until the job is done; nothing here calls MLX.
 final class QwenStagePrefixDiskJob: @unchecked Sendable {
     struct Source {
-        let array: MLXArray
+        let array: MLXArray?
         let data: Data
+        /// An attention entry read unit by unit instead of `data`.
+        var rows: QwenStagePrefixDiskRows? = nil
     }
     let header: QwenStagePrefixDiskHeader
     let fileName: String
@@ -153,7 +168,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     }
 
     var hostBytes: Int {
-        attention.reduce(0) { $0 + $1.data.count } + recurrent.reduce(0) { $0 + $1.data.count }
+        attention.reduce(0) { $0 + $1.data.count + ($1.rows?.heldBytes ?? 0) } + recurrent.reduce(0) { $0 + $1.data.count }
             + history.reduce(0) { $0 + $1.data.count }
             + [sharedHidden, sharedLast, sharedTokens].reduce(0) { $0 + ($1?.data.count ?? 0) }
     }
@@ -192,12 +207,21 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     /// Prepares a record of `states` (one prompt's captured frontiers, the
     /// deepest carrying the whole attention copy). Runs on the serving thread:
     /// it evaluates (normally a no-op) and borrows the arrays' bytes.
+    /// `attentionRows`: the deepest frontier's attention entries the writer
+    /// reads unit by unit (`QwenStagePrefixDiskRows`), stored as attention
+    /// arrays of one head are; a layer is in one of the two, never both.
     static func prepare(scope: String, recordKey: String, fileName: String, rank: Int, deepest: QwenStagePrefixState,
-                        frontiers: [(state: QwenStagePrefixState, key: String)], blockTokens: Int) throws -> QwenStagePrefixDiskJob {
+                        frontiers: [(state: QwenStagePrefixState, key: String)], blockTokens: Int,
+                        attentionRows: [Int: (keys: QwenStagePrefixDiskRows, values: QwenStagePrefixDiskRows)] = [:])
+        throws -> QwenStagePrefixDiskJob {
         let committed = deepest.committedTokens
         guard committed > 0, blockTokens > 0, !frontiers.isEmpty,
               frontiers.allSatisfy({ $0.state.committedTokens == committed || $0.state.committedTokens % blockTokens == 0 }) else {
             throw ProbeError("Prefix record frontiers are off the block grid")
+        }
+        guard Set(attentionRows.keys).isDisjoint(with: deepest.attention.keys),
+              attentionRows.values.allSatisfy({ [$0.keys, $0.values].allSatisfy { $0.tokens == committed && $0.width > 0 } }) else {
+            throw ProbeError("Prefix record attention rows differ from their frontier")
         }
         eval(deepest.attention.values.flatMap { [$0.keys, $0.values] } + frontiers.flatMap { $0.state.recurrent.values.flatMap { [$0.conv, $0.ssm] } }
             + frontiers.flatMap { $0.state.speculativeHistory.map { [$0.hidden, $0.tokens, $0.last] } ?? [] })
@@ -207,7 +231,19 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             return .init(index: index, offset: offset, length: plain + QwenStagePrefixDiskFormat.tagBytes)
         }
         var attention: [QwenStagePrefixDiskHeader.Attention] = [], attentionSources: [Source] = []
-        for layer in deepest.attention.keys.sorted() {
+        for layer in Set(deepest.attention.keys).union(attentionRows.keys).sorted() {
+            if let pair = attentionRows[layer] {
+                for (kind, rows) in [("keys", pair.keys), ("values", pair.values)] {
+                    guard let dtype = QwenStagePrefixDiskFormat.name(rows.dtype) else {
+                        throw ProbeError("Prefix record attention rows' dtype is not storable")
+                    }
+                    let rowBytes = rows.width * rows.dtype.size, blocks = (committed + blockTokens - 1) / blockTokens
+                    let units = (0..<blocks).map { block in unit(min(blockTokens, committed - block * blockTokens) * rowBytes) }
+                    attention.append(.init(layer: layer, kind: kind, dtype: dtype, heads: 1, headDim: rows.width, units: units))
+                    attentionSources.append(.init(array: nil, data: Data(), rows: rows))
+                }
+                continue
+            }
             let pair = deepest.attention[layer]!
             for (kind, array) in [("keys", pair.keys), ("values", pair.values)] {
                 guard array.ndim == 4, array.dim(0) == 1, array.dim(2) == committed,
@@ -324,12 +360,20 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     }
 
     /// The plaintext of one attention unit: all heads of rows
-    /// `[block * blockTokens, ...)` from the whole source.
-    func attentionPlaintext(entry: Int, block: Int) -> Data {
+    /// `[block * blockTokens, ...)` from the whole source, or read from the
+    /// entry's row source.
+    func attentionPlaintext(entry: Int, block: Int) throws -> Data {
         let item = header.attention[entry], committed = header.committedTokens, b = header.blockTokens
         let rowBytes = item.headDim * (QwenStagePrefixDiskFormat.dtypes[item.dtype]?.size ?? 0)
         let rows = min(b, committed - block * b), run = rows * rowBytes
         var out = Data(count: item.heads * run)
+        if let source = attention[entry].rows {
+            guard item.heads == 1 else { throw ProbeError("Prefix record attention rows have one head") }
+            try out.withUnsafeMutableBytes { target in
+                try source.read(block * b ..< block * b + rows, target.baseAddress!)
+            }
+            return out
+        }
         attention[entry].data.withUnsafeBytes { source in
             out.withUnsafeMutableBytes { target in
                 for head in 0..<item.heads {
@@ -383,7 +427,7 @@ enum QwenStagePrefixDiskIO {
             try writeAll(fd, sealed, at: dataStart + unit.offset)
         }
         for (entry, item) in job.header.attention.enumerated() {
-            for (block, unit) in item.units.enumerated() { try seal(job.attentionPlaintext(entry: entry, block: block), unit) }
+            for (block, unit) in item.units.enumerated() { try seal(try job.attentionPlaintext(entry: entry, block: block), unit) }
         }
         for (entry, item) in job.header.recurrent.enumerated() { try seal(job.recurrent[entry].data, item.unit) }
         for (entry, item) in job.header.historyEntries.enumerated() { try seal(job.history[entry].data, item.unit) }

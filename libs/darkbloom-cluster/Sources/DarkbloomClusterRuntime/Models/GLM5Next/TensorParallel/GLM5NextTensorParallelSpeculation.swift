@@ -108,6 +108,17 @@ final class GLM5NextTensorParallelSpeculation {
     /// .primeAndProposeLanes`); each lane's proposals are bitwise its own.
     /// `rounds` takes the first lane's choice.
     var batchesProposalHeads = true
+    /// No verification window of one row (`GLM5NextTensorParallelDecodePolicy`):
+    /// a round of no proposal verifies `last` beside a padding row (the NextN
+    /// step-0 proposal it computes anyway), keeps only the target's first
+    /// token and drops the padding row as a rejected proposal. Its token then
+    /// has the bits of a window column, not of a one-row step. The agreement
+    /// carries the padded window. Both ranks must set it alike.
+    var padsSingleRowWindows = false
+    /// Diagnostic for tests: every round's logits of its kept tokens,
+    /// `[1, kept, V']`, in round order.
+    var recordsKeptLogits = false
+    private(set) var keptLogits: [MLXArray] = []
     /// Per round, when set: host seconds building the graph, encoding it
     /// (`asyncEval` returning) and then waiting for the result. A wait near
     /// zero means the round is host-bound; a long wait, GPU-bound.
@@ -335,7 +346,9 @@ final class GLM5NextTensorParallelSpeculation {
         }
         pending = nil
         let started = DispatchTime.now().uptimeNanoseconds
-        let drafts = try prepareProposals(verified, window: window, propose: propose)
+        let padded = pads(window: window, stage: stage, cache: cache)
+        let verifying = padded ? 1 : window
+        let drafts = try prepareProposals(verified, window: window, padded: padded, propose: propose)
         if earlySubmission != .none, let drafts { asyncEval(drafts) }
         let input = concatenated([MLXArray([Int32(last)], [1, 1])] + (drafts.map { [$0] } ?? []), axis: 1)
         let split = splitsVocabulary && draw == nil && ranks == 2
@@ -345,7 +358,7 @@ final class GLM5NextTensorParallelSpeculation {
         guard case .final(let output) = candidate.output else {
             throw ProbeError("GLM speculative verification produced no logits")
         }
-        let width = split ? 3 * window + 3 : 2 * window + 2
+        let width = split ? 3 * verifying + 3 : 2 * verifying + 2
         let local = Self.slot(logits: output.logits, draw: draw, drafts: drafts, stop: stop, rank: rank, split: split)
         let empty = MLXArray.zeros([width], dtype: .float32)
         let agreed = agree(concatenated((0..<ranks).map { $0 == rank ? local : empty }, axis: 0))
@@ -366,9 +379,9 @@ final class GLM5NextTensorParallelSpeculation {
                 try error.check()
             }
         }, keeping: { _ in
-            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: window, sampled: draw != nil,
-                vocabularySplit: split)
-            if !acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
+            var round = try Self.decide(agreed.asArray(Float.self), ranks: ranks, window: verifying,
+                sampled: draw != nil, vocabularySplit: split)
+            if !acceptsProposals || padded { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
             decided = round
             return round.tokens.count
         })
@@ -377,21 +390,30 @@ final class GLM5NextTensorParallelSpeculation {
         // The next round's verified pairs: each kept target token with the
         // hidden row that predicted it.
         pending = (MLXArray(decided.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
+        if recordsKeptLogits { keptLogits.append(output.logits[0..., ..<kept, 0...]) }
         record(decided, window: window)
         return decided
+    }
+
+    /// Whether a round of `window` proposals verifies a padding row
+    /// (`padsSingleRowWindows`): only a round of none, and only while the
+    /// context has room for the row.
+    private func pads(window: Int, stage: GLM5NextTextStage, cache: GLM5NextTextStageCache) -> Bool {
+        padsSingleRowWindows && window == 0 && cache.offset + 2 <= stage.plan.configuration.maxPositionEmbeddings
     }
 
     /// Graph only: primes the verified pairs (never skipped: it keeps the
     /// NextN history in step with the target even when no proposal is used)
     /// and proposes a round's `window` tokens with `propose` (nil: the
-    /// argmax), `[1, window]`; nil for a window of 0. Keeps the first step's
-    /// NextN logits for the draft probe.
-    private func prepareProposals(_ verified: (tokens: MLXArray, hidden: MLXArray), window: Int,
+    /// argmax), `[1, window]`; for a window of 0, nil, or with `padded` the
+    /// step-0 proposal `[1, 1]` (the padding row's token). Keeps the first
+    /// step's NextN logits for the draft probe.
+    private func prepareProposals(_ verified: (tokens: MLXArray, hidden: MLXArray), window: Int, padded: Bool = false,
                                   propose: GLM5NextMTP.ProposalSelection?) throws -> MLXArray? {
         let lane = proposalLane(verified, window: window, propose: propose)
         let proposals = try mtp.primeAndPropose(shiftedTokens: lane.shiftedTokens, targetHidden: lane.targetHidden,
             at: lane.position, state: lane.state, depth: lane.depth, select: lane.select)
-        return window > 0 ? proposals[0..., ..<window] : nil
+        return window > 0 ? proposals[0..., ..<window] : (padded ? proposals : nil)
     }
 
     /// `prepareProposals`' arguments for the NextN layer (at least one step,
@@ -499,6 +521,10 @@ extension GLM5NextTensorParallelSpeculation {
         }
         let (rank, ranks) = (first.rank, first.ranks)
         let started = DispatchTime.now().uptimeNanoseconds
+        // Each lane's verified window: its own, or one padding row for a
+        // round of no proposal (`padsSingleRowWindows`).
+        let padded = lanes.map { $0.speculation.pads(window: $0.window, stage: stage, cache: $0.cache) }
+        let verifying = zip(lanes, padded).map { $1 ? 1 : $0.window }
         var inputs: [GLM5NextTextStageLane] = []
         var drafts: [MLXArray?] = []
         // Each lane's own priming and proposals (as in `round`): its own NextN
@@ -515,13 +541,17 @@ extension GLM5NextTensorParallelSpeculation {
                 return lane.speculation.proposalLane(verified, window: lane.window, propose: lane.propose)
             }
             let proposals = try first.mtp.primeAndProposeLanes(proposalLanes)
-            drafts = zip(lanes, proposals).map { lane, value in lane.window > 0 ? value[0..., ..<lane.window] : nil }
+            drafts = zip(zip(lanes, proposals), padded).map { pair, pads in
+                let (lane, value) = pair
+                return lane.window > 0 ? value[0..., ..<lane.window] : (pads ? value : nil)
+            }
         } else {
-            for lane in lanes {
+            for (lane, pads) in zip(lanes, padded) {
                 let speculation = lane.speculation
                 let verified = speculation.pending!
                 speculation.pending = nil
-                drafts.append(try speculation.prepareProposals(verified, window: lane.window, propose: lane.propose))
+                drafts.append(try speculation.prepareProposals(verified, window: lane.window, padded: pads,
+                    propose: lane.propose))
             }
         }
         for (lane, draft) in zip(lanes, drafts) {
@@ -550,8 +580,8 @@ extension GLM5NextTensorParallelSpeculation {
         }
         // Each lane's slots exactly as its own round lays them out.
         var slots: [MLXArray] = []
-        for (lane, (output, draft)) in zip(lanes, zip(outputs, drafts)) {
-            let width = split ? 3 * lane.window + 3 : 2 * lane.window + 2
+        for ((lane, window), (output, draft)) in zip(zip(lanes, verifying), zip(outputs, drafts)) {
+            let width = split ? 3 * window + 3 : 2 * window + 2
             let local = Self.slot(logits: output.logits, draw: lane.draw, drafts: draft, stop: lane.stop,
                 rank: rank, split: split)
             let empty = MLXArray.zeros([width], dtype: .float32)
@@ -562,7 +592,7 @@ extension GLM5NextTensorParallelSpeculation {
         // holds whatever each lane's `draw` computes from its logits.
         let agreed = first.agree(depends(input: concatenated(slots, axis: 0),
             dependencies: outputs.map(\.logits)))
-        let segments = Self.segments(windows: lanes.map(\.window), ranks: ranks, split: split)
+        let segments = Self.segments(windows: verifying, ranks: ranks, split: split)
         var decided: [Round] = []
         try candidate.commit(afterEvaluating: { roots in
             try MLX.withError { error in
@@ -584,10 +614,13 @@ extension GLM5NextTensorParallelSpeculation {
             }
         }, keeping: { _ in
             let values = agreed.asArray(Float.self)
-            decided = try zip(lanes, segments).map { lane, segment in
-                var round = try Self.decide(Array(values[segment]), ranks: ranks, window: lane.window,
+            decided = try zip(zip(lanes, verifying), zip(segments, padded)).map { pair, own in
+                let ((lane, window), (segment, pads)) = (pair, own)
+                var round = try Self.decide(Array(values[segment]), ranks: ranks, window: window,
                     sampled: lane.draw != nil, vocabularySplit: split)
-                if !lane.speculation.acceptsProposals { round = Round(tokens: [round.tokens[0]], stops: round.stops) }
+                if !lane.speculation.acceptsProposals || pads {
+                    round = Round(tokens: [round.tokens[0]], stops: round.stops)
+                }
                 return round
             }
             return decided.map(\.tokens.count)
@@ -598,6 +631,7 @@ extension GLM5NextTensorParallelSpeculation {
             let kept = round.tokens.count
             // The next round's verified pairs, as `round` keeps them.
             speculation.pending = (MLXArray(round.tokens.map(Int32.init), [1, kept]), output.hidden[0..., ..<kept, 0...])
+            if speculation.recordsKeptLogits { speculation.keptLogits.append(output.logits[0..., ..<kept, 0...]) }
             speculation.record(round, window: lane.window)
         }
         timing?(times)

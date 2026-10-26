@@ -179,6 +179,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 71.8 (its third proposal is rarely kept and widens every window).
     /// Shared with the provider's status (`ClusterGLMTensorParallel`).
     static let mtpDepth = ClusterGLMTensorParallel.speculativeDepth
+    /// How many of those proposals a round verifies and whether a window may
+    /// have one row (`GLM5NextTensorParallelDecodePolicy`, from this process's
+    /// environment); bound into the load agreement.
+    static var decodePolicy: GLM5NextTensorParallelDecodePolicy { .current }
     /// The media contract this runtime serves; bound into the load agreement.
     /// Rank 0 holds the vision tower whole (1.13 GB of bfloat16 weights for
     /// the registered artifact, charged to its load gate); rank 1 holds none.
@@ -292,6 +296,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         GLM5NextTensorParallelPrefillPlan.commandBuffers = prefillCommandBuffers
         let frameTiming = GLM5NextTensorParallelPrefillPlan.enableFrameTimingFromSwitch()
         let lanes = try QwenBatchSettings.fromEnvironment(environment)
+        let decodePolicy = try GLM5NextTensorParallelDecodePolicy.environment.get()
         let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         guard spec.supportedGenerationModes.contains(.tensorParallel) else {
@@ -380,6 +385,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 "glm5-next-tensor-parallel-prefix-v2", prefixEnabled ? "on" : "off"]
                 + (prefixEnabled ? prefixRecords.loadAgreementFields : [])
                 + Self.laneAgreementFields(lanes) + Self.pagedKVAgreementFields(pagedKV)
+                + (Self.mtpDepth > 0 ? decodePolicy.loadAgreementFields : [])
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
@@ -451,6 +457,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 }
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
                 value.tensorParallelMicroBatches = Self.prefillMicroBatches
+                value.widthInvariantWindows = decodePolicy.widthInvariant
                 value.freeze()
                 // Every request's DSA and NextN histories live in this rank's page pool.
                 if pagedKV {
@@ -523,7 +530,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
                     + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) micro_batch_tokens=\(Self.prefillMicroBatchTokens ?? 0) merged_tokens=\(Self.mergedPrefillTokens) sequence_parallel=\(Self.prefillSequenceParallel ? 1 : 0) selection_split=\(Self.prefillSelectionSplit ? String(Self.prefillSelectionSplitMinimumHistory) : "off") sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
-                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
+                    + " mtp_depth=\(Self.mtpDepth) mtp_policy=\(decodePolicy.depth.rawValue)"
+                    + " mtp_load_lanes=\(decodePolicy.depth == .load ? decodePolicy.loadLanes : 0)"
+                    + " width_invariant=\(decodePolicy.widthInvariant ? 1 : 0)"
+                    + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
                     + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")
@@ -1074,6 +1084,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 pagePool: pages?.pool, pageAccount: pages?.account,
                 agree: { [group] in group.allSum($0) })
         }
+        speculation?.padsSingleRowWindows = Self.decodePolicy.widthInvariant
         mark("speculation")
         // Prompt prefix: the longest chunk boundary both ranks hold, in memory
         // or as an SSD record (`GLM5NextTensorParallelPrefixDisk`), under the
@@ -1410,8 +1421,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
             rounds: while !ended {
                 let taken = agreedCount
                 growPages(needed: prompt.count + agreedCount + 1)
+                // One request a step: the policy's depth for one decoding lane.
                 let round = try speculation.round(stage: stage, cache: cache, last: last,
-                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep, draw: draw,
+                    window: Self.decodePolicy.window(maximum: speculation.depth, lanes: 1,
+                        outputLeft: request.outputCount - agreedCount), stop: stopKeep, draw: draw,
                     propose: propose, whileRunning: {
                         for (index, value) in fresh.enumerated() {
                             _ = try take(value, counted: taken - fresh.count + index + 1)

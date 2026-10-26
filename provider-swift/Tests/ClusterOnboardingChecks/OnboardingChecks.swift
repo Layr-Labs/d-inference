@@ -829,7 +829,7 @@ import Darwin
     static func resumedMacsOpenWithTheMark() {
         let D = ClusterOnboardingDriver.self
         let resumes: [(String, ClusterOnboardingResume, String)] = [
-            ("member", memberResume(), "This Mac is a member of the cluster led by Apple M3 Ultra, 256 GB."),
+            ("member", memberResume(), "This Mac is a member of the cluster led by the other Mac (Apple M3 Ultra, 256 GB)."),
             ("leader", .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
              "This Mac leads the cluster."),
         ]

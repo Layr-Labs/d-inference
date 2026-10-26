@@ -54,6 +54,10 @@ struct SelectedModelRecoveryPolicyTests {
         await check(loop, at: start.advanced(by: .seconds(31)))
         waiting = try await entry(loop)
         #expect(waiting.blocker?.contains("glm-5.3-flash (idle ") == true, "\(waiting.blocker ?? "")")
+        // The next backoff step comes before GLM's idle threshold.
+        #expect(waiting.nextCheckAt == start.advanced(by: .seconds(91)))
+        await check(loop, at: start.advanced(by: .seconds(91)))
+        waiting = try await entry(loop)
         #expect(waiting.nextCheckAt == lastRequest.advanced(by: SelectedModelRecovery.victimMinimumIdle))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
 
@@ -76,8 +80,8 @@ struct SelectedModelRecoveryPolicyTests {
         await check(loop, at: start)
         let held = try await entry(loop)
         #expect(held.blocker?.contains("Autopilot hold until ") == true, "\(held.blocker ?? "")")
-        // The hold ends in an hour: the next check is the longest step away.
-        #expect(held.nextCheckAt == start.advanced(by: .seconds(600)))
+        // The hold ends in an hour: checks keep backing off meanwhile.
+        #expect(held.nextCheckAt == start.advanced(by: .seconds(30)))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
 
         // Expired: idle is measured from the expiry, so GLM qualifies two

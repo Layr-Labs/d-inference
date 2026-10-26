@@ -373,8 +373,8 @@ the startup preload's selected candidates that it skipped or that failed for
 memory, or that a slot cap left untried; before it, nothing retried them, and
 the coordinator cold-routes a model only to an idle machine. The capacity tick
 checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
-minutes, at once after any unload, and at a blocker's known end (a hold's
-expiry, an idle threshold), at most 10 minutes away. A check plans on the same
+minutes, at once after any unload, and sooner when what blocked it ends first
+(a hold's expiry plus the idle threshold, an idle threshold). A check plans on the same
 figures as the load gate (Super's LOAD-claim room against its narrowest
 configuration, otherwise usable load memory against weights plus headroom) and
 loads with `allowEviction: false`. Before the load it may unload only resident

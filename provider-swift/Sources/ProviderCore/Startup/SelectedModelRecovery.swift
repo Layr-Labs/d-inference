@@ -43,16 +43,15 @@ struct SelectedModelRecovery: Sendable {
     }
 
     /// Records a check that did not load `id`. The next one is due after the
-    /// next backoff step, or when what blocked it ends (`retryAt`: a hold's
-    /// expiry, an idle threshold), at most the longest step away.
+    /// next backoff step, or sooner when what blocked it ends first
+    /// (`retryAt`: a hold's expiry, an idle threshold).
     mutating func deferCheck(_ id: String, blocker: String, now: ContinuousClock.Instant,
                              retryAt: ContinuousClock.Instant? = nil) {
         guard var entry = entries[id] else { return }
-        let step = Self.checkBackoff[min(entry.checks, Self.checkBackoff.count - 1)]
-        let longest = now.advanced(by: Self.checkBackoff[Self.checkBackoff.count - 1])
+        let backoff = now.advanced(by: Self.checkBackoff[min(entry.checks, Self.checkBackoff.count - 1)])
         entry.checks += 1
         entry.blocker = blocker
-        entry.nextCheckAt = retryAt.map { max(now, min($0, longest)) } ?? now.advanced(by: step)
+        entry.nextCheckAt = retryAt.map { max(now, min($0, backoff)) } ?? backoff
         entries[id] = entry
     }
 

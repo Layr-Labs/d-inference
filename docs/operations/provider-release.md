@@ -42,7 +42,9 @@ Before tagging `v0.10.3`:
 - Confirm that the tagged commit pins `libs/mlx-swift` to `4926d3d9`
   (mlx-swift branch `hotfix/0.10.2-jit-nax-dsplit`) and `libs/mlx` and the
   nested `mlx` to `31f550af` (mlx branch `hotfix/0.10.2-jit-nax-dsplit`), with
-  `libs/mlx-swift-lm` still at `aee6ebb6`.
+  `libs/mlx-swift-lm` still at `aee6ebb6`. Keep both hotfix branches:
+  Layr-Labs/mlx#48 brought the fix to mlx `main` as a squash commit, so the mlx
+  branch is the only ref that holds `31f550af`.
 - Confirm that the tagged commit still pins `libs/mlx-swift-lm` to a commit on
   SDK `main`; the SDK pin is unchanged from 0.10.2. d-inference#1592 pins
   `aee6ebb6`, the head of the SDK set `release/sdk-0.10.2-final`: SDK `main` with
@@ -66,7 +68,7 @@ only the last waits for the tag:
    signed `0.10.1` provider, and the coordinator must include request
    normalization v9.
 3. After the fleet converges on `0.10.3` (0.10.2 crashes on M5 Macs), list
-   `logprobs` in GLM-5.3-Flash's catalog row. Once a signed `0.10.2` build also
+   `logprobs` in GLM-5.3-Flash's catalog row. Once a signed `0.10.3` build also
    restores Nemotron 3.5 Super's SSD checkpoints after a restart, add Super's
    tuple to the allowlist and list `logprobs` in Super's catalog row.
 

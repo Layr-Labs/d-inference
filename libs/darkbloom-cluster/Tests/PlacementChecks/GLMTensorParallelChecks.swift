@@ -166,6 +166,15 @@ private func checkGLMTensorParallelFirst(_ priced: ClusterModelLayout, golden: U
             chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.shares == nil && chosen?.ranks.count == 2
                 && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
     }
+    // The plan's hardware bound: a Mac at rest (`atRestAdmissibleBytes`), not its live free memory. What is left of it
+    // is what the NextN layer's real request bytes (2 GiB stands in here) and any load term the plan does not price
+    // yet may take before the pair stops planning tensor parallel.
+    let ceiling = min(profile.residentCapacityBytes, profile.atRestAdmissibleBytes)
+    let ranks = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: first, link: measured).chosen?.ranks ?? []
+    let need = ranks.map(\.needBytes).max() ?? .max
+    checks.require(String(format: "glm tp first: a rank needs %.1f GB, %.1f GB inside an M5 Ultra 256 GB's at-rest ceiling (%.2f GB)",
+            Double(need) / 1e9, Double(ceiling - need) / 1e9, Double(ceiling) / 1e9),
+        ranks.count == 2 && need <= ceiling && ceiling == profile.atRestAdmissibleBytes)
 }
 
 /// The plan's terms, and every tensor a text stage loads counted once,

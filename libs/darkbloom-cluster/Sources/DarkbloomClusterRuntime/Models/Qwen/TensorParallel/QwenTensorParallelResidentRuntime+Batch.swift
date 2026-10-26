@@ -10,8 +10,9 @@ struct QwenTensorParallelOwnedBatchReservation: QwenTensorParallelBatchReservati
     /// (`QwenTensorParallelRequestCharge`); the owner holds the largest of them.
     let sharedStateBytes: Int
     let media: QwenMediaRequestWork?
-    // Preparation starts bilaterally in open; no unsynchronized model/tower
-    // work is scheduled by admission or by the control thread.
+    // Rank zero's patches were prepared before it admitted (host values
+    // only); the tower runs bilaterally in open. No model/tower work is
+    // scheduled by admission or by the control thread.
     var joinable: Bool { true }
 }
 
@@ -83,6 +84,13 @@ extension QwenTensorParallelResidentRuntime {
                 media = try .init(state: .init(media: envelope, prompt: request.promptTokenIDs,
                     identity: visionInventory.mediaIdentity, maximumPrompt: admission.profile.maximumPromptTokens,
                     maximumContext: request.maximumTokens), budget: budget)
+                // Rank zero answers only with the leader's patches in hand: a
+                // preparation that differs refuses this request alone.
+                if collective.rank == 0, let media {
+                    try QwenTensorParallelMedia.admit(media, modelConfiguration: admission.configBytes,
+                        processorConfiguration: visionInventory.processorConfiguration,
+                        deadline: value.deadlineUptimeNanoseconds)
+                }
             } else { media = nil }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try batchBook.reserve(requestID, .init(request: request, deadline: value.deadlineUptimeNanoseconds,
@@ -263,13 +271,12 @@ extension QwenTensorParallelResidentRuntime {
         }
         try check()
         guard let media = reserved.media else { return nil }
-        guard let visionInventory else { throw ProbeError("Qwen TP batch media source is unavailable") }
-        // Cancellation is applied at the next shared driver boundary. Once a
-        // preparation phase is announced, both ranks complete/drain it; an
+        guard visionInventory != nil else { throw ProbeError("Qwen TP batch media source is unavailable") }
+        // Cancellation is applied at the next shared driver boundary. Once the
+        // tower phase is announced, both ranks complete/drain it; an
         // individual stop cannot strand its peer or invalidate other lanes.
-        try QwenTensorParallelMedia.prepare(media, vision: vision, inventory: visionInventory,
-            modelConfiguration: admission.configBytes, rank: collective.rank, group: group,
-            chunkTokens: reserved.request.chunkSize, shouldStop: { false }, check: check)
+        try QwenTensorParallelMedia.prepare(media, vision: vision, rank: collective.rank, group: group,
+            chunkTokens: reserved.request.chunkSize, check: check)
         return .init(positions: { try media.state.positions(in: $0) },
             promptEmbedding: { input, range in try media.state.merging(model.embeddingsForMedia(input), range: range) })
     }

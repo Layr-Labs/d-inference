@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
 import XCTest
 @testable import DarkbloomClusterWorker
@@ -195,6 +196,32 @@ final class WorkerLaneTests: XCTestCase {
         try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: next)
         try expect(h, .finished(.length), id: next)
         try expect(h, .retired(.clean), id: next)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+    }
+
+    /// A lane the runtime refuses for a reason of its own (rank 0's Qwen media
+    /// preparation that cannot reproduce the leader's patches) is refused
+    /// alone with that reason, not `capacity`; the worker stays up and the
+    /// next request is admitted and served.
+    func testALaneRefusedWithItsOwnReasonKeepsTheWorkerServing() throws {
+        let h = try LanePipeHarness(), refused = UUID(), next = UUID()
+        h.runtime.refusesNextReservation = ClusterResidentRequestRefusal(reason: .unsupported,
+            message: "Qwen media preparation refused this request: fixture")
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        try h.send(.reserve(h.reservation), id: refused)
+        try expect(h, .refused(.unsupported), id: refused)
+        try h.send(.reserve(h.reservation), id: next)
+        try expect(h, .admitted(reservedBytes: 1024), id: next)
+        try h.send(.start, id: next)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: next)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: next)
+        try expect(h, .finished(.length), id: next)
+        try expect(h, .retired(.clean), id: next)
+        XCTAssertEqual(h.runtime.heldRequests, [])
         try h.send(.shutdown)
         try expect(h, .shutdownComplete, id: nil)
         XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)

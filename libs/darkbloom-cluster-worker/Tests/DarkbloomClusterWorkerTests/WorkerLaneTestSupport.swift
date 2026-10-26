@@ -22,6 +22,9 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     /// As a rank's live memory gate: a lane whose prompt plus output is
     /// longer than this is refused, for that request alone.
     var refusesContextAbove: Int?
+    /// As rank 0's Qwen media preparation at admission: the next reservation
+    /// is refused for this request alone, with this refusal's own reason.
+    var refusesNextReservation: ClusterResidentRequestRefusal?
     /// What `refreshLaneServingContext` re-derives between batches; nil keeps
     /// readiness's (every lane owner but Qwen tensor parallel).
     var laneServingContext: Int?
@@ -62,6 +65,10 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
             }
             if let refusesContextAbove, value.promptTokenIDs.count + value.outputCount > refusesContextAbove {
                 throw WorkerFailure.invalid("Test lane exceeds its live memory allowance")
+            }
+            if let refusal = refusesNextReservation {
+                refusesNextReservation = nil
+                throw refusal
             }
             reservations[id] = value
             return 1024

@@ -4674,6 +4674,25 @@ duplicate language model. `QwenTensorParallelMedia` runs one complete image or
 clip through the original tower, then distributes exact features through the
 existing sealed collective codec without summing or re-encoding their values.
 
+Rank zero prepares a request's patches at admission, before it answers its
+reservation (`QwenTensorParallelMedia.admit`): `QwenMediaDecoding` decodes the
+encoded bytes as the provider's ingest does and runs the SDK's
+`Qwen3VLMediaProcessor` on a task of its own while the native executor waits,
+then requires every grid and patch digest to equal the leader's. The patches
+are computed on a CPU stream of the preparation's own
+(`Stream.withNewDefaultStream`), never the process's shared CPU stream: MLX
+evaluates one thread's graph while another thread schedules (`eval` holds
+`evalLock` only while scheduling), and a stream's stored task error is thrown to
+whichever caller next synchronizes that stream, so a preparation that shared the
+stream with the executor's status exchanges failed with an error that was not
+its own. A preparation that cannot reproduce the leader's patches refuses that
+request alone (`ClusterResidentRequestRefusal`, `unsupported`, or `deadline`
+past its deadline) after its task ended, with its reason logged; the worker
+answers `refused` with that reason, the owner gives back rank one's admission
+and the pair keeps serving. The prepared patches stay host values until the
+request joins; the tower then runs on rank zero and a tower failure still ends
+the worker (the owner treats a started request's `failed` as the pair's).
+
 `QwenMediaRequestState` recomputes three-axis positions from authenticated token
 spans and grids. It verifies processor, prompt, position and patch identities,
 splices features across actual prompt chunks, and retains a request-local decode
@@ -4694,7 +4713,9 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Med
 (`QwenStageVision`), `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaRequestState.swift`
 (`QwenMediaRequestState`), and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelMedia.swift`
-(`prepare`).
+(`admit`, `prepare`), and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Media/QwenMediaDecoding.swift`
+(`QwenMediaDecoding`).
 
 Qwen media reservations retain the encoded source only in the request owner and
 rank 0; rank 1 receives the same authenticated metadata without encoded bytes.

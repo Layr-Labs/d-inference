@@ -10,6 +10,13 @@ import MLXVLM
 /// The provider's full-image/EXIF and owned-video decode policy, evaluated on
 /// CPU before rank zero's tower. Encoded buffers, rasters and prepared patches
 /// remain covered by the native request supplement until checked retirement.
+///
+/// The patches are computed on a CPU stream of this preparation's own
+/// (`Stream.withNewDefaultStream`), never the process's shared CPU stream:
+/// MLX evaluates one thread's graph while another thread schedules (the
+/// evaluation lock covers scheduling only), and a stream's stored task error
+/// is thrown to whichever caller synchronizes that stream next, so sharing a
+/// stream with the executor's collectives lets either side fail the other.
 enum QwenMediaDecoding {
     static let maximumPixels = 100_000_000
     static let maximumAggregatePixels = 384_000_000
@@ -23,7 +30,7 @@ enum QwenMediaDecoding {
             media.processorPolicy.rawValue == Qwen3VLMediaProcessor.policyID else {
             throw ProbeError("Qwen media processor bytes differ")
         }
-        return try await Device.withDefaultDevice(.cpu) {
+        return try await Stream.withNewDefaultStream(device: .cpu) {
             try await MLX.withError { errors in
                 let processor = try Qwen3VLMediaProcessor(modelConfiguration: modelConfiguration,
                     processorConfiguration: processorConfiguration)

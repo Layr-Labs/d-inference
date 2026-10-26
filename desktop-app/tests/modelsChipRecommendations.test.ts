@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { NetworkData } from '../src/shared/contracts';
 import {
   chipEarnings,
+  chipRanking,
   networkEarnings,
   recommendedModels,
 } from '../src/renderer/features/models/recommendations';
 import { poolModels } from './modelsFixtures';
-import { chipNetwork } from './chipNetworkFixture';
+import { chipNetwork, uncoveredChipNetwork } from './chipNetworkFixture';
 
 describe('recommendations from Macs with the same chip', () => {
   it('reads what Macs with this chip earned per model and ignores other chips', () => {
@@ -81,5 +82,20 @@ describe('recommendations from Macs with the same chip', () => {
       'qwen-3.5-9b',
       'gpt-oss-20b',
     ]);
+  });
+
+  it('falls back to network totals when this chip earned from no model this Mac can serve', () => {
+    const network = uncoveredChipNetwork();
+    const perChip = chipEarnings(network, 'Apple M4 Max');
+    // Rows exist for this chip: one for a model too large here, one for a model that paid nothing.
+    expect(perChip && [...perChip.keys()].sort()).toEqual(['kimi-k2.6', 'qwen-3.6-35b']);
+    expect(chipRanking(poolModels, perChip)).toBeNull();
+    expect(
+      recommendedModels(poolModels, networkEarnings(network), chipRanking(poolModels, perChip)).map(
+        (m) => m.id,
+      ),
+    ).toEqual(['qwen-3.6-35b', 'qwen-3.5-9b', 'gpt-oss-20b']);
+    const covered = chipEarnings(chipNetwork(), 'Apple M4 Max');
+    expect(chipRanking(poolModels, covered)).toBe(covered);
   });
 });

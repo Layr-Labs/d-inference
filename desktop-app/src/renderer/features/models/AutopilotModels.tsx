@@ -6,6 +6,7 @@ import { Button, Empty, Header, Notice } from '../../components/UI';
 import { LinkDialog } from './LinkDialog';
 import {
   chipEarnings,
+  chipRanking,
   networkEarnings,
   recommendedModels,
   rankNetworkModels,
@@ -48,7 +49,7 @@ export function AutopilotModels({
   const [remove, setRemove] = useState<NativeModel>();
   const [confirm, setConfirm] = useState<AutopilotChange>();
   const network = networkEarnings(backend.network);
-  const perChip = chipEarnings(backend.network, state.machine.chip);
+  const perChip = chipRanking(state.models, chipEarnings(backend.network, state.machine.chip));
   const recommended = recommendedModels(state.models, network, perChip);
   const ranked =
     filter === 'all' || filter === 'available' ? rankNetworkModels(models, network) : models;

@@ -33,7 +33,7 @@ export interface ChipEarning {
   mean: bigint;
 }
 
-const amount = (value: unknown) => typeof value === 'string' && /^\d+$/.test(value);
+const isAmount = (value: unknown) => typeof value === 'string' && /^\d+$/.test(value);
 
 // What one Mac with this chip earned per day from each model over the last 24 hours, across the
 // network's Macs of that chip serving the model. Null when the network has no class for this chip
@@ -53,8 +53,8 @@ export function chipEarnings(
         typeof entry?.chip !== 'string' ||
         !Number.isSafeInteger(entry.machines) ||
         entry.machines < 1 ||
-        !amount(entry.median_micro_usd_per_machine_day) ||
-        !amount(entry.mean_micro_usd_per_machine_day)
+        !isAmount(entry.median_micro_usd_per_machine_day) ||
+        !isAmount(entry.mean_micro_usd_per_machine_day)
       )
         return null;
       if (entry.chip === chip)
@@ -65,6 +65,15 @@ export function chipEarnings(
     }
   }
   return earnings.size ? earnings : null;
+}
+
+// Per-chip earnings rank the recommendations only when they recommend a model this Mac can
+// serve; otherwise the ranking and its copy fall back to network totals together.
+export function chipRanking(
+  models: NativeModel[],
+  perChip: ReadonlyMap<string, ChipEarning> | null,
+): ReadonlyMap<string, ChipEarning> | null {
+  return perChip && recommendedModels(models, null, perChip).length ? perChip : null;
 }
 
 // Prefer what Macs like this one earn: the network total favors models that many fast Macs serve,

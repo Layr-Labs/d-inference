@@ -1758,8 +1758,9 @@ round-trips both encoded and metadata-only envelopes through owner and peer-link
 clock translation. `ClusterReservationRelayTests` (run by
 `bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh`) sends one reservation
 per media carrier (still images, MiMo images, GLM media, Qwen media), each with
-sampling, and a routed text reservation through both hops and requires each to
-arrive unchanged but for its deadline. `PairWorkerEndpointReservationTests` (run
+sampling and a prefix partition, and a routed text reservation through both
+hops and requires each to arrive unchanged but for its deadline.
+`PairWorkerEndpointReservationTests` (run
 by `bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh`) sends
 the same set through the pair-check driver's `PairWorkerEndpoint` into a
 `/bin/sh` stand-in that records its input, and the protocol checks' `retiming`

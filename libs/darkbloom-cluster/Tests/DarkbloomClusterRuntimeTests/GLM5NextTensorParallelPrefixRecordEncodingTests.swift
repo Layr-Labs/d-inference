@@ -221,6 +221,8 @@ struct GLM5NextTensorParallelPrefixRecordEncodingTests {
             #expect(disk.read(boundary: frontier, prompt: prompt, scope: scopeB, stop: { false }) == nil)
             let restored = try #require(disk.read(boundary: frontier, prompt: prompt, scope: scopeA, stop: { false }))
             #expect(restored.frontier == frontier && Self.bytes(restored.nextN![0]) == record.keys[8]!)
+        }
+    }
 
     /// A rank restored from a balanced record keeps a deeper boundary of a
     /// longer prompt: its row readers' latents that decode from the earlier

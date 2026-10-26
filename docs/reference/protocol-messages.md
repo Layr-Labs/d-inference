@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -170,6 +170,24 @@ force/fault recovery retain their cancellation paths; a dead connection cannot
 deliver a graceful-drain acknowledgement.
 
 
+## Close codes and the reconnect wait
+
+The provider reads the code of a WebSocket close frame from the coordinator side
+only to choose the wait before its next connection attempt
+(`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`,
+`CoordinatorReconnectPolicy`). It does not read the close reason, and no JSON
+frame changes.
+
+| Close from the coordinator side | Wait before the next attempt |
+|---|---|
+| Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
+| Any other code, or no close frame | The next `ExponentialBackoff` range; the backoff grows |
+
+A session that stayed open for `stableSessionDuration` or more, counted from its
+`register` frame, resets the backoff before either wait. The values are in the
+[runtime constants](../provider/cli-reference.md#runtime-constants). Older
+providers handle `1012` like any other close, so the coordinator can send it to
+every provider version. Every reconnect sends a fresh `register`.
 
 ## Envelope and the single-parse rule
 

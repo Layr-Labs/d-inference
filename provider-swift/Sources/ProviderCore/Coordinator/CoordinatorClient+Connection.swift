@@ -1,5 +1,6 @@
-// CoordinatorClient connection lifecycle: reconnect loop with backoff, a single
-// WebSocket session (ping/heartbeat/reachability), the receive loop, and reconnect telemetry.
+// CoordinatorClient connection lifecycle: reconnect loop with its reconnect
+// policy, a single WebSocket session (ping/heartbeat/reachability), the receive
+// loop, and reconnect telemetry.
 
 import Foundation
 import Network
@@ -9,26 +10,29 @@ extension CoordinatorClient {
     // MARK: - Connection Loop
 
     internal func runLoop() async {
-        var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
+        var policy = reconnectPolicy
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
             logger.info(.connectingToCoordinator)
             logger.info("Coordinator URL: \(self.config.url)")
+            let session = CoordinatorSessionRecorder()
 
             do {
-                try await connectAndRun()
+                try await connectAndRun(session)
                 logger.info(.coordinatorConnectionClosed)
-                backoff.reset()
+                policy.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
 
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
+                let end = session.end()
+                let delay = TimeInterval.random(in: policy.nextDelayRange(after: end))
                 let reachable = reachability.isReachable
+                let closeCode = end.closeCode.map { "\($0)" } ?? "none"
                 logger.warning(.coordinatorConnectionFailed)
-                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
+                logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). close_code=\(closeCode). Reconnecting in \(delay)s")
 
                 reconnectCount += 1
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
@@ -50,7 +54,7 @@ extension CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun() async throws {
+    private func connectAndRun(_ session: CoordinatorSessionRecorder) async throws {
         guard let url = URL(string: config.url) else {
             throw CoordinatorError.invalidURL(config.url)
         }
@@ -178,6 +182,8 @@ extension CoordinatorClient {
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
         sessionRegistered = true
+        // The reconnect policy measures how long the session stays open from here.
+        session.markOpened()
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -205,14 +211,16 @@ extension CoordinatorClient {
         try await sessionLoop(
             connection: connection,
             outboundStream: outboundStream,
-            failureStream: failureStream
+            failureStream: failureStream,
+            session: session
         )
     }
 
     private func sessionLoop(
         connection: NWConnection,
         outboundStream: AsyncStream<OutboundMessage>,
-        failureStream: AsyncStream<Error>
+        failureStream: AsyncStream<Error>,
+        session: CoordinatorSessionRecorder
     ) async throws {
         let pingInterval: TimeInterval = 10.0
         let pongTimeout: TimeInterval = 30.0
@@ -239,7 +247,7 @@ extension CoordinatorClient {
             // Task 1: Receive messages from coordinator
             group.addTask { [weak self] in
                 guard let self else { return }
-                try await self.receiveLoop(connection: connection)
+                try await self.receiveLoop(connection: connection, session: session)
             }
 
             // Task 2: Forward outbound messages to coordinator
@@ -370,7 +378,9 @@ extension CoordinatorClient {
 
     // MARK: - Receive Loop
 
-    private func receiveLoop(connection: NWConnection) async throws {
+    private func receiveLoop(
+        connection: NWConnection, session: CoordinatorSessionRecorder
+    ) async throws {
         while !shutdownRequested {
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
             // NWProtocolWebSocket delivers one complete WebSocket message per
@@ -382,8 +392,8 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context, receivedAt, profileAnchor):
-                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant,
+            let (data, wsMeta, receivedAt, profileAnchor):
+                (Data?, NWProtocolWebSocket.Metadata?, ContinuousClock.Instant,
                  SuspendingClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
@@ -401,7 +411,18 @@ extension CoordinatorClient {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context, receivedAt, profileAnchor))
+                            // WS metadata for opcode inspection.
+                            let wsMeta = context?.protocolMetadata(
+                                definition: NWProtocolWebSocket.definition
+                            ) as? NWProtocolWebSocket.Metadata
+                            // Record a close frame's code here, on connectionQueue:
+                            // the transport state change that follows the frame can
+                            // end the session before this task reads the frame.
+                            if let wsMeta, wsMeta.opcode == .close,
+                               let closeCode = wsMeta.closeCode.wireValue {
+                                session.recordCloseCode(closeCode)
+                            }
+                            cont.resume(returning: (data, wsMeta, receivedAt, profileAnchor))
                         }
                     }
                 } onCancel: {
@@ -409,11 +430,6 @@ extension CoordinatorClient {
                 }
 
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
-
-            // Extract WS metadata for opcode inspection.
-            let wsMeta = context?.protocolMetadata(
-                definition: NWProtocolWebSocket.definition
-            ) as? NWProtocolWebSocket.Metadata
 
             // A WebSocket close frame arrives as a (typically dataless) message
             // tagged `.close`; surface it as a connection close so runLoop
@@ -467,5 +483,20 @@ extension CoordinatorClient {
             ]
         )
         logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
+    }
+}
+
+extension NWProtocolWebSocket.CloseCode {
+    /// The close code number as sent on the wire, for every case that
+    /// Network.framework reports.
+    var wireValue: UInt16? {
+        switch self {
+        case .protocolCode(let code):
+            return code.rawValue
+        case .applicationCode(let code), .privateCode(let code):
+            return code
+        @unknown default:
+            return nil
+        }
     }
 }

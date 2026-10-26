@@ -115,6 +115,34 @@ struct StatusResidencyTests {
         #expect(!autopilot.contains("Adopted"))
         #expect(!autopilot.contains("Target:"))
     }
+
+    @Test("a selected model the daemon keeps retrying and a filter edit waiting for a restart")
+    func retryingSelectedModelAndPendingFilterChange() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(enabledModels: [Self.superID, Self.gemmaID], autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
+                "serving_selection": [Self.gemmaID, Self.glmID, Self.superID],
+                "enabled_models_at_start": [Self.superID, Self.gemmaID, Self.glmID],
+                "selected_model_recovery": [[
+                    "model": Self.superID, "waiting_since": now - 3 * 3_600 - 240, "next_check_at": now + 125,
+                    "checks": 9,
+                    "blocker": "needs 83.6 GB; 34.8 GB usable; waiting for \(Self.glmID) (171.3 GB: 1 request in flight)",
+                ]],
+            ])
+            print("== STATUS")
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+        let status = try #require(outputSection(output, from: "== STATUS", to: "== END"))
+        #expect(status.contains("\nConfiguration change needs a restart to apply: enabled_models removes \(Self.glmID). "
+            + "Run `\(BuildEnvironment.current.cliName) restart`.\n"), "\(status)")
+        #expect(status.contains("\nRetrying \(Self.superID) when memory frees; next check in 2m (waiting 3h4m)\n"
+            + "  Last check: needs 83.6 GB; 34.8 GB usable; waiting for \(Self.glmID) (171.3 GB: 1 request in flight)\n"),
+            "\(status)")
+    }
 }
 
 extension CLICommandSandbox {

@@ -184,6 +184,13 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     /// record of the same state would write them (log lines and measurement).
     let attentionBytes: Int
     let nativeAttentionBytes: Int
+    /// The earlier record whose encoded rows the writer keeps where they
+    /// decode to this state's rows; set by the writer before it starts.
+    var verbatim: QwenStagePrefixDiskVerbatimSource?
+    private let verbatimLock = NSLock()
+    private var copiedRows = 0
+    /// Encoded rows stored as `verbatim` stores them (all heads, all entries).
+    var verbatimRows: Int { verbatimLock.withLock { copiedRows } }
 
     init(header: QwenStagePrefixDiskHeader, fileName: String, attention: [Source],
          encodedRows: [QwenStagePrefixDiskEncodedRows?] = [], recurrent: [Source], history: [Source] = [],
@@ -408,13 +415,19 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
 
     /// The plaintext of one attention unit: all heads of rows
     /// `[block * blockTokens, ...)` from the whole source, or read from the
-    /// entry's row source, encoded as the entry's rows say. The writer calls
-    /// it for several units at once (`QwenStagePrefixDiskIO.encodingWriters`),
-    /// so a row source reads concurrently.
+    /// entry's row source, encoded as the entry's rows say, keeping
+    /// `verbatim`'s bytes for rows they decode to. The writer calls it for
+    /// several units at once (`QwenStagePrefixDiskIO.encodingWriters`), so a
+    /// row source and the verbatim source read concurrently.
     func attentionPlaintext(entry: Int, block: Int) throws -> Data {
         let item = header.attention[entry], committed = header.committedTokens, b = header.blockTokens
         let rowBytes = item.headDim * (QwenStagePrefixDiskFormat.dtypes[item.dtype]?.size ?? 0)
         let first = block * b, rows = min(b, committed - first), run = rows * rowBytes
+        let earlier = try encodedRows[entry].flatMap { try verbatim?.rows(of: item, encoded: $0, first: first, count: rows) }
+        func kept(_ unit: (plaintext: Data, verbatimRows: Int)) -> Data {
+            if unit.verbatimRows > 0 { verbatimLock.withLock { copiedRows += unit.verbatimRows } }
+            return unit.plaintext
+        }
         if let source = attention[entry].rows {
             guard item.heads == 1 else { throw ProbeError("Prefix record attention rows have one head") }
             var native = Data(count: run)
@@ -422,12 +435,15 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
                 try source.read(first ..< first + rows, target.baseAddress!)
             }
             guard let encoded = encodedRows[entry] else { return native }
-            return try native.withUnsafeBytes { try encoded.encode(unit: $0, heads: 1, first: first, rows: rows) }
+            return kept(try native.withUnsafeBytes {
+                try encoded.encode(unit: $0, heads: 1, first: first, rows: rows, verbatim: earlier)
+            })
         }
         if let encoded = encodedRows[entry] {
-            return try attention[entry].data.withUnsafeBytes { source in
-                try encoded.encode(source: source, heads: item.heads, committed: committed, first: first, rows: rows)
-            }
+            return kept(try attention[entry].data.withUnsafeBytes { source in
+                try encoded.encode(source: source, heads: item.heads, committed: committed, first: first, rows: rows,
+                    verbatim: earlier)
+            })
         }
         var out = Data(count: item.heads * run)
         attention[entry].data.withUnsafeBytes { source in

@@ -2139,15 +2139,24 @@ approximate), a unit read row by row from a history encoding as the whole
 array does, a layer kept native (a speculative head's history) beside encoded
 ones, encodings never restored under one another, a root holding both
 encodings, refused corrupt, truncated and undecodable records, and the bytes at
-the beta models' shapes. Like every MLX
+the beta models' shapes. Three of its tests cover restored rows written again:
+three generations of records, each from the previous one's restore, keep every
+restored row bit for bit at every precision and dtype (and a tier without the
+earlier record moves them); rows computed rather than restored are encoded as
+usual; an earlier record that cannot be read drops the new one. Like every MLX
 test in the target it needs the source-matched `mlx.metallib` beside the test
 executable. `PREFIX_RECORD_ENCODE_BENCH=1` adds a timing of one 27B rank layer
-at 32,768 tokens. `QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
+at 32,768 tokens and of the next record of a longer prompt from its restore.
+`QwenTensorParallelBatchSessionTests.ssdBalancedRecordsAdoptOnBothRanksWithAnExactBand`
 writes a balanced record through the batch owner and adopts it on both ranks.
 `GLM5NextTensorParallelPrefixRecordEncodingTests` writes a GLM tensor-parallel
 rank's record through its row readers at the artifact's widths (only the DSA
-latents encoded; the NextN history native) and adopts it;
-`GLM53_PREFIX_SSD=1` adds
+latents encoded; the NextN history native), adopts it, and keeps the restored
+latents' bytes in a deeper record. The SDK's
+`NativeCheckpointRowCodecTests.testReencodingDecodedRowsIsIdempotentOnlyForHalfPrecisionValues`
+encodes decoded rows again: key rows (every dtype) and FP32 value rows move,
+FP16 and BF16 value rows do not on the rows it covers. `GLM53_PREFIX_SSD=1`
+adds
 `GLM5NextTensorParallelPrefixRestoreTests.aServingStageRestoresFromABalancedRecord`
 (GPU, about 1 GB of synthetic weights: real paged histories through a balanced
 record, then the restored request prefills on).

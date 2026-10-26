@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1806,6 +1806,11 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+The SDK's [Gemma row-mapped NAX opt-in](../reference/configuration.md#gemma-4-row-mapped-nax)
+is not forwarded to the LaunchAgent. It is a process-environment setting for
+direct foreground/local serving, not a new CLI flag or an installation default.
+The SDK pin alone leaves it disabled.
 
 For sandboxed foreground/local startup, `TMPDIR` selects the anonymous runtime
 metallib snapshot directory. It is not forwarded to the background provider;

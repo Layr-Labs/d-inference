@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -212,6 +212,23 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Gemma 4 row-mapped NAX
+
+This SDK opt-in uses exact `1`, not the general boolean convention above.
+The provider pin alone does not activate it; no `provider.toml` key is added.
+
+| Variable | Values / default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | Exact `1` requests the route; unset or every other value is off. Read once by the SDK's static selection | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); eligible stock Gemma expert prefill reads original token rows through the sorted assignment map. Hardware, shape, dtype, module and tracing guards still apply. |
+
+The flag is absent from `LaunchAgent.passthroughEnvKeys` and
+`LaunchAgent.inferencePassthroughEnvKeys` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`; an export in the
+shell that installs a background job is not forwarded to it. It applies to the
+environment of a directly launched foreground/local serving process. See the
+[mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
+and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
 
 ### Scheduler-prefill benchmark prompts
 

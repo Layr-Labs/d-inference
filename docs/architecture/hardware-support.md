@@ -240,6 +240,27 @@ feed-forward or MLX allocator peaks, and establish no memory reduction. Provider
 reserves, activation floors, LOAD quotations, KV grants and admission limits
 remain unchanged; the bounded decode result does not qualify increasing them.
 
+### Gemma 4 row-mapped NAX qualification
+
+The [row-mapped prefill route](inference.md#gemma-4-row-mapped-nax-prefill) keeps
+original activations, assignment maps and live expert arrays as graph inputs.
+It avoids the expanded sorted token tensor for the two gate/up products while
+retaining separate output arrays and the existing down/reduction graph. The
+helper adds no persistent parameter identity cache or copied expert bank.
+Sources: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
+(`tryPair`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).
+
+Native checks cover live parameters, dropped wrappers, asynchronous evaluation,
+subset outputs and fixed full-model KV/frontier parity. They do not establish a
+lower peak allocation or a general workload memory bound. The endpoint reports
+process residency/footprint rather than MLX allocator peak, and lifetime peaks
+include loading and earlier requests. The bounded cold-TTFT result therefore
+does not qualify reducing reserves, activation floors or LOAD quotations, or
+increasing KV grants and admission limits. Those policies remain unchanged.
+Devices without NAX support retain the existing path; other devices and
+clustering require separate qualification.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage

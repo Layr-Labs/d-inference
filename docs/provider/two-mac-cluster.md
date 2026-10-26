@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -202,7 +202,8 @@ memory fit and a predicted advantage over pipeline. A new pair without those
 link measurements uses an eligible fitting pipeline; a supported worker's first load records
 the measurements for later planning, and each later load adds one. Plans use the median of the
 pair's last eight measurements from the last 30 days, so one fast or slow load does not switch
-the mode. GLM currently has a pipeline adapter only.
+the mode. GLM-5.3-Flash has both a pipeline and a tensor-parallel adapter; its
+private image candidate is pipeline-only.
 See the [placement planner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift)
 and [mode explanation](../../libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift).
 
@@ -312,8 +313,13 @@ memory holds its share.
 Both Macs keep the prompt prefixes of every model family, in memory and in the
 encrypted SSD tier: a repeated long prompt starts with its prefix restored, and
 after both Macs restart the SSD tier gives it back. Gemma 4 keeps each
-sliding-window layer's window at every kept frontier; GLM-5.3-Flash keeps its
-attention history once per prompt and its linear-attention state per frontier.
+sliding-window layer's window at every kept frontier; GLM-5.3-Flash in pipeline
+keeps its attention history once per prompt and its linear-attention state per
+frontier. GLM-5.3-Flash in tensor parallel keeps one boundary per prompt, the
+last whole 4,096-token chunk before its final token: each Mac writes its own
+share of it to the SSD once the request has finished, and a later prompt is
+restored from it only when both Macs hold it, with the same tokens as a request
+that prefilled the whole prompt ([how it works](../architecture/prefix-cache.md#glm-tp-prefix-ssd-tier)).
 
 ## MiMo V2.6 Flash on the pair
 

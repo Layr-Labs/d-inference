@@ -12,7 +12,10 @@ import MLX
 /// this rank's verified storage commitment) and the exact prompt tokens up to
 /// its length. Restore is both-or-neither (`agree`): the ranks vote the
 /// boundaries each holds for the prompt in one sealed reduction and restore
-/// the longest one BOTH hold; with none, both prefill cold.
+/// the longest one BOTH hold; with none, both prefill cold. A boundary a rank
+/// holds only on its SSD tier (`GLM5NextTensorParallelPrefixDisk`) counts
+/// too, and is then restored only after a second sealed exchange (`confirm`)
+/// shows both ranks have it.
 enum QwenTensorParallelPrefixCache {
     /// At most this many boundaries are voted (the last ones before the final token).
     static let maximumVotedBoundaries = 32
@@ -60,15 +63,38 @@ enum QwenTensorParallelPrefixCache {
         return Array(all.suffix(maximumVotedBoundaries))
     }
 
-    /// Both ranks: the longest boundary both hold, or nil. One sealed
-    /// reduction of a fixed-size vote (each rank adds 1 where it holds one).
-    static func agree(held: [Bool], group: QwenTensorParallelReduction, candidates: [Int]) throws -> Int? {
+    /// One rank's vote for a candidate boundary: 1 held in memory, 3 held
+    /// only as a complete SSD record, 0 not held. Without SSD records the
+    /// words are the memory-only vote's.
+    static func offer(inMemory: Bool, onDisk: Bool) -> Float { inMemory ? 1 : onDisk ? 3 : 0 }
+
+    /// The longest candidate both of two ranks offer, and whether either
+    /// offers it only from its SSD tier; nil when none. `sums`: the ranks'
+    /// offers summed per candidate, so 2 (both in memory), 4 or 6 (both, from
+    /// SSD at least once); 1 and 3 are one rank's alone.
+    static func agreed(sums: [Float], candidates: [Int]) -> (boundary: Int, ssd: Bool)? {
+        let both = sums.indices.filter { $0 < candidates.count && [Float(2), 4, 6].contains(sums[$0]) }
+        return both.last.map { (candidates[$0], sums[$0] > 2) }
+    }
+
+    /// Both ranks: the longest boundary both hold (`agreed`), or nil. One
+    /// sealed reduction of a fixed-size vote of `offers` (`offer`, per candidate).
+    static func agree(offers: [Float], group: QwenTensorParallelReduction, candidates: [Int]) throws
+        -> (boundary: Int, ssd: Bool)? {
+        guard group.size == 2 else { throw ProbeError("The tensor-parallel prefix vote takes two ranks") }
         var votes = [Float](repeating: 0, count: maximumVotedBoundaries)
-        for (index, value) in held.enumerated() where value && index < votes.count { votes[index] = 1 }
+        for (index, value) in offers.enumerated() where index < votes.count { votes[index] = value }
         let summed = group.allSum(MLXArray(votes))
         try MLX.withError { error in eval(summed); try error.check() }
-        let all = summed.asArray(Float.self)
-        let both = all.indices.filter { $0 < candidates.count && all[$0] >= Float(group.size) }
-        return both.last.map { candidates[$0] }
+        return agreed(sums: summed.asArray(Float.self), candidates: candidates)
+    }
+
+    /// The second exchange of a boundary agreed from an SSD record: true when
+    /// both ranks have its state (`local`, this rank's), else both prefill
+    /// from zero.
+    static func confirm(_ local: Bool, group: QwenTensorParallelReduction) throws -> Bool {
+        let summed = group.allSum(MLXArray([Float(local ? 1 : 0)]))
+        try MLX.withError { error in eval(summed); try error.check() }
+        return summed.asArray(Float.self) == [Float(group.size)]
     }
 }

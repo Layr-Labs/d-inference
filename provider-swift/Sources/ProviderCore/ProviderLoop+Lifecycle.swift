@@ -97,6 +97,14 @@ extension ProviderLoop {
         if !Task.isCancelled, lifecycleRemaining == 0, let client = coordinatorClient, ContinuousClock.now < finishDeadline {
             acknowledged = await client.acknowledgeDrain(timeout: ContinuousClock.now.duration(to: finishDeadline))
         }
+        // Without a registered session there is no coordinator to acknowledge:
+        // a disconnect already cancelled accepted work and outbound messages
+        // are never carried to a later connection. Waiting would leave a
+        // provider whose reconnect keeps failing unable to stop gracefully.
+        var coordinatorSession = coordinatorClient != nil
+        if !acknowledged, !Task.isCancelled, let client = coordinatorClient {
+            coordinatorSession = await client.hasRegisteredConnection()
+        }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
         let workerRetired = await stopAppAttestWorkerAndWait()
@@ -105,7 +113,7 @@ extension ProviderLoop {
         } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || !coordinatorSession) {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {

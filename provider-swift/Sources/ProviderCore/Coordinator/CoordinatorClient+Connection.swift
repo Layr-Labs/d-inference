@@ -128,45 +128,26 @@ extension CoordinatorClient {
 
         let logger = self.logger
 
-        // Wait for the handshake to complete (.ready). The one-shot handler set
-        // here is swapped for a persistent failure-forwarding handler the instant
-        // the connection is ready — done inside the `.ready` branch (serial on
-        // connectionQueue) so no post-ready state change slips through the gap
-        // between resuming the continuation and installing the persistent handler.
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    connection.stateUpdateHandler = { laterState in
-                        switch laterState {
-                        case .failed(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .waiting(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .cancelled:
-                            failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                        default:
-                            break
-                        }
-                    }
-                    cont.resume()
+        // Wait for the handshake to complete (.ready), bounded by the
+        // handshake deadline. The persistent failure-forwarding handler is
+        // installed inside the `.ready` callback (serial on connectionQueue) so
+        // no post-ready state change slips through the gap between resuming
+        // and installing it.
+        try await CoordinatorConnectionHandshake.start(
+            connection, on: connectionQueue, timeout: config.handshakeTimeout
+        ) {
+            connection.stateUpdateHandler = { laterState in
+                switch laterState {
                 case .failed(let error):
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
+                    failureCont.yield(CoordinatorError.connectionClosed(error))
                 case .waiting(let error):
-                    // Can't establish yet (DNS failure, connection refused, no
-                    // route). Don't sit in NWConnection's internal wait/retry —
-                    // surface it so the client's own backoff loop owns reconnect.
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
+                    failureCont.yield(CoordinatorError.connectionClosed(error))
                 case .cancelled:
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
+                    failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
                 default:
                     break
                 }
             }
-            connection.start(queue: self.connectionQueue)
         }
 
         logger.info(.coordinatorTransportReady)

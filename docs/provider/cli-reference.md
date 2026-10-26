@@ -923,6 +923,13 @@ process draining with automatic restart disabled. Repeat `stop` or `restart`
 with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
 cancel accepted inference or reopen admission. A running provider without the
 drain control protocol requires an upgrade or an explicit forced interruption.
+With the coordinator connection down, a drain with no unfinished work waits up
+to 10 seconds for the session to return and then finishes without an
+acknowledgement (`coordinator acknowledgement: not needed (no coordinator
+connection)`): the disconnect already cancelled accepted work and nothing queued
+can still reach the coordinator. After the drain, shutdown waits up to 15
+seconds for each model's unload; a model whose native retirement never finishes
+is left to process exit (`ProviderLoop.unloadAllModelsForShutdown`).
 
 Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
 `ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`

@@ -57,15 +57,7 @@ extension ProviderLoop {
             writeDaemonState()
             return false
         }
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelID in Array(modelSlots.keys) {
-                await unloadModel(modelID)
-            }
-        }
+        await unloadAllModelsForShutdown()
         powerAssertion.releaseAll()
         if nativeMiMoAllowsReclamation() { MLX.Memory.clearCache() }
         writeDaemonState()

@@ -1,6 +1,10 @@
 import Foundation
 
 extension ProviderLoop {
+    /// How long a drain with no work left waits for a dropped coordinator
+    /// session to come back and acknowledge it.
+    static let drainReconnectGrace: Duration = .seconds(10)
+
     internal func beginServingDrain(owner: ProviderDrain.Owner) {
         servingDrain.begin(owner)
         // Before registration there is no event reader to wake the startup
@@ -93,9 +97,21 @@ extension ProviderLoop {
 
         // Do not claim success just because the engine finished: the FIFO
         // coordinator acknowledgement follows all terminal/usage messages.
+        // Without a live session there is nothing left to acknowledge: the
+        // disconnect cancelled accepted work and the outbound path buffers
+        // nothing. A reconnect gets a short grace to carry the barrier.
         var acknowledged = false
-        if !Task.isCancelled, lifecycleRemaining == 0, let client = coordinatorClient, ContinuousClock.now < finishDeadline {
-            acknowledged = await client.acknowledgeDrain(timeout: ContinuousClock.now.duration(to: finishDeadline))
+        var sessionDown = false
+        if !Task.isCancelled, lifecycleRemaining == 0, let client = coordinatorClient {
+            let graceEnd = min(finishDeadline, ContinuousClock.now.advanced(by: Self.drainReconnectGrace))
+            while ContinuousClock.now < graceEnd, !Task.isCancelled, !(await client.hasRegisteredConnection()) {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            if await client.hasRegisteredConnection(), ContinuousClock.now < finishDeadline {
+                acknowledged = await client.acknowledgeDrain(timeout: ContinuousClock.now.duration(to: finishDeadline))
+            }
+            let connected = await client.hasRegisteredConnection()
+            sessionDown = !acknowledged && !connected
         }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
@@ -105,7 +121,8 @@ extension ProviderLoop {
         } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0
+                    && (acknowledged || coordinatorClient == nil || sessionDown) {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {

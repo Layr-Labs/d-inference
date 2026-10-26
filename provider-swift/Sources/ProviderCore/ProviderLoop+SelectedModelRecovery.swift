@@ -25,15 +25,29 @@ extension ProviderLoop {
         }
     }
 
-    /// Selected, advertised, eligible and not fenced. A model the saved
-    /// filter dropped after the start leaves the recovery even though the
-    /// running daemon still advertises it.
+    /// Explicitly selected (not just on disk), in the ordinary selection,
+    /// advertised, eligible and not fenced. A model the saved filter dropped
+    /// after the start leaves the recovery even though the running daemon
+    /// still advertises it.
     private func selectedModelRecoveryApplies(_ id: String) -> Bool {
         let saved = savedEnabledModels
         if !saved.isEmpty, saved != loopConfig.config.backend.enabledModels, !saved.contains(id) { return false }
-        return ordinaryServingModelIDs.contains(id) && advertisedModels[id] != nil
+        return explicitlySelectedModelIDs.contains(id)
+            && ordinaryServingModelIDs.contains(id) && advertisedModels[id] != nil
             && failedSelfTestHashes[id] == nil && !isRefusedByRetirement(id)
             && ModelRuntimeRequirements.isEligible(modelID: id, available: loopConfig.runtimeCapabilities)
+    }
+
+    /// The operator's explicit choices at start: `enabled_models`,
+    /// `preload_models`, the pinned `model` and Autopilot's persisted
+    /// selection. Without any, every model on disk is served and a cold one
+    /// loads on request, so nothing is retried.
+    private var explicitlySelectedModelIDs: Set<String> {
+        let backend = loopConfig.config.backend
+        var ids = Set(backend.enabledModels).union(backend.preloadModels)
+        if let pin = backend.model, !pin.isEmpty { ids.insert(pin) }
+        if autopilotConsented { ids.formUnion(autopilotSettings.selectedModels) }
+        return ids
     }
 
     /// Drops entries that loaded by other means or no longer apply.
@@ -97,8 +111,8 @@ extension ProviderLoop {
         case blocked(String, retryAt: ContinuousClock.Instant?)
     }
 
-    /// Whether `target` fits now or after evicting the fewest idle
-    /// unselected models (least recently used first), on the gate's own
+    /// Whether `target` fits now or after evicting the shortest
+    /// least-recently-used run of idle unselected models, on the gate's own
     /// figures; else what keeps it out and when that may change.
     func selectedModelRecoveryPlan(for target: String, now: ContinuousClock.Instant) async -> SelectedModelRecoveryPlan {
         guard let info = advertisedModels[target] else { return .blocked("not advertised", retryAt: nil) }
@@ -163,7 +177,7 @@ extension ProviderLoop {
         if !stale.isEmpty {
             blocker += "; \(stale.joined(separator: ", ")) stays in the running daemon's selection until a restart applies the saved enabled_models"
         } else if waits.isEmpty {
-            blocker += "; selected models hold the rest"
+            blocker += "; no model outside the selection can be evicted to make room"
         }
         return .blocked(blocker, retryAt: retryAt)
     }

@@ -151,6 +151,17 @@ struct SelectedModelRecoveryPolicyTests {
         await loop.modelLoadingSetLoadingAny(false)
     }
 
+    /// With no explicit selection every model on disk is served and a cold
+    /// one loads on request: nothing is retried.
+    @Test func withoutAnExplicitSelectionNothingIsRetried() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox,
+            models: [ModelLoadingFixtures.model("on-disk-a"), ModelLoadingFixtures.model("on-disk-b")])
+        await loop.enqueueSelectedModelRecovery(["on-disk-a", "on-disk-b"])
+        #expect(await loop.selectedModelRecovery.isEmpty)
+    }
+
     @Test func checksBackOffToTenMinutesAndAnUnloadMakesThemDue() {
         var recovery = SelectedModelRecovery()
         let start = ContinuousClock.now

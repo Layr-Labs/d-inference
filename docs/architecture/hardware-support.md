@@ -369,8 +369,10 @@ daemon state publishes the same exclusions (`eviction_exclusions`) and the
 ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
 Selected-model recovery (`ProviderLoop+SelectedModelRecovery.swift`) retries
-the startup preload's selected candidates that it skipped or that failed for
-memory, or that a slot cap left untried; before it, nothing retried them, and
+the startup preload's candidates that the operator chose explicitly
+(`enabled_models`, `preload_models`, the pinned `model`, Autopilot's persisted
+selection) and that it skipped or that failed for memory, or that a slot cap
+left untried; before it, nothing retried them, and
 the coordinator cold-routes a model only to an idle machine. The capacity tick
 checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
 minutes, at once after any unload, and sooner when what blocked it ends first

@@ -83,6 +83,7 @@ extension ProviderLoop {
             let task = Task { await self.attemptSelectedModelRecovery(target, evicting: victims) }
             selectedModelRecovery.attempt = (target, task)
         case .releaseAdoption(let id):
+            guard selectedModelRecovery.attempt == nil, selectedModelRecoveryPauseReason() == nil else { return }
             let blocker = await releaseAdoptionForSelectedModelRecovery(id, target: target)
             selectedModelRecovery.pause(target, blocker: blocker, now: now)
         }

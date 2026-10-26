@@ -30,23 +30,30 @@ struct GLM5ToolFailureTests {
             forced: forced, width: 65536, invalid: true)
     }
 
-    @Test func publicForcedGLMStillRefusesUnsupportedConstraint() throws {
-        let request = try MiMoConsumerFixture.request(choice: #""required""#)
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
-        #expect(throws: (any Error).self) {
-            try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "glm5_next")
+    /// Forced choice is served by structured post-validation: the production
+    /// handler is the native GLM parser, which withholds calls until EOS.
+    @Test func publicForcedGLMUsesTheWithheldNativeParser() throws {
+        for choice in [#""required""#, #"{"type":"function","function":{"name":"echo"}}"#] {
+            let request = try MiMoConsumerFixture.request(choice: choice)
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+            let handler = try #require(try ToolStreamPreparation.makeHandler(
+                request: request, prepared: prepared, modelType: "glm5_next"))
+            #expect(handler.format == .glm5 && !handler.streamsCalls)
+            let context = ChatTemplateFixContext(modelId: request.model, modelType: "glm5_next")
+            #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: prepared.mode, modelContext: context)
+                == .structuredPostValidation)
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolChoiceEnforcementPolicy.validateParser(.json, strategy: .structuredPostValidation,
+                    modelContext: context)
+            }
         }
     }
 
     private func check(output: String, forced: Bool, width: Int, invalid: Bool) async throws {
         let request = try MiMoConsumerFixture.request(choice: forced ? #""required""# : #""auto""#)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
-        // Exercise output validation independently of admission. Public GLM
-        // required/named admission remains unsupported; do not enable it here.
-        let handler = forced
-            ? BatchedToolStreamHandler(format: .glm5, tools: prepared.tools?.map { $0.toolSpec() })
-            : try #require(try ToolStreamPreparation.makeHandler(
-                request: request, prepared: prepared, modelType: "glm5_next"))
+        let handler = try #require(try ToolStreamPreparation.makeHandler(
+            request: request, prepared: prepared, modelType: "glm5_next"))
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
         let upstream = AsyncStream<GenerationEvent> { continuation in
             let chars = Array(output)

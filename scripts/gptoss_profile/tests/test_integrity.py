@@ -98,6 +98,22 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(row["perRequestDecodeTPS"], 1000)
         self.assertEqual(row["legacyWholeRowAggregateTPS"], 900)
 
+    def test_prefill_summary_keeps_the_engine_geometry(self):
+        spec = {"cell": Cell("prefill", 4096).record(), "iterations": 1,
+                "decodeTokens": 64, "backend": "paged", "provenanceID": "pin"}
+        report = {"schemaVersion": 5, "samples": [{"ttftMs": 400.0, "peakMemoryBytes": 1000}],
+                  "soloPrefillStripeTokens": None, "prefillChunkTokens": 2048,
+                  "maxBatchedTokensPerStep": 4096}
+        row = summarize_cell(report, spec)
+        self.assertEqual((row["soloPrefillStripeTokens"], row["prefillChunkTokens"],
+                          row["maxBatchedTokensPerStep"]), (None, 2048, 4096))
+        for key in ("prefillChunkTokens", "maxBatchedTokensPerStep"):
+            del report[key]
+        report.update(schemaVersion=4, soloPrefillStripeTokens=2048)
+        row = summarize_cell(report, spec)
+        self.assertEqual((row["soloPrefillStripeTokens"], row["prefillChunkTokens"],
+                          row["maxBatchedTokensPerStep"]), (2048, None, None))
+
     def test_raw_timing_and_provenance_must_match_summary(self):
         spec, manifest, report = fixture()
         report["decode"][0]["decodeTiming"]["overlapAggregateTokensPerSecond"] = 9999

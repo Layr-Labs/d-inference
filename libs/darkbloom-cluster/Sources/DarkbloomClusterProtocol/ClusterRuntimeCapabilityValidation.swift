@@ -39,10 +39,10 @@ enum ClusterRuntimeCapabilityValidation {
         }
         let p = value.profile
         try workerRequire((1...ClusterWorkerLimits.vocabularySize).contains(p.vocabularySize)
-            && (1...ClusterWorkerLimits.promptTokens).contains(p.maximumPromptTokens)
-            && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
+            && (1...ClusterWorkerLimits.wirePromptTokens).contains(p.maximumPromptTokens)
+            && (1...ClusterWorkerLimits.wireOutputTokens).contains(p.maximumOutputTokens)
             && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
-            && (1...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens)
+            && (1...ClusterWorkerLimits.wireContextTokens).contains(p.maximumContextTokens)
             // Each maximum leaves room for at least one token of the other; a
             // request's own prompt plus output is held to the context by the
             // reservation checks, so a long prompt and a long output need not

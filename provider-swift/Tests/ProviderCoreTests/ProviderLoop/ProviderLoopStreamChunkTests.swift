@@ -56,7 +56,7 @@ private func encodeChunk(
                     role: role,
                     content: content,
                     reasoningContent: reasoningContent,
-                    toolCalls: toolCalls
+                    toolCalls: toolCalls?.map { OpenAIToolCallDelta($0) }
                 ),
                 finishReason: finishReason
             )
@@ -279,8 +279,8 @@ func parseStreamChunkExtractsToolCallsDelta() throws {
         "tool_calls delta must surface from delta.tool_calls (P2 #2)")
     #expect(extracted.count == 1)
     #expect(extracted[0].id == "call_1")
-    #expect(extracted[0].function.name == "get_weather")
-    #expect(extracted[0].function.arguments == #"{"city":"SF"}"#)
+    #expect(extracted[0].function?.name == "get_weather")
+    #expect(extracted[0].function?.arguments == #"{"city":"SF"}"#)
 }
 
 /// The hash-encoding helper must produce a deterministic, framed
@@ -296,7 +296,7 @@ func encodeToolCallsForHashProducesStableEncoding() {
         type: "function",
         function: .init(name: "get_weather", arguments: #"{"city":"SF"}"#)
     )
-    let encoded = ProviderLoop.encodeToolCallsForHash([call])
+    let encoded = ProviderLoop.encodeToolCallsForHash([OpenAIToolCallDelta(call)])
 
     // Wrapped with \u{1F} markers (Unit Separator — invalid in
     // normal chat content, so cannot collide).
@@ -309,7 +309,7 @@ func encodeToolCallsForHashProducesStableEncoding() {
 
     // Idempotent encoding — same input must always produce the same
     // bytes (sortedKeys output formatting).
-    let encoded2 = ProviderLoop.encodeToolCallsForHash([call])
+    let encoded2 = ProviderLoop.encodeToolCallsForHash([OpenAIToolCallDelta(call)])
     #expect(encoded == encoded2,
         "encoding must be deterministic across invocations (sortedKeys)")
 }
@@ -481,7 +481,7 @@ func injectLogprobsSkipsNonContentFrames() throws {
     // Role-only preamble.
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(role: "assistant"), entries: entries) == nil)
-    // Reasoning-only delta (logprobs.content covers CONTENT tokens).
+    // Reasoning-only delta (without `includingReasoning`, entries wait for content).
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(reasoningContent: "thinking"), entries: entries) == nil)
     // Terminal/usage chunk.
@@ -499,4 +499,34 @@ func injectLogprobsSkipsNonContentFrames() throws {
     // No entries → nothing to splice, even into a content frame.
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(content: "x"), entries: []) == nil)
+}
+
+@Test("injectLogprobs splices reasoning frames too where a model's logprobs cover reasoning")
+func injectLogprobsIncludingReasoningFrames() throws {
+    let entries = sampleLogprobEntries()
+    for frame in [try encodeChunk(reasoningContent: "thinking"), try encodeChunk(content: "Hello")] {
+        let rewritten = try #require(
+            ProviderLoop.injectLogprobs(into: frame, entries: entries, includingReasoning: true))
+        let payload = try #require(ProviderLoop.joinedDataPayload(rewritten))
+        let obj = try #require(
+            try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        let choice = try #require((obj["choices"] as? [[String: Any]])?.first)
+        let content = try #require((choice["logprobs"] as? [String: Any])?["content"] as? [[String: Any]])
+        #expect(content.map { $0["token"] as? String } == ["Hello"])
+        // The frame's text is untouched.
+        let original = try #require(ProviderLoop.parseStreamChunk(frame))
+        let parsed = try #require(ProviderLoop.parseStreamChunk(rewritten))
+        #expect(parsed.contentDelta == original.contentDelta && parsed.reasoningDelta == original.reasoningDelta)
+    }
+    // Role preambles, empty reasoning and usage chunks still keep entries pending.
+    for frame in [try encodeChunk(role: "assistant"), try encodeChunk(reasoningContent: ""),
+                  try encodeChunk(finishReason: "length", usage: OpenAIUsage(promptTokens: 1, completionTokens: 2))] {
+        #expect(ProviderLoop.injectLogprobs(into: frame, entries: entries, includingReasoning: true) == nil)
+    }
+    // GLM5-Next and the Nemotron Super owner opt in on the relay; others keep content frames.
+    #expect(ProviderLoop.logprobsCoverReasoning(modelType: "glm5_next", nemotronSuper: false))
+    #expect(ProviderLoop.logprobsCoverReasoning(modelType: "glm5_next_mtp", nemotronSuper: false))
+    #expect(ProviderLoop.logprobsCoverReasoning(modelType: "nemotron_h_omni", nemotronSuper: true))
+    #expect(!ProviderLoop.logprobsCoverReasoning(modelType: "qwen3_5_moe", nemotronSuper: false))
+    #expect(!ProviderLoop.logprobsCoverReasoning(modelType: "flint", nemotronSuper: false))
 }

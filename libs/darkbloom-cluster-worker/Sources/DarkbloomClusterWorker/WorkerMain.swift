@@ -39,6 +39,11 @@ import Foundation
                                                           environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
+            // Before anything native: GLM tensor parallel's fused sum fences (read once too).
+            if let line = WorkerFenceFusion.apply(mode: configuration.generationMode, family: configuration.family,
+                                                  environment: ProcessInfo.processInfo.environment) {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment

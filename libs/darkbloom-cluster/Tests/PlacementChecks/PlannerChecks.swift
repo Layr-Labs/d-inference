@@ -68,19 +68,28 @@ func checkGateAgreement(_ checks: PlacementChecks) {
     let small = ClusterDeviceMemory.gate(SyntheticMac.idle(36).observation, now: SyntheticMac.now)
     checks.require("margins: a 36 GiB Mac's record carries its own margins",
         small.minimumAdmissibleBytes == 9 * gib / 4 && small.loadingHeadroomBytes == 3 * gib / 2)
-    // A cache-heavy Mac: the gate's cap on counted cache is what the record shows.
-    let heavy = ClusterDeviceMemory.gate(SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 180).observation, now: SyntheticMac.now)
-    checks.require("a cache-heavy Mac counts at most the gate's cap",
-        heavy.countedFileCacheBytes == QwenDenseStageLoadPolicy.maximumCountedReclaimableBytes)
+    // A cache-heavy Mac: the gate counts all of its file cache, and the record shows it.
+    let heavyMac = SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 180)
+    let heavy = ClusterDeviceMemory.gate(heavyMac.observation, now: SyntheticMac.now)
+    checks.require("a cache-heavy Mac at normal pressure counts all of its file cache",
+        heavy.countedFileCacheBytes == heavy.fileBackedBytes && heavy.fileBackedBytes == 180 * gib
+            && heavy.admissibleNowBytes == heavy.actualFreeBytes + heavy.fileBackedBytes)
     // 0.3 GiB free, 180 GiB of idle cache, about 72 GiB of applications: the kernel keeps
     // 10/27 of what is pageable (about 93 GiB) as cache and would give up the rest (about 87).
     checks.require("the record carries the kernel's cache minimum and what lies above it, as the gate computed them",
         heavy.fileCacheReserveBytes + heavy.fileCacheAboveReserveBytes == heavy.fileBackedBytes
             && abs(heavy.fileCacheReserveBytes - 252 * gib * 10 / 27) < gib / 64)
+    checks.require("cache below the kernel's minimum is counted too: a requirement beyond free pages plus the cache above it is admitted now",
+        heavy.kernelWouldGiveBytes < 170 * gib && heavy.fit(170 * gib) == .now)
+    // The same Mac at warning pressure: the gate counts no cache, though the kernel would give it up.
+    var warnedMac = heavyMac; warnedMac.pressure = 2
+    let warned = ClusterDeviceMemory.gate(warnedMac.observation, now: SyntheticMac.now)
+    checks.require("at warning pressure the same Mac counts none of its file cache",
+        warned.judged && warned.countedFileCacheBytes == 0 && warned.admissibleNowBytes == warned.actualFreeBytes)
     checks.require("within free pages plus cache above the kernel's minimum, beyond what the gate counts: the gate's rule refuses, not memory",
-        { if case .gateCountsLess = heavy.fit(80 * gib) { return true } else { return false } }())
+        { if case .gateCountsLess = warned.fit(80 * gib) { return true } else { return false } }())
     checks.require("beyond the cache the kernel would give up: applications must release memory, and protected cache is not promised",
-        { if case .afterApplicationsRelease(let bytes) = heavy.fit(100 * gib) { return bytes == 100 * gib - heavy.kernelWouldGiveBytes } else { return false } }())
+        { if case .afterApplicationsRelease(let bytes) = warned.fit(100 * gib) { return bytes == 100 * gib - warned.kernelWouldGiveBytes } else { return false } }())
     checks.require("beyond everything but the kernel's cache minimum: the minimum is named as the kernel's share of unwired memory, not as something only a restart empties",
         { if case .afterRestart = heavy.fit(200 * gib) { return true } else { return false } }()
             && ClusterPlacementExplanation.describe(heavy.fit(200 * gib)).contains("in proportion to the memory that is not wired")

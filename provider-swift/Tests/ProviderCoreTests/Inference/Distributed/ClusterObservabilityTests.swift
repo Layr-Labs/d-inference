@@ -89,6 +89,42 @@ struct ClusterObservabilityTests {
         #expect(status.telemetry?.recent.first == record)
     }
 
+    /// Time-sliced lanes serve several requests at once: each one's speed is then a share of the pair's, and its
+    /// record must not be taken for the pair's speed (2026-10-22: eight lanes at 12 tok/s each, where one request
+    /// alone decodes 90, made the next plan predict tensor parallel slower than a pipeline).
+    @Test func requestsThatSharedThePairAreNoSpeedRecords() {
+        let overlap = DistributedPairOverlap(clock: { 1_000 })
+        let a = UUID(), b = UUID(), c = UUID()
+        #expect(overlap.note(a, phase: .reserved) == nil)
+        #expect(overlap.note(a, phase: .firstToken) == nil)
+        #expect(overlap.note(a, phase: .terminal) == nil)
+        #expect(overlap.note(a, phase: .retired) == 0)                   // alone: a speed record
+        _ = overlap.note(b, phase: .reserved)
+        _ = overlap.note(c, phase: .reserved)                            // c starts while b runs
+        _ = overlap.note(c, phase: .terminal)
+        #expect(overlap.note(c, phase: .retired) == 1)
+        _ = overlap.note(b, phase: .terminal)
+        #expect(overlap.note(b, phase: .retired) == 1)                   // b shared the pair with c
+        #expect(overlap.note(UUID(), phase: .retired) == nil)            // never seen to start: not counted
+        let shared = ClusterPairRequestTelemetry(requestID: "s", finishedAt: 1, modelID: "m", mode: "tensor_parallel_v1",
+            cut: "0-45|0-45", promptTokens: 30, cachedTokens: 0, completionTokens: 256, firstTokenMilliseconds: 500,
+            decodeTokensPerSecond: 12, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
+            outcome: "length", concurrentRequests: 7)
+        #expect(!shared.isSpeedRecord && ClusterServedSpeedFile.adding(shared, to: []).isEmpty)
+    }
+
+    /// A request whose end was lost (an overflowing sink drops observations) stops counting against later ones.
+    @Test func aLostEndDoesNotMarkEveryLaterRequest() {
+        let now = LockedClock(1_000)
+        let overlap = DistributedPairOverlap(clock: { now.value })
+        _ = overlap.note(UUID(), phase: .reserved)                       // its terminal and retired never arrive
+        now.value += DistributedPairOverlap.staleSeconds + 1
+        let later = UUID()
+        _ = overlap.note(later, phase: .reserved)
+        _ = overlap.note(later, phase: .terminal)
+        #expect(overlap.note(later, phase: .retired) == 0)
+    }
+
     @Test func failureIncidentIsClassifiedAndRedacted() throws {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -126,5 +162,16 @@ struct ClusterObservabilityTests {
         #expect(snapshot.lines.contains { $0.contains("collective_stall") })
         let encoded = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
         #expect(encoded.contains("\"guidance\""))
+    }
+}
+
+/// A settable clock for `DistributedPairOverlap`.
+private final class LockedClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Double
+    init(_ value: Double) { current = value }
+    var value: Double {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
     }
 }

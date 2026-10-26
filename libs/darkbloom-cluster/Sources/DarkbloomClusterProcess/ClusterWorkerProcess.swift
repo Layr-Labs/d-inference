@@ -305,7 +305,11 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             let frame = ClusterWorkerCommandFrame(membershipEpoch: expectedIdentity.membershipEpoch,
                 sequence: nextCommand, requestID: requestID, command: command)
             let bytes = try ClusterWorkerCodec.encode(frame)
-            guard outgoing.count < 16, queuedBytes <= 1024 * 1024 - bytes.count else {
+            // One reservation carrying GLM media may take `mediaCommandBytes`.
+            guard outgoing.count < 16, queuedBytes <= ClusterWorkerLimits.queuedCommandBytes - bytes.count else {
+                // A reservation the queue cannot take now is that request's
+                // refusal; the worker and the pair are as they were.
+                if case .reserve = command { throw ClusterWorkerOwnerError.refused(.busy) }
                 throw ClusterWorkerOwnerError.invalid("Worker command queue exceeded bound")
             }
             outgoing.append((bytes, 0, deadline)); queuedBytes += bytes.count; nextCommand += 1

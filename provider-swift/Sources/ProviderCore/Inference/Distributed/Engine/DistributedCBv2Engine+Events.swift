@@ -15,13 +15,14 @@ extension DistributedCBv2Engine {
         // Like the prefix report: after the last token, telemetry only.
         if case .telemetry(let value) = event {
             state.rankTelemetry = value
+            mtpTotals.add(value)
             return state.terminal == nil
         }
         guard state.terminal == nil else {
             // The first token after a clean stop was asked for is the one the
             // stop answers. Nothing is delivered; from here the stop only has
             // to finish, so the first-token deadline no longer applies.
-            if case .token = event, state.cleanStopPending, !state.cleanStopAnswered {
+            if event.committedToken != nil, state.cleanStopPending, !state.cleanStopAnswered {
                 state.cleanStopAnswered = true
                 if !state.cancelSent { armDeadline(state) }
             }
@@ -31,7 +32,7 @@ extension DistributedCBv2Engine {
         checkDeadline(state)
         guard state.terminal == nil else { return false }
         switch event {
-        case .token(let token):
+        case .token(let token), .loggedToken(let token, _):
             guard token >= 0, token < profile.vocabularySize,
                 state.completionTokens < state.request.maxTokens
             else {
@@ -53,7 +54,9 @@ extension DistributedCBv2Engine {
                 return false
             }
             // Raw stop IDs count for usage but never enter the text detokenizer.
-            if case .terminated = state.continuation.yield(.delta(text: text, tokens: [token], logprobs: nil)) {
+            var logprobs: [CBv2TokenLogprob]?
+            if case .loggedToken(_, let value) = event { logprobs = [value] }
+            if case .terminated = state.continuation.yield(.delta(text: text, tokens: [token], logprobs: logprobs)) {
                 stop(state, reason: .cancelled)
                 return false
             }

@@ -44,6 +44,18 @@ extension ProviderLoop {
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
         if isClusterMember { rejectClusterMemberPrefetch(modelId, send: send); return }
+        // With saved consent, a build outside ordinary serving never takes the
+        // ordinary path, not even under a live lease, or a `models_update`
+        // would make it ordinary: it is an Autopilot download into the set
+        // unless the operator turned downloads off, then refused as before.
+        if autopilotConsented && !ordinaryServingModelIDs.contains(modelId) {
+            if autopilotDownloadSettings.enabled {
+                await handleAutopilotDownloadRequest(modelId: modelId, priority: priority, send: send)
+            } else {
+                send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
+            }
+            return
+        }
         guard autopilotAllowsModel(modelId) else {
             send.send(.prefetchModelStatus(modelId: modelId, status: .failed, bytesDone: 0, bytesTotal: 0, error: "model_not_selected"))
             return
@@ -339,7 +351,7 @@ extension ProviderLoop {
             if let previous = entry.previousBuild, ordinaryServingModelIDs.contains(previous),
                 !entry.desiredBuild.isEmpty {
                 ordinaryServingModelIDs.insert(entry.desiredBuild)
-                if autopilotConsented && !autopilotSettings.allows(entry.desiredBuild) {
+                if autopilotConsented && !autopilotSetAllows(entry.desiredBuild) {
                     autopilotSuccessorNeedsInventoryRefresh = true
                 }
             }

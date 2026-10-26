@@ -18,7 +18,9 @@ private struct DistributedCompletionFixture {
             config: .init(host: "127.0.0.1", port: 0, authToken: "fixture-token"),
             firstTokenBudgetPolicy: try .init(
                 baseMilliseconds: firstTokenBudgetMilliseconds, millisecondsPerInputToken: 0),
-            tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) })
+            tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) },
+            // A short queue, so the full-queue case stays quick.
+            queue: .init(maximumWaiting: 8))
         try await host.start()
         port = try #require(await host.status.boundPort)
     }
@@ -234,7 +236,7 @@ struct DistributedHTTPCompletionTests {
             let firstLease = try await fixture.startedLease(1)
             // Queued requests are told apart by their max_tokens (3, 4, ...).
             var queued: [Task<(Data, URLResponse), Error>] = []
-            for index in 0..<DistributedRequestQueue.maximumWaiting {
+            for index in 0..<fixture.host.queue.maximumWaiting {
                 let stream = index % 2 == 0
                 let request = try fixture.request(stream: stream, maxTokens: 3 + index)
                 queued.append(Task { try await client.data(for: request) })

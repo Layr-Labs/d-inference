@@ -1,3 +1,4 @@
+import Cmlx
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
@@ -14,7 +15,9 @@ import MLXLMCommon
 ///
 /// The same executor contract as `QwenTensorParallelResidentRuntime`: one
 /// request at a time, cancel from the control thread, an enclosing process
-/// deadline required. Each decode step carries one small sealed reduction in
+/// deadline required; or, loaded with batch lanes (`lanes`, from
+/// `DARKBLOOM_CLUSTER_BATCH_LANES`), several requests at once in the lane loop
+/// (`GLM5NextTensorParallelLanes.swift`), each with its own arithmetic. Each decode step carries one small sealed reduction in
 /// which both ranks put their token and stop flag: a greedy token both ranks
 /// chose differently ends the request (it would mean diverged state), a
 /// sampled token is rank 0's draw, and a stop on either rank ends both after
@@ -24,11 +27,19 @@ import MLXLMCommon
 /// layer, which every rank holds whole (`mtpDepth`,
 /// `GLM5NextTensorParallelSpeculation`): one stage forward verifies up to
 /// `mtpDepth` proposals, and its round's reduction carries every window
-/// position's token, the proposals and the stop flags. Sampled requests
-/// decode one token per step.
+/// position's token, the proposals and the stop flags. So do sampled
+/// requests, verifying against keyed target draws with proposals coupled to
+/// them (`coupledDraftSharpness`); logit bias and penalties are replayed over
+/// each round's proposals (`QwenStageTokenSampler.verifyRound`).
 ///
-/// Not in this mode yet (the pipeline serves it): image input. A request
-/// asking for images is refused.
+/// Image and video input (`ClusterGLMMedia`) is served as the single-Mac
+/// product serves it (`GLM5NextTensorParallelMedia`), alone or in a lane:
+/// rank 0 holds the vision tower and prepares the media's patches from its
+/// reservation on, off the executor; when the request opens, rank 0 runs the
+/// tower and both ranks agree the features with one sealed sum per frame; the
+/// prefill splices them over the media positions and primes the NextN history
+/// with them, and the request decodes speculatively as text does, with no
+/// prefix reuse.
 public final class GLM5NextTensorParallelResidentRuntime {
     static let planName = "glm5_next_heads_and_expert_channels_v1"
     /// The freed-buffer cache a ready rank keeps under the
@@ -39,6 +50,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// (3,931-token prompt, 2,048-token chunks): cache 0 prefill 1,062 tok/s,
     /// decode 25.7; 1 GiB 1,624 / 50.4; 4 GiB 1,766 / 50.8. Charged to the
     /// load's memory gate and the stage residency beside the request reserve.
+    /// Given back once the rank is idle (`releaseIdleMemory`), and before a
+    /// reservation or a running request is refused (`yieldingMemory`).
     static let freedBufferCacheBytes = 4 << 30
     /// Each prefill chunk runs as this many micro-batches, so one computes
     /// while another's sealed sum crosses the link
@@ -70,6 +83,90 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// partials, 15,724-token prompt): 4,096-token chunks 3,311 tok/s,
     /// 8,192: 3,614. Charged as four request workspaces in all.
     static let bulkPrefillChunkTokens = 8192
+    /// A request prefills consecutive chunks together in one graph (frame),
+    /// up to this many tokens (beside decoding lanes only in layer slices,
+    /// `lanePrefillSliceMilliseconds`)
+    /// (`GLM5NextTensorParallelPrefillPlan`; 0: each chunk alone). Every
+    /// chunk keeps its micro-batches, so tokens are unchanged; a graph's edges
+    /// leave its last sums waiting for the link and its first micro-batches
+    /// with nothing to overlap, and a longer graph overlaps each sum with more
+    /// micro-batches (bulk chunks as 4 x 4,096 instead of 2 x 4,096 on the
+    /// 15.7K prompt: 3,819 -> 4,086 tok/s). The prompt-prefix boundary may fall
+    /// inside a graph (the stage keeps its cache there). No further charge:
+    /// MLX keeps at most `MLX_MAX_ACTIVE_TASKS` command buffers in flight
+    /// whatever the graph's length, so a longer graph holds only each
+    /// micro-batch's residual streams and the graph's hidden rows longer
+    /// (about 1 GiB more at 16,384 tokens), far inside the bulk chunk's
+    /// workspaces.
+    static let mergedPrefillTokens = 32768
+    /// Chunks whose micro-batches are all large enough to compute the same
+    /// bits at any size (`GLM5NextTensorParallelPrefillPlan.rowCountInvariantRows`)
+    /// run as micro-batches of at most this many rows instead (nil: two per
+    /// chunk). Bigger micro-batches read each layer's expert weights once per
+    /// more rows; tokens are unchanged: each row keeps its product
+    /// micro-batch's DSA selection (`GLM5NextTensorParallelPrefillPlan.make(pinsSelections:)`).
+    static let prefillMicroBatchTokens: Int? = 8192
+    /// While other lanes decode, a lane's prefill frame runs in layer slices
+    /// of about this long, one a step, each followed by every decoding lane's
+    /// unit (`GLM5NextTensorParallelPrefillPlan.Slices`), so no decoding lane
+    /// waits longer than a slice for its next round, and frames merge chunks
+    /// (up to `mergedPrefillTokens`) beside decoding lanes too. A slice builds
+    /// the frame's next layers for every micro-batch exactly as the whole
+    /// frame does: tokens and caches are unchanged. nil: frames run whole,
+    /// merging only while no lane decodes (a decoding lane then waits a whole
+    /// 8,192-token chunk, about 2 s).
+    static let lanePrefillSliceMilliseconds: Double? = 500
+    /// The pair's prefill compute per prompt token (merged frames, 31.5K:
+    /// 3,973 tok/s), which sizes a slice; only timing depends on it.
+    static let prefillMillisecondsPerToken = 0.252
+    /// Lanes still prefilling take frames shortest remaining prompt first
+    /// (ties: join order), so a short request does not wait for a long one's
+    /// whole prompt; a frame in progress always finishes first. False: join
+    /// order. Either way each lane's frames are its own.
+    static let lanePrefillShortestFirst = true
+
+    /// The layers of a frame's next slice, from `built` of `layers`: the
+    /// frame's rest without `slicing`, else the next of the frame's slices,
+    /// as many as its estimated time needs at `lanePrefillSliceMilliseconds`,
+    /// with near-equal layer counts. Both ranks derive it.
+    static func prefillSlice(from built: Int, layers: Int, tokens: Int, slicing: Bool) -> Range<Int> {
+        guard slicing, let budget = lanePrefillSliceMilliseconds, budget > 0, built < layers else { return built ..< layers }
+        let estimate = Double(tokens) * prefillMillisecondsPerToken
+        let slices = min(layers, max(1, Int((estimate / budget).rounded(.up))))
+        return built ..< ((1 ... slices).lazy.map { $0 * layers / slices }.first { $0 > built } ?? layers)
+    }
+
+    /// A sliced frame's held arrays between slices: every micro-batch's
+    /// residual streams and pending mHC expand (`[T, hcMult + 1, hidden]`
+    /// activations, `post`/`comb` in float32), at the longest frame. Held
+    /// while other lanes' units run, so admission charges it beside the
+    /// largest forward's transients.
+    static func prefillFrontierBytes(configuration c: GLM5NextTextConfiguration) throws -> Int {
+        guard lanePrefillSliceMilliseconds != nil else { return 0 }
+        return try QwenLongPrefillCheckedBytes.product([mergedPrefillTokens,
+            try QwenLongPrefillCheckedBytes.sum([(c.hcMult + 1) * c.hiddenSize * 2, (c.hcMult + c.hcMult * c.hcMult) * 4])])
+    }
+    /// Prefill micro-batches of an even 4,096 rows or more keep each rank's
+    /// half of the rows' residual streams: the mHC sites and MoE routers run
+    /// on that half only, and each layer's sums become a sealed all-gather of
+    /// the sublayer inputs and a sealed reduce-scatter of the partials
+    /// (`GLM5NextTextStage.installTensorParallelSequenceParallel`): the same
+    /// link bytes, twice the collectives, half the replicated mHC and router
+    /// work per rank. Tokens unchanged (each of those computes a row the same
+    /// in a call of half the rows; the scatter adds as the sum does).
+    static let prefillSequenceParallel = false
+    /// Prefill shares each DSA layer's sparse-row top-k selection between the
+    /// ranks by rows (`GLM5NextTextStage.installTensorParallelSelectionSplit`):
+    /// the indexer is replicated, so each rank scores and selects half the
+    /// rows and a sealed all-sum of the chosen pool IDs (float32, about 2 KiB
+    /// a row per DSA layer) gives both every row's. Tokens unchanged. Not
+    /// with `prefillSequenceParallel`. Only micro-batches whose history holds
+    /// `prefillSelectionSplitMinimumHistory` keys share (a row's selection
+    /// costs about its history, the exchange about its row). Pair (c43,
+    /// serving env, every micro-batch shared): 10.5K -0.2 %, 16K -0.5 %,
+    /// 31.5K +1.5 %; from 16,384 keys only 31.5K's later micro-batches share.
+    static let prefillSelectionSplit = true
+    static let prefillSelectionSplitMinimumHistory = 16384
     /// NextN (MTP) proposals each greedy decode round verifies
     /// (`GLM5NextTensorParallelSpeculation`, at most
     /// `GLM5NextMTP.maximumProposalDepth`); 0 loads no NextN layer and every
@@ -81,6 +178,52 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// 62.6 tok/s; depth 1 68.7, depth 2 76.0 (2.24 tokens a round), depth 3
     /// 71.8 (its third proposal is rarely kept and widens every window).
     static let mtpDepth = 2
+    /// The media contract this runtime serves; bound into the load agreement.
+    /// Rank 0 holds the vision tower whole (1.13 GB of bfloat16 weights for
+    /// the registered artifact, charged to its load gate); rank 1 holds none.
+    static let mediaContract = ClusterGLMMedia.contract
+    /// A sampled request draws every NextN proposal with its own sampler and
+    /// the keyed noise of the output index the proposal is for (coupled
+    /// drafting, `GLM5NextTensorParallelSpeculation`), from the NextN logits
+    /// times this factor: 1 applies the target's own race to the draft's
+    /// distribution; above 1 sharpens a draft less confident than the target;
+    /// infinity proposes the NextN argmax (the rule before coupling). A
+    /// request with bias or penalties takes 1 unless it is infinite. Every
+    /// committed token stays the target's draw from its window logits at any
+    /// value; it moves acceptance (and with it where rounds end).
+    static let coupledDraftSharpness: Float = 1
+    /// Rank 0 of a stateless sampled request also scores other proposal rules
+    /// on every verified round's first proposal: the argmax, then the coupled
+    /// draw at each of `probedDraftSharpness`. Its kept counts are logged
+    /// (`mtp_probe`); one more small sampling pass per round, enqueued after
+    /// the round's result is read. Diagnostic: proposals and tokens never change.
+    static let probesDraftRules = true
+    static let probedDraftSharpness: [Float] = [1, 1.5, 2, 3]
+
+    /// The request log line's proposal fields: the rule, kept and made
+    /// proposals per position, and the draft probe's kept counts.
+    static func proposalFields(_ speculation: GLM5NextTensorParallelSpeculation?,
+                               sampler: QwenStageTokenSampler?) -> String {
+        guard let speculation else { return "" }
+        let rule = sampler.map { $0.admitsSpeculativeVerification ? "coupled\(coupledDraftSharpness)" : "replayed" }
+        var fields = " mtp_draft=\(rule ?? "argmax")"
+            + " mtp_accepted_by_position=" + speculation.acceptedByPosition.map(String.init).joined(separator: "-")
+            + " mtp_proposed_by_position=" + speculation.proposedByPosition.map(String.init).joined(separator: "-")
+        if let hits = speculation.draftProbeHits() {
+            fields += " mtp_probe_rounds=\(speculation.probedRounds) mtp_probe=" + hits
+        }
+        return fields
+    }
+
+    /// The rules `probesDraftRules` scores, named `argmax` and `c<sharpness>`.
+    static func draftProbe(_ sampler: QwenStageTokenSampler) -> GLM5NextTensorParallelSpeculation.DraftProbe {
+        .init(names: ["argmax"] + probedDraftSharpness.map { "c\($0)" }) { logits in
+            let wide = logits.asType(.float32)
+            let greedy = argMax(wide[0..., -1, 0...], axis: -1).reshaped(1).asType(.int32)
+            let coupled = sampler.draft(concatenated(probedDraftSharpness.map { wide * $0 }, axis: 0), offset: 0)
+            return concatenated([greedy] + (coupled.map { [$0.reshaped(-1).asType(.int32)] } ?? []), axis: 0)
+        }
+    }
 
     let configuration: QwenResidentLoadConfiguration
     let descriptor: GLM5NextResidentDescriptor
@@ -90,23 +233,43 @@ public final class GLM5NextTensorParallelResidentRuntime {
     let codec: QwenTensorParallelSealCodec?
     let lifecycle = QwenLayerStageResidentLifecycle()
     let loadAgreement: String
-    private let operation = NSLock()
+    let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private var stage: GLM5NextTextStage?
+    var stage: GLM5NextTextStage?
     /// The NextN layer when `mtpDepth > 0`; it shares the stage's embedding and head.
-    private var mtp: GLM5NextMTP?
+    var mtp: GLM5NextMTP?
+    /// Rank 0's vision tower (`mediaContract`); nil on rank 1.
+    var vision: GLM5NextStageVision?
     private var residency: ClusterStageResidency?
-    private let requestReserveBytes: Int
+    /// What a request costs this rank at its own context
+    /// (`GLM5NextTensorParallelRequestCharge`): `reserve` and `reserveLane`
+    /// admit by it; READY's capacity is its value at the profile's longest.
+    let requestCharge: GLM5NextTensorParallelRequestCharge
+    /// The charge of the memory plan's request, which the LOAD gate admitted.
+    let requestReserveBytes: Int
+    /// The longest context this rank's gate admits now (READY, then each
+    /// keep-warm answer: `refreshServingContext`).
+    private(set) var servingContextTokens: Int?
     private let baseReady: ClusterWorkerReady
     private var reservation: Reserved?
     private var processLeaseOwned = true
     public let linkProbe: ClusterWorkerLinkProbe?
     /// This rank's prompt prefixes (`GLM5NextTensorParallelPrefixCache`).
     let prefix: GLM5NextTensorParallelPrefixCache
+    /// Requests served at once (continuous batching); one serves one request
+    /// at a time exactly as before. Bound into the load agreement.
+    public let lanes: QwenBatchSettings
+    /// Batch lanes: every reserved, started and running lane on this rank.
+    let laneBook = ClusterBatchLaneBook<GLM5NextTensorParallelLaneReservation>()
+    /// True while the lane loop runs on the executor (lane control is applied
+    /// inside it, under its exclusive operation).
+    var batchServing = false
 
     struct Reserved {
         let request: QwenLayerStageGenerationRequest
         let deadline: UInt64
+        /// The request's images and video (rank 0 prepares them meanwhile).
+        let media: GLM5NextTensorParallelMedia?
     }
 
     // MARK: - Load
@@ -114,8 +277,14 @@ public final class GLM5NextTensorParallelResidentRuntime {
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential) throws -> GLM5NextTensorParallelResidentRuntime {
+        let entered = DispatchTime.now().uptimeNanoseconds
+        let enteredUnixMilliseconds = Int64(Date().timeIntervalSince1970 * 1000)
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        GLM5NextTensorParallelPrefillPlan.commandBuffers = prefillCommandBuffers
+        let frameTiming = GLM5NextTensorParallelPrefillPlan.enableFrameTimingFromSwitch()
+        let lanes = try QwenBatchSettings.fromEnvironment(environment)
+        let path = try GLM5NextTensorParallelLoadPath.resolved(environment)
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         guard spec.supportedGenerationModes.contains(.tensorParallel) else {
             throw ProbeError("Generation mode tensor_parallel_v1 is not in the GLM row")
@@ -148,49 +317,41 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let planSHA256 = try GLM5NextServingResources.contract(specification: spec,
             configuration: descriptor.configuration, artifactIdentity: descriptor.artifactIdentity,
             cut: descriptor.cut).source.planFingerprint
-        let inventory = try descriptor.inspectInventory(directory: directory)
-        guard GLM5NextArtifactMetadata.fingerprint(inventory) == spec.inventorySHA256 else {
-            throw ProbeError("GLM shard headers are not the registered inventory")
-        }
-        // Every rank is charged the request state of both pipeline stages: the
-        // whole model's latent caches (replicated under TP) and all its KDA
-        // state (charged whole, although a rank holds half its heads), so the
-        // charge is never below the need. Beside it, one sealed sum's buffers
-        // at the largest chunk: the float32 partial, its sealed frame, both
-        // ranks' frames, the opened peer partial and the sum (six partials).
         let profile = descriptor.profile
-        let largestChunk = max(profile.maximumChunkTokens, Self.bulkPrefillChunkTokens)
-        var requestReserve = try QwenLongPrefillCheckedBytes.sum([
-            try QwenLongPrefillCheckedBytes.product([6, largestChunk, descriptor.configuration.textConfig.hiddenSize, 4]),
-            try QwenLongPrefillCheckedBytes.product([largestChunk / max(1, profile.maximumChunkTokens) - 1,
-                GLM5NextServingResources.workspaceNativeBytes])])
-        for rank in 0 ..< 2 {
-            let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-                rank: rank, buildSHA256: configuration.identity.peers[rank].buildSHA256)
-            let quote = try resources.quote(descriptor: descriptor, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
-                allocationBound: QwenResidentResourceEnvironment.allocationBound)
-            requestReserve = try QwenLongPrefillCheckedBytes.sum([requestReserve, quote.request.reservedBytes])
-        }
-        let shardBytes = try Self.shardBytes(inventory)
-        // Every rank holds the NextN layer whole: its loader never shards, so
-        // its bytes are the stored ones (`GLM5NextTensorShard.splitAxis` has
-        // no layer bound and would wrongly halve some of them).
         let text = descriptor.configuration.textConfig
         guard Self.mtpDepth == 0 || (text.numNextNPredictLayers == 1
                 && Self.mtpDepth <= GLM5NextMTP.maximumProposalDepth
                 && (Self.mtpDepth == 1 || text.indexShareForMTPIteration)) else {
             throw ProbeError("GLM tensor-parallel speculative depth \(Self.mtpDepth) is unsupported by this model")
         }
-        let mtpBytes = Self.mtpDepth > 0 ? inventory.bytes(in: .mtp) : 0
-        requestReserve = try QwenLongPrefillCheckedBytes.sum([requestReserve,
-            try Self.speculationRequestBytes(configuration: text, profile: profile, depth: Self.mtpDepth,
-                executionPolicy: descriptor.executionPolicy)])
+        // Paged KV histories (`GLM5NextTensorParallelPagedKV.swift`), bound into the agreement.
+        let pagedKV = try Self.pagedKV(environment)
+        _ = try Self.pagedRetainBytes(environment)
+        // MLX's device record, read here first; the metadata thread's quotes read it too.
+        let maximumBufferBytes = GPU.deviceInfo().maxBufferSize
+        let roots = GLM5NextArtifactLoadRoots()
+        // The inventory, the request charge and the gate's bytes (and on the
+        // prepared path the owner whose single read loads the shard) come from
+        // the checkpoint's metadata alone: worked out on a thread of their own
+        // while this one brings the link up, and joined before the intent.
+        let metadataWork = GLM5NextTensorParallelBackground {
+            try GLM5NextTensorParallelLoadMetadata(spec: spec, descriptor: descriptor, directory: directory,
+                rank: configuration.rank, buildSHA256: configuration.identity.peers.map(\.buildSHA256), path: path,
+                roots: roots, pagedKV: pagedKV, maximumBufferBytes: maximumBufferBytes)
+        }
+        var phases = GLM5NextTensorParallelLoadPhases(since: entered, startedUnixMilliseconds: enteredUnixMilliseconds)
+        phases.mark("setup")
+        // The prefix cache votes in a reduction of its own: both ranks must
+        // have it on, or both off (`DARKBLOOM_CLUSTER_PREFIX_CACHE=off`).
+        let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var loaded: GLM5NextTextStage?
         var loadedMTP: GLM5NextMTP?
+        var loadedVision: GLM5NextStageVision?
         weak var retired: GLM5NextTextStage?
         weak var retiredMTP: GLM5NextMTP?
+        weak var retiredVision: GLM5NextStageVision?
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
             let read: (URL, Int) throws -> Data = { try BoundedProbeInput.data($0, maximumBytes: $1) }
@@ -201,9 +362,11 @@ public final class GLM5NextTensorParallelResidentRuntime {
             try jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size, transport: collective.transport)
             let identity = configuration.identity
             let loadAgreement = sha256(try canonicalJSONData(["glm5-next-tensor-parallel-load-v1", planName, partialsTransport,
-                GLM5NextTensorParallelSpeculation.agreementName, String(mtpDepth),
+                GLM5NextTensorParallelSpeculation.agreementName, String(mtpDepth), mediaContract,
                 descriptor.fingerprint, identity.membershipEpoch.uuidString.lowercased(), jaccl.fingerprint,
-                collective.transport.rawValue, configuration.allocatorPolicy.rawValue]
+                collective.transport.rawValue, configuration.allocatorPolicy.rawValue,
+                "glm5-next-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
+                + Self.laneAgreementFields(lanes) + Self.pagedKVAgreementFields(pagedKV)
                 + ClusterGenerationMode.tensorParallel.loadAgreementFields + ClusterDataPlaneAgreement.loadAgreementFields
                 + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
@@ -215,8 +378,19 @@ public final class GLM5NextTensorParallelResidentRuntime {
             let codec = try QwenTensorParallelSealCodec.product(collective: collective, scope: Data(loadAgreement.utf8))
             try codec.install()
             group.sealed = codec
+            phases.mark("link")
+            let metadata = try metadataWork.join()
+            let inventory = metadata.inventory
+            var requestCharge = metadata.requestCharge
+            let requestReserve = metadata.requestReserve, shardBytes = metadata.shardBytes
+            let mtpBytes = metadata.mtpBytes, visionBytes = metadata.visionBytes, mediaCapacity = metadata.mediaCapacity
+            phases.mark("metadata")
+            phases.note("metadata_thread", metadataWork.finishedUptimeNanoseconds - metadataWork.startedUptimeNanoseconds)
+            phases.note("metadata_inventory", metadata.inventoryNanoseconds)
+            phases.note("metadata_resources", metadata.resourcesNanoseconds)
             var probe: ClusterWorkerLinkProbe?
             var stageResidency: ClusterStageResidency?
+            var prefixBudget = 0
             let started = DispatchTime.now().uptimeNanoseconds
             try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
@@ -227,6 +401,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                     disagreementMessage: "GLM tensor-parallel load membership/source/plan differ",
                     scope: .session(.loadAgreement, "glm-tensor-parallel-load-intent"), check: checked)
+                phases.mark("intent")
                 // The link as this mode uses it, before any weight is read: the
                 // planner's measured reduction costs for this pair.
                 let measured = try QwenTensorParallelLinkProbe.measure(collective: collective, group: group,
@@ -234,41 +409,97 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     chunkTokens: descriptor.profile.maximumChunkTokens, check: checked)
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
+                phases.mark("probe")
                 // The live gate admits this rank's shard and the whole request charge before any read.
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, requestReserve,
-                    bufferCacheBytes]))
-                let roots = GLM5NextArtifactLoadRoots()
-                let loader = try GLM5NextArtifactLoader(directory: directory, expectedIdentity: descriptor.artifactIdentity,
-                    storage: descriptor.storage, constructionRoots: roots, executionPolicy: descriptor.executionPolicy)
+                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
+                    requestReserve, bufferCacheBytes]))
+                phases.mark("gate")
+                // `prepared` (the product): the owner parsed the metadata on the
+                // metadata thread and checks every file's SHA-256 in `prepare`, in
+                // the one read that also fills this rank's buffers; nothing is
+                // built before it matched. `per-tensor`: the owner hashes every
+                // file here, after the gate, as before.
+                let loader = try metadata.loader ?? GLM5NextArtifactLoader(directory: directory,
+                    expectedIdentity: descriptor.artifactIdentity, storage: descriptor.storage, constructionRoots: roots,
+                    executionPolicy: descriptor.executionPolicy, verification: path.verification)
                 guard GLM5NextArtifactMetadata.fingerprint(loader.inventory) == spec.inventorySHA256 else {
                     throw ProbeError("GLM verified owner differs from the registered inventory")
                 }
                 let text = loader.configuration.textConfig
                 let plan = try GLM5NextTextStagePlan(configuration: text, layers: 0 ..< text.hiddenLayers,
                     shard: try GLM5NextTensorShard(rank: collective.rank, size: collective.size))
+                phases.mark("open")
+                if path != .perTensor {
+                    try autoreleasepool {
+                        try loader.prepare(plan: plan, includeMTP: Self.mtpDepth > 0, keepFileCache: path == .prepared)
+                    }
+                    try checked()
+                    phases.mark("read")
+                }
                 let value = try autoreleasepool { try loader.loadTextStage(plan: plan) }
                 value.tensorParallelMicroBatches = Self.prefillMicroBatches
                 value.freeze()
+                // Every request's DSA and NextN histories live in this rank's page pool.
+                if pagedKV {
+                    let pool = try value.makeDSAPagePool(pageSize: Self.dsaPageTokens)
+                    value.dsaPagePool = pool
+                    requestCharge.pagedHistory = .init(pool: pool)
+                    // Its kernels compile here, not in the first request's prefill.
+                    let warming = DispatchTime.now().uptimeNanoseconds
+                    try pool.prewarm()
+                    log("darkbloom-glm-paged-prewarm-v1 rank=\(collective.rank)"
+                        + " ms=\((DispatchTime.now().uptimeNanoseconds - warming) / 1_000_000)")
+                }
                 // The NextN layer, whole, bound to the stage's replicated embedding and head.
                 let head = Self.mtpDepth > 0 ? try autoreleasepool { try loader.loadMTP(stage: value) } : nil
                 head?.freeze()
                 loadedMTP = head; retiredMTP = head
+                // Rank 0's vision tower, whole, from the same verified loader.
+                if collective.rank == 0 {
+                    let tower = try GLM5NextStageVision(loader: loader, roots: roots,
+                        beforeRead: { _, _ in try checked() }, check: checked)
+                    loadedVision = tower; retiredVision = tower
+                }
+                phases.mark("build")
                 try roots.evaluate(value.parameters().flattened().map(\.1)
                     + (head?.parameters().flattened().map(\.1) ?? []))
                 Stream.gpu.synchronize(); try checked()
                 roots.releaseAfterConfirmedFence()
                 try loader.verifyUnchanged()
+                phases.mark("evaluate")
+                for line in GLM5NextTensorParallelLoadDigest.lines([value] + (head.map { [$0] } ?? []),
+                        rank: collective.rank, path: path, environment: environment) {
+                    log(line)
+                }
+                phases.mark("digest")
                 try value.installTensorParallelReduction { partial in
                     // GLM's partials are its projections' bfloat16 outputs: they
                     // cross as they are and the sealed sum adds them in float32,
                     // rounding once (`partialsTransport`).
                     group.allSum(partial)
                 }
+                if Self.prefillSequenceParallel {
+                    try value.installTensorParallelSequenceParallel(
+                        share: collective.rank, shares: collective.size,
+                        reduceScatter: { group.reduceScatter($0) }, allGather: { group.allGather($0) })
+                }
+                if Self.prefillSelectionSplit {
+                    try value.installTensorParallelSelectionSplit(
+                        share: collective.rank, shares: collective.size,
+                        minimumHistory: Self.prefillSelectionSplitMinimumHistory, exchange: { group.allSum($0) })
+                }
                 loaded = value; retired = value
                 Memory.clearCache()
+                // Residency is a limit, clamped to the product's ceiling: it
+                // covers the longest request the profile admits.
                 stageResidency = try ClusterStageResidency(bytes: try QwenLongPrefillCheckedBytes.sum([
-                    Memory.activeMemory, requestReserve, bufferCacheBytes]))
+                    Memory.activeMemory, try requestCharge.bytes(contextTokens: profile.maximumContextTokens),
+                    bufferCacheBytes]))
                 if bufferCacheBytes > 0 { Memory.cacheLimit = bufferCacheBytes; try checked() }
+                // Never 0 while on: a rank with no budget would skip the vote its peer takes.
+                prefixBudget = prefixEnabled
+                    ? max(1, QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)) : 0
+                phases.mark("residency")
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, descriptor.artifactAggregateSHA256,
                     String(shardBytes), String(mtpBytes)]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
@@ -278,25 +509,36 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(planName) shares=1-1"
                     + " shard_bytes=\(shardBytes) source_bytes=\(inventory.entries.values.reduce(0) { $0 + $1.bytes })"
                     + " tensors=\(inventory.entries.count) load_ns=\(DispatchTime.now().uptimeNanoseconds - started)"
-                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
-                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes)")
+                    + " cut=\(descriptor.cut) launch_cut=\(configuration.stageCut) micro_batches=\(Self.prefillMicroBatches) micro_batch_tokens=\(Self.prefillMicroBatchTokens ?? 0) merged_tokens=\(Self.mergedPrefillTokens) sequence_parallel=\(Self.prefillSequenceParallel ? 1 : 0) selection_split=\(Self.prefillSelectionSplit ? String(Self.prefillSelectionSplitMinimumHistory) : "off") sealed=1 buffer_cache=\(bufferCacheBytes) wired_limit=\(stageResidency?.receipt.appliedBytes ?? 0)"
+                    + " mtp_depth=\(Self.mtpDepth) mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
+                    + " vision_bytes=\(visionBytes) media=\(mediaContract)"
+                    + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
+                    + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")
+                phases.mark("loaded")
+                log(phases.line(rank: collective.rank, path: path))
             }
-            guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0) else {
-                throw ProbeError("GLM tensor-parallel load returned no stage or NextN layer")
+            guard let stage = loaded, (loadedMTP != nil) == (Self.mtpDepth > 0),
+                  (loadedVision != nil) == (configuration.rank == 0) else {
+                throw ProbeError("GLM tensor-parallel load returned no stage, NextN layer or vision tower")
             }
+            // The longest context the gate admits now, beside the loaded weights.
+            let serving = try requestCharge.servingContextTokens(reclaimableBytes: 0)
+            log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(serving ?? 0) previous=0 reclaimable=0"
+                + " profile=\(profile.maximumContextTokens) reference_charge=\(requestReserve)")
             try control.loaded()
-            return GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
+            return try GLM5NextTensorParallelResidentRuntime(configuration: configuration, descriptor: descriptor,
                 control: control, collective: collective, group: group, codec: codec, stage: stage, mtp: loadedMTP,
-                residency: stageResidency, requestReserveBytes: requestReserve, loadAgreement: loadAgreement, linkProbe: probe,
-                planSHA256: planSHA256, prefix: GLM5NextTensorParallelPrefixCache(
-                    budgetBytes: QwenTensorParallelPrefixCache.defaultBudget(activeLoaded: Memory.activeMemory)))
+                vision: loadedVision, mediaCapacityBytes: mediaCapacity,
+                residency: stageResidency, requestCharge: requestCharge, requestReserveBytes: requestReserve,
+                servingContextTokens: serving, loadAgreement: loadAgreement, linkProbe: probe,
+                planSHA256: planSHA256, lanes: lanes, prefix: GLM5NextTensorParallelPrefixCache(budgetBytes: prefixBudget))
         } catch {
-            let primary = error; control.fail(); loaded = nil; loadedMTP = nil
+            let primary = error; control.fail(); loaded = nil; loadedMTP = nil; loadedVision = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache(); try nativeError.check()
                 }
-                guard retired == nil, retiredMTP == nil else {
+                guard retired == nil, retiredMTP == nil, retiredVision == nil else {
                     throw ProbeError("GLM tensor-parallel failed-load stage remains retained")
                 }
             } catch {
@@ -309,7 +551,9 @@ public final class GLM5NextTensorParallelResidentRuntime {
     /// Bytes one rank holds of the text model: its half of every split tensor,
     /// all of every replicated one.
     static func shardBytes(_ inventory: GLM5NextWeightInventory) throws -> Int {
-        try inventory.entries(in: .text).reduce(0) { total, entry in
+        // A sum: the text entries in any order (no name sort).
+        try inventory.entries.values.reduce(0) { total, entry in
+            guard entry.part == .text else { return total }
             let bytes = GLM5NextTensorShard.splitAxis(entry.tensor.name) == nil ? entry.bytes : entry.bytes / 2
             return try QwenLongPrefillCheckedBytes.sum([total, bytes])
         }
@@ -331,10 +575,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
     ///   window coexist. Full heads, as the request budgets charge KDA state.
     /// A window's logits (`[1 + depth, vocabulary]`) are far inside the final
     /// stage's chunk-logits allowance already in the budget.
+    /// `contextTokens` (default the profile's longest) and `history` (default
+    /// the cache's own doubling) as in `GLM5NextRequestStateBudget`; the NextN
+    /// history is charged three times at its bound either way (a round's
+    /// checkpoint and two draft appends); a paged one (`.paged`) is pages
+    /// the owner charges, and here only one read's gather of it.
     static func speculationRequestBytes(configuration c: GLM5NextTextConfiguration,
                                         profile: QwenLayerStageGenerationProfile, depth: Int,
                                         executionPolicy: GLM5NextExecutionPolicy,
-                                        allocationBound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound)
+                                        allocationBound: (Int) throws -> Int = QwenResidentResourceEnvironment.allocationBound,
+                                        contextTokens: Int? = nil,
+                                        history bound: GLM5NextRequestStateBudget.HistoryBound = .geometric)
         throws -> Int {
         guard depth > 0 else { return 0 }
         typealias Bytes = QwenLongPrefillCheckedBytes
@@ -342,11 +593,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
             try Bytes.product([allocationBound(bytes), copies])
         }
         let chunk = profile.maximumChunkTokens
-        let capacity = max(256, try Bytes.product([2, profile.maximumContextTokens]))
+        let context = contextTokens ?? profile.maximumContextTokens
+        let capacity = try bound.columns(contextTokens: context).capacity
         let history = try Bytes.sum([c.kvLoraRank * 4, c.indexHeadDim * 4, c.indexHeadDim * 4, 1].map { width in
-            try Bytes.sum([native(Bytes.product([capacity, width]), copies: 3), native(Bytes.product([chunk, width]))])
+            try Bytes.sum([native(Bytes.product([capacity, width]), copies: bound.isPaged ? 1 : 3),
+                native(Bytes.product([chunk, width]))])
         })
-        let plan = try GLM5NextMTPExecution.memoryPlan(configuration: c, maximumInputs: profile.maximumContextTokens,
+        let plan = try GLM5NextMTPExecution.memoryPlan(configuration: c, maximumInputs: min(context, c.maxPositionEmbeddings),
             limits: .init(maximumPrefillTokens: chunk, maximumDraftTokens: depth), executionPolicy: executionPolicy)
         func bytes(_ buffers: [CBv2MTPFixedBufferSpec]) throws -> Int {
             try Bytes.sum(buffers.map { try native($0.logicalBytes, copies: $0.allocationCount) })
@@ -379,17 +632,26 @@ public final class GLM5NextTensorParallelResidentRuntime {
     private init(configuration: QwenResidentLoadConfiguration, descriptor: GLM5NextResidentDescriptor,
                  control: QwenResidentControl, collective: Collective, group: QwenTensorParallelGroup,
                  codec: QwenTensorParallelSealCodec?, stage: GLM5NextTextStage, mtp: GLM5NextMTP?,
-                 residency: ClusterStageResidency?,
-                 requestReserveBytes: Int, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
-                 planSHA256: String, prefix: GLM5NextTensorParallelPrefixCache) {
-        self.prefix = prefix
+                 vision: GLM5NextStageVision?, mediaCapacityBytes: Int,
+                 residency: ClusterStageResidency?, requestCharge: GLM5NextTensorParallelRequestCharge,
+                 requestReserveBytes: Int, servingContextTokens: Int?, loadAgreement: String, linkProbe: ClusterWorkerLinkProbe?,
+                 planSHA256: String, lanes: QwenBatchSettings, prefix: GLM5NextTensorParallelPrefixCache) throws {
+        self.prefix = prefix; self.lanes = lanes
         self.configuration = configuration; self.descriptor = descriptor; self.control = control
         self.collective = collective; self.group = group; self.codec = codec; self.stage = stage; self.mtp = mtp
-        self.residency = residency; self.requestReserveBytes = requestReserveBytes
+        self.vision = vision
+        self.residency = residency; self.requestCharge = requestCharge; self.requestReserveBytes = requestReserveBytes
+        self.servingContextTokens = servingContextTokens
         self.loadAgreement = loadAgreement; self.linkProbe = linkProbe
+        // The most one request is charged: its context at the profile's
+        // longest, plus what one media request may add on this rank (a text
+        // request is charged its context alone).
         baseReady = .init(identity: configuration.identity, rank: collective.rank, profile: descriptor.wireProfile,
-            executionPlanSHA256: planSHA256, requestCapacityBytes: requestReserveBytes,
-            dataPlane: collective.workerDataPlane, linkProbe: linkProbe)
+            executionPlanSHA256: planSHA256,
+            requestCapacityBytes: try QwenLongPrefillCheckedBytes.sum([
+                try requestCharge.bytes(contextTokens: descriptor.profile.maximumContextTokens), mediaCapacityBytes]),
+            dataPlane: collective.workerDataPlane, servingContextTokens: servingContextTokens, linkProbe: linkProbe,
+            media: Self.mediaContract)
     }
 
     // MARK: - Owner interface
@@ -404,6 +666,71 @@ public final class GLM5NextTensorParallelResidentRuntime {
         defer { operation.unlock() }
         guard control.available else { throw ProbeError("Keep-warm needs an idle resident owner") }
         return keepWarm.pulse()
+    }
+
+    /// Gives back what this idle rank holds beyond its weights
+    /// (`ClusterIdleMemory`): MLX's freed-buffer cache, and the prompt-prefix
+    /// entries too while the host is `underPressure` (the vote then restores
+    /// nothing until both ranks hold a boundary again). Nothing while a
+    /// request or any batch lane is reserved, started or running. Returns the
+    /// bytes given back.
+    public func releaseIdleMemory(underPressure: Bool) throws -> Int {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return 0 }
+        let cached = Memory.cacheMemory, held = Memory.activeMemory + cached, entries = prefix.count
+        let dropped = underPressure ? prefix.sweep() : 0
+        // Pages nobody holds go back to the pool. Its slabs stay for the next
+        // request (one that fits them reserves without allocating or copying
+        // a slab) up to the retention cap; above it, or under pressure, they
+        // go as before (all of them once no entry holds a page). A
+        // reservation's gate takes retained slabs back before it refuses
+        // (`yieldingIdleMemory`).
+        var slabs = ""
+        if let pool = stage?.dsaPagePool {
+            // Pages the finished requests released count as free.
+            pool.recycle()
+            let capacity = pool.capacityBytes, free = pool.unallocatedBytes
+            let cap = (try? Self.pagedRetainBytes(ProcessInfo.processInfo.environment)) ?? Self.defaultPagedRetainBytes
+            if Self.trimsIdleSlabs(capacityBytes: capacity, freeBytes: free, retainBytes: cap, underPressure: underPressure) {
+                let trimmed = (try? pool.trim()) ?? 0
+                slabs = " slabs=trimmed trimmed_bytes=\(trimmed) retained_bytes=\(pool.capacityBytes)"
+            } else {
+                slabs = " slabs=retained retained_bytes=\(capacity) free_bytes=\(free)"
+            }
+            slabs += " retain_cap_bytes=\(cap)"
+        }
+        ClusterIdleMemory.releaseFreedBuffers()
+        let released = max(0, held - Memory.activeMemory - Memory.cacheMemory)
+        // Keep-warm pulses leave a few bytes in the cache between ticks; the
+        // slab decision is logged on every idle release that is not a pressure tick.
+        if released >= 1 << 20 || (!slabs.isEmpty && !underPressure) {
+            log("darkbloom-idle-release-v1 rank=\(collective.rank) released_bytes=\(released) freed_buffer_bytes=\(cached)"
+                + " prefix_entries_dropped=\(underPressure ? entries : 0) prefix_bytes_dropped=\(dropped)"
+                + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) pressure=\(underPressure ? 1 : 0)"
+                + " active_bytes=\(Memory.activeMemory)" + slabs)
+        }
+        return released
+    }
+
+    /// The longest context this idle rank's gate admits now, re-derived on
+    /// each keep-warm answer (`ClusterWorkerEvent.keptWarm`): prompt-prefix
+    /// entries and freed buffers count as free, since a reservation releases
+    /// them before it is refused. Nil while a request or lane is held.
+    public func refreshServingContext() -> Int? {
+        guard operation.try() else { return nil }
+        defer { operation.unlock() }
+        guard control.available, reservation == nil, laneBook.isEmpty, stage != nil else { return nil }
+        // The page slabs' free capacity is kept for the next request and given back before a refusal.
+        let retained = stage?.dsaPagePool?.unallocatedBytes ?? 0
+        guard let value = try? requestCharge.servingContextTokens(
+            reclaimableBytes: prefix.bytesInUse + Memory.cacheMemory + retained) else { return nil }
+        if value != servingContextTokens {
+            log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(value) previous=\(servingContextTokens ?? 0)"
+                + " reclaimable=\(prefix.bytesInUse + Memory.cacheMemory + retained)")
+        }
+        servingContextTokens = value
+        return value
     }
 
     public func dataPlanePing() throws -> UInt64 {
@@ -426,17 +753,47 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let request = try QwenLayerStageGenerationRequest(profile: descriptor.profile, requestID: requestID,
             promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
             stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
+        let media = try reservedMedia(value)
+        // Charged at its own context (and its media): the live gate alone decides whether it fits.
+        // A paged request's pages start at its prompt and a granule and grow on demand (`growPages`).
+        let context = Self.initialPageTokens(promptCount: request.promptTokenIDs.count,
+            maximumTokens: request.maximumTokens)
+        let charge = try QwenLongPrefillCheckedBytes.sum([try requestCharge.bytes(contextTokens: request.maximumTokens),
+            media?.requestBytes ?? 0])
         try control.check(); try control.reserve(requestID)
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard stage != nil else { throw ProbeError("Resident model already released") }
-            guard requestReserveBytes <= value.capacityLimitBytes else {
+            guard charge <= value.capacityLimitBytes else {
                 throw ProbeError("GLM tensor-parallel reservation exceeds its owner or readiness capacity")
             }
-            try Self.requireLiveMemory(bytes: requestReserveBytes)
+            // What an idle rank keeps for the next request gives way first.
+            // A paged rank also needs what its page pool grows by for this request.
+            try yieldingIdleMemory {
+                try Self.requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([charge,
+                    pagedGrowthBytes(request, context: context)]))
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds)
-            return requestReserveBytes
+            reservation = .init(request: request, deadline: value.deadlineUptimeNanoseconds, media: media?.media)
+            // Rank 0 prepares the patches off the executor; the request's
+            // open waits for them (`GLM5NextTensorParallelMedia.open`).
+            if collective.rank == 0 { media?.media.startPreparation() }
+            return charge
         }
+    }
+
+    /// A reservation's media on this rank, checked against its prompt and
+    /// the loaded model, with the bytes it adds to this rank's charge. Rank 0
+    /// alone carries the encoded bytes.
+    func reservedMedia(_ value: ClusterWorkerReservation) throws
+        -> (media: GLM5NextTensorParallelMedia, requestBytes: Int)? {
+        guard let described = value.glmMedia else { return nil }
+        guard described.carriesEncodedBytes == (collective.rank == 0) else {
+            throw ProbeError("GLM media bytes belong to rank 0 alone")
+        }
+        let media = try GLM5NextTensorParallelMedia(media: described, prompt: value.promptTokenIDs,
+            configuration: descriptor.configuration)
+        return (media, try GLM5NextTensorParallelMedia.requestBytes(described, rank: collective.rank,
+            configuration: descriptor.configuration))
     }
 
     public func releaseReservation(requestID: UUID) throws {
@@ -445,6 +802,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
         guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
             throw ProbeError("Resident release has no matching unstarted reservation")
         }
+        reserved.media?.cancelPreparation()
         reservation = nil
     }
 
@@ -494,8 +852,12 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     weak var released: GLM5NextTextStage?
                     weak var releasedMTP: GLM5NextMTP?
-                    released = stage; releasedMTP = mtp; reservation = nil; stage = nil; mtp = nil
-                    guard released == nil, releasedMTP == nil else {
+                    weak var releasedVision: GLM5NextStageVision?
+                    released = stage; releasedMTP = mtp; releasedVision = vision
+                    reservation?.media?.cancelPreparation()
+                    for lane in laneBook.reservations() { lane.media?.cancelPreparation() }
+                    reservation = nil; laneBook.clear(); stage = nil; mtp = nil; vision = nil
+                    guard released == nil, releasedMTP == nil, releasedVision == nil else {
                         throw ProbeError("GLM tensor-parallel stage remains retained")
                     }
                     try residency?.end(); residency = nil
@@ -509,18 +871,344 @@ public final class GLM5NextTensorParallelResidentRuntime {
 
     deinit { if processLeaseOwned { control.fail() } }
 
+    // MARK: - One request's arithmetic (the solo path and every lane)
+
+    /// Prefill chunks of a request whose own chunk is `requestChunk`: the
+    /// largest multiple of it within `prefillChunkTokens`.
+    /// Command-buffer commit limits of decode steps, MTP rounds and lane
+    /// rounds on the thread that encodes them. The owner's rank guard caps a
+    /// buffer at 16 operations (`MLX_MAX_OPS_PER_BUFFER`), which on a decode
+    /// step of ~1,400 operations is ~85 buffers, each a GPU gap of about 10 us:
+    /// 13.24 ms a TP2 step at 16 against 12.56 at 100 (pair-measured, tokens
+    /// identical; 400 gains nothing more). The size bound stays lifted, as the
+    /// worker sets it for tensor parallel (`WorkerCommandBufferBudget`): every
+    /// MoE launch takes its whole expert bank as an input. Prefill keeps the
+    /// rank's limits. Synchronization only: results never depend on the
+    /// partitioning.
+    static let decodeCommandBuffers = GPU.CommandBufferLimits(operations: 100, megabytes: 1 << 20)
+    /// Prefill frames' command buffers (`GLM5NextTensorParallelPrefillPlan.commandBuffers`):
+    /// MLX's own Ultra limit of 50 operations instead of the worker's
+    /// 16-operation guard. Under 16, a 32K frame of 8,192-row micro-batches
+    /// split into about three times the buffers and stalled in MLX's eval
+    /// window (31.5K: 7.93 s at 16 against 7.49 s unset, pair-measured;
+    /// 16K frames unchanged). Synchronization only, as for decode.
+    static let prefillCommandBuffers: GPU.CommandBufferLimits? = .init(operations: 50, megabytes: 1 << 20)
+
+    static func prefillChunk(requestChunk: Int) -> Int {
+        let requestChunk = max(1, requestChunk)
+        return max(requestChunk, (prefillChunkTokens / requestChunk) * requestChunk)
+    }
+
+    /// Owner decision (off): prompt prefixes are kept on the bulk grid
+    /// (`bulkPrefillChunkTokens`, every 8,192 tokens) instead of every chunk,
+    /// and the rest of a prompt past its kept boundary (at most a bulk chunk)
+    /// runs as one chunk (`GLM5NextTensorParallelPrefillPlan.make(tailTokens:)`):
+    /// a 31.5K prompt's last 6,924 tokens run as 2 x 3,462 rows instead of
+    /// 2 x 2,048 + 2 x 1,414, every row keeping the DSA selection of its
+    /// product micro-batch (`OpenedRequest.selectionKeepAt`); prefixes are
+    /// then found at 8K granularity. The tail runs as one chunk only where
+    /// every micro-batch on both sides is in the measured invariant range
+    /// (`GLM5NextTensorParallelPrefillPlan.tailInvariantRows`), else as the
+    /// product's chunks.
+    static let prefixOnBulkGrid = false
+    /// The rest of a prompt past its kept boundary that runs as one chunk.
+    static var prefillTailTokens: Int? { prefixOnBulkGrid ? bulkPrefillChunkTokens : nil }
+
+    /// The prompt boundary kept for prefixes: the last whole chunk (or, with
+    /// `prefixOnBulkGrid`, the last whole bulk chunk) before the final token
+    /// (0 with the cache off).
+    static func prefixKeepAt(promptCount: Int, chunk: Int, prefixEnabled: Bool,
+                             onBulkGrid: Bool = prefixOnBulkGrid) -> Int {
+        let grid = onBulkGrid ? max(chunk, (bulkPrefillChunkTokens / chunk) * chunk) : chunk
+        return prefixEnabled ? ((promptCount - 1) / grid) * grid : 0
+    }
+
+    /// Where the prefill frame that starts at `offset` ends. The chunks are
+    /// the one grid every request prefills on, alone or in a lane: a bulk
+    /// chunk while it ends at or before the boundary kept for prefixes (or the
+    /// prompt's end), else the next chunk boundary, each as
+    /// `prefillMicroBatches` micro-batches. A frame is one chunk, or with
+    /// `merging` the first graph of `GLM5NextTensorParallelPrefillPlan` from
+    /// `offset` (consecutive chunks up to `mergedPrefillTokens`); either way
+    /// every micro-batch and so the frames' arithmetic is the same.
+    /// `selectionKeepAt`: the request's `OpenedRequest.selectionKeepAt`
+    /// (where the bulk grid's tail runs as one chunk depends on it).
+    static func prefillFrameEnd(offset: Int, promptCount: Int, chunk: Int, keepAt: Int, merging: Bool = false,
+                                selectionKeepAt: Int? = nil) -> Int {
+        GLM5NextTensorParallelPrefillPlan.make(promptCount: promptCount, start: offset, chunkTokens: chunk,
+            keepAt: keepAt, bulkTokens: bulkPrefillChunkTokens, microBatches: prefillMicroBatches,
+            mergedTokens: merging ? mergedPrefillTokens : 0, microBatchTokens: prefillMicroBatchTokens,
+            coalescing: merging, tailTokens: prefillTailTokens, selectionKeepAt: selectionKeepAt).chunks[0].end
+    }
+
+    /// A request as it begins on this rank, after both ranks checked they hold
+    /// it, voted for its prompt prefix and restored it (or start cold).
+    struct OpenedRequest {
+        let cache: GLM5NextTextStageCache
+        /// The request's page reservation (nil with contiguous histories); it
+        /// ends with the request's state.
+        let pages: GLM5NextPageReservation?
+        /// Prompt tokens restored from the prefix cache.
+        let start: Int
+        let speculation: GLM5NextTensorParallelSpeculation?
+        let chunk: Int
+        let keepAt: Int
+        /// The product's kept boundary (every chunk), whose plan's
+        /// micro-batches a re-cut frame keeps the DSA selections of
+        /// (`GLM5NextTensorParallelPrefillPlan.make(selectionKeepAt:)`).
+        let selectionKeepAt: Int
+        /// The request's images and video, their features agreed; nil for text.
+        let media: GLM5NextTensorParallelMedia?
+        /// A rank stopped (cancel or deadline) before the features were made:
+        /// both ranks know, and the request ends without a prefill frame.
+        let stopped: Bool
+    }
+
+    /// Opens `request` (collective: a digest agreement and, with the prefix
+    /// cache on and a prompt longer than a chunk, one prefix vote). A media
+    /// request's digest covers its media, its features cross before anything
+    /// else (`GLM5NextTensorParallelMedia.open`, which reads `stop` between
+    /// its sums) and it neither restores nor keeps prompt prefixes (the
+    /// product's media requests are prefix-cache-excluded too).
+    func openRequest(_ request: QwenLayerStageGenerationRequest, stage: GLM5NextTextStage,
+                     media: GLM5NextTensorParallelMedia? = nil, growing: Bool = false,
+                     stop: () -> Bool = { false }) throws -> OpenedRequest {
+        let rank = collective.rank
+        // Diagnostic (`GLM5NextTensorParallelPrefillPlan.frameTiming`): where the open's time goes.
+        let timing = GLM5NextTensorParallelPrefillPlan.frameTiming
+        var marks: [(String, UInt64)] = [("start", DispatchTime.now().uptimeNanoseconds)]
+        func mark(_ name: String) { if timing { marks.append((name, DispatchTime.now().uptimeNanoseconds)) } }
+        defer {
+            if timing {
+                let phases = zip(marks.dropFirst(), marks).map { String(format: "%@_ms=%.1f", $0.0, Double($0.1 - $1.1) / 1e6) }
+                FileHandle.standardError.write(Data(("glm-open-v1 rank=\(rank) prompt=\(request.promptTokenIDs.count) "
+                    + phases.joined(separator: " ") + "\n").utf8))
+            }
+        }
+        guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement
+            + (media.map { "|glm-media=" + $0.media.fingerprint } ?? ""))) else {
+            throw ProbeError("GLM tensor-parallel ranks were given different requests")
+        }
+        // Rank 0's features reach rank 1 before the prefill: one sealed sum per frame.
+        if let media, try !media.open(rank: rank, tower: vision?.tower, sum: { [group] in group.allSum($0) }, stop: stop) {
+            return OpenedRequest(cache: stage.newCache(), pages: nil, start: 0, speculation: nil,
+                chunk: Self.prefillChunk(requestChunk: request.chunkSize), keepAt: 0, selectionKeepAt: 0, media: media,
+                stopped: true)
+        }
+        mark("digest")
+        let chunk = Self.prefillChunk(requestChunk: request.chunkSize)
+        let prompt = request.promptTokenIDs
+        let pages = try reservePages(request, growing: growing)
+        mark("pages")
+        // Every request decodes speculatively, greedy or sampled (bias and
+        // penalties too: `QwenStageTokenSampler.verifyRound`). Every request
+        // primes the NextN history over its prompt (cheap: no attention, MoE
+        // or readout), so every prefix entry carries the history at its
+        // boundary. Every history grows at most to the request's own length,
+        // the length its reservation was charged (`GLM5NextTensorParallelRequestCharge`).
+        let historyTokens = requestCharge.historyTokens(contextTokens: request.maximumTokens)
+        let speculation = try mtp.map {
+            try GLM5NextTensorParallelSpeculation(mtp: $0, depth: Self.mtpDepth, rank: rank, ranks: collective.size,
+                primeRows: descriptor.profile.maximumChunkTokens, historyTokens: historyTokens,
+                pagePool: pages?.pool, pageAccount: pages?.account,
+                agree: { [group] in group.allSum($0) })
+        }
+        mark("speculation")
+        // Prompt prefix: the longest chunk boundary both ranks hold.
+        let scope = loadAgreement
+        var cache = stage.newCache(account: pages?.account), start = 0
+        if prefix.enabled, media == nil, prompt.count > chunk {
+            let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
+            let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
+            mark("held")
+            let vote = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates)
+            mark("vote")
+            if let agreed = vote {
+                guard let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) else {
+                    throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
+                }
+                cache = restored.cache; start = agreed
+                // The entry's pages are shared; what the request appends is its own.
+                cache.bindPages(to: pages?.account)
+                try speculation?.restore(restored.mtp)
+            }
+        }
+        Self.boundHistories(cache, tokens: historyTokens)
+        mark("restore")
+        return OpenedRequest(cache: cache, pages: pages, start: start, speculation: speculation, chunk: chunk,
+            keepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk, prefixEnabled: prefix.enabled && media == nil),
+            selectionKeepAt: Self.prefixKeepAt(promptCount: prompt.count, chunk: chunk,
+                prefixEnabled: prefix.enabled && media == nil, onBulkGrid: false),
+            media: media, stopped: false)
+    }
+
+    /// One prefill frame `offset ..< end` of `prompt` (`prefillFrameEnd`): its
+    /// chunks' micro-batches in one stage forward, the NextN priming in its
+    /// evaluation, and the prompt prefix kept when a chunk ends at `keepAt`
+    /// (inside the frame or at its end). `merging`: the frame is a merging
+    /// one (`prefillFrameEnd(merging: true)`), whose chunks may share
+    /// micro-batches. The final frame returns the last row's logits and
+    /// hidden row; `stored` is the kept boundary. A media request's frame
+    /// runs from its input embeddings, media rows replaced by their features
+    /// (`GLM5NextTensorParallelMedia.embeddings`), through the same segments
+    /// and micro-batches, and primes the NextN history with the same rows;
+    /// a frame without media rows is the text path's.
+    func runPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage,
+                         merging: Bool = true)
+        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
+        guard !opened.stopped else { throw ProbeError("GLM tensor-parallel request stopped before its media crossed") }
+        let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
+            chunkTokens: opened.chunk, keepAt: opened.keepAt,
+            bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging, tailTokens: Self.prefillTailTokens,
+            selectionKeepAt: opened.selectionKeepAt)
+        let result = try GLM5NextTensorParallelPrefillPlan.run(frame, stage: stage, cache: opened.cache, prompt: prompt,
+            speculation: opened.speculation, inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
+        if let kept = result.kept {
+            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+        }
+        return (result.final, result.kept?.end)
+    }
+
+    /// A media request's input embeddings by prompt positions
+    /// (`GLM5NextTensorParallelMedia.embeddings`); nil for text.
+    static func mediaInputs(_ prompt: [Int], opened: OpenedRequest, stage: GLM5NextTextStage)
+        throws -> GLM5NextTensorParallelPrefillPlan.Inputs? {
+        guard let media = opened.media else { return nil }
+        guard let embedding = stage.embedding else {
+            throw ProbeError("GLM tensor-parallel media needs the stage's embedding")
+        }
+        return { lower, upper in
+            try media.embeddings(tokens: MLXArray(prompt[lower ..< upper].map(Int32.init), [1, upper - lower]),
+                from: lower, to: upper, embedding: { embedding($0) })
+        }
+    }
+
+    /// A lane's frame `offset ..< end` begun in layer slices (`runPrefillFrame`'s
+    /// frame, `merging` as there; a media request's frames from their input
+    /// embeddings, as there).
+    func beginPrefillFrame(_ prompt: [Int], offset: Int, end: Int, opened: OpenedRequest, stage: GLM5NextTextStage,
+                           merging: Bool) throws -> GLM5NextTensorParallelPrefillPlan.Slices {
+        guard !opened.stopped else { throw ProbeError("GLM tensor-parallel request stopped before its media crossed") }
+        let frame = try GLM5NextTensorParallelPrefillPlan.frame(start: offset, end: end, promptCount: prompt.count,
+            chunkTokens: opened.chunk, keepAt: opened.keepAt,
+            bulkTokens: Self.bulkPrefillChunkTokens, microBatches: Self.prefillMicroBatches,
+            microBatchTokens: Self.prefillMicroBatchTokens, coalescing: merging, tailTokens: Self.prefillTailTokens,
+            selectionKeepAt: opened.selectionKeepAt)
+        return try .init(frame, stage: stage, cache: opened.cache, prompt: prompt, speculation: opened.speculation,
+            inputs: try Self.mediaInputs(prompt, opened: opened, stage: stage))
+    }
+
+    /// The last slice of a lane's frame: `runPrefillFrame`'s results.
+    func finishPrefillFrame(_ slices: GLM5NextTensorParallelPrefillPlan.Slices, prompt: [Int])
+        throws -> (final: (logits: MLXArray, lastHidden: MLXArray)?, stored: Int?) {
+        let result = try slices.finish()
+        if let kept = result.kept {
+            let began = DispatchTime.now().uptimeNanoseconds
+            prefix.store(scope: loadAgreement, prompt: prompt, length: kept.end, cache: kept.cache, mtp: kept.history)
+            if GLM5NextTensorParallelPrefillPlan.frameTiming {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
+                FileHandle.standardError.write(Data(String(format: "glm-prefill-store-v1 length=%d store_ms=%.1f active_gb=%.2f\n",
+                    kept.end, ms, Double(Memory.activeMemory) / 1e9).utf8))
+            }
+        }
+        return (result.final, result.kept?.end)
+    }
+
+    /// One small sealed reduction per step: [token rank 0, token rank 1,
+    /// stop rank 0, stop rank 1]. Greedy: both ranks put their own choice
+    /// and must agree. Sampled: rank 0 draws, rank 1 puts 0 and adopts it.
+    func choose(_ row: MLXArray, sampler: QwenStageTokenSampler?, stop: Float) -> MLXArray {
+        let rank = collective.rank
+        let local: MLXArray
+        if let sampler {
+            let drawn = rank == 0 ? sampler.sample(row) : MLXArray(Int32(0))
+            local = drawn.asType(.float32).reshaped(1)
+        } else {
+            local = argMax(row.asType(.float32), axis: -1).asType(.float32).reshaped(1)
+        }
+        let zero = MLXArray.zeros([1], dtype: .float32)
+        let tokens = rank == 0 ? [local, zero] : [zero, local]
+        let stops = rank == 0 ? [MLXArray([stop]), zero] : [zero, MLXArray([stop])]
+        return group.allSum(concatenated(tokens + stops, axis: 0))
+    }
+
+    /// The agreed token of an evaluated `choose`.
+    static func agreedToken(_ agreed: [Float], sampled: Bool) throws -> Int {
+        guard agreed.count == 4 else { throw ProbeError("GLM tensor-parallel selection has a wrong shape") }
+        if !sampled, agreed[0] != agreed[1] {
+            throw ProbeError("GLM tensor-parallel ranks chose different greedy tokens")
+        }
+        return Int(agreed[0])
+    }
+
+    /// Sampled MTP rounds: rank 0 draws the keyed target sample at every
+    /// window column, at output indexes from the sampler's committed count
+    /// (`QwenStageTokenSampler.verifyRound`: with bias or penalties, the step
+    /// path replayed over the round's proposals). Rank 1 puts the window's
+    /// argmax, which the agreement ignores: its slot must depend on the
+    /// window's logits, or the round's one evaluation may run the agreement
+    /// sum before the layer sums on rank 1 only, and the ranks' sums no longer
+    /// pair up. Nil for greedy requests (the argmax).
+    func verificationDraw(_ sampler: QwenStageTokenSampler?) -> ((MLXArray) -> MLXArray)? {
+        let rank = collective.rank
+        return sampler.map { sampler in
+            { logits in (rank == 0 ? sampler.verifyRound(logits) : argMax(logits, axis: -1)).asType(.float32) }
+        }
+    }
+
+    /// Sampled MTP rounds: every rank draws proposal j with the request's
+    /// sampler and the keyed noise of window column j's output index
+    /// (coupled drafting, `coupledDraftSharpness`), so the ranks' proposals
+    /// stay equal and a draft close to the target proposes the target's own
+    /// draw. Holds no collective: the proposals feed the window on every rank
+    /// before its sums. Nil for greedy requests (the argmax).
+    func proposalSelection(_ sampler: QwenStageTokenSampler?) -> GLM5NextMTP.ProposalSelection? {
+        sampler.map { sampler in
+            { logits, step in sampler.propose(logits, step: step, sharpness: Self.coupledDraftSharpness) }
+        }
+    }
+
+    /// The request asks for each token's logprobs. It decodes in MTP rounds
+    /// like every request (owner: MTP always on; the product instead makes
+    /// logprob rows MTP-ineligible, `EngineLoopV2.mtpBasicEligible`). Rank 0
+    /// gathers them with the product's gather after each token is agreed: a
+    /// step's from its row (`QwenStageTokenSampler.takePendingLogprobs`), a
+    /// round's from the verify window row whose draw each token is
+    /// (`takeRoundLogprobs`). No collective: the logits are already evaluated.
+    static func capturesLogprobs(_ sampler: QwenStageTokenSampler?) -> Bool {
+        sampler?.wire.capturedLogprobs != nil
+    }
+
+    /// A request's MTP counts for its `requestTelemetry` (rank 0): rounds,
+    /// proposals and accepted proposals; nil without a NextN layer.
+    static func speculationTelemetry(_ speculation: GLM5NextTensorParallelSpeculation?) -> ClusterWorkerRequestTelemetry? {
+        speculation.map { .init(mtpDrafted: $0.proposedTokens, mtpAccepted: $0.acceptedTokens, mtpRounds: $0.rounds) }
+    }
+
+    /// Rank 0's draft probe for a stateless sampled request (`probesDraftRules`).
+    func installDraftProbe(_ speculation: GLM5NextTensorParallelSpeculation, sampler: QwenStageTokenSampler?) {
+        guard collective.rank == 0, Self.probesDraftRules, let sampler, sampler.admitsSpeculativeVerification else {
+            return
+        }
+        speculation.draftProbe = Self.draftProbe(sampler)
+    }
+
     // MARK: - One request
 
     private func generate(_ reserved: Reserved, channel: ClusterCommittedTokenChannel) throws
         -> QwenResidentGenerationCompletion {
         guard let stage else { throw ProbeError("Resident model already released") }
         let request = reserved.request, rank = collective.rank
-        guard try group.digestsEqual(QwenTensorParallelResidentRuntime.digest64(request.fingerprint + "|" + loadAgreement)) else {
-            throw ProbeError("GLM tensor-parallel ranks were given different requests")
+        let opened = try openRequest(request, stage: stage, media: reserved.media, growing: true,
+            stop: { [control] in (try? control.check(deadline: reserved.deadline)) == nil })
+        // Both ranks know a rank stopped before the features crossed: both end
+        // here (a stopped request ends the owner's request, as text's does).
+        if opened.stopped {
+            try control.check(deadline: reserved.deadline)
+            throw ProbeError("The peer rank stopped the GLM tensor-parallel media request")
         }
         let sampler = request.sampler
-        let requestChunk = max(1, request.chunkSize)
-        let chunk = max(requestChunk, (Self.prefillChunkTokens / requestChunk) * requestChunk)
         let prompt = request.promptTokenIDs
         var lastCheck: UInt64 = 0
         func localStop() -> Bool {
@@ -532,89 +1220,40 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             return false
         }
-        // Greedy requests decode speculatively. Every request primes the NextN
-        // history over its prompt (cheap: no attention, MoE or readout), so
-        // every prefix entry carries the history at its boundary.
-        let speculation = try mtp.map {
-            try GLM5NextTensorParallelSpeculation(mtp: $0, depth: Self.mtpDepth, rank: rank, ranks: collective.size,
-                primeRows: descriptor.profile.maximumChunkTokens, agree: { [group] in group.allSum($0) })
-        }
-        // Prompt prefix: the longest chunk boundary both ranks hold.
-        let scope = loadAgreement
-        var cache = stage.newCache(), start = 0
-        if prefix.enabled, prompt.count > chunk {
-            let candidates = QwenTensorParallelPrefixCache.candidates(promptCount: prompt.count, chunk: chunk)
-            let held = prefix.heldBoundaries(scope: scope, prompt: prompt, chunk: chunk)
-            if let agreed = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates) {
-                guard let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) else {
-                    throw ProbeError("GLM tensor-parallel prefix both ranks voted for is gone")
-                }
-                cache = restored.cache; start = agreed
-                try speculation?.restore(restored.mtp)
-            }
-        }
+        let speculation = opened.speculation, cache = opened.cache, start = opened.start
         // Prefill from `start` in chunks aligned to the boundaries; keep the
         // last whole boundary before the final token.
         var logits: MLXArray?, lastHidden: MLXArray?
         var offset = start, stored: [Int] = []
-        let keepAt = prefix.enabled ? ((prompt.count - 1) / chunk) * chunk : 0
         while offset < prompt.count {
-            // Bulk chunks while they end at or before the boundary kept for
-            // prefixes (or the prompt's end), then chunk-aligned ones.
-            let bulk = (Self.bulkPrefillChunkTokens / chunk) * chunk
-            let limit = keepAt > offset ? keepAt : prompt.count
-            let end = offset % chunk == 0 && bulk > chunk && offset + bulk <= limit
-                ? offset + bulk : min(prompt.count, (offset / chunk + 1) * chunk)
-            let last = end == prompt.count
-            let tokens = MLXArray(prompt[offset ..< end].map(Int32.init), [1, end - offset])
-            let candidate = try stage.prepareForward(tokens: tokens, cache: cache, readout: last ? .lastToken : .none)
-            // The chunk's hidden rows prime the NextN history, in the chunk's evaluation.
-            if let speculation {
-                switch candidate.output {
-                case .final(let output): try speculation.primePrompt(prompt, from: offset, to: end, hidden: output.hidden)
-                case .hidden(let hidden): try speculation.primePrompt(prompt, from: offset, to: end, hidden: hidden)
-                case .streams: throw ProbeError("GLM tensor-parallel prefill produced no hidden rows")
-                }
-            }
-            try candidate.commit { roots in eval(roots + (try speculation?.evaluationTargets() ?? [])) }
-            if last, case .final(let output) = candidate.output {
-                logits = output.logits[0..., -1, 0...]; lastHidden = output.hidden[0..., (-1)..., 0...]
-            }
-            if !last, end == keepAt, keepAt > start {
-                prefix.store(scope: scope, prompt: prompt, length: end, cache: cache, mtp: try speculation?.checkpoint())
-                stored.append(end)
-            }
+            let end = Self.prefillFrameEnd(offset: offset, promptCount: prompt.count, chunk: opened.chunk,
+                keepAt: opened.keepAt, merging: true, selectionKeepAt: opened.selectionKeepAt)
+            let frame = try runPrefillFrame(prompt, offset: offset, end: end, opened: opened, stage: stage)
+            if let final = frame.final { logits = final.logits; lastHidden = final.lastHidden }
+            if let at = frame.stored { stored.append(at) }
             offset = end
         }
         guard let firstLogits = logits else { throw ProbeError("GLM tensor-parallel prefill produced no logits") }
 
-        // One small sealed reduction per step: [token rank 0, token rank 1,
-        // stop rank 0, stop rank 1]. Greedy: both ranks put their own choice
-        // and must agree. Sampled: rank 0 draws, rank 1 puts 0 and adopts it.
-        func choose(_ row: MLXArray, stop: Float) -> MLXArray {
-            let local: MLXArray
-            if let sampler {
-                let drawn = rank == 0 ? sampler.sample(row) : MLXArray(Int32(0))
-                local = drawn.asType(.float32).reshaped(1)
-            } else {
-                local = argMax(row.asType(.float32), axis: -1).asType(.float32).reshaped(1)
-            }
-            let zero = MLXArray.zeros([1], dtype: .float32)
-            let tokens = rank == 0 ? [local, zero] : [zero, local]
-            let stops = rank == 0 ? [MLXArray([stop]), zero] : [zero, MLXArray([stop])]
-            return group.allSum(concatenated(tokens + stops, axis: 0))
-        }
-        func token(_ agreed: [Float]) throws -> Int {
-            guard agreed.count == 4 else { throw ProbeError("GLM tensor-parallel selection has a wrong shape") }
-            if sampler == nil, agreed[0] != agreed[1] {
-                throw ProbeError("GLM tensor-parallel ranks chose different greedy tokens")
-            }
-            return Int(agreed[0])
-        }
+        func choose(_ row: MLXArray, stop: Float) -> MLXArray { self.choose(row, sampler: sampler, stop: stop) }
+        func token(_ agreed: [Float]) throws -> Int { try Self.agreedToken(agreed, sampled: sampler != nil) }
+        // Decode encodes under `decodeCommandBuffers` (prefill keeps the rank's own limits).
+        var previousOperations: Int32 = 0, previousMegabytes: Int32 = 0
+        mlx_metal_set_thread_command_buffer_limits(Int32(Self.decodeCommandBuffers.operations),
+            Int32(Self.decodeCommandBuffers.megabytes), &previousOperations, &previousMegabytes)
+        defer { mlx_metal_set_thread_command_buffer_limits(previousOperations, previousMegabytes, nil, nil) }
         var tokens: [Int] = []
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
         var stopKeep: Float = 0
+        // The pages could not grow: the request ends at its length after the
+        // next step or round built (the margin covers the ones built before).
+        var pagesRefused = false
+        /// Before a step or round that brings the request to `needed` context tokens is built: its pages.
+        func growPages(needed: Int) {
+            guard !pagesRefused else { return }
+            pagesRefused = !self.growPages(opened.pages, needed: needed, limit: request.maximumTokens)
+        }
         // Rank 0 publishes each token at once and reads the owner's answer to
         // it after the next step or round was submitted, before publishing
         // the next token. A stop answer is acted on one step later: the extra
@@ -625,12 +1264,33 @@ public final class GLM5NextTensorParallelResidentRuntime {
             unanswered = false
             if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
         }
+        // Rank 0, a logprob request: the agreed tokens' logprobs not yet
+        // published, in order (a step's or a round's, `capturesLogprobs`).
+        var logprobQueue: [ClusterWorkerTokenLogprobs] = [], logprobNext = 0
+        let logs = rank == 0 && Self.capturesLogprobs(sampler)
+        /// After a step's token was agreed: the gather its draw made.
+        func keepStepLogprobs() throws {
+            guard logs else { return }
+            guard let drawn = sampler?.takePendingLogprobs() else {
+                throw ProbeError("GLM tensor-parallel token has no logprobs")
+            }
+            logprobQueue.append(drawn)
+        }
         /// Commits one agreed token on this rank (and publishes it on rank 0);
         /// the request's own end (EOS or length) at it, else nil.
         func commit(_ value: Int) throws -> ClusterWorkerFinishReason? {
             tokens.append(value)
             if rank == 0 {
-                try channel.publish(tokens.count - 1, value, prompt.count + tokens.count - 1); unanswered = true
+                var logprobs: ClusterWorkerTokenLogprobs?
+                if logs {
+                    guard logprobNext < logprobQueue.count else {
+                        throw ProbeError("GLM tensor-parallel token has no logprobs")
+                    }
+                    logprobs = logprobQueue[logprobNext]; logprobNext += 1
+                    if logprobNext == logprobQueue.count { logprobQueue.removeAll(); logprobNext = 0 }
+                }
+                try channel.publishToken(tokens.count - 1, value, prompt.count + tokens.count - 1, logprobs)
+                unanswered = true
             }
             switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(value),
                                                       committed: tokens.count, outputCount: request.outputCount, wanted: true) {
@@ -639,7 +1299,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             case .clientStop, .proceed: return nil
             }
         }
-        if let speculation, sampler == nil, let lastHidden {
+        if let speculation, let lastHidden {
             // The first token is agreed as a plain step's; then each round
             // commits 1 to `mtpDepth + 1` agreed tokens. What a round builds
             // and when the loop ends follow from agreed tokens only, so both
@@ -649,6 +1309,14 @@ public final class GLM5NextTensorParallelResidentRuntime {
             // memory) stops committing, still ends where the other rank
             // would, and carries its flag in the next round it submits.
             let first = try token(choose(firstLogits, stop: 0).asArray(Float.self))
+            try keepStepLogprobs()
+            sampler?.commit(first)
+            // Sampled: coupled proposals on every rank (`proposalSelection`);
+            // rank 0 draws the keyed target sample at every window column, at
+            // output indexes from the sampler's committed count (rank 1's slot
+            // depends on the logits: `verificationDraw`).
+            let draw = verificationDraw(sampler), propose = proposalSelection(sampler)
+            installDraftProbe(speculation, sampler: sampler)
             try speculation.begin(carry: first, lastHidden: lastHidden)
             var agreedCount = 1, last = first, fresh: [Int] = []
             /// Takes one agreed token; true when the request ends at it.
@@ -663,19 +1331,33 @@ public final class GLM5NextTensorParallelResidentRuntime {
             var ended = try take(first, counted: 1)
             rounds: while !ended {
                 let taken = agreedCount
+                growPages(needed: prompt.count + agreedCount + 1)
                 let round = try speculation.round(stage: stage, cache: cache, last: last,
-                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep,
-                    whileRunning: {
+                    window: min(speculation.depth, request.outputCount - agreedCount - 1), stop: stopKeep, draw: draw,
+                    propose: propose, whileRunning: {
                         for (index, value) in fresh.enumerated() {
                             _ = try take(value, counted: taken - fresh.count + index + 1)
                         }
-                        if stopKeep == 0, localStop() { stopKeep = Float(tokens.count) }
+                        if stopKeep == 0, localStop() {
+                            stopKeep = Float(tokens.count)
+                        } else if stopKeep == 0, pagesRefused {
+                            stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                        }
                     })
-                if let keep = round.stops.filter({ $0 > 0 }).min() {
-                    tokens = Array(tokens.prefix(Int(keep)))
-                    finish = .clientStop; break
+                if let slot = round.stops.filter({ $0 > 0 }).min() {
+                    // A rank asked both to stop: both keep the tokens it named
+                    // and end here (at the request's length when its pages could not grow).
+                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                    tokens = Array(tokens.prefix(stop.keep))
+                    finish = stop.finish == .length ? .length : .clientStop; break
                 }
                 fresh = round.tokens; last = fresh[fresh.count - 1]; agreedCount += fresh.count
+                if logs {
+                    let gathered = sampler?.takeRoundLogprobs(tokens: fresh) ?? []
+                    guard gathered.count == fresh.count else { throw ProbeError("GLM tensor-parallel round has no logprobs") }
+                    logprobQueue += gathered
+                }
+                sampler?.commitRound(fresh)
                 // Tokens that end the request are taken now (no next round).
                 let ends = fresh.indices.contains {
                     request.stopTokenIDs.contains(fresh[$0]) || agreedCount - fresh.count + $0 + 1 >= request.outputCount
@@ -705,22 +1387,35 @@ public final class GLM5NextTensorParallelResidentRuntime {
             }
             steps: for index in 0 ..< request.outputCount {
                 pending = nil
-                if pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                if pipelined, index + 1 < request.outputCount {
+                    growPages(needed: prompt.count + index + 2)
+                    pending = try step(from: current, stop: stopKeep)
+                }
                 // The answer to the last token arrived while this step was encoded.
                 if stopKeep == 0 { try readAnswer() }
                 let agreed = current.asArray(Float.self)
                 let value = try token(agreed)
                 let flags = [agreed[2], agreed[3]].filter { $0 > 0 }
-                if let keep = flags.min() {
-                    tokens = Array(tokens.prefix(Int(keep)))
-                    finish = .clientStop; break
+                if let slot = flags.min() {
+                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                    tokens = Array(tokens.prefix(stop.keep))
+                    finish = stop.finish == .length ? .length : .clientStop; break
                 }
                 if stopKeep == 0 {
+                    try keepStepLogprobs()
                     sampler?.commit(value)
                     if let end = try commit(value) { finish = end; break steps }
-                    if localStop() { stopKeep = Float(tokens.count) }
+                    if localStop() {
+                        stopKeep = Float(tokens.count)
+                    } else if pagesRefused {
+                        stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                    }
                 }
-                if !pipelined, index + 1 < request.outputCount { pending = try step(from: current, stop: stopKeep) }
+                if !pipelined, index + 1 < request.outputCount {
+                    growPages(needed: prompt.count + index + 2)
+                    if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
+                    pending = try step(from: current, stop: stopKeep)
+                }
                 guard let next = pending else { break }
                 current = next; pending = nil
             }
@@ -733,7 +1428,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
             unanswered = false
             if try !channel.answer(), finish == .clientStop { clientStopped = true }
         }
-        if stopKeep > 0 || clientStopped { finish = .clientStop }
+        if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
         let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
         guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
@@ -753,13 +1448,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) reused=\(start) stored=\(stored.map(String.init).joined(separator: "_"))"
-            + " prefix_entries=\(prefix.count) output=\(tokens.count) finish=\(finish.rawValue)"
+            + " prefix_entries=\(prefix.count) prefix_bytes=\(prefix.bytesInUse) output=\(tokens.count) finish=\(finish.rawValue)"
             + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
-            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)")
-        return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
+            + " kv_tokens=\(opened.pages?.tokens ?? 0) kv_grown=\(opened.pages?.grown ?? 0) kv_refused=\(pagesRefused ? 1 : 0)"
+            + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler)
+            + " media_frames=\(opened.media?.media.frames.count ?? 0) media_tokens=\(opened.media?.featureCount ?? 0)")
+        var completion = QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,
             reusedPromptTokens: start, storedPromptFrontiers: stored)
+        if rank == 0 { completion.telemetry = Self.speculationTelemetry(speculation) }
+        return completion
     }
 }

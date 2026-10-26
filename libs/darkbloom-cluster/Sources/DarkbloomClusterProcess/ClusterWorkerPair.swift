@@ -2,7 +2,9 @@ import Foundation
 import DarkbloomClusterProtocol
 
 public enum ClusterWorkerRequestEvent: Sendable {
-    case token(Int), finished(ClusterWorkerFinishReason), failed(String)
+    /// A committed token, with rank 0's logprobs for it when the request asks for them.
+    case token(Int, ClusterWorkerTokenLogprobs? = nil)
+    case finished(ClusterWorkerFinishReason), failed(String)
     /// Both ranks restored `reused` prompt tokens from their prefix caches and
     /// both now hold `stored` frontiers of this prompt. Delivered once, just
     /// before `finished`, only when either is not empty.
@@ -31,6 +33,16 @@ public struct ClusterWorkerPairReadiness: Sendable {
     /// admit now (`ClusterWorkerPair.servingContextTokens`); a request longer
     /// than this is refused before either rank is asked.
     public let servingContextTokens: Int
+    /// The media contract both ranks serve (`ClusterWorkerReady.media`); nil
+    /// when either serves text only.
+    public let media: String?
+    public init(identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, executionPlanSHA256: String,
+                requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane?, servingContextTokens: Int,
+                media: String? = nil) {
+        self.identity = identity; self.profile = profile; self.executionPlanSHA256 = executionPlanSHA256
+        self.requestCapacityBytes = requestCapacityBytes; self.dataPlane = dataPlane
+        self.servingContextTokens = servingContextTokens; self.media = media
+    }
 }
 
 /// How long a pair's owner waits for a rank to answer. None of these waits
@@ -84,6 +96,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// one-request-at-a-time pair exactly; more need workers launched with as
     /// many batch lanes, and route each worker's events by request.
     public let lanes: Int
+    /// The workers retire a cancelled started lane alone (a cancel or a
+    /// deadline ends that request, not the pair): GLM tensor parallel's lane
+    /// loop. Otherwise any cancel of a started request ends the pair.
+    public let lanesRetireAlone: Bool
     private let routers: [ClusterWorkerEventRouter]
     private let lock = NSLock()
     private var active: ClusterWorkerRequest?
@@ -122,6 +138,13 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// bounded fixed text the owner side derived (never prompt or token text).
     private var lastFailure: String?
     public var lastRequestFailure: String? { lock.withLock { lastFailure } }
+    /// The longest a rank may take to answer a reservation or give one back:
+    /// the timing's, or with lanes at least a loop step on each rank
+    /// (`ClusterWorkerRequest.laneAdmissionWaitNanoseconds`).
+    var admissionWaitNanoseconds: UInt64 {
+        lanes > 1 ? max(timing.admissionWaitNanoseconds, ClusterWorkerRequest.laneAdmissionWaitNanoseconds)
+            : timing.admissionWaitNanoseconds
+    }
     func noteRequestFailure(_ lease: ClusterWorkerRequest, _ cause: String) {
         let id = lease.requestID.uuidString.lowercased().prefix(8)
         lock.withLock { lastFailure = "request \(id) failed on the pair: \(cause)" }
@@ -141,7 +164,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             // One keyed session or none: ranks that disagree are not a pair.
             guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
-                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked)
+                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked,
+                media: a.media == b.media ? a.media : nil)
         }
     }
 
@@ -164,13 +188,14 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// default in the product); a caller that names nothing gets none.
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
                 timing: ClusterWorkerPairTiming = .standard,
-                keepWarm: ClusterWorkerKeepWarmPolicy = .off, refusesAboveServingContext: Bool = true, lanes: Int = 1) throws {
+                keepWarm: ClusterWorkerKeepWarmPolicy = .off, refusesAboveServingContext: Bool = true, lanes: Int = 1,
+                lanesRetireAlone: Bool = false) throws {
         self.refusesAboveServingContext = refusesAboveServingContext
         guard timing.isWithinLimits else {
             throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
         }
         guard (1...8).contains(lanes) else { throw ClusterWorkerOwnerError.invalid("A pair serves 1...8 lanes") }
-        self.lanes = lanes
+        self.lanes = lanes; self.lanesRetireAlone = lanes > 1 && lanesRetireAlone
         routers = workers.map { ClusterWorkerEventRouter(endpoint: $0) }
         guard workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
               workers[0].expectedIdentity == workers[1].expectedIdentity,
@@ -352,13 +377,23 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         }
         do { try lease.admit(until: admissionDeadline); return lease }
         catch ClusterWorkerOwnerError.refused(let reason)
-            where lease.withdrawRefused(until: DispatchTime.now().uptimeNanoseconds + timing.admissionWaitNanoseconds) {
+            where lease.withdrawRefused(until: DispatchTime.now().uptimeNanoseconds + admissionWaitNanoseconds) {
             // A rank refused this request (its live gate, its deadline or its
             // profile) and every rank that had admitted it gave it back. Only
             // this request failed: the pair is valid and idle again.
             lease.releaseResources()
             lock.withLock { refusedCount += 1 }
             throw ClusterWorkerOwnerError.refused(reason)
+        } catch ClusterWorkerOwnerError.cancelled where lease.cancellationReason == .callerCancelled
+                    || lease.cancellationReason == .deadline {
+            // Its caller or its deadline cancelled it while it was being
+            // admitted: its own cleanup gives back what a rank admitted (or
+            // reads a pending answer first). When no rank had to be fenced,
+            // only this request ended and the pair serves on.
+            lease.waitForRetirement()
+            if lease.withdrewBeforeStart { lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled }
+            noteRequestFailure(lease, "admission: the request was cancelled and a rank did not give it back")
+            invalidate(); lease.releaseResources(); throw ClusterWorkerOwnerError.cancelled
         } catch {
             // Named for the pair's incident (S24), as a started request's failure is.
             noteRequestFailure(lease, "admission: " + ClusterWorkerRequest.failureText(error))

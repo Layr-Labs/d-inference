@@ -11,7 +11,7 @@ private final class Received: @unchecked Sendable {
     private var retired = false
     func accept(_ event: DistributedResidentEvent) -> Bool {
         lock.withLock {
-            switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value; case .promptCache, .telemetry: break }
+            switch event { case .token(let id), .loggedToken(let id, _): tokens.append(id); case .finished(let value): finished = value; case .promptCache, .telemetry: break }
             return true
         }
     }
@@ -40,7 +40,7 @@ private struct Failure: Error {}
         guard let ready = owner.readiness() else { throw Failure() }
         let request = CBv2Request(id: .init(7), promptTokens: [1, 2, 3], sampling: .init(temperature: 0), maxTokens: 2)
         guard owner.projectFirstToken(request, admission: .init()) == .unbounded(reason: nil) else { throw Failure() }
-        var bad = request; bad.sampling.topLogprobs = 1
+        var bad = request; bad.sampling.topLogprobs = 21 // above OpenAI's 20; 1...20 are served
         var refused = false
         do { _ = try owner.reserve(bad, identity: ready.identity, profileID: profile.id, capacityLimit: 1800) }
         catch DistributedEngineError.refused(.logprobsUnsupported) { refused = true }

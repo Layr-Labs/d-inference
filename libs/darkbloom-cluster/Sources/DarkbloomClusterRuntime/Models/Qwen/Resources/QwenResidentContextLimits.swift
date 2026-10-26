@@ -27,15 +27,34 @@ struct QwenResidentContextLimits: Equatable, Encodable {
     let maximumOutputTokens: Int
     let maximumChunkTokens: Int
 
-    init(declaredContextTokens declared: Int, prefillChunkTokens: Int = Self.chunkTokens) throws {
+    /// The bounds a declared context is cut to. `standard` is the protocol's
+    /// standard request (every family's, sized and qualified for it); a
+    /// registered row that serves its native context names a wider ceiling,
+    /// within the wire's (`ClusterWorkerLimits.wire*`).
+    struct Ceiling: Equatable {
+        let promptTokens: Int, outputTokens: Int, contextTokens: Int
+        static let standard = Ceiling(promptTokens: ClusterWorkerLimits.promptTokens,
+            outputTokens: ClusterWorkerLimits.outputTokens, contextTokens: ClusterWorkerLimits.contextTokens)
+        /// The whole declared context, with `outputTokens` at most.
+        static func native(outputTokens: Int) -> Ceiling {
+            .init(promptTokens: ClusterWorkerLimits.wirePromptTokens, outputTokens: outputTokens,
+                contextTokens: ClusterWorkerLimits.wireContextTokens)
+        }
+    }
+
+    init(declaredContextTokens declared: Int, prefillChunkTokens: Int = Self.chunkTokens,
+         ceiling: Ceiling = .standard) throws {
         guard declared >= 2, declared <= 1_048_576,
+              (1...ClusterWorkerLimits.wirePromptTokens).contains(ceiling.promptTokens),
+              (1...ClusterWorkerLimits.wireOutputTokens).contains(ceiling.outputTokens),
+              (1...ClusterWorkerLimits.wireContextTokens).contains(ceiling.contextTokens),
               (1...ClusterWorkerLimits.promptTokens).contains(prefillChunkTokens) else {
             throw QwenDenseProfileError("Declared model context is outside the bounded metadata scope")
         }
         declaredContextTokens = declared
-        maximumContextTokens = min(ClusterWorkerLimits.contextTokens, declared)
-        maximumPromptTokens = min(ClusterWorkerLimits.promptTokens, maximumContextTokens - 1)
-        maximumOutputTokens = min(ClusterWorkerLimits.outputTokens, maximumContextTokens - 1)
+        maximumContextTokens = min(ceiling.contextTokens, declared)
+        maximumPromptTokens = min(ceiling.promptTokens, maximumContextTokens - 1)
+        maximumOutputTokens = min(ceiling.outputTokens, maximumContextTokens - 1)
         maximumChunkTokens = min(prefillChunkTokens, maximumPromptTokens)
     }
 

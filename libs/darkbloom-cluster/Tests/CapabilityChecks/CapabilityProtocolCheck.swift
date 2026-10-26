@@ -120,7 +120,8 @@ struct CheckFailure: Error { let message: String }
         try no("unknown-plan-selection") { _ = try value.selection(planSHA256: String(repeating: "f", count: 64)) }
         for (key, replacement): (String, Any) in [
             ("adapterID", "unknown"), ("adapterVersion", 2), ("runtimeModelID", "registered_qwen38_27b"),
-            ("workerProtocolVersion", 2), ("ownerProtocolVersion", 2), ("bootstrapABIVersion", 2),
+            ("workerProtocolVersion", ClusterWorkerLimits.version + 1), ("workerProtocolVersion", 1),
+            ("ownerProtocolVersion", 2), ("bootstrapABIVersion", 2),
             ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2),
             ("schedulingPolicy", "oneChunkLookahead"), ("selectionPolicy", "sampling"),
             ("speculation", "mtp"), ("prefixReuse", true), ("prefixReuse", 0), ("modality", "image"),

@@ -92,9 +92,11 @@ extension EngineV2Bridge {
             continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
             continuation.finish()
             return stream
-        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message) {
-            // A capacity refusal already finalized its lookup; keep its
-            // content-free marker in-band for nonthrowing callers.
+        } catch MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(let message),
+            MultiModelBatchSchedulerEngineError.unsupportedOutputControl(let message) {
+            // Capacity and output-control refusals already finalized their
+            // lookup; keep their content-free markers in-band for nonthrowing
+            // callers, which map them back to the same typed errors.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
             continuation.yield(.error(message))
             continuation.finish()
@@ -126,6 +128,7 @@ extension EngineV2Bridge {
         multimodal: CBv2MultimodalInput? = nil,
         mimoClusterImages: Data? = nil,
         clusterStillImages: Data? = nil,
+        clusterGLMMedia: Data? = nil,
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
@@ -152,6 +155,18 @@ extension EngineV2Bridge {
             try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
                 startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
         }
+        if let clusterGLMMedia {
+            // The tensor-parallel pair's media: only on a bridge bound to it,
+            // never beside another media form, every span bound to the prompt.
+            guard mimoClusterImages == nil, clusterStillImages == nil, multimodal == nil,
+                  let ingress = clusterGLMMediaIngress else { throw DistributedEngineError.refused(.mediaUnsupported) }
+            let media = try ClusterGLMMedia.decodeBounded(clusterGLMMedia), c = ingress.configuration
+            guard media.configurationSHA256 == ingress.configurationSHA256 else {
+                throw DistributedEngineError.refused(.mediaUnsupported)
+            }
+            try media.validate(prompt: promptTokens, imageToken: c.imageTokenId,
+                startToken: c.imageStartTokenId, endToken: c.imageEndTokenId, videoToken: c.videoTokenId)
+        }
         let imageBoundCacheScope: String
         if let mimoClusterImages {
             let media = try ClusterMiMoImages.decodeBounded(mimoClusterImages)
@@ -159,7 +174,8 @@ extension EngineV2Bridge {
             imageBoundCacheScope = cacheScope.isEmpty ? "" : cacheScope + "|mimo=" + media.fingerprint
         } else { imageBoundCacheScope = cacheScope }
         // Never manufacture an authenticated scope from an image digest.
-        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && (mimoClusterImages == nil || !cacheScope.isEmpty)
+        let imageCacheEnabled = cacheEnabled && clusterStillImages == nil && clusterGLMMedia == nil
+            && (mimoClusterImages == nil || !cacheScope.isEmpty)
         // This is our frame-receipt clock when available, never an upstream wall
         // timestamp. Local engines are unaffected by the distributed-only context.
         let httpResponse = DistributedHTTPResponseScope.current
@@ -178,6 +194,11 @@ extension EngineV2Bridge {
             continuation.yield(.error("request queue full: engine is shutting down"))
             continuation.finish()
             return stream
+        }
+        if let refusal = nativeOutputControlRefusal(request: request, tokenConstraint: tokenConstraint) {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.unsupportedOutputControl(refusal)
         }
 
         // Duplicate request-id guard (legacy: the planner's
@@ -278,8 +299,10 @@ extension EngineV2Bridge {
         )
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
+        cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
             firstContentDeadline,
@@ -1031,5 +1054,36 @@ extension EngineV2Bridge {
         for error: Error
     ) -> PrefixCacheLookupFailureClass {
         (error is CBv2KVError || error is PreContentDeadlineFailure) ? .capacity : .policy
+    }
+
+    /// A native-tracked engine refuses token constraints, and logprob rows
+    /// unless its contract qualifies capture (`EngineV2.acceptsLogprobRows`:
+    /// GLM5-Next, not MiMo), at submit (`EngineV2.validateRequest`) with an
+    /// SDK-internal error this bridge could report only as a generation
+    /// failure: an untyped 500 that strikes the coordinator's inference-error
+    /// breaker for every request of the model's shape. Refuse those requests
+    /// first, as a typed client error.
+    func nativeOutputControlRefusal(
+        request: ChatCompletionRequest, tokenConstraint: (any CBv2TokenConstraint)?
+    ) -> String? {
+        let engine = ownedEngine as? EngineV2
+        return Self.nativeOutputControlRefusal(
+            nativeTracked: engine?.nativeShutdownExecutionContractID != nil,
+            capturesLogprobs: engine?.acceptsLogprobRows ?? true,
+            topLogprobs: EngineV2Translation.topLogprobs(
+                logprobs: request.logprobs, topLogprobs: request.top_logprobs),
+            constrained: tokenConstraint != nil)
+    }
+
+    static func nativeOutputControlRefusal(
+        nativeTracked: Bool, capturesLogprobs: Bool, topLogprobs: Int, constrained: Bool
+    ) -> String? {
+        guard nativeTracked else { return nil }
+        let prefix = EngineV2Translation.unsupportedOutputControlPrefix
+        if topLogprobs != 0 && !capturesLogprobs {
+            return "\(prefix): this model's engine does not return logprobs"
+        }
+        if constrained { return "\(prefix): this model's engine does not run constrained decoding" }
+        return nil
     }
 }

@@ -59,6 +59,35 @@ struct GLM5NextRequestStateBudget: Equatable {
         let hostBytes: Int
     }
 
+    /// How a DSA history's token columns are bounded.
+    enum HistoryBound: Equatable {
+        /// The cache's own doubling (`GLM5NextDSACache`, no capacity limit):
+        /// up to `max(256, 2 * context)` columns, charged three times
+        /// (committed, tentative and the growth copy).
+        case geometric
+        /// A cache whose growth stops at this many columns
+        /// (`GLM5NextDSACache.capacityLimit`, at least the context): charged
+        /// twice, the history and the one fresh buffer an append writes before
+        /// the history it replaces is released.
+        case reserved(tokens: Int)
+        /// Histories in the pages of a pool (`GLM5NextDSAPagePool`), whose
+        /// pages the owner charges itself (`GLM5NextTensorParallelRequestCharge.pagedHistoryBytes`):
+        /// here only what a read gathers, one layer's history of at most this
+        /// many columns at a time, twice (two micro-batches' reads may coexist).
+        case paged(tokens: Int)
+
+        func columns(contextTokens: Int) throws -> (capacity: Int, copies: Int) {
+            switch self {
+            case .geometric: return (max(256, try GLM5NextRequestStateBudget.product([2, contextTokens])), 3)
+            case .reserved(let tokens), .paged(let tokens):
+                guard tokens >= contextTokens else { throw ProbeError("GLM history bound is below its context") }
+                return (tokens, 2)
+            }
+        }
+
+        var isPaged: Bool { if case .paged = self { true } else { false } }
+    }
+
     /// Must match the owner's negotiated authenticated transport limits.
     struct TransportTerms: Codable, Equatable {
         let maximumRecordPlaintextBytes: Int
@@ -86,13 +115,36 @@ struct GLM5NextRequestStateBudget: Equatable {
     let reservedBytes: Int
     let workspaceEvidenceSHA256: String
 
+    /// What `estimate` checks workspace evidence against: the digests of an
+    /// inventory, its text configuration and an execution policy. The
+    /// inventory's hashes every stored tensor's name, type and shape (the
+    /// registered GLM artifact's 114,160 tensors: about 60-120 ms), so a
+    /// caller that estimates one immutable inventory again and again (every
+    /// request's charge, `GLM5NextTensorParallelRequestCharge`) computes them
+    /// once and passes them; the checks are the same.
+    struct EvidenceDigests: Equatable {
+        let configurationSHA256: String
+        let inventorySHA256: String
+        let numericalPolicySHA256: String
+
+        init(inventory: GLM5NextWeightInventory, executionPolicy: GLM5NextExecutionPolicy) throws {
+            configurationSHA256 = sha256(try canonicalJSONData(inventory.configuration.textConfig))
+            inventorySHA256 = GLM5NextArtifactMetadata.fingerprint(inventory)
+            numericalPolicySHA256 = try GLM5NextStageContract.policySHA256(executionPolicy)
+        }
+    }
+
+    /// `digests`: those of exactly this `inventory` and `executionPolicy`
+    /// (`EvidenceDigests`); nil computes them here.
     static func estimate(inventory: GLM5NextWeightInventory, layers: Range<Int>, rank: Int,
                          scope: Scope, executionPolicy: GLM5NextExecutionPolicy,
                          executionEnvironmentSHA256: String,
                          workspace: WorkspaceEvidence?, transport: TransportTerms?,
                          maximumBufferBytes: Int,
                          allocationBound: (Int) throws -> Int,
-                         hostAllocationBound: (Int) throws -> Int) throws -> Self {
+                         hostAllocationBound: (Int) throws -> Int,
+                         history: HistoryBound = .geometric,
+                         digests: EvidenceDigests? = nil) throws -> Self {
         let c = inventory.configuration.textConfig
         try scope.validate(configuration: c)
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0,
@@ -107,9 +159,10 @@ struct GLM5NextRequestStateBudget: Equatable {
               qwenStageWireIsSHA256(workspace.evidenceSHA256),
               qwenStageWireIsSHA256(executionEnvironmentSHA256),
               workspace.executionEnvironmentSHA256 == executionEnvironmentSHA256,
-              workspace.configurationSHA256 == sha256(try canonicalJSONData(c)),
-              workspace.inventorySHA256 == GLM5NextArtifactMetadata.fingerprint(inventory),
-              workspace.numericalPolicySHA256 == (try GLM5NextStageContract.policySHA256(executionPolicy)) else {
+              workspace.configurationSHA256 == (try digests?.configurationSHA256 ?? sha256(canonicalJSONData(c))),
+              workspace.inventorySHA256 == (digests?.inventorySHA256 ?? GLM5NextArtifactMetadata.fingerprint(inventory)),
+              workspace.numericalPolicySHA256
+                == (try digests?.numericalPolicySHA256 ?? GLM5NextStageContract.policySHA256(executionPolicy)) else {
             throw ProbeError("GLM request budget lacks matching workspace/environment evidence or geometry")
         }
         try workspace.scope.validate(configuration: c)
@@ -128,20 +181,30 @@ struct GLM5NextRequestStateBudget: Equatable {
         let chunk = scope.maximumChunkTokens
         // GLM5NextDSACache starts at the first append length, then grows to
         // max(end, 2*capacity, 256). Without truncation, capacity <= max(256,2*N).
-        // Charge committed + tentative + growth padding, plus new input columns.
+        // Charge committed + tentative + growth padding, plus new input columns
+        // (`HistoryBound`: a capacity-limited cache is charged at its limit).
         // All three floating histories use <= FP32; validity is one byte.
-        let capacity = max(256, try product([2, scope.maximumContextTokens]))
+        let (capacity, copies) = try history.columns(contextTokens: scope.maximumContextTokens)
         let dsaLayers = layers.filter { c.layerTypes[$0] == .deepseekSparseAttention }.count
         var dsa = 0
         if dsaLayers > 0 {
             let widths = [try product([c.kvLoraRank, 4]),
                           try product([c.indexHeadDim, 4]),
                           try product([c.indexHeadDim, 4]), 1]
-            let one = try sum(widths.map { width in
-                try sum([native(product([capacity, width]), copies: 3),
-                         native(product([chunk, width]))])
-            })
-            dsa = try product([one, dsaLayers])
+            if history.isPaged {
+                // Pages hold the histories (charged by the owner); each layer
+                // writes its new input columns, and a read gathers one
+                // layer's history at a time.
+                let incoming = try sum(widths.map { try native(product([chunk, $0])) })
+                let gathered = try sum(widths.map { try native(product([capacity, $0]), copies: copies) })
+                dsa = try sum([product([incoming, dsaLayers]), gathered])
+            } else {
+                let one = try sum(widths.map { width in
+                    try sum([native(product([capacity, width]), copies: copies),
+                             native(product([chunk, width]))])
+                })
+                dsa = try product([one, dsaLayers])
+            }
         }
         let kdaLayers = layers.count - dsaLayers
         var kda = 0

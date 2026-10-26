@@ -78,7 +78,9 @@ final class Gemma4LayerStageModel: Module, LanguageModel {
     }
 
     // A stage is driven by frames; the whole-model entry points do not exist.
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(
+        _ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters
+    ) throws -> PrepareResult {
         throw ProbeError("A Gemma layer stage is not a complete language model")
     }
 

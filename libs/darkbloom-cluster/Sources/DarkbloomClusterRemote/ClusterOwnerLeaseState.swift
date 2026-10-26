@@ -30,6 +30,9 @@ public struct ClusterOwnerLeaseState: Sendable {
     var seen = Set<UUID>()
     var seenOrder: [UUID] = []
     var releasedRequests = 0
+    /// With lanes: requests that retired here recently, oldest first, whose
+    /// late cancel changes nothing (as the worker's lane session treats it).
+    var retiredRecently: [UUID] = []
 
     struct Request: Sendable {
         enum Phase: Equatable, Sendable { case reserving, admitted, running, retired }

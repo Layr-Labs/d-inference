@@ -63,7 +63,7 @@ public struct ClusterPairServingContext: Sendable {
     /// member session and the coordinator.
     public static func pairOwner(
         profile: DistributedResidentExecutionProfile, chunkTokens: Int, startupAllowanceNanoseconds: UInt64,
-        timing: ClusterWorkerPairTiming = .standard,
+        timing: ClusterWorkerPairTiming = .standard, lanes: Int = 1, lanesRetireAlone: Bool = false,
         routing: @escaping @Sendable () -> ClusterRequestRoutingBasis.Outcome? = { nil },
         follower: @escaping @Sendable (NativePairMemberServingStart, ClusterOwnerBootstrapRelay?) throws -> any ClusterWorkerEndpoint
     ) -> @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner {
@@ -84,9 +84,11 @@ public struct ClusterPairServingContext: Sendable {
             // a follower member that refused the open is named with its reason.
             let pair: ClusterWorkerPair
             do {
+                // The batch lanes both members' workers were launched with
+                // (`DistributedInstalledPlan.batchLanes`).
                 pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
                     startupDeadline: now + startupAllowanceNanoseconds,
-                    timing: timing, keepWarm: .standard)
+                    timing: timing, keepWarm: .standard, lanes: lanes, lanesRetireAlone: lanesRetireAlone)
             } catch {
                 // The follower's refusal names why (sanitized); the pair alone only sees its link close.
                 let named = DistributedInstalledSession.startFailure(error, endpoints: [start.endpoint, peer])

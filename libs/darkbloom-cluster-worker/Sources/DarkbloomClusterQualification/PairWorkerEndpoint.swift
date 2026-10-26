@@ -373,7 +373,8 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             translated = .reserve(.init(profileID: value.profileID, promptTokenIDs: value.promptTokenIDs,
                 stopTokenIDs: value.stopTokenIDs, outputCount: value.outputCount, chunkSize: value.chunkSize,
                 deadlineUptimeNanoseconds: try workerDeadline(forLocal: value.deadlineUptimeNanoseconds),
-                capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route,mimoImages:value.mimoImages))
+                capacityLimitBytes: value.capacityLimitBytes, sampling: value.sampling, route: value.route,mimoImages:value.mimoImages,
+                glmMedia: value.glmMedia))
         }
         try lock.withLock {
             guard launchedAt != nil, terminationValue == nil, fault == nil, !inputClosed else { throw ClusterWorkerOwnerError.closed }

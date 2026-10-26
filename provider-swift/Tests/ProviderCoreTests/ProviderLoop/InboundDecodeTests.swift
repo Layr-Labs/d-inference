@@ -197,6 +197,7 @@ struct InboundDecodeTests {
         #expect(req.messages[1].toolCalls?.first?.function.name == "get_weather")
         #expect(req.messages[1].toolCalls?.first?.function.arguments == #"{"city":"SF"}"#)
         #expect(req.messages[2].role == .tool)
+        #expect(req.messages[2].toolCallID == "call_legacy_1")
     }
 
     @Test("malformed legacy function_call throws invalidToolPayload")

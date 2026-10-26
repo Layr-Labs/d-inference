@@ -78,7 +78,8 @@ func makeLocalInferenceApplication(
     clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
     distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
     nemotronSuperImageHTTP: NemotronSuperLocalImageHTTP? = nil,
-    managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest) -> (any MLXServerEngine)?)? = nil
+    managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
+        -> (any MLXServerEngine)?)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -106,6 +107,22 @@ func makeLocalInferenceApplication(
             engine: engine, responseStore: responseStore, metrics: metrics)
     }
     let service = serviceForTemplateControls(.init())
+    // Request-owned metadata is shared by standalone and cluster HTTP. The
+    // distributed response registry controls stream lifetime, not API fields.
+    let serviceForLogprobs: @Sendable (ChatTemplateControls, EngineV2LogprobsPlumbing) -> MLXOpenAIService = {
+        controls, logprobs in
+        MLXOpenAIService(engine: MultiModelBatchSchedulerEngine(
+            acquire: acquire, tokenizerProvider: tokenizerProvider, availableModels: availableModels,
+            defaultMaxTokens: defaultMaxTokens, templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope, modelTypeProvider: modelTypeProvider,
+            seedsContentForUnknownPromptTail: true, engineV2Logprobs: logprobs),
+            responseStore: responseStore, metrics: metrics)
+    }
+    let reasoningTokenCounter: @Sendable (String) async -> (@Sendable (String) -> Int)? = { model in
+        guard let resolution = try? await tokenizerProvider(model) else { return nil }
+        let tokenizer = resolution.tokenizer
+        return { text in tokenizer.inner.encode(text: text, addSpecialTokens: false).count }
+    }
     let router = MLXServerApplication.buildRouter(service: service)
     if let clusterStatus {
         router.get("/v1/cluster/status") { request, _ async throws -> Response in
@@ -146,10 +163,12 @@ func makeLocalInferenceApplication(
         reasoningParserFor: reasoningParserFor,
         // Like the response store above: one per application, so both serve modes continue conversations alike.
         responseConversations: LocalResponseConversationStore(),
-        serviceForRawChat: { body, request in
+        serviceForLogprobs: serviceForLogprobs,
+        reasoningTokenCounter: reasoningTokenCounter,
+        serviceForRawChat: { body, request, logprobs in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
-                responseStore: responseStore, metrics: metrics) { return service }
-            return managedSuperEngine?(body, request).map {
+                responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }
+            return managedSuperEngine?(body, request, logprobs).map {
                 MLXOpenAIService(engine: $0, responseStore: responseStore, metrics: metrics)
             }
         })

@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
 
@@ -109,8 +110,10 @@ public final class QwenTensorParallelResidentRuntime {
             let mode = ClusterGenerationMode.tensorParallel
             // The prefix cache votes in a reduction of its own: both ranks must have it on, or both off.
             let prefixEnabled = QwenStagePrefixCache.fromEnvironment(environment).enabled
+            // Paged attention KV (`QwenTensorParallelPagedKV.swift`), bound into the agreement.
+            let pagedKV = try Self.pagedKV(environment)
             let fields = mode.loadAgreementFields + loadAgreementFields(shares: shares)
-                + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"]
+                + ["qwen-tensor-parallel-prefix-v1", prefixEnabled ? "on" : "off"] + pagedKVAgreementFields(pagedKV)
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             let loadAgreement = sha256(try canonicalJSONData([try admission.loadAgreementFingerprint()] + fields))
             if let credential {
@@ -142,6 +145,8 @@ public final class QwenTensorParallelResidentRuntime {
                         reduction: group, check: checked)
                 }
                 retired = value.model; loadedModel = value.model; shardReceipt = value.receipt; source = value.profile
+                // Every request's attention keys and values live in this rank's page pool.
+                if pagedKV { value.model.attentionPagePool = try value.model.makeAttentionPagePool(pageSize: Self.attentionPageTokens) }
                 let loadedIdentity = sha256(try canonicalJSONData([loadAgreement, value.receipt.verifiedAggregateSHA256,
                     value.receipt.storageCommitmentSHA256, value.receipt.planName]))
                 _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
@@ -154,7 +159,8 @@ public final class QwenTensorParallelResidentRuntime {
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(value.receipt.planName)"
                     + " shares=\(shares.map(String.init).joined(separator: "-")) shard_bytes=\(value.receipt.shardBytes)"
                     + " source_bytes=\(value.receipt.sourceBytes) tensors=\(value.receipt.sourceTensors)"
-                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)")
+                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)"
+                    + " paged_kv=\(pagedKV ? Self.attentionPageTokens : 0) page_bytes=\(value.model.attentionPagePool?.pageBytes ?? 0)")
                 try configuration.allocatorPolicy.prepareReady(
                     synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                     snapshot: {
@@ -262,8 +268,16 @@ public final class QwenTensorParallelResidentRuntime {
             guard total <= value.capacityLimitBytes, total <= baseReady.requestCapacityBytes else {
                 throw ProbeError("Tensor-parallel reservation exceeds its owner or readiness capacity ceiling")
             }
-            // Kept prefixes give way before a reservation is refused for memory.
-            try prefix.yieldingMemory { try charge.allowance.requireLive(additionalNativeBytes: charge.extraNativeBytes) }
+            // Pages no request or prefix entry holds go back first (the pool
+            // regrows to this request's pages when it starts).
+            _ = try? model?.attentionPagePool?.trim()
+            // Kept prefixes give way before a reservation is refused for memory;
+            // a paged rank also needs what its page pool grows by.
+            try prefix.yieldingMemory {
+                try charge.allowance.requireLive(additionalNativeBytes: try QwenLongPrefillCheckedBytes.sum([
+                    charge.extraNativeBytes, Self.pagedGrowthBytes(model: model, tokens: Self.initialPageTokens(
+                        promptCount: request.promptCount, maximumTokens: request.maximumTokens))]))
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, allowance: charge.allowance, extraNativeBytes: charge.extraNativeBytes,
                 deadline: value.deadlineUptimeNanoseconds)
@@ -356,8 +370,13 @@ public final class QwenTensorParallelResidentRuntime {
             return false
         }
 
+        // The request's attention pages (nil when contiguous), held until it ends.
+        // Its prompt and one granule; decode grows them (`growPages`).
+        let pages = try Self.reservePages(model: model, tokens: Self.initialPageTokens(
+            promptCount: prompt.count, maximumTokens: request.maximumTokens))
+        defer { withExtendedLifetime(pages) {} }
         // Prompt prefix: the longest chunk boundary both ranks hold.
-        var cache = model.newCache()
+        var cache = try model.newCache(account: pages?.account)
         var start = 0
         let scope = loadAgreement + "|" + receipt
         if prefix.enabled, prompt.count > chunk {
@@ -366,6 +385,8 @@ public final class QwenTensorParallelResidentRuntime {
             if let agreed = try QwenTensorParallelPrefixCache.agree(held: held, group: group, candidates: candidates),
                let restored = prefix.restore(scope: scope, prompt: prompt, length: agreed) {
                 cache = restored; start = agreed
+                // The entry's pages are shared; what the request appends is its own.
+                for case let history as PagedAttentionKVCache in cache { history.account = pages?.account }
             }
         }
         // Prefill from `start` in chunks aligned to the boundaries; keep the
@@ -411,21 +432,33 @@ public final class QwenTensorParallelResidentRuntime {
         // 0, or the number of tokens to keep: what this rank puts in its stop
         // slot of every step built from now on.
         var stopKeep: Float = 0
+        // The pages could not grow: the request ends at its length after the
+        // next step built (the margin covers the steps built before that).
+        var pagesRefused = false
+        /// Before a step that appends output `index` is built: its pages.
+        func growPages(forOutput index: Int) {
+            guard !pagesRefused else { return }
+            pagesRefused = !Self.growPages(pages, needed: prompt.count + index + 1, limit: request.maximumTokens,
+                caches: cache, admit: { bytes in try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: bytes) } })
+        }
         var pending: (MLXArray, MLXArray)?
         steps: for step in 0 ..< request.outputCount {
             pending = nil
             if pipelined, step + 1 < request.outputCount {
+                growPages(forOutput: step)
                 let next = choose(model.step(current, cache: cache), stop: stopKeep)
                 asyncEval(next.0, next.1)
                 pending = next
             }
             let token = Int(current.item(Int32.self))
             let flags = currentFlags.asArray(Float.self).filter { $0 > 0 }
-            if let keep = flags.min() {
+            if let slot = flags.min() {
                 // A rank asked both to stop when this step was built: both keep
-                // the tokens it named and end here.
-                tokens = Array(tokens.prefix(Int(keep)))
-                finish = .clientStop; break
+                // the tokens it named and end here (at the request's length
+                // when its pages could not grow).
+                let stop = QwenTensorParallelStopRule.stop(slot: slot)
+                tokens = Array(tokens.prefix(stop.keep))
+                finish = stop.finish == .length ? .length : .clientStop; break
             }
             if stopKeep == 0 {
                 sampler?.commit(token)
@@ -442,9 +475,15 @@ public final class QwenTensorParallelResidentRuntime {
                 case .clientStop: clientStopped = true
                 case .proceed: break
                 }
-                if clientStopped || localStop() { stopKeep = Float(tokens.count) }
+                if clientStopped || localStop() {
+                    stopKeep = Float(tokens.count)
+                } else if pagesRefused {
+                    stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
+                }
             }
             if !pipelined, step + 1 < request.outputCount {
+                growPages(forOutput: step)
+                if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
                 let next = choose(model.step(current, cache: cache), stop: stopKeep)
                 asyncEval(next.0, next.1)
                 pending = next
@@ -456,7 +495,7 @@ public final class QwenTensorParallelResidentRuntime {
         // A step both ranks built and submitted is evaluated by both, so its
         // reductions meet; nothing of it is emitted.
         if let pending { eval(pending.0, pending.1) }
-        if stopKeep > 0 || clientStopped { finish = .clientStop }
+        if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         // Both ranks end on rank 0's outcome (one small sealed agreement, made
         // by both before either may throw below): a client stop rank 0 made
         // when no later step could carry its flag leaves rank 1 at the limit.
@@ -481,7 +520,8 @@ public final class QwenTensorParallelResidentRuntime {
         let reused = start
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
             + " prompt=\(prompt.count) reused=\(reused) output=\(tokens.count) finish=\(finish.rawValue)"
-            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)")
+            + " sampled=\(sampler == nil ? 0 : 1) frames=\(codec?.sealedFrames ?? 0) key_generation=\(codec?.keyGeneration ?? 0)"
+            + " kv_tokens=\(pages?.tokens ?? 0) kv_grown=\(max(0, (pages?.accounts.count ?? 1) - 1)) kv_refused=\(pagesRefused ? 1 : 0)")
         return QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,

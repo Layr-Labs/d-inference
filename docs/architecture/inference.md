@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-26
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -10,6 +10,17 @@ legacy engine and no subprocess. For the memory model see
 [`prefix-cache.md`](prefix-cache.md).
 The [native block adapter](native-block-inference.md) reuses this bridge boundary
 for committed diffusion output and explicit native-container slot ownership.
+
+Standalone and cluster chat HTTP use the same scalar-stop normalization,
+request-owned logprob plumbing and reasoning-token usage decoration for JSON
+and SSE responses. `EngineV2Bridge.submitTokenized` forwards an explicit
+`min_p` on both paths; existing engine validation still applies. Stream lifetime
+and distributed retirement remain separate from these API fields. The
+model-free parity suite does not establish that a native family or generation
+mode implements capture. Sources:
+`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
+`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`, and
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 The cluster setup liveness probe uses the same request validation as ordinary
 chat completions. `ClusterSetupProbeRequest` sends no family-specific thinking
@@ -143,9 +154,11 @@ frames and tower activation, its five-tubelet EVS scoring window at
 of every projected row) is then reserved; its maximum,
 `NemotronSuperServingPolicy.videoMediaChargeBytes`, stays below one largest
 image's charge. As for images, a body over
-`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (8 MiB) returns the
-invalid-media 400, as does a video prompt over the context, and a charge the
-shared budget cannot hold returns the media-memory 503. The owner lock covers
+`NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB, which holds one
+part at the shared 25 MiB inline-media cap as base64 and every body the
+provider's transports deliver) returns `media_too_large`, a video prompt over
+the context returns the invalid-media 400, and a charge the shared budget
+cannot hold returns the media-memory 503. The owner lock covers
 only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
@@ -204,8 +217,13 @@ with 429.
 `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK` tokens (default 2,048, at most the
 calibrated prefill limit), at most one prompt chunk per step beside every decode
 or verify row, a step budget that holds a whole chunk plus those rows, and
-optional decode-only steps between chunks
-(`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`). A request's chunks are
+four decode-only steps after each chunk while requests decode
+(`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`;
+`DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64 and is
+forwarded to the launchd provider job). On an M5 Ultra four held steps raised a
+decoder's rate during an 8K prefill from 5.8 to 16.3 tok/s and delayed the
+prefilling request's first token by 15 to 26%; eight gave 24.7 tok/s for 33 to
+52%. A step without decode rows is never held. A request's chunks are
 therefore the same whether or not it is served alone. Because one chunk runs per
 step, the prefill activation is one owner-wide lane in the shared budget,
 reserved before the first request and released only after native retirement:
@@ -220,8 +238,10 @@ configured request (below). The builder refuses a KV grant that
 cannot hold every configured request's fixed bytes plus the minimum KV with
 `UnserviceableGrant`, which names the grant, the smallest serviceable grant and
 the fixed bytes per request.
-`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse when
-`DARKBLOOM_PREFIX_CACHE_MEMORY=1`. For the pinned checkpoint
+`NemotronSuperLocalPrefixCache` gives either owner exact text prefix reuse. By
+default the managed slot keeps it as complete encrypted SSD checkpoints (see
+below); `DARKBLOOM_PREFIX_CACHE_MEMORY=1` selects the resident bank instead.
+For the pinned checkpoint
 `NemotronSuperServingPolicy.defaultPrefixBankBytes` sizes the SDK's resident
 recurrent checkpoint bank from the KV grant and the machine:
 `serving = grant - admissionKVBytes(requests, speculates) - lane bound(chunk) - one image's media charge`,
@@ -323,8 +343,71 @@ decode. On the full checkpoint (`scripts/nemotron-qualification/bench_serving.py
 71–91% of drafts were accepted; aggregate tok/s against the plain owner was
 57.0 / 32.5 at one client (depth 3), 65.0 / 50.7 at two and 78.4 / 67.2 at four
 (depth 2) and 86.9 / 82.8 at eight (depth 1), hence the managed default
-`3,2,2,2,1`. Sources:
+`3,2,2,2,1`. The M5 Ultra measured differently (384-token greedy and sampled
+requests; per-request tok/s against target-only decode): +20% to +24% alone at
+depth 3, a tie at two (depth 2: greedy +3%, sampled -4%), at four depth 1 within
+2% where depth 2 costs 7% to 9%, and at eight depth 1 costs 13% to 15% of
+aggregate. An M5 therefore defaults to `3,2,1,1,0`: five or more decoding
+requests run target-only. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalMTP.swift`.
+
+### Nemotron Super logprobs
+
+Super serves OpenAI `logprobs` and `top_logprobs` on text, image and video
+requests. `NemotronSuperRequestPlan.topLogprobs` reads both from the raw body
+(`EngineV2Translation.topLogprobs`: `logprobs: true` captures at least one
+alternative) and the plan refuses `top_logprobs` outside 0 to 20. Entries leave
+on an `EngineV2LogprobsChannel` the caller passes to the owner's chat route
+(`NemotronSuperLocalImageHTTP.engine`, `NemotronSuperSlotOwner.chatEngine`);
+both bindings refuse a logprobs request without one. The coordinator relay
+passes the channel its frames loop splices. For a local `logprobs` body,
+`LocalChatUploadResponder` creates one and splices entries into reasoning and
+content frames with `ProviderLoop.injectLogprobs`. A complete response attaches
+the entries its stream would carry: the owner also passes each chunk through a
+streaming split of the request and keeps the entries gathered so far only when
+that chunk shows reasoning or content (`NemotronSuperCompleteLogprobs`).
+
+The contract matches vLLM and SGLang: `logprobs.content` has one entry per
+generated token, in generation order, covering reasoning, answer and tool-call
+tokens. Joined, the entry tokens spell the reasoning text and then the answer
+text, not the answer alone; they also include the `</think>` marker that ends
+the reasoning, which neither `reasoning_content` nor `content` shows. A
+stream's reasoning chunks carry their tokens' entries and its content chunks
+theirs. An entry rides the chunk that carries its token or a neighbouring one:
+a token that renders nothing, such as the marker or a tool call's tokens, rides
+the next chunk that shows text, and the frames loop drains whatever the bridge
+has appended. Order and exactly-once are exact, so clients accumulate entries
+across chunks. A complete response carries the same entries as one list. A
+response that ends while reasoning (its `max_tokens` spent) carries an entry
+for every token. Tokens that no shown text follows carry none, such as the stop
+token that ends a `stop` finish. Super's tool-call tokens therefore lack
+entries only in the rare case that nothing follows the call: its own call turns
+end with a newline after `</tool_call>`, whose chunk carries the call's
+entries. A held JSON answer, which shows only at the end, carries every entry
+before it, the stop token's included. On the coordinator relay
+`ProviderLoop.logprobsCoverReasoning` selects this contract for the Super owner
+and GLM5-Next; other models attach entries to content chunks only.
+
+A logprob row never drafts or verifies (`EngineLoopV2.mtpBasicEligible`). On a
+target with the request-scoped fallback, `EngineLoopV2.mtpDraftBatchRows`
+removes it from the draft cohort as it removes an image request, so the other
+rows keep speculating while it decodes one ordinary target token per step; the
+row-exact decode keeps every output exact. Synthetic fixtures check its tokens
+and logprobs against the plain owner's and that a text row beside it still
+speculates (`NemotronSuperMTPMediaFallbackTests`). On Super's row-exact
+recurrent target every other row the engine cannot draft for (a `stop` string,
+a repetition, frequency or presence penalty, `logit_bias`) leaves the draft
+cohort the same way, so one such request no longer turns speculation off for
+the whole step (`NemotronSuperMTPRequestControlsTests`). Sampled Super rows
+speculate: the assistant's greedy proposals are accepted only where they equal
+the token pre-sampled with the request's own sampler and seed (exact
+target-prefix acceptance), so sampled output equals target-only sampling.
+`NemotronSuperLocalMTPTests` checks both through the provider's local binding
+and bridge against the plain owner's tokens.
+Sources:
+`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperCompleteLogprobs.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Managed Nemotron Super slot
 
@@ -419,10 +502,16 @@ configuration such eviction can reach, so an idle model yields to the
 planned owner rather than to a narrower one, and refuses without evicting
 when not even the narrowest is reachable. A victim that takes work while its
 unload suspends declines it, and eviction plans again from the models still
-idle; the third decline refuses the load. Startup preload, which never
-evicts, admits Super by the same room and orders it by its planned
-requirement. The discovery footprint (`estimated_memory_gb`) is the
-narrowest configuration's requirement itself,
+idle; the third decline refuses the load. Like the ordinary gate, eviction
+first releases retained free KV segments and drops MLX's buffer cache once
+(`releaseReclaimableMemoryForLoad`), before its first eviction or a refusal
+with nothing idle, and counts those segments as reachable only until then:
+segments still parked after the release never justify an eviction.
+Pre-accept performs the same release and judges the room it leaves when
+nothing is idle or only those segments could close the gap.
+Startup preload, which never evicts, admits Super by the same room and
+orders it by its planned requirement. The discovery footprint
+(`estimated_memory_gb`) is the narrowest configuration's requirement itself,
 89,750,767,136 bytes (83.6 GiB) on every Mac. Cold capacity quotes and the
 coordinator's cold-load routing compare it and the load headroom with free
 memory less the provider's load reserve (`free_for_load_gb`), so they stay
@@ -463,13 +552,14 @@ survivor's grant instead of keeping a loaded slot that serves nothing.
 
 `NemotronSuperServingPolicy.loadPlan` sets the runtime policy: `mtp_mode` `auto`
 or `on` installs rectangular speculation at depth `3,2,2,2,1` by decoding
-requests (`off` or `DARKBLOOM_CBV2_MTP=0`
+requests, `3,2,1,1,0` on an M5 (`off` or `DARKBLOOM_CBV2_MTP=0`
 serves the plain owner); eight requests unless `engine_v2_max_concurrent` or its
 per-model entry is explicit, which then bounds it (at most eight with
 speculation). The depth, verification, prefill chunk and decode-step keys above
-keep an operator's value. The plain owner turns exact text prefix reuse on when
-the grant holds every request's fixed bytes beside the bank, unless the
-operator set `DARKBLOOM_PREFIX_CACHE_MEMORY` or a cache kill switch.
+keep an operator's value. Either owner's exact text prefix reuse is complete SSD
+checkpoints, which take no grant; the resident bank is reserved only when the
+operator sets `DARKBLOOM_PREFIX_CACHE_MEMORY=1`, and a cache kill switch turns
+both off.
 
 On NAX GPUs (M5 and later) prompt processing runs the routed NVFP4 experts
 on dedicated NAX kernels behind one fused expert route
@@ -537,10 +627,35 @@ Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
 local-endpoint chat completions (`NemotronSuperLocalEndpointEngine`) run on the
 owner's chat route, not the generic engine: the pinned prompt contract, reasoning
 channel, tool and structured-output validation, cancellation and usage are the
-hook's. Coordinator text prefix reuse is partitioned by the authenticated cache
-scope and off without one; the slot emits no cache receipts, cached-token usage
-or prefix-cache capability. A cancelled stream bills delivered output and the
-reference prompt length. Inline JPEG and PNG images (`data:` URIs, within the
+hook's. A JSON response format may come with tools: a turn that calls tools
+returns its calls, and only an answer without calls is validated as JSON.
+Coordinator text prefix reuse is partitioned by the authenticated cache
+scope and off without one. The managed load binds the owner's checkpoints to
+the aggregate it published for the checkpoint and the checkpoint's
+`PromptContractIdentity` (`NemotronSuperLocalPrefixCache.RoutingIdentity`).
+Without a bank (the default) the builder keeps them in an
+`SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
+the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
+the assistant's prompt history encrypted under the provider's cache root, at
+the slot's effective checkpoint precision (`engine_v2_kv_checkpoint_quantization`,
+`balanced` by default): older attention rows are coded, while the conv/SSM
+state and the assistant's history stay exact
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
+slot then advertises a durable capability (`prefix_cache_v2_models`), its
+checkpoints survive restarts within the store's TTL, and the coordinator's
+repeat hint gates their writes as for every other model. A durable checkpoint
+outlives the process, so its identity rests on this load: every shard was
+staged against its pinned SHA-256, and the prompt contract hashes the prompt
+files the load read. A load whose post-load artifact hash differs from the
+published one is refused. With the bank the slot advertises a resident
+capability (`prefix_cache_memory_models`), and such a load advertises nothing.
+Either way the coordinator can send the slot a cache scope, and a request
+reports its lookup and ready receipts, `prompt_tokens_details.cached_tokens`
+and its cache usage through the request's own usage signal, as on the generic
+engine. Image checkpoints have no durable layout, so only the bank reuses
+image turns. A cancelled stream bills delivered output and the reference
+prompt length, and reports cache usage only when the native terminal already
+recorded it. Inline JPEG and PNG images (`data:` URIs, within the
 [image format reference](../reference/nemotron-super-image-formats.md) limits)
 run on the owner's image binding. On the default speculating owner every image
 request is target-only for its whole lifetime: the engine prefills and decodes
@@ -549,8 +664,9 @@ keep speculating in the same steps. The image's media reservation (decode,
 normalization, features and the largest image's tower and projector bound) is
 taken from the shared budget before decoding and held until the request
 retires; one that does not fit is refused with 503 before anything is
-allocated. A body over 8 MiB, visual tokens beyond the context or a prompt
-that overflows it is the request's own fault: 400, never a retryable 503.
+allocated. A body over 40 MiB (`media_too_large`), visual tokens beyond the
+context or a prompt that overflows it is the request's own fault: 400, never a
+retryable 503.
 One image request runs at a time per owner, beside text requests; a
 second concurrent one gets 429 before any response starts. The Super model
 quantizes activations with deployment (SATFINITE) overflow semantics: an image
@@ -610,6 +726,23 @@ See `libs/mlx-swift-lm/docs/bonsai2.md` for the exact activation mapping,
 checkpoint contract and qualification scope. This implementation does not
 activate a catalog entry.
 
+Gated DeltaNet prompt windows of `qwen3_5`, `qwen3_5_moe` and
+`prism_hadamard_qwen35` models with at least `minT = 16` unmasked positions run
+a four-row recurrence kernel
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift`, `GatedDeltaPrefill`).
+In each process, the first such window of each kernel instantiation (input
+dtype and head geometry) tries the `packed` and then the `rows` kernel on a
+fixed probe window and keeps the first that reproduces `gated_delta_step` bit
+for bit on the GPU, or else the stock kernel.
+Decode, MTP verification, masked updates and shorter windows always run the
+stock kernel; because a selected kernel matches it bit for bit, mixing kernels
+across chunks cannot change the recurrent state that
+[checkpoint capture](prefix-cache.md#streamed-complete-checkpoints) relies on.
+`qwen4_exp` and `qwen4_exp_text` keep their blocked-seq path.
+`DARKBLOOM_TTFT_GDN_BLOCKED`
+([configuration](../reference/configuration.md#engine-and-scheduler)) keeps the
+stock kernel or forces `packed` or `rows` for A/B measurement.
+
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
 (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
@@ -622,7 +755,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (a refused SSD store's typed reason reaches the bridge for local `/metrics` only); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates (resident tiers only for engines that host them, so GLM keeps its SSD store under the memory opt-in; a refused SSD store's typed reason rides on the heartbeat status as `detail`); refuses an ordinary fixed-workspace bridge with zero serving width before publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -661,6 +794,14 @@ full-artifact qualification. Source lives under
 [in-progress integration contract](../design/glm53-flash-native.md) for the
 required paged, complete-prefix and trained-MTP gates.
 
+The target also declares the activation dtype that the latent keys, the
+`[index keys, pool gates, validity]` values row and the KDA convolution history
+only widen to FP32 (`GLM5NextTextModel.glm5NextPagedPayloadStorage`, derived
+from the loaded weights' dtypes with the forward's own promotion). The paged
+binding passes it to the complete-checkpoint codec, which stores those roles at
+that dtype and widens them back exactly on import
+([SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
+
 An explicit [local qualification selection](../reference/configuration.md#local-glm-qualification)
 can admit the exact pinned local artifact into standalone discovery without
 changing coordinator advertisement. The local selection cannot bypass managed
@@ -676,6 +817,14 @@ only then), the embedded `apple_m5`, `mlx_nax` and `glm5_next_v1` requirement
 (`GLM5NextStepScratch`), and an identity chain: the cached catalog entry pins
 version and aggregate, the revision receipt must match it and hash to that
 aggregate, and the admitted load hashes every file against the same manifest.
+That verification is the published weight hash: once every manifest file has
+matched and no file identity changed through construction, the load reports the
+manifest aggregate (`GLM5NextManagedLoad.verifiedArtifactSHA256`), which both
+modes publish instead of separate pre-load and post-load `WeightHasher` passes
+(`ProviderLoop.verifiedGLM5NextWeightHash`). The next coordinator-mode start
+registers that hash without reading the weights while every file keeps its
+device, inode, size and modification and status-change times
+(`VerifiedWeightHashStore`); the load verifies again before serving.
 An R2-only revision names its native identity by catalog id and the first 40 hex digits of its aggregate. The
 reviewed shipped template remains mandatory. The enforced context is 262,144
 tokens (`GLM5NextCoordinatorServing.maximumContextLength`); a smaller catalog
@@ -703,14 +852,40 @@ engine prices one worst-case step at setup and stays inactive when it exceeds
 the post-load envelope (about 56.8 GB of admission on a 256 GiB host, shared
 with KV). Decode and MTP verification rows (at most 8 sparse queries) read one
 selection row per query, retained until the step fence (about 46 MB per query
-across 11 DSA layers). A longer row whose selection rows would read at least
+across 11 DSA layers). Each paged read launch binds up to 17 of the 64 MiB
+segments that hold the row's pages (`PagedSegmentDispatchPlan.maximumBindings`):
+index metadata and latent-history reads cover only those segments' pages, one
+threadgroup per page, with no zero fill, and a selection read copies each row
+with one SIMD-group (`GLM5NextPagedTransfers`). Plain decode steps (every row
+one token) and MTP rounds whose rows are all decode or verification rows (at
+most 8 tokens) commit a Metal command buffer every 100 operations with no
+input-size bound, as Nemotron Super and Flint do for plain decode
+(`GLM5NextDecodeCommandBuffers`); prefill chunks keep MLX's defaults. A longer
+row whose selection rows would read at least
 its history instead reads its whole latent plane once per layer through
 the page table and runs the contiguous arithmetic over it
 (`GLM5NextPagedPayload.latentHistory`, `GLM5NextPagedModelBinding.readsLatentHistory`),
 so its retained reads are bounded by the history, not the chunk. The GLM
 scheduler installs 2,048-token prefill chunks and steps, bounded by the context,
 and disables solo stripes (`EngineV2Factory.glm5NextMaximumStepTokens`,
-`glm5NextServingScheduler`). The price splits into setup bytes for the step
+`glm5NextServingScheduler`). Decode rows share that step budget and push every
+prefill range off the 256-token checkpoint grid, so with the GLM complete store
+the scheduler also ends a cacheable request's range on its checkpoint
+boundaries (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`; see
+[streamed complete checkpoints](prefix-cache.md#streamed-complete-checkpoints)).
+While other requests decode, each prompt chunk is
+followed by eight decode-only steps
+(`EngineV2Factory.glm5NextDefaultDecodeStepsBetweenChunks`,
+`CBv2SchedulerConfig.decodeStepsBetweenPrefillChunks`;
+`DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` sets 0 to 64, and any other value
+refuses the load). A chunk step takes about a second on an M5 Ultra, so without
+them a decoding request got about one token per chunk while another request
+prefilled: 2.8 tok/s beside an 8K prefill and 1.2 to 1.5 with two decoders.
+Eight steps measured 19.5 and 7.1 to 7.2 tok/s, and the prefilling request's
+first token 6 to 20% later (5.3 to 5.6 s at 8K beside one decoder, 18.6 to
+21.2 s at 32K beside two). A step without decode rows is never held, so a
+request served alone prefills as before, and the
+[deadline projection](#deadlines) charges every held step. The price splits into setup bytes for the step
 geometry and a rate per context token of each request, which covers the
 request's index metadata reads, pooled index planes, latent reads and page
 tables in both its step and the chained decode successor
@@ -787,7 +962,13 @@ repair forward. An adaptive controller picks the depth (0 to 3) from measured
 cost and acceptance; sampled requests speculate through exact target-prefix
 acceptance. The window runs the batched multi-token kernels, so greedy output is
 not token-identical to target-only decode (near-ties can flip). The speculative
-batch is 1, and the profile composes with the complete-prefix store
+batch is 2 (`GLM5NextProtectedModel.rectangularSpeculativeBatch`): while one or
+two requests decode, every decoding row drafts and one captured forward verifies
+all windows; with three or more decoding rows the step decodes target-only. On
+an M5 Ultra two concurrent requests decode at about 46 tok/s each instead of 38
+target-only, while speculating three or four rows cost about 5% of aggregate
+throughput. The paged backend's gathered-attention batch holds at least the
+speculative batch. The profile composes with the complete-prefix store
 (`glm5_next_native_paged_full_state_rectangular_mtp_v1`).
 `DARKBLOOM_GLM_RECTANGULAR_VERIFY=0` (also `false`, `no`, `off`) selects the
 serial-target single-proposal profile
@@ -802,8 +983,10 @@ positional encoding, so a submission carries causal spans and no position
 state (`EngineV2VisionPrefill.prepareGLM5NextMedia`, `buildGLM5NextSubmission`).
 The original request is normalized by the GLM prompt policy exactly as text is,
 with symbolic image and video parts, and the processor expands each `<|image|>`
-to its feature count (16 to 8000 per image). A video's single constant-frame-rate
-MP4 or QuickTime track is read frame by frame, and only its 2 FPS official
+to its feature count (16 to 8000 per image). A video's single MP4 or QuickTime
+track is read frame by frame in presentation order. As in the reference loader,
+frame i is timed at i / the track's average frame rate (`nominalFrameRate`), so a
+variable-frame-rate track is indexed, not refused. Only its 2 FPS official
 sample is converted to RGB8 and kept, within the processor's decoded-frame cap
 (`maximumDecodedBytes`, 512 MiB; `GLM5NextProcessor.decodeAsset`); each
 pair of sampled frames becomes one image-token span between
@@ -819,7 +1002,7 @@ because videos decode one at a time, one decoded-frame cap when any video is
 present (`GLM5NextVisionBudget.mediaReservation`,
 `GLM5NextVisionBudget.videoTokenCeiling`). All media in one request share the
 processor's prepared-pixel cap of 28,532 visual tokens.
-Processor refusals, including variable-frame-rate video, are deterministic 400s; tower and MLX faults keep the
+Processor refusals are deterministic 400s; tower and MLX faults keep the
 retriable refusal. Media requests are excluded from prefix lookup and capture
 (`CBv2Request.permitsHybridCheckpoint`), so no KV is reused across images or videos, and
 they decode without MTP speculation. A GLM slot serves media only when its
@@ -866,6 +1049,36 @@ string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
+It renders reasoning that OpenRouter returns on earlier assistant turns
+(`reasoning` or `reasoning_details` text) as the template's `reasoning_content`
+(`GLM5NextPromptPolicy.RawControls.returnedReasoning`); OpenRouter's
+`reasoning.context` chooses which of it renders, `current_turn` meaning the
+template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
+`strict` tools by validating each `auto` call against its schema before
+exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
+GLM's native engine refuses sampler token constraints, so a JSON
+`response_format` is likewise prompt-steered and validated, not constrained:
+the service's instruction message renders through the template, reasoning
+streams on a separate typed channel, and the answer is withheld until
+generation ends, then decoded and checked (`json_schema` against the caller's
+schema, through the shared compiled subset when the schema fits it) before it
+is exposed; invalid output is a 422 with no
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
+`tool_choice` (required or a named function) is structured post-validation, as
+on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
+parser withholds the call until end of stream, and `ToolConstraintValidation`
+must accept it before it is exposed (`ToolChoiceEnforcementPolicy.forcedStrategy`).
+The provider advertises it for the managed GLM identities. Neither mode
+installs a token constraint or requests logprobs, so these rows stay
+MTP-eligible and pass the native engine's output-control refusal
+(`EngineV2Bridge.nativeOutputControlRefusal`).
+OpenRouter's hidden reasoning (`reasoning.exclude`, `include_reasoning` false,
+or Anthropic's `thinking.display` `omitted`) leaves the prompt unchanged: on
+text and media, GLM's reasoning then also takes the native typed channel, where
+`NativeToolStreamRouter` withholds it as it does for Flint. It still counts as
+reasoning tokens, and `WithheldReasoningLogprobsFilter` starts inside the
+prompt's open `<think>` (`GLM5NextPromptPolicy.withholdsReasoning`,
+`thinkingEnabled`).
 `GLM5NextPromptPolicy.templateSHA256` recognizes only the template shipped in
 `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` (and its `glm-5.3-flash` publication), and every GLM LOAD refuses any other
 template (`GLM5NextLocalQualification.requireShippedTemplate`). The pinned Swift-Jinja renders it
@@ -886,6 +1099,13 @@ prefill rates. Cross-model activity is tracked across the shared runtime, not
 inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
+
+Completed observations can reach the bridge out of engine-time order.
+`EnginePerformanceMeasurements.Rate` keeps age and expiry anchored to the newest
+observation in each aggregate, current-posture or workload-bucket series.
+Rate averaging and sample counts still follow receipt consumption order;
+an older receipt cannot move freshness backward or create a false evidence gap
+for the next observation. A heartbeat snapshot alone never renews evidence.
 
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
@@ -971,6 +1191,54 @@ probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
 maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
 
+Before those probes, ordinary `EngineV2` slots run an excluded shape warmup
+once per loaded engine (`ModelCalibrationPolicy.shapeWarmup`). MLX compiles
+each kernel specialization from source on first use in a process, and macOS
+caches the compiled libraries per app, keyed by source and GPU compiler. With a
+cold cache (a new install, or the first start after macOS or the MLX kernel
+sources change), the first long customer prompt paid those compiles; with the
+warmup it matched later requests (measurements in the
+[startup shape warmup report](../reports/2026-10-21-startup-shape-warmup-first-request.md)).
+A warm cache leaves no measurable first-request penalty, so the
+warmup first runs a greedy 128-token probe twice. Only a first run that
+exceeds its repeat by more than the repeat itself and 750 ms proceeds to the
+shape cells; otherwise they are skipped. One solo prompt covers stripe-wide
+chunks, keys past MLX's 4,096-key looped-softmax limit and an unaligned tail.
+One cell at the served width covers plain chunks beside decoding rows and decode
+or MTP verify at that width. Both use the artifact's default sampling. A cell
+counts only when every row reaches its requested length: a row the sampler
+stops early can retire before later rows join, so the cell reruns with another
+prompt, and its third try is accepted so an artifact that always stops early
+cannot keep the warmup due
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`shapeWarmupCellTries`). No probe
+or cell trains a rate or counter. They share a 20-second wall budget that
+includes prompt rendering. A timeout or refusal completes the attempt; only
+preemption leaves it due, and the retry resumes after the probes and cells
+already finished. Each finished pass records the served width it covered
+(`ModelCalibrationState.shapeWarmupWidth`). If the probe judged the cache cold
+(or the mode is `always`) and serving concurrency later grows past that width
+(posture returns to nominal, or the KV grant grows), the warmup is due again and
+the next idle session runs only the wider width's cell
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ShapeWarmup.swift`,
+`shapeWarmupDue`); a narrower width never lowers the record. The probe judges
+the whole cache from its one short shape, so a cache that holds it but not the
+long-prompt or served-width kernels (a process stopped between the probe and the
+cells, an earlier attempt the budget cut short, or a cache that only saw short
+prompts) skips the cells, and the first such request compiles them as before.
+
+The startup preload warms each loaded model after any passing self-test, before
+registration (or before a standalone listener opens), so routed traffic cannot
+preempt it; a local-endpoint request still can. Posture does not gate this pass
+because it measures nothing, and the registration gate's timeout still bounds
+the preload. Later engines (lazy loads, MTP replacement engines) run it in the
+idle calibration session after a 0.5-second pause that lets a triggering request
+preempt first. Slots with a reviewed deadline profile run it alone under the same
+idle gate, and standalone servers retry deferred engines from their 5-second
+sweep tick. Each attempt logs its outcome, duration and probe times.
+`DARKBLOOM_TTFT_SHAPE_WARMUP=0` restores the plain probes and `always` skips the
+shader-cache probe; the launchd job forwards it.
+
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
 affordable concurrency sweeps and solo refresh after 90 seconds. The existing
@@ -1045,6 +1313,24 @@ sequenceDiagram
     S-->>C: SSE chunks / final response
 ```
 
+The chat template is rendered on every request. When caching is enabled for
+the request, `LocalTokenizerBridge` encodes the rendered prompt through
+`PromptTokenCache` (`provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`):
+it cuts the text where an added token begins, under the conditions in which the
+swift-transformers encoder already encodes those pieces independently, and
+reuses the token IDs of pieces seen before in the same prefix-cache scope. New
+long prompts encode their pieces on up to four cores. The cache renders Gemma 4
+and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
+their per-message history scans that render the same text, so render time no
+longer grows with the square of the history length. The IDs equal the unchanged
+`applyChatTemplate` path's: tokenizers or templates outside
+those conditions, or failing a load-time comparison, keep that path, and
+sampled background comparisons against the served template disable reuse on a
+mismatch, or when the served template rejects a prompt the cache rendered. Reuse
+never crosses a cache scope; `DARKBLOOM_TTFT_PROMPT_CACHE=0` restores the
+unchanged path
+([configuration](../reference/configuration.md#prompt-preparation-and-admission)).
+
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
 deadline check → translation (`maxTokens = request.max_tokens ??
@@ -1062,6 +1348,27 @@ or fences them, so staging does not wait for that chunk
 ([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
 (`CBv2CompleteCheckpointImport`)).
+
+Segmented paged admission no longer waits for queued GPU work. A released row's
+free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,
+outside the grant, floor and ledger charge, and the next admission of the same
+size class reinstalls them. New segments wrap zero-fill-on-demand host pages
+when their size is a whole number of VM pages, so growth neither zero-fills on
+the device nor waits on a stream synchronize under the process-wide MLX eval
+lock
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`
+(`makeSegmentedPagedBackend`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
+(`cbv2ZeroFilledPages`)). Parked backing is dropped on a refused admission, on
+a process-wide release request (memory pressure, a refused charge, a load gate
+or startup-preload check short of memory) and after 30 s of engine idleness.
+The proactive allocator-cache sweep flushes between busy engines' steps only
+when the pool crowds out admission headroom
+(`KVPoolReclaimer.proactiveWindow`); otherwise it waits for 5 s of whole-Mac
+idleness and clears while request admission waits
+(`WholeMacServiceBudget.performIfIdle`).
+`DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
+restore the previous behavior ([configuration](../reference/configuration.md)).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
@@ -1102,8 +1409,10 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Setting | Value in production | Code |
 |---|---|---|
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
-| `maxBatchedTokensPerStep` / `prefillChunkSize` / `maxWaiting` | 2048 / 512 / 64 (`CBv2SchedulerConfig` init defaults) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 2048 (`defaultSoloPrefillStripeTokens`); 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` |
+| `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
+| `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
@@ -1114,6 +1423,65 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 
 Environment variables are named here, never defaulted; defaults live in
 [`../reference/configuration.md`](../reference/configuration.md).
+
+### Prompt geometry
+
+With one partial prefill (`maxConcurrentPartialPrefills`), the plain chunk is
+the prompt work a busy engine runs beside its decode rows: a solo stripe never
+arms beside an unpaused decode row (`SchedulerV2.plan`). Gemma 4 takes the
+2,048-token plain chunk and a 4,096-token step, so a full chunk and a finishing
+row's remainder share one step with the decode rows. The wider chunk amortizes
+each step's fixed host and readback cost over more prompt tokens and gives MoE
+expert GEMMs more rows per expert; a prompt needs a quarter of the mixed steps,
+so decode rows also spend more steps without prompt work. The chunk replaces
+Gemma 4's 2,048-token stripe rather than exceeding it, so the paged pool's
+`maxPrefillChunk` (`max(prefillChunkSize, soloPrefillStripeTokens)`,
+`makeSegmentedPagedBackend`) and every windowed-ring KV charge stay unchanged.
+The same holds for the GPT-OSS and dense Qwen opt-in below. The trade is
+inter-token latency: a decode token that shares a step with prompt work waits
+for the whole chunk, so the p90 gap shrinks while the p99 gap grows two to
+three times. The
+[2026-10-21 measurements](../reports/2026-10-21-mixed-step-prefill-geometry.md)
+record the load, engine and memory evidence; the activation effect is in
+[hardware support](hardware-support.md#serving-width-by-chip).
+
+Requests with bidirectional media blocks, Gemma 4 images and video frames,
+keep the SDK's 512-token plain chunk (`bidirectionalMediaPrefillChunkCeiling`,
+`CBv2SchedulerConfig.plainPrefillChunkSize`). A paged span-bearing chunk
+attends in one unblocked call whose score tensor grows with the chunk length
+times the history (`PagedLayerCache.prefillAttend`); a chunk that begins at a
+block still extends over the whole block. Qwen media is causal, attends in
+query blocks like text and takes the plain chunk.
+
+Other families keep 512 / 2048 (`usesWidePrefillChunk`):
+
+| Family | Reason |
+|---|---|
+| GPT-OSS (`GPTOSSModel`), dense Qwen3.5/3.8 (`Qwen35Model`) | Both reached the first token sooner under 2,048 / 4,096, but at eight 32k-token prompts it lifted their KV-subtracted activation peaks further above their floors: GPT-OSS from 3.50 to 3.62 GiB against 3.5, Qwen3.5-9B from 5.73 to 6.03 against 5.5. Floors are measured constants that move only with platform admission. Setting both keys to `2048` and `4096` opts them in. |
+| Nemotron 3.5 Lightning, Ternary Bonsai 2 (`MLXVLM.PrismHadamardQwen35`) | Their qualified demanded short checkpoints split only an armed solo stripe (`demandedCheckpointRange`), and the 2,048-token stripe would not exceed a 2,048-token plain chunk. |
+| MoE Qwen (`Qwen35MoEModel`) | Its measured activation peak rises about 2 GiB under 2,048 / 4,096, past the default floor at eight 32k-token prompts, and it has no busy-engine TTFT measurement. |
+| Qwen3-VL, Qwen4, MiMo and other families | No busy-engine measurement of the wide geometry. MiMo's grouped-prefill, step-owned attention and bounded MTP envelopes grow with the step budget (`EngineV2.init`). |
+
+An explicit `DARKBLOOM_CBV2_PREFILL_CHUNK` applies to every family, and the
+step budget follows it unless `DARKBLOOM_CBV2_STEP_TOKENS` is set, except
+where a later family policy replaces the geometry. GLM5Next takes its own
+2,048-token chunk and step limits and no stripe (`glm5NextServingScheduler`),
+and calibrated Nemotron models cap the chunk at their calibrated prefill limit
+and drop the stripe (`calibratedPrefillTokenLimit`), both in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`.
+Nemotron Super local serving takes `DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`
+and a step that holds one chunk plus its decode rows
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalPrefill.swift`,
+`NemotronSuperLocalPrefill.Policy.apply`). Scheduler-prefill
+benchmark receipts record the geometry the engine was actually built with
+(`EngineV2Factory.ProductionBuild.prefillGeometry`). Like every
+`DARKBLOOM_CBV2_*` key, either override enters the complete-checkpoint
+numerics fingerprint (`PrefixCachePolicy.completeCheckpointIdentity`) and
+disqualifies reviewed serving and deadline profiles
+(`ServingPerformanceProfiles.runtimeOverridesAreAbsent`,
+`DeadlineRuntimeEnvironment.permitsQualification`). A solo chunk on Gemma 4
+no longer counts toward `soloStripeChunks`, which still counts chunks wider
+than `prefillChunkSize`.
 
 ### Deadlines
 
@@ -1126,11 +1494,80 @@ exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
-prefill estimate is available. The ordinary admission path uses valid measured
+prefill estimate is available. The engine's projection replays decode-only
+steps between prompt chunks (`decodeStepsBetweenPrefillChunks`, GLM's
+default) from the scheduler's live owed count and charges each held step as a
+decode step of the rows decoding then
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`SchedulerV2.firstTokenWorkProjection`). A prompt-row ceiling
+(`maxPrefillRowsPerStep`) is not projected (`unsupported_scheduler`); the
+Nemotron Super owner, which sets it, submits without a first-content deadline
+(`NemotronSuperLocalBinding`). The ordinary admission path uses valid measured
 isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
 This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
+
+Three estimator corrections shape those inputs;
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
+
+Decode is charged per batch step. The decode EWMA is a per-request rate, so
+the policy carries the step shape of the requests that measured it
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift`,
+`CBv2DecodeRateShape`: token-producing rows, confirmed tokens and assigned
+width per decode step). The rows exclude the first-token step, which the rate
+does not time, unless that step's row count is unavailable
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePrefillReceipt.firstTokenStepRows`). The engine prices each projected
+step as one measured step, `tokensPerStep / rate`, scaled by `max(1, width / stepWidth)`
+and `max(1, rows / batchRows)`, instead of summing every row's tokens. A step
+no wider and with no more decode rows than the measured steps therefore costs
+one measured step: an MTP round costs the tokens it was measured confirming,
+not its `1+k` draft width. For a single measurement the scaling is a bound
+when step time never falls and grows at most linearly with rows and width.
+Admission smooths each request's mean step duration together with its shape
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`MeasuredDecodeStep`) and passes the rate implied by that duration, so the
+priced step time and time per row stay within the measured range. Across
+batch widths this is an average of measured steps, not a bound; the routing
+heartbeat keeps the per-request decode EWMA. The projection also mirrors the
+live MTP plan's depth gates
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`,
+`CBv2MTPRoundDriver.speculationDepthCeiling`): a step with more decode rows
+than `maxSpeculativeBatch`, or with no depth left inside the automatic
+verification envelope (`maxAutomaticRectangularTokens / rows - 1`; five or
+more rows at the 8-token M3-M5 envelope; both are
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`
+`CBv2MTPConfig` fields), charges each row one target token instead of `1+k`,
+and no step charges more depth than that ceiling. A projection with any media
+row keeps `1+k`, because target-only media rows can leave the planner's batch
+count. A request carrying a reviewed deadline calibration gets no shape: its
+calibrated conversion and its fallback keep the per-row charge with the
+per-request decode EWMA, at the configured `1+k` width, that its error envelope
+was measured against and that serving qualification's two-conversion proof
+(`provider-swift/Tests/ServingQualificationTests/ServingQualificationDeadlineEvidence.swift`,
+`ServingQualificationDeadlineEvidence`) assumes.
+
+Ordinary engines (without the native recovery probe) bound the aggregate
+isolated prefill rate by the startup calibration cell's idle rate
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`IsolatedPrefillAdmissionRate`): it is never priced below one eighth of that
+rate, and evidence that expired while the Mac sat idle at nominal posture is
+priced at no less than it. Evidence older than 30 minutes on an idle Mac is
+treated as absent, anchored or not, because a calibration cell can itself run
+under another process's GPU load. Idle means no other request on this engine
+and, through the shared whole-Mac service budget, no other resident model's
+request and no load, encoder preparation or cache transfer
+(`provider-swift/Sources/ProviderCore/Inference/Performance/WholeMacServiceBudget.swift`,
+`WholeMacServiceBudget.isIdle(except:)`). A fresh isolated sample in the
+request's prompt-size bucket still tightens the bounded aggregate, even below
+that floor, because the anchor comes from a short calibration cell
+(`provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift`,
+`ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
+evidence expires after 120 seconds. The published isolated rate is unchanged.
+A late older cold sample no longer restarts the combined prefill EWMA.
+
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
 state, competing profile identities and work limits, phase rates, and a
@@ -1385,6 +1822,19 @@ reservation (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/E
 `mtpDepthWithinOutputBudget`, `beginMTPPlan`).
 The process-wide kill switch is `DARKBLOOM_CBV2_MTP` (`CBv2MTPConfig.envEnabled`;
 see [`../reference/configuration.md`](../reference/configuration.md)).
+The Qwen inline assistant speculates for one decode row only. While more rows
+decode, its rows run ordinary decode that may chain: the target forward also
+returns its hidden rows, and finalize appends them to the assistant history in
+step order and stores the carry once no successor is in flight, with no policy
+top-two or extra readback. The final prompt row's hidden is the first carry, so
+a round can follow the first token without a seed step. Opt-in is per drafter
+(`supportsOrdinaryDecodeHistory`); drafters that need the committed-observation
+fence and native completion tracking keep MTP steps
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPOrdinaryHistory.swift`,
+`finalizeMTPOrdinaryHistory`). The rollback switches are
+`DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
+(`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
+[`../reference/configuration.md`](../reference/configuration.md)).
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation
@@ -1423,7 +1873,8 @@ disabled for this hybrid model.
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
 | `max_tokens` | `maxTokens = max_tokens ?? 4096` | 4096 |
 | `stop` | `stopStrings`, matched on held-back detokenised text (`EngineV2Bridge+StopSequence.swift`) | `[]` |
-| `min_p`, `priority` | **Ignored**: always `0` | — |
+| `min_p` | `minP`, forwarded by `EngineV2Bridge.submitTokenized` after translation | `0` |
+| `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
 "Artifact default" means the value declared in the checkpoint's
@@ -1473,6 +1924,31 @@ Other model identities keep the legacy defaults in the table byte-for-byte. `do_
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
 
+A native-tracked engine (`EngineV2.nativeShutdownExecutionContractID` set: the
+protected GLM5-Next and MiMo V2.6 engines) refuses a token constraint at
+submit, and a `topLogprobs` row unless its contract qualifies capture
+(`EngineV2.acceptsLogprobRows`; the GLM5-Next page-bank profiles do, MiMo
+does not). The engine's SDK-internal error could reach the coordinator only
+as a 500 `generation_failure`, which strikes its inference-error breaker, so
+`EngineV2Bridge.nativeOutputControlRefusal`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`)
+refuses such a request first, before any reservation, as
+`MultiModelBatchSchedulerEngineError.unsupportedOutputControl`: 400
+`invalid_request` with reason `client_error` on both submit paths.
+
+A GLM5-Next logprob row samples through the engine's ordinary sampler, like a
+logprob row on any CBv2 engine: it never drafts or verifies
+(`EngineLoopV2.mtpBasicEligible`), and its gather rides the step's retained
+native work. GLM has no request-scoped target-only fallback, so while such a
+row decodes beside other rows the whole step decodes target-only, as it does
+beside a GLM media row; output stays exact and the other rows speculate again
+once it finishes. Its entries follow
+[Super's contract](#nemotron-super-logprobs) on the relay
+(`ProviderLoop.logprobsCoverReasoning`): one per generated token in generation
+order, reasoning tokens included, so a response that ends while reasoning still
+carries them. GLM returns logprobs only through the relay; the standalone
+`--local` server emits none.
+
 ### Collected and streaming reasoning state
 
 The local HTTP responder selects an omitted reasoning parser from the model
@@ -1509,8 +1985,22 @@ Both text and media paths in `MultiModelBatchSchedulerEngine` apply the
 probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
-and generated answers need not emit another marker. Explicit `.none`, other
-parser families and unrecognized prompt tails receive no prefix from the
+and generated answers need not emit another marker.
+
+A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
+no think marker also receives the empty closed block
+(`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
+renders a bare `<|im_start|>assistant\n` generation prompt and does not
+reason; without the seed its whole answer waited for a tag or the end of
+generation. A `<think>` the model emits itself still opens reasoning in
+content state. Other Qwen types get no seed: the Qwen 3.5, 3.6 and 3.8
+templates always end in a marker, and a close-only reasoner such as
+`qwen3_next` writes its reasoning before a bare `</think>`, which a content
+seed would expose as answer text. `DARKBLOOM_TTFT_THINK_CONTENT_SEED=0`
+disables the seed.
+
+Explicit `.none`, other parser families (`deepseekR1` keeps close-only
+parsing) and other unrecognized prompt tails receive no prefix from the
 probe. Local HTTP additionally enables `seedsContentForUnknownPromptTail`:
 for a streamed think-format request with an unknown tail, `contentSeed` starts
 the parser in content mode. A generated `<think>` can still open reasoning.
@@ -1557,6 +2047,40 @@ Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
 inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
 including the embedded-MTP one, advertise forced tools
 (`ToolChoiceEnforcementPolicy.swift`).
+
+### Streamed auto tool calls
+
+Chat streams (`MLXOpenAIService.streamChatCompletionFrames`, which serves the
+coordinator path and local `stream: true` requests) set `streamToolCallDeltas`.
+For `tool_choice` `auto` on the `.gemma`, `.qwen35`, `.harmony` and `.json`
+formats, `ToolStreamPreparation.makeHandler` then gives `ToolCallProcessor`
+streaming options. Once a frame's function name resolves to a declared tool,
+the processor emits the name, then argument JSON fragments as they become
+certain: Gemma marker-quoted strings and Qwen XML string parameters stream as
+generated, other Qwen XML parameters once they close, and framed-JSON and
+Harmony arguments verbatim. Other Gemma values arrive with the closing frame,
+because one later value outside the strict grammar makes the complete parse
+read bare scalars and composites as raw strings. When the frame closes, the
+complete parse must agree with everything already exposed
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
+`NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
+fragment and validates name and schema at frame close; the service renders
+OpenAI fragments (`index`, `id`, `type` and `function.name` first, then
+`function.arguments` pieces). A response that begins with a call therefore
+reaches its first content frame at the function name instead of the engine
+terminal, which also ends the frame loop's pre-content deadline check.
+
+| Case | Behavior |
+|---|---|
+| Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
+| Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
+| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
+
+The response hash adds one `tool_call` marker per fragment in wire order; a
+complete call encodes exactly as before
+(`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
+`encodeToolCallsForHash`).
 
 ### Chat-template render check
 
@@ -1847,6 +2371,17 @@ checked, including shadowed aliases. `MiMoV26TemplateFix` and the coordinator's
 reasoning history remains intact; this alias adds no granular effort or
 reasoning-budget support.
 
+MiMo tool results pair with their calls by `tool_call_id` only. The pinned
+template renders a result's content but never its `name` or ID, so
+`MiMoV26TemplateFix.normalizeHistory` keeps a result's `name` unchanged and does
+not compare it with the call's function. It reorders a complete parallel result
+batch into call order. A result without a pending call, a repeated result, and a
+call left unanswered before the next non-tool message or the end of history are
+refused with 400 `invalid_request`. The coordinator's
+[`mimo_v26::normalize_history`](https://github.com/Layr-Labs/darkbloom-platform/blob/4b048a0edb1596df055aa27db494fc4df0474a1e/coordinator/promptsidecar/src/mimo_v26.rs)
+still compares the name. For such a request it returns no exact prompt plan,
+and the coordinator dispatches the request without one.
+
 Encoded MiMo visual ingress passes the existing transport ceiling
 `MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
 `MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
@@ -2039,6 +2574,40 @@ cleanup path. `QwenBatchLaneBook` releases only the withdrawn lane's reservation
 7. MTP is fail-open to target-only decode: artifact resolution failure or
    `DARKBLOOM_CBV2_MTP` off never refuses a load — `EngineV2SlotFactory+MTP.swift`,
    `MTPContractsV2.swift` (`envEnabled`).
+8. Default prompt geometry never widens the largest schedulable chunk or a
+   bidirectional media chunk: the wide plain chunk equals Gemma 4's former
+   stripe, and block-bearing requests keep the SDK chunk — `EngineV2Factory+Configuration.swift`
+   (`usesWidePrefillChunk`, `prefillGeometry`), `SchedulerV2.swift`
+   (`prefillChunkCap`).
+9. A Gemma 4 block chunk never exceeds the `maxPrefillChunk` its windowed
+   rings hold, although a chunk that starts at a block covers the whole block
+   and submit validation bounds blocks only by the step budget:
+   `Gemma4Processor` gives every image and video frame its own
+   `boi`/`eoi`-delimited block of `image_seq_length` or
+   `video_processor.max_soft_tokens` soft tokens (280 and 70 by default; the
+   vision family's largest image budget is 1,120). The default 2,048-token
+   chunk covers that, and a chunk override that leaves `max(chunk, stripe)`
+   below 1,120 tokens is raised to 1,120. A step budget below 1,120 is raised
+   to 1,120 as well, because submit validation refuses a block longer than the
+   step budget —
+   `libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma4.swift` (`Gemma4Processor`),
+   `MultimodalV2.swift` (`CBv2MultimodalPlan.validate`),
+   `EngineV2Factory+Configuration.swift` (`gemma4MaximumMediaBlockTokens`,
+   `prefillGeometry`).
+10. A coordinator request refused as a client error, before its inference task
+   or while its prompt is prepared, writes exactly one fixed public log line
+   naming a closed `InferenceRefusalReason` and a private line pairing it with
+   the request ID, never request text; the refusal's `inference_error` frame is
+   unchanged. Prompt-time reasons ride on the typed error
+   (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
+   error case), never on its message —
+   `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+   (`handleInferenceRequest`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`
+   (`InferenceFailureLogger`),
+   `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`
+   (`init(promptRefusal:)`). The lines are listed in the
+   [CLI reference](../provider/cli-reference.md#refusal-lines).
 
 ## Failure modes
 
@@ -2054,7 +2623,9 @@ cleanup path. `QwenBatchLaneBook` releases only the withdrawn lane's reservation
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
+| `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
+| Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 
 ## Code map
@@ -2090,7 +2661,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
 | Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |
-| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift` |
+| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`, `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `MeasuredDecodeStep`, `IsolatedPrefillAdmissionRate`) |
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
@@ -2118,27 +2689,72 @@ mixed affine export (group-64 INT4 projections/experts, INT8 embeddings, BF16
 sensitive tensors), with native BF16 KV for the official export. It rejects
 missing/extra/duplicate tensors, conflicting aliases and unsupported geometry
 rather than silently filling a checkpoint.
-This format is not NVFP4. Native KV and native checkpoint precision are required;
-select both explicitly when the provider's general checkpoint setting is
-`balanced`. `EngineV2KVQuantizationPolicy.resolve` rejects non-native selections;
-the production factory also checks an explicitly supplied checkpoint selection.
-Reduced KV and MTP are not supported by this integration.
+This format is not NVFP4. Flint always uses native KV and native checkpoint
+precision. `EngineV2KVQuantizationPolicy.resolve` ignores the provider-wide
+defaults for it (checkpoints default to `balanced`), so a default configuration
+serves Flint, and refuses an explicit per-model or environment selection of
+anything other than native. The production factory also checks an explicitly
+supplied checkpoint selection. Reduced KV and MTP are not supported by this
+integration.
 
-Select `engine_v2_kv_backend = "paged"` for paged serving and pass
-`--kv-backend paged` to its qualification benchmarks. Explicit selection refuses
-paged construction failures; automatic selection follows the general artifact
-allowlist and does not establish that a Flint slot used paged attention. Record
-the resolved backend in every performance receipt. Contiguous measurements are
-separate reference results, not evidence of paged throughput.
+Flint is served only on paged attention.
+`EngineV2Factory.prepareProductionBackend` treats an automatic
+`engine_v2_kv_backend` selection for a verified `FlintModel` as explicit paged:
+the automatic crash-loop guard cannot move it to contiguous, and paged
+construction failures refuse the load. An explicit `contiguous` selection, the
+paged kill switch or a model-capability veto also refuses the load instead of
+serving contiguous. Pass `--kv-backend paged` to its qualification benchmarks
+and record the resolved backend in every performance receipt. The plain
+`darkbloom benchmark` command runs Flint through the production CBv2 session
+(`ModelBenchmark.usesNativeGeneration`), and `--sweep` skips its scalar,
+non-paged prefill pass for Flint (`ThroughputSweep.measuresScalarPrefill`);
+measure paged prefill with `--scheduler-prefill`.
 
-Flint chooses reasoning automatically. `FlintRequestPolicy` rejects explicit
-reasoning effort/enabled controls, media and combined JSON response-format/tool
-requests. Output limits remain ordinary completion-token limits.
+Flint always decides for itself whether to reason; it has no trained switch,
+effort level or budget, and its pinned template reads none of these controls
+([Recursive's serving guide](https://github.com/RecursiveSI/flint/blob/2a247be0c0aec895ccb0ac7ca92229ec6df37288/sglang/README.md)).
+`FlintRequestPolicy` accepts `reasoning_effort` and `reasoning.effort` (none,
+minimal, low, medium, high or xhigh), `reasoning.enabled`, `enable_thinking`
+and `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
+prompt. Malformed values, unknown efforts, `preserve_thinking`, other reasoning
+keys and media are refused. When a request sets `reasoning.exclude` true,
+`include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
+withholds the generated reasoning, so chat completions, the Responses API and
+the coordinator relay return only content and tool calls. The withheld tokens
+still count in `completion_tokens` and `completion_tokens_details.reasoning_tokens`;
+the response hash covers only emitted output, and withheld reasoning counts as
+first output for the first-content deadline. Relay logprobs cover every sampled
+token and attach to the next content frame; for withheld reasoning,
+`WithheldReasoningLogprobsFilter` drops the entries of the initial
+`<think>…</think>` span, matched on bytes like the native boundary, so hidden
+reasoning never returns as entry tokens. GLM-5.3-Flash withholds hidden
+reasoning through the same router and filter. Output limits remain ordinary
+completion-token limits.
+
 `ToolConstraintFactory.make` attaches `FlintNativeProtocolConstraint` to every
 exact `model_type: flint` request, including requests without tools. It verifies
-the rendered assistant boundary and pinned tokenizer markers. Custom stop
-strings are rejected because independent stop-string matching could terminate
-an unfinished reasoning span or call. Other model families retain their policies.
+the rendered assistant boundary and pinned tokenizer markers. Engine stop-string
+matching stays off for Flint because it could end an unfinished reasoning span
+or call. Instead, up to four client `stop` sequences of at most 256 bytes are
+matched by `FlintAnswerStops` against visible answer bytes only: reasoning,
+call frames and arguments never advance a match. `FlintAnswerStopConstraint`
+leaves only an answer EOS after the first match, so the request finishes with
+`stop`, and `FlintAnswerStopFilter` withholds the sequence and everything after
+it before the channel splitter or tool parser sees it. Other model families
+retain their policies.
+
+A JSON `response_format` (`json_object`, or `json_schema` within the shared
+fail-closed schema subset) constrains the content after optional reasoning, as
+in Recursive's guide. `FlintJSONContentAutomaton` replaces the boundary's
+content phase: reasoning is unconstrained, and visible content must be one JSON
+value of the compiled grammar; declared object properties are the only keys
+generated. A schema outside the subset is a 400 before generation.
+`FlintResponseFormat.validate` decodes and checks the completed content again;
+a failure, including an output budget that ends before the value completes, is
+a typed 422 rather than a successful completion. Tools plus a response format
+get only the response format, whatever `tool_choice` asked: the prompt renders
+as it would without the format, so the coordinator prompt sidecar needs no
+format rule, and no call may be generated or returned.
 
 | Prepared tool choice | Native output boundary |
 |---|---|
@@ -2196,6 +2812,27 @@ and retains full JSON/schema post-validation. It does not import rec's scheduler
 or XGrammar runtime. Constraint memory and decode scheduling costs are described
 under [Flint memory admission](hardware-support.md#flint-memory-admission).
 
+The constraint does not stall decode. `FlintNativeProtocolConstraint` and
+`FlintAnswerStopConstraint` opt into the CBv2 engine's constrained chaining:
+step N+1 is sampled while step N is still on the GPU, using the mask of the
+state confirmed through N-1, and is redrawn from its retained logits (penalty
+state and per-row RNG step restored) when N moves to a different state, so the
+token stream is identical to unchained decode. Their `maskCacheKey` is the
+constraint state while output budget remains, because the allowed set depends
+only on the state; repeated states reuse a cached device mask instead of
+rebuilding the vocabulary-sized mask on the host. The catalog artifact
+`RecursiveSI/flint-int4` is on the automatic paged list, so it starts at the
+legacy serving width (`ServingPerformanceProfiles.legacyMaximumConcurrency`) on
+M5 Pro, Max and Ultra without an operator override.
+
+Decode also runs fewer, fused kernels: one quantized matmul for q/k/v on single
+rows and for dense/shared gate+up on small batches, routed gate/up banks fused
+at load (the checkpoint is still validated in split form), compiled router
+steps, and one kernel for the MoE combine, shared-expert add and residual add.
+The batch-1 decode graph drops from about 2,000 to about 1,200 GPU primitives
+per token with byte-identical outputs. Larger row counts keep the separate
+projections, because MLX's split-K choice depends on the output width.
+
 The published tool protocol has no escape for a literal `</arg_value>` in a
 top-level raw string value. `FlintRequestPolicy` rejects such historical
 arguments; syntactically indistinguishable generated frames cannot be recovered
@@ -2217,6 +2854,12 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift` (`make`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolConstraint.swift` (`FlintNativeProtocolConstraint`),
 `provider-swift/Sources/ProviderCore/Inference/FlintNativeProtocolBoundary.swift` (`FlintNativeProtocolBoundary`),
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStops.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintAnswerStopConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),
 `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,
@@ -2309,15 +2952,17 @@ mandatory. See `provider-swift/Sources/ProviderCore/Inference/Distributed/Calibr
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, need within the GPU working set and the at-rest admissible memory `atRestAdmissibleBytes`), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit.
 
-GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no rank (the runtime still loads NextN whole beside the stage for speculative decode and charges it at load; see below). The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The image profile stays pipeline-only, in both the layout and the capability. The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone and a keyed link measurement, the planner chooses tensor parallel. Before the keyed link has been measured, it chooses a pipeline (`GLMTensorParallelChecks`).
+GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no rank (the runtime still loads NextN whole on both ranks beside the stage for speculative decode, and the vision tower whole on rank 0 for media, and charges them at load; see below). The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone and a keyed link measurement, the planner chooses tensor parallel. Before the keyed link has been measured, it chooses a pipeline (`GLMTensorParallelChecks`).
 
-A chosen GLM tensor-parallel placement is served by `GLM5NextTensorParallelResidentRuntime` (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/`). Each rank verifies the whole artifact, loads every layer's share through `GLM5NextTensorShard`, and sums each layer's attention and feed-forward partials (bfloat16, added in float32) over the sealed all-sum (AES-256-GCM on the keyed JACCL data plane; a peer piece that does not open fails the request). On the JACCL mesh the sum is streamed in one CPU-stream task: each 256 KiB sealed piece carries its own tag, crosses as soon as it is sealed and is opened and added as soon as it lands, so only the first and last pieces wait for crypto (`SealedAllSum`, `sealed_stream.h`); other groups seal and gather the whole frame. Prefill runs 4,096-token chunks on both ranks (`prefillChunkTokens`: the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4 matmuls against ~62 at 2,048; charged as a second request workspace), each chunk as two micro-batches whose sums are issued as soon as their partials exist, so one computes while the other's sum crosses the link (`GLM5NextTextStage.tensorParallelMicroBatches`; 2,532 against 1,767 tok/s whole); sampled decode runs one token per step, and the ranks' tokens must agree at every step. A tensor-parallel worker lifts MLX's per-command-buffer input-size bound before anything native starts (`WorkerCommandBufferBudget`, `MLX_MAX_MB_PER_BUFFER`; a launcher value is kept): every MoE launch takes a whole expert bank as input, so decode committed ~88 buffers a step instead of ~22 (measured 19.0 -> 16.8 ms a step; the 50-operation bound stays). The load gate charges the shard, the NextN layer, both pipeline ranks' request budgets plus speculative decode's request state, and a 4 GiB freed-buffer cache (the load runs with MLX's cache at zero; serving with it at zero halves prefill and decode). READY names the installed partition's plan hash, as a pipeline rank does. Prompt prefixes are reused as under Qwen tensor parallel: each rank keeps its own stage cache (its heads' KDA state and the replicated DSA latents) at a prompt's last whole chunk boundary in memory (`GLM5NextTensorParallelPrefixCache`, at most 8 GiB), and a request restores the longest boundary both ranks hold after one sealed vote, or neither does; entries give way first under memory pressure and every failure drops them. No SSD tier yet. Tensor parallel is text-only for now: no images (image requests keep the pipeline profile). The link probe that prices the reduction (`QwenTensorParallelLinkProbe`, recorded by both pipeline and tensor-parallel loads) times the sealed all-sum after one unmeasured pass with the same bounded cache, so the planner prices what a ready rank pays (a cold probe read 16.9 ms per 32 MiB against 5.8 ms ready).
+A chosen GLM tensor-parallel placement is served by `GLM5NextTensorParallelResidentRuntime` (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/`). Each rank verifies the whole artifact, loads every layer's share through `GLM5NextTensorShard`, and sums each layer's attention and feed-forward partials (bfloat16, added in float32) over the sealed all-sum (AES-256-GCM on the keyed JACCL data plane; a peer piece that does not open fails the request). On the JACCL mesh the sum is streamed in one CPU-stream task: each 256 KiB sealed piece carries its own tag, crosses as soon as it is sealed and is opened and added as soon as it lands, so only the first and last pieces wait for crypto (`SealedAllSum`, `sealed_stream.h`); other groups seal and gather the whole frame. Prefill runs 4,096-token chunks on both ranks (`prefillChunkTokens`: the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4 matmuls against ~62 at 2,048; charged as a second request workspace), each chunk as two micro-batches whose sums are issued as soon as their partials exist, so one computes while the other's sum crosses the link (`GLM5NextTextStage.tensorParallelMicroBatches`; 2,532 against 1,767 tok/s whole); sampled decode runs one token per step, and the ranks' tokens must agree at every step. A tensor-parallel worker lifts MLX's per-command-buffer input-size bound before anything native starts (`WorkerCommandBufferBudget`, `MLX_MAX_MB_PER_BUFFER`; a launcher value is kept): every MoE launch takes a whole expert bank as input, so decode committed ~88 buffers a step instead of ~22 (measured 19.0 -> 16.8 ms a step; the 50-operation bound stays). Decode steps, MTP rounds and lane rounds encode with at most 100 operations a buffer on the thread that encodes them (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`), above the owner's 16-operation rank guard, which prefill keeps: each further buffer is a GPU gap of about 10 µs (13.24 -> 12.56 ms a step, tokens identical). An MTP round submits its NextN priming and proposals as soon as they are built, so the GPU runs them while the host builds the verification forward (`GLM5NextTensorParallelSpeculation.EarlySubmission.proposals`; before, the whole round's graph, about 1.8 ms of host work, was built with the GPU idle): a depth-2 round 23.06 -> 21.64 ms (95.9 -> 102.7 tok/s), two lanes 115.2 -> 121.6 tok/s, tokens and top logits identical. A greedy round reads out half the head's vocabulary rows on each rank and agrees on every window token through the round's existing agreement sum: each rank's slot carries its half's maximum and argmax, and the larger maximum wins, rank 0's lower index on a tie, which is the whole head's argmax (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, `GLM5NextTextStageReadout.allTokensVocabularyPart`): 21.32 -> 21.05 ms a depth-2 round, tokens identical; sampled rounds keep the whole head. A GLM tensor-parallel worker lets the hyper-connection site that reads a sum wait for it itself (`WorkerFenceFusion`: `MLX_METAL_FENCED_INPUTS`; a launcher value is kept), one dependent dispatch fewer on each of a step's 90 sums. The core's fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a launcher's choice: above 32 KB a partial's update is split over several threadgroups and that path never signals the CPU, so two batched lanes (six verification rows) stalled every round about 0.7 s. The load gate charges the shard, the NextN layer, both pipeline ranks' request budgets plus speculative decode's request state, and a 4 GiB freed-buffer cache (the load runs with MLX's cache at zero; serving with it at zero halves prefill and decode). READY names the installed partition's plan hash, as a pipeline rank does. Prompt prefixes are reused as under Qwen tensor parallel: each rank keeps its own stage cache (its heads' KDA state and the replicated DSA latents) at a prompt's last whole chunk boundary in memory (`GLM5NextTensorParallelPrefixCache`, at most 8 GiB), and a request restores the longest boundary both ranks hold after one sealed vote, or neither does; entries give way first under memory pressure and every failure drops them. No SSD tier yet. The link probe that prices the reduction (`QwenTensorParallelLinkProbe`, recorded by both pipeline and tensor-parallel loads) times the sealed all-sum after one unmeasured pass with the same bounded cache, so the planner prices what a ready rank pays (a cold probe read 16.9 ms per 32 MiB against 5.8 ms ready).
 
 Greedy requests under GLM tensor parallel decode speculatively with the model's own NextN (MTP) layer (`GLM5NextTensorParallelResidentRuntime.mtpDepth`, depth 2; `GLM5NextTensorParallelSpeculation`). Every rank loads the layer whole beside its shard (about 4.2 GB; it shares the replicated embedding and head and needs no sums), so both ranks propose the same tokens from the same inputs. A round proposes up to `mtpDepth` tokens (step 0, then index-shared continuations for depth 2 and 3), verifies the last committed token and the proposals in one stage forward (`GLM5NextTextStage.prepareVerification`: a `[1, 1 + depth]` window through the same 91 sums), and keeps the longest prefix of proposals equal to the target's greedy tokens, plus the target's next token. Each KDA layer adopts the state it captured after the last kept token and each DSA history drops the rest (`GLM5NextTextStageCandidate.commit(afterEvaluating:keeping:)`), so a rejected proposal costs no replay forward. The round's one sealed reduction carries each rank's target tokens, proposals and stop flag: tokens or proposals that differ end the request, and a stop flag on either rank ends both after the same round. Rounds are not pipelined; each reads its agreement before the next is built, but a round's tokens are committed while the next round runs (`GLM5NextTensorParallelSpeculation.round`, `whileRunning`), unless they end the request. The NextN history is primed from the prompt's hidden rows (history only: no attention, MoE or readout) and afterwards only from verified pairs, and prompt-prefix entries keep it at their boundary. Tokens leave one at a time through the same stop and length rules. The output is the target's greedy tokens, computed in windows of up to `1 + depth` rows instead of one-row steps. MLX runs a one-row quantized projection (and the head) as `qmv` and a multi-row one as `qmv_wide`, which reduces K in a different order, so every window rounds differently from a one-token step and the KDA and DSA histories carry that forward: a long speculative decode drifts from one-token greedy decode and can choose a different token after tens to hundreds of tokens, not only at near-ties (measured on the 3,931-token prompt: first difference at output 104 for depths 1 and 2, and at 89 for depth 3; `qmv_wide` rounds a row the same in two- and three-row windows). The ranks never differ, and a one-token window is bitwise an ordinary step (`darkbloom-cluster-tp-check glm --mtp-check one-token`; `keep-first` decodes one token per round through full windows to separate this arithmetic from acceptance and rollback). On the pair (sealed, 256 tokens) decode measured 62.6 tok/s one token per step, 68.7 at depth 1, 76.0 at depth 2 (2.24 tokens a round) and 71.8 at depth 3. Sampled requests keep one token per step (rank 0 draws). The load agreement binds the depth (`glm5-next-tp-mtp-v1`). The planner does not price speculative decode yet: it assumes one token per step and no NextN bytes, so the load gate can refuse a pair the plan admitted.
 
+GLM image and video input under tensor parallel (`ClusterGLMMedia`, contract `glm53_tp_media_v1`) is the single-Mac product's media path split across the leader and rank 0. The leader runs the product's code up to the vision tower (`DistributedGLMMediaIngress`): `EngineV2VisionPrefill.glm5NextUserInput` (the bounded `MediaIngest` decode and every product cap) and `GLM5NextProcessor.prepareDetailed` with the artifact's processor budgets and the thinking-off tokenizer, on the CPU device, so the expanded prompt, its spans and its patches are the product's; it checks them as `buildGLM5NextSubmission` does and describes each part: its encoded bytes' digest, grid, per-pair token offsets, the product's tower limits for one frame (`VisionTowerBudget.glm5FrameLimits`) and a SHA-256 of its prepared patches. Rank 0's reservation carries the encoded bytes as well (at most 32 MiB, the one worker command above the 8 MiB command bound: `ClusterWorkerLimits.mediaCommandBytes`); rank 1's carries the digests only, and both bind the envelope's fingerprint into the request digest. Rank 0 holds the vision tower (1.13 GB of bfloat16 weights, charged at load). From the reservation on, off the executor and without MLX, rank 0 rebuilds the ingest's media values, prepares them with the SDK's `GLM5NextProcessor.prepareMediaValues` (the media half of `prepareDetailed`, as host values) and requires every grid and patch digest to equal the leader's; the reservation itself returns at once. When the request opens, after the digest agreement, both ranks exchange small sealed sums carrying that preparation's status and each rank's stop until it ended (a stop ends the request on both ranks before anything is made; a failed or different preparation is an agreement failure on both). Rank 0 then runs the tower once per temporal pair with the leader's limits on the default GPU stream, as the product does, and one sealed all-sum per frame carries the features to rank 1, which adds negative zero (the additive identity for every value, signed zeros included, rounded once); rank 0 checks each result bit for bit and a last small sum carries its verdict, so both ranks end together on a difference. Every one of these sums is evaluated alone. With batch lanes a media lane runs the same open, frames and rounds: rank 0 joins it only once its preparation ended (`GLM5NextTensorParallelLaneReservation.joinable`), so the running lanes never wait for a decode, and its media charge is held with its lane state. A prefill frame that holds media positions replaces their embedding rows with the features by concatenation (the product's `spliceEmbeddings`) and runs from those embeddings through the same chunks and micro-batches (`GLM5NextTextStage.prepareForward(embeddings:cache:segments:readout:snapshotAfter:)`), so a frame merging several chunks stays bitwise for media rows as for text; every other row and frame is the text path's, on tensor parallel's own chunk grid. Unlike the single-Mac product, which decodes media requests target-only, a media request here decodes speculatively as text does: the NextN history is primed with the same input rows, so a media position's next input is its feature row (`GLM5NextMTP.primeHistory(shiftedEmbeddings:)`, as a multimodal target's drafter is fed). It neither restores nor stores prompt prefixes. Workers advertise the contract at READY (`ClusterWorkerReady.media`) with a request capacity that covers one media request (`GLM5NextTensorParallelMedia.capacityBytes`); a text request is still charged only its own context. The leader binds media only when both ranks advertise it, and the pipeline's private image profile is unchanged.
+
 Rank 0 hands each committed token to its owner and reads the owner's answer late (`ClusterCommittedTokenChannel`, `WorkerRuntime.start(_:tokens:)`): it publishes the token at once, and reads the answer after the next step or round was submitted, before it publishes the next token. The protocol's token credit is unchanged (`ClusterWorkerSession` still refuses a token before the answer to the one before, and anything after a stop), but the answer's round trip through the owner (pipes, the provider's token callback and detokenizer; about 0.7 ms a token measured at the endpoint; greedy decode went from 73.5 to 76.8 tok/s through the API, matching the bench) now overlaps the next step's encoding and GPU time instead of sitting between steps. A stop answer takes effect one step or round later; that work is computed and never published, and its flag reaches the peer in the next submitted sum as before. Other runtimes publish and wait as before (the protocol's default implementation).
 
-GLM's decode and prefill kernels changed only in ways that keep every output bit for bit (they serve one Mac and the cluster alike). Decode: each hyper-connection site is one launch whose last threadgroup finishes the Sinkhorn and collapse (`GLM5NextHyperConnectionNormFusion`, `SplitForm.oneLaunch`); the MoE decode router spreads each expert row over 8 SIMD groups and replays top-K with `simd_max`/`simd_min` in the same order (`GLM5NextMoEDecodeKernel`); DSA decode uses smaller, more numerous threadgroups, a 1,024-thread top-k and a two-launch cache append that writes fresh buffers (`GLM5NextSparseDecodeKernel`, `GLM5NextTextCache`); per-call constants are cached and dead KDA nodes are no longer built. Prefill: the MoE gathers decode a packed NVFP4 word at a time (`GLM5NextMoEPrefillKernel`) and DSA's absorbed queries run beside the first index-score block. Host: MLX shares generated kernel sources, resolves pipelines once and binds repeat launches without rebuilding names or keys. Core's fused fence update and fenced custom-kernel inputs (`MLX_METAL_FUSED_FENCE_UPDATE`, `MLX_METAL_FENCED_INPUTS`) are opt-in and off. Measured on two M5 Ultra (sealed TP2, MTP depth 2): plain decode 14.45 -> 12.43 ms a step, an MTP round 27.8 -> 23.9 ms, 15.7K-token prefill 3,819 -> 3,917 tok/s, tokens and top logits identical. Changes that only reorder sums were measured with a teacher-forced full-model perplexity bench and rejected (KDA paired order, DSA absorbed product on the tensor units, the tensor-unit prefill router, INT8 activations: +0.4 to +5.6 % perplexity, about 79 % top-1 agreement against a 99.4 % noise floor of the product's own chunking).
+GLM's decode and prefill kernels changed only in ways that keep every output bit for bit (they serve one Mac and the cluster alike). Decode: each hyper-connection site is one launch whose last threadgroup finishes the Sinkhorn and collapse (`GLM5NextHyperConnectionNormFusion`, `SplitForm.oneLaunch`); the MoE decode router spreads each expert row over 8 SIMD groups and replays top-K with `simd_max`/`simd_min` in the same order (`GLM5NextMoEDecodeKernel`); DSA decode uses smaller, more numerous threadgroups, a 1,024-thread top-k and a two-launch cache append that writes fresh buffers (`GLM5NextSparseDecodeKernel`, `GLM5NextTextCache`); per-call constants are cached and dead KDA nodes are no longer built. Prefill: the MoE gathers decode a packed NVFP4 word at a time (`GLM5NextMoEPrefillKernel`) and DSA's absorbed queries run beside the first index-score block. Host: MLX shares generated kernel sources, resolves pipelines once and binds repeat launches without rebuilding names or keys. Core's fused fence update and fenced custom-kernel inputs (`MLX_METAL_FUSED_FENCE_UPDATE`, `MLX_METAL_FENCED_INPUTS`) are off by default; a GLM tensor-parallel rank turns the fenced inputs on (`WorkerFenceFusion`) and leaves the fused fence update to its launcher. Measured on two M5 Ultra (sealed TP2, MTP depth 2): plain decode 14.45 -> 12.43 ms a step, an MTP round 27.8 -> 23.9 ms, 15.7K-token prefill 3,819 -> 3,917 tok/s, tokens and top logits identical. Changes that only reorder sums were measured with a teacher-forced full-model perplexity bench and rejected (KDA paired order, DSA absorbed product on the tensor units, the tensor-unit prefill router, INT8 activations: +0.4 to +5.6 % perplexity, about 79 % top-1 agreement against a 99.4 % noise floor of the product's own chunking).
 
 What a tensor-parallel setup served corrects only its shard rates (`ClusterServedCalibration.tensorParallelMeasurements`); the whole-model rates it carries are the estimate it started from. `ClusterSpeedEstimator` therefore takes a device's whole-model rates from its best other measurement (a probe, or what a pipeline or one Mac served) and lays the served shard rates on top (`ClusterSpeedMeasurement.correctsShardRatesOnly`). Before, the tensor-parallel record, being nearest the request mix, replaced a pipeline's served rates with the prior and priced a serial pipeline as fast as one Mac.
 

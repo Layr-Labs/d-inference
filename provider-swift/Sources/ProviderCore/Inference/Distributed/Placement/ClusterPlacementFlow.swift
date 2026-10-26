@@ -53,6 +53,7 @@ public enum ClusterPlacementFlow {
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
+                              incumbentMode: ClusterGenerationMode? = nil,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
@@ -142,6 +143,21 @@ public enum ClusterPlacementFlow {
                 devices = ClusterHardwarePrior.absolute(zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
                     layout: layout, link: link)
             }
+        }
+        // What this pair served in each mode, for the reference request, and the mode the plan keeps because of it
+        // (`ClusterServedModes.hold`): after a Darkbloom update (`incumbentMode`, the same model on the same pair)
+        // the mode the pair served in, unless the planner and the pair's own requests both find another faster;
+        // otherwise, once the pair served two modes, the one it served faster. A developer's forced mode keeps nothing.
+        let reference = (prompt: policy.promptTokens ?? layout.maximumPromptTokens, output: policy.outputTokens ?? layout.maximumOutputTokens)
+        let servedModes = ClusterServedModes.figures(ours, promptTokens: reference.prompt, outputTokens: reference.output)
+        if !servedModes.isEmpty {
+            servedLines += ["Served requests by mode"]
+                + ClusterServedModes.lines(servedModes, promptTokens: reference.prompt, outputTokens: reference.output)
+        }
+        let plannable = capability.supportedGenerationModes.filter { layout.generationModes.contains($0) && (handOff || !$0.isHandOff) }
+        if forced == nil, let hold = ClusterServedModes.hold(incumbent: incumbentMode, figures: servedModes, plannable: plannable,
+                                                              promptTokens: reference.prompt, outputTokens: reference.output) {
+            policy.keptMode = hold.mode; policy.keptModeMargin = hold.margin; policy.keptModeReason = hold.reason
         }
         // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
         // unmeasured, no tensor-parallel mode is chosen.

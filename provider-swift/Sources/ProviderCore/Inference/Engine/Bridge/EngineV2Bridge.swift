@@ -29,6 +29,9 @@ public actor EngineV2Bridge {
     /// MLX cache or grows the surviving models' memory grants.
     let draftMiMoImageConfiguration: Data?
     let clusterGLMImageConfiguration: Data?
+    /// GLM images and video on the tensor-parallel pair (`ClusterGLMMedia`):
+    /// present only when both ranks serve the media contract.
+    let clusterGLMMediaIngress: DistributedGLMMediaIngress?
     var ownedEngine: (any CBv2Engine)?
     struct NativeShutdownIdentity: Equatable {
         let engineID: UUID
@@ -323,6 +326,12 @@ public actor EngineV2Bridge {
     var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
+    /// Decode step of the requests behind `observedDecodeTpsEwma`, smoothed
+    /// and reset with it. Deadline admission uses it to charge decode per
+    /// batch step instead of per row.
+    var observedDecodeStep = MeasuredDecodeStep()
+    /// `DeadlineAdmissionFixes`, resolved once per bridge.
+    let admissionFixes: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -335,6 +344,9 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    /// Latest published calibration-cell isolated rate: measured idle at
+    /// nominal posture with caching off. Anchors admission's isolated rate.
+    var calibratedIsolatedPrefillTps: Double?
     var nativeMediaPrefillRates = NativeMediaPrefillRates()
     var nativeMediaBootstrapRequestID: String?
     var nativeMediaLearnedRequestIDs: Set<String> = []
@@ -402,18 +414,22 @@ public actor EngineV2Bridge {
         distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         draftMiMoImageConfiguration: Data? = nil,
         clusterGLMImageConfiguration: Data? = nil,
+        clusterGLMMediaIngress: DistributedGLMMediaIngress? = nil,
         calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
+        admissionFixes: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.draftMiMoImageConfiguration = draftMiMoImageConfiguration
         self.clusterGLMImageConfiguration = clusterGLMImageConfiguration
+        self.clusterGLMMediaIngress = clusterGLMMediaIngress
         self.ownedEngine = engine
         self.glm5NextNativeOwner = glm5NextNativeOwner
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
+        self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
@@ -476,7 +492,8 @@ public actor EngineV2Bridge {
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil
-        self.prefixCacheBaseStatus = cacheRejected ? PrefixCacheModelStatus(
+        let constructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        let baseStatus = cacheRejected ? PrefixCacheModelStatus(
             modelId: modelId, backend: PrefixCacheStatusBackend(kvBackendKind),
             replayStrategy: .unknown, state: .disabled, reason: .unsupportedLayout
         ) : prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -485,7 +502,12 @@ public actor EngineV2Bridge {
             replayStrategy: .unknown,
             state: durableSource == nil ? .disabled : .pending,
             reason: durableSource == nil ? .unsupportedBackend : .scanPending)
-        self.prefixCacheConstructionFailure = durableSource == nil ? prefixCacheConstructionFailure : nil
+        // A refused store reports its typed cause beside the closed reason.
+        self.prefixCacheBaseStatus = PrefixCacheModelStatus(
+            modelId: baseStatus.modelId, backend: baseStatus.backend,
+            replayStrategy: baseStatus.replayStrategy, state: baseStatus.state,
+            reason: baseStatus.reason, detail: baseStatus.detail ?? constructionFailure)
+        self.prefixCacheConstructionFailure = constructionFailure
         self.prefixCacheEvidenceSequencer = durableSource.map {
             PrefixCacheEvidenceSequencer(source: $0)
         }
@@ -520,6 +542,7 @@ public actor EngineV2Bridge {
             }
         }
         self.emitTelemetry = emitTelemetry
+        performanceMeasurements.keepsNewestObservationTime = self.admissionFixes
     }
 
     /// Deterministic timing seam for prefill-sampling tests.

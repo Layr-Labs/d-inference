@@ -6,13 +6,48 @@ public enum ClusterWorkerProtocolError: Error, Equatable, Sendable {
 
 /// Software ceilings, never permission to allocate native state or load a model.
 public enum ClusterWorkerLimits {
-    public static let version = 1
-    public static let commandBytes = 512 * 1024
+    /// 2: a reservation's prompt crosses as packed little-endian UInt32 token
+    /// IDs in base64 (`promptTokens`, with `promptTokenCount`) instead of a
+    /// JSON number array. Every record carries the version and every reader
+    /// refuses another, and the runtime capability carries it too, so
+    /// mismatched builds refuse at pairing and setup, never inside a request.
+    public static let version = 2
+    /// A reservation carries its whole prompt as packed token IDs (four bytes
+    /// each, 5 1/3 in base64): 8 MiB holds a `wirePromptTokens` prompt with its
+    /// stop tokens, sampling and routes.
+    public static let commandBytes = 8 * 1024 * 1024
+    /// The one larger command: a reservation carrying GLM media bytes to the
+    /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,
+    /// and every record that crosses the link, stays within `commandBytes`.
+    public static let mediaCommandBytes = commandBytes + ClusterGLMMedia.maximumEnvelopeBytes
+    /// One command inside its owner envelope (`ClusterOwnerWire`) or as a pipe
+    /// record: the largest command and room for the envelope's own fields.
+    /// Every hop a command takes admits this, so a command the codec admits
+    /// is never refused on its way to a rank.
+    public static let envelopeBytes = mediaCommandBytes + 64 * 1024
+    /// What one rank's command queue holds (`ClusterWorkerProcess`,
+    /// `ClusterRemoteWorkerEndpoint`): the largest command and 1 MiB of other
+    /// commands beside it. A queue that cannot take a reservation now refuses
+    /// that request alone (`ClusterWorkerOwnerError.refused(.busy)`).
+    public static let queuedCommandBytes = mediaCommandBytes + 1024 * 1024
     public static let eventBytes = 16 * 1024
+    /// The standard request bounds: what every family is sized and qualified
+    /// for unless its own registered row declares more (`wire*`). A family's
+    /// limits and memory plan use these; a registered row with a longer native
+    /// context names its own within the wire bounds.
     public static let promptTokens = 32_768
     public static let outputTokens = 32_768
     // Leave room for the full prompt budget as well as a 32K completion.
     public static let contextTokens = promptTokens + outputTokens
+    /// What the wire carries and validates: the longest native context a
+    /// registered model declares (GLM-5.3-Flash, `max_position_embeddings`
+    /// 1,048,576) and the longest output a provider lists for one (Z.AI lists
+    /// 131,072 for GLM-5.3-Flash). Each profile names its own limits within
+    /// these; a request is held to its profile, and each rank's live memory
+    /// gate decides whether it fits.
+    public static let wireContextTokens = 1_048_576
+    public static let wirePromptTokens = wireContextTokens
+    public static let wireOutputTokens = 131_072
     public static let stopTokens = 256
     public static let vocabularySize = 262_144
     public static let deadlineNanoseconds: UInt64 = 3_600_000_000_000
@@ -230,14 +265,18 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     public let servingContextTokens: Int?
     /// The link as a tensor-parallel load measured it; nil from other modes.
     public let linkProbe: ClusterWorkerLinkProbe?
+    /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
+    /// text only, and then the record's bytes are those of a worker without it.
+    public let media: String?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
-                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil) {
+                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
         self.linkProbe = linkProbe
+        self.media = media
     }
 }
 
@@ -259,17 +298,22 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let sampling: ClusterWorkerSampling?
     public let mimoImages: ClusterMiMoImages?
     public let stillImages: ClusterStillImages?
+    /// GLM image and video input on the tensor-parallel pair; nil is text, and
+    /// then the reservation's bytes are exactly those of a worker without media.
+    public let glmMedia: ClusterGLMMedia?
     /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
     /// placed, and then the reservation's bytes are exactly those of a worker
     /// without routes.
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil) {
+                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+                glmMedia: ClusterGLMMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
         self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
+        self.glmMedia = glmMedia
     }
 }
 
@@ -315,21 +359,42 @@ public struct ClusterWorkerRequestTelemetry: Equatable, Sendable {
     public let mtpAccepted: Int?
     /// This rank's time from the start of the request to its first committed (or relayed) token.
     public let prefillNanoseconds: UInt64?
+    /// MTP rounds (draft and verify) this rank ran for the request.
+    public let mtpRounds: Int?
     public init(handoffNanoseconds: UInt64? = nil, handoffBytes: Int? = nil, mtpDrafted: Int? = nil,
-                mtpAccepted: Int? = nil, prefillNanoseconds: UInt64? = nil) {
+                mtpAccepted: Int? = nil, prefillNanoseconds: UInt64? = nil, mtpRounds: Int? = nil) {
         self.handoffNanoseconds = handoffNanoseconds; self.handoffBytes = handoffBytes
         self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted; self.prefillNanoseconds = prefillNanoseconds
+        self.mtpRounds = mtpRounds
     }
     public var isEmpty: Bool {
         handoffNanoseconds == nil && handoffBytes == nil && mtpDrafted == nil && mtpAccepted == nil && prefillNanoseconds == nil
+            && mtpRounds == nil
     }
+}
+
+/// The decoding rank's log probabilities for one committed token, from the
+/// model's raw (pre-transform) distribution as the product reports them
+/// (`CBv2Logprobs`): the token's own, then the `top` most likely tokens in
+/// descending order. Sent only for a request whose sampling asks for them.
+/// Values travel as IEEE-754 bit patterns, like `ClusterWorkerSampling`.
+public struct ClusterWorkerTokenLogprobs: Equatable, Sendable {
+    public struct Alternative: Equatable, Sendable {
+        public let tokenID: Int
+        public let logprob: Float
+        public init(tokenID: Int, logprob: Float) { self.tokenID = tokenID; self.logprob = logprob }
+    }
+    public let logprob: Float
+    public let top: [Alternative]
+    public init(logprob: Float, top: [Alternative]) { self.logprob = logprob; self.top = top }
 }
 
 public enum ClusterWorkerEvent: Equatable, Sendable {
     case ready(ClusterWorkerReady)
     case admitted(reservedBytes: Int)
     case refused(ClusterWorkerRefusal)
-    case committedToken(ordinal: Int, tokenID: Int, committedTokens: Int)
+    /// `logprobs` only when the request's sampling asks for them (`ClusterWorkerSampling.topLogprobs`).
+    case committedToken(ordinal: Int, tokenID: Int, committedTokens: Int, logprobs: ClusterWorkerTokenLogprobs? = nil)
     /// This rank's prefix cache for the running request: prompt tokens it
     /// restored instead of computing (after both ranks agreed to), and the
     /// prompt frontiers it kept after both ranks retired cleanly (ascending,

@@ -23,8 +23,12 @@ struct GLM5NextServingMetadataTests {
         #expect(entry.supportedCuts == Array(1..<45) && entry.manifestSHA256 == spec.manifestSHA256)
         let files = try spec.runtimeFiles(manifest: file("manifest.json"))
         #expect(files.count == 37 && files.keys.filter { $0.hasSuffix(".safetensors") && $0 != "model.safetensors.index.json" }.count == 35)
-        let profile = try spec.profile()
-        #expect(profile.maximumContextTokens == 65_536 && profile.maximumChunkTokens == 2048)
+        // The native context and the registered output are advertised; the
+        // memory plan (LOAD gates, placement) is sized for the standard request.
+        let profile = try spec.profile(), memory = try spec.memoryProfile()
+        #expect(profile.maximumContextTokens == 1_048_576 && profile.maximumOutputTokens == 65_536)
+        #expect(profile.maximumChunkTokens == 2048)
+        #expect(memory.maximumContextTokens == 65_536 && memory.maximumChunkTokens == 2048)
     }
 
     @Test func actualMetadataAdmitsFullOutputAndQuotesTheExpandedContextOnBothRanks() throws {

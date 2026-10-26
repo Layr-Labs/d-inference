@@ -1,6 +1,6 @@
 # Set provider cache writes and storage
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-24
 
 Set a persistent write limit and optionally store encrypted inference caches on
 a separate disk. These commands affect cache payloads; use
@@ -96,7 +96,8 @@ owner-only key file instead.
 | Ownership, ACL, filesystem or encryption check fails | Inspect the volume and directory properties; active I/O also rechecks permissions and encryption. Do not disable macOS security controls to bypass the check |
 | Return to the internal cache | Run `darkbloom cache set --reset-directory`, then restart. This keeps the daily write choice and does not delete the external files |
 | Daily cap exhausted | Wait for old reservations to age out or explicitly change the allowance. Restarting or selecting another disk preserves the ledger on the Mac |
-| `/metrics` shows `prefix_cache_status{…,detail="key_unavailable"}` | The provider could not load its persistent cache key, for example an ad hoc signed build without the keychain access group, and serves uncached. Read the logged cause in [runtime cache observations](../reference/ssd-kv-cache.md#verification) and run a signed build |
+| `status` shows `prefix_cache=FAILED (cache_init_failed: key_unavailable)`, or `/metrics` shows `prefix_cache_status{…,detail="key_unavailable"}` | The provider could not load its persistent cache key and serves that model uncached: an ad hoc signed build has no keychain access group, and a Mac not unlocked since boot cannot use the key. Run a signed build, or log in once, then restart. A key sealed to a replaced Secure Enclave identity is replaced automatically. The logged cause is in [runtime cache observations](../reference/ssd-kv-cache.md#verification) |
+| `status` shows `prefix_cache=FAILED (disk_unavailable: unsafe_path)` | The selected cache directory is missing, moved or unsafe. Follow the missing-volume or ownership rows above, then restart |
 
 ## Related
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// The streaming responses of one installed pipeline: those being generated
 /// (at most its batch lanes) and those queued behind them
-/// (`DistributedRequestQueue.maximumWaiting`). Each response hold is separate
+/// (`DistributedRequestQueue.Limits.maximumWaiting`). Each response hold is separate
 /// from the model acquisition and native ownership.
 final class DistributedHTTPResponses: @unchecked Sendable {
     let generationID: UUID
@@ -14,7 +14,7 @@ final class DistributedHTTPResponses: @unchecked Sendable {
     private var accepting = true
     private var deliveryDeadline: ContinuousClock.Instant?
 
-    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.maximumWaiting + DistributedRequestQueue.maximumLanes) {
+    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.Limits.standard.responseLimit) {
         self.generationID = generationID; self.limit = max(1, limit)
     }
 

@@ -280,6 +280,11 @@ enum EngineV2Translation {
         return (refusal, String(rest[separator.upperBound...]))
     }
 
+    /// Canonical marker for an output control the slot's engine cannot honor.
+    /// `MultiModelBatchSchedulerEngineError.fromSchedulerMessage` maps it to
+    /// `.unsupportedOutputControl` → 400 on the non-throwing submit path.
+    static let unsupportedOutputControlPrefix = "unsupported_output_control"
+
     static func admissionErrorMessage(for error: Error) -> String {
         admissionErrorMessage(for: error, distributedProfile: nil)
     }

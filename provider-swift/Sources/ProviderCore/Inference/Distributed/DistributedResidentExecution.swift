@@ -83,19 +83,26 @@ public struct DistributedResidentReadiness: Sendable {
     /// resident, re-derived while idle. Nil when the owner states none (the
     /// profile's maximum applies). A longer request is refused before admission.
     public let servingContextTokens: Int?
+    /// The media contract both ranks serve (`ClusterGLMMedia.contract` for GLM
+    /// images and video on the tensor-parallel pair); nil serves text only.
+    public let media: String?
 
     public init(identity: DistributedResidentIdentity, profileID: String, requestCapacityBytes: Int,
-                servingContextTokens: Int? = nil) {
+                servingContextTokens: Int? = nil, media: String? = nil) {
         self.identity = identity
         self.profileID = profileID
         self.requestCapacityBytes = requestCapacityBytes
         self.servingContextTokens = servingContextTokens
+        self.media = media
     }
 }
 
 public enum DistributedResidentEvent: Sendable {
     /// One target-authoritative committed token. Draft/MTP tokens are not accepted.
     case token(Int)
+    /// A committed token with the decoding rank's raw logprobs for it, for a
+    /// request that asks for them (`CBv2SamplingParams.topLogprobs`).
+    case loggedToken(Int, CBv2TokenLogprob)
     case finished(CBv2FinishReason)
     /// Both peers restored `reused` prompt tokens from their rank-local prefix
     /// caches and both now hold `stored` prompt frontiers. Once, before the
@@ -106,6 +113,16 @@ public enum DistributedResidentEvent: Sendable {
     case telemetry(DistributedRankTelemetry)
 }
 
+extension DistributedResidentEvent {
+    /// The committed token this event carries, with or without logprobs.
+    var committedToken: Int? {
+        switch self {
+        case .token(let token), .loggedToken(let token, _): token
+        case .finished, .promptCache, .telemetry: nil
+        }
+    }
+}
+
 /// Both ranks' own measurements of one request (PROD-PLAN S24). Values only.
 public struct DistributedRankTelemetry: Sendable, Equatable {
     /// The slower rank's hand-off wall time, in milliseconds.
@@ -114,10 +131,13 @@ public struct DistributedRankTelemetry: Sendable, Equatable {
     /// The decoding rank's MTP drafts and acceptances, summed over the ranks that drafted.
     public let mtpDrafted: Int?
     public let mtpAccepted: Int?
+    /// The decoding rank's MTP rounds, summed over the ranks that reported them.
+    public let mtpRounds: Int?
 
-    public init(handoffMilliseconds: Double?, handoffBytes: Int?, mtpDrafted: Int?, mtpAccepted: Int?) {
+    public init(handoffMilliseconds: Double?, handoffBytes: Int?, mtpDrafted: Int?, mtpAccepted: Int?,
+                mtpRounds: Int? = nil) {
         self.handoffMilliseconds = handoffMilliseconds; self.handoffBytes = handoffBytes
-        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted
+        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted; self.mtpRounds = mtpRounds
     }
 
     /// Merges what each rank sent: the longer hand-off (both ranks wait for it),
@@ -130,6 +150,8 @@ public struct DistributedRankTelemetry: Sendable, Equatable {
         let drafted = ranks.compactMap(\.mtpDrafted), accepted = ranks.compactMap(\.mtpAccepted)
         mtpDrafted = drafted.isEmpty ? nil : drafted.reduce(0, +)
         mtpAccepted = accepted.isEmpty ? nil : accepted.reduce(0, +)
+        let rounds = ranks.compactMap(\.mtpRounds)
+        mtpRounds = rounds.isEmpty ? nil : rounds.reduce(0, +)
     }
 }
 
@@ -277,7 +299,8 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         case .contextTooLong:
             return "The prompt plus max_tokens is above this model's context\(limit(profile?.maxContextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
-        case .logprobsUnsupported: return "logprobs are not supported on this cluster."
+        case .logprobsUnsupported:
+            return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
         case .constrainedDecodingUnsupported: return "Constrained decoding is not supported for this model on this cluster."
         case .mediaUnsupported: return "Media input is not supported on this cluster."
         case .priorityUnsupported: return "Request priority is not supported on this cluster."
@@ -301,13 +324,23 @@ extension DistributedResidentExecutionProfile {
                   let media = try? ClusterStillImages.decodeBounded(wire),
                   (try? media.validateStructure(promptCount: request.promptTokens.count)) != nil else { return .mediaUnsupported }
         }
+        if let wire = request.clusterGLMMedia {
+            // GLM images and video on the tensor-parallel pair: the text row's
+            // profile, the envelope alone, bound to this prompt's spans.
+            guard request.clusterStillImages == nil, request.mimoClusterImages == nil,
+                  id == ClusterGLMImageCandidate.textProfileID,
+                  let media = try? ClusterGLMMedia.decodeBounded(wire),
+                  media.featureTokens < request.promptTokens.count else { return .mediaUnsupported }
+        }
         if let wire = request.mimoClusterImages {
             guard id == "registered_mimo_v26_flash_mopd_greedy_generation_v1" + ClusterMiMoImages.profileSuffix,
                   let images = try? ClusterMiMoImages.decodeBounded(wire),
                   (try? images.validate(prompt:request.promptTokens)) != nil else { return .mediaUnsupported }
         }
         if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
-        if p.topLogprobs != 0 { return .logprobsUnsupported }
+        // The decoding rank gathers them as the product does; a runtime that
+        // cannot refuses the request alone (unsupported, retryable).
+        if !(0...ClusterWorkerSampling.maximumTopLogprobs).contains(p.topLogprobs) { return .logprobsUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
         if request.promptTokens.count > maxPromptTokens { return .promptTooLong }
@@ -356,7 +389,7 @@ enum DistributedSampling {
             repetitionContextSize: min(max(0, p.repetitionContextSize), ClusterWorkerLimits.contextTokens),
             frequencyPenalty: p.frequencyPenalty, presencePenalty: p.presencePenalty,
             seed: p.seed ?? 0, stream: request.id.raw,
-            logitBias: logitBias(p.logitBias, vocabularySize: vocabularySize))
+            logitBias: logitBias(p.logitBias, vocabularySize: vocabularySize), topLogprobs: p.topLogprobs)
         return value.isGreedyNoOp ? nil : value
     }
 }

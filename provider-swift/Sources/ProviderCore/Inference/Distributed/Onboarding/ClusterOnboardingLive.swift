@@ -3,6 +3,7 @@ import Darwin
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 
 extension ClusterOnboardingOperations {
     public struct LiveSettings: Sendable {
@@ -60,6 +61,11 @@ final class OnboardingLive: @unchecked Sendable {
     private var pendingAnswer: Bool?
     private var peerReport: ClusterSetupReport?
     private var peerReportMemberID: String?
+    /// When the other Mac's report was taken, and when this Mac last stopped the cluster's parts: a report taken
+    /// before the stop prices the other Mac's memory with its old part still loaded
+    /// (`ClusterOnboardingUpdate.reportPricesPlan`).
+    private var peerReportAt: Date?
+    private var partsStoppedAt: Date?
     private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
     private var choices: [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)] = []
     /// Choices that are catalog models no Mac has yet (by choice index).
@@ -548,6 +554,7 @@ final class OnboardingLive: @unchecked Sendable {
         lock.withLock {
             peerReport = report
             peerReportMemberID = memberID
+            peerReportAt = Date()
         }
     }
 
@@ -564,22 +571,27 @@ final class OnboardingLive: @unchecked Sendable {
         return result
     }
 
-    func localPlanModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+    /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
+    /// mode the pair served the model in.
+    func localPlanModels(keeping: [String: ClusterGenerationMode] = [:]) -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+        // The plan judges each Mac by the memory its report sampled. A report taken before this Mac stopped the
+        // cluster's parts still counts the other Mac's old part (the re-plan after an update stops them first):
+        // ask again, so both Macs are priced with that memory given back. 2026-10-22: the other Mac's report was
+        // taken while its tensor-parallel part still held 98 GB, its share of tensor parallel looked 6 GB short,
+        // and the update came back as a pipeline at half the speed.
+        let stale = lock.withLock { !ClusterOnboardingUpdate.reportPricesPlan(reportedAt: peerReportAt, partsStoppedAt: partsStoppedAt) }
+        if stale, case .failure(let failure) = localReachMembers({ _ in }) { return .failure(failure) }
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }
         // The models single-Mac Darkbloom installed on this Mac are cluster models too (cloned in: no new blocks), when a
         // pair may serve them with this build (as for models copied from the other Mac or downloaded).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
-        // Every model's own pages out of the file cache first: the plan judges each Mac by what its load gate counts,
-        // and a model's pages left active by a download or a copy are not counted (nor needed: a load reads them back).
-        for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? [] where !name.hasPrefix(".") {
-            ClusterModelStore.dropCachedPages(folder: store.appendingPathComponent(name))
-        }
+        // Models' pages stay in the file cache: the plan judges each Mac by what its load gate counts, which is all
+        // of the cache (58d7371a, de782ff1), and the start that follows reads the cached part at memory speed.
         for installed in ClusterProductModelStore.installed() where ClusterModelCopyTrust.servableArtifacts.contains(installed.artifact.aggregateSHA256) {
-            ClusterModelStore.dropCachedPages(folder: installed.directory)
             _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration,
                                                                     accepts: context.workerAcceptsManifest)
         }
-        switch context.plan(peer: peer) {
+        switch context.plan(peer: peer, keeping: keeping) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
@@ -1128,13 +1140,16 @@ final class OnboardingLive: @unchecked Sendable {
                 return .failure(.init(["A part keeps ending the same way: \(once.line)."] + lastErrors(fallback: nil)))
             }
             if seen[once.line] == 1, once.line != said { progress(once.line); said = once.line }
-            sleep(2)
+            usleep(Self.readinessPollMicroseconds)
         }
         return .failure(.init(["The cluster did not report ready within 15 minutes."] + lastErrors(fallback: said)))
     }
 
     /// The same part end seen this many times stops the wait on screen (the service keeps restarting it).
     static let sameEndsBeforeSaying = 3
+    /// Between readiness polls: a ready pair is reported within this (plus one poll, ~0.7 s over the cable), not up
+    /// to 2 s later, in a start that now takes about 10 s.
+    static let readinessPollMicroseconds: useconds_t = 500_000
 
     /// The last error each Mac's part reported, one line per Mac, also for parts still running (shown on screen after a
     /// start that did not finish, instead of a log path).
@@ -1368,6 +1383,7 @@ final class OnboardingLive: @unchecked Sendable {
     func localStop() -> Result<[String], ClusterOnboardingFailure> {
         do {
             try store.updateRecord { $0.leadership?.serving = false }
+            lock.withLock { partsStoppedAt = Date() }
             _ = try command(.init(op: .stop))
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"

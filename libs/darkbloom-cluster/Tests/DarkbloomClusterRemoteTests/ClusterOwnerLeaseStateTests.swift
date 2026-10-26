@@ -385,6 +385,66 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertThrowsError(try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 9))
     }
 
+    func laneState() throws -> ClusterOwnerLeaseState {
+        var state = try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 2)
+        try state.beginNativeLaunch(child, now: 101)
+        try state.observeNativeStarted(child)
+        try state.observeReady(readiness(state.binding), launchID: child, now: 102)
+        return state
+    }
+
+    /// A lane cancelled after it started retires alone (its worker dropped it
+    /// at a step boundary): the lease keeps serving the other lane and more.
+    func testALaneCancelledAfterStartRetiresWithoutQuarantine() throws {
+        var state = try laneState()
+        let first = UUID(), second = UUID()
+        for (index, id) in [first, second].enumerated() {
+            let now = UInt64(105 + 2 * index)
+            _ = try send(.reserve(requestID: id, capacityLimitBytes: 40, remainingNanoseconds: 500), to: &state, now: now)
+            try state.observeAdmitted(requestID: id, reservedBytes: 30)
+            _ = try send(.start(requestID: id), to: &state, now: now + 1)
+        }
+        _ = try send(.cancel(requestID: first, reason: .callerCancelled), to: &state, now: 112)
+        try state.observeRetired(requestID: first, retirement: .cancelled)
+        XCTAssertFalse(state.status.quarantined)
+        _ = try send(.release(requestID: first), to: &state, now: 113)
+        try state.observeRequestResourcesReleased(requestID: first)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertEqual(state.activeRequestIDs, [second])
+        // A lane that fails still poisons the session.
+        try state.observeRetired(requestID: second, retirement: .failed)
+        XCTAssertTrue(state.status.quarantined)
+    }
+
+    /// A cancel and a lane's clean finish cross: the clean retirement is
+    /// accepted, and a cancel that arrives after it is a no-op, as the
+    /// worker's own lane session treats it.
+    func testALaneCancelCrossingItsCleanRetirementKeepsTheLeaseServing() throws {
+        var state = try laneState()
+        let first = UUID(), second = UUID()
+        for (index, id) in [first, second].enumerated() {
+            let now = UInt64(105 + 2 * index)
+            _ = try send(.reserve(requestID: id, capacityLimitBytes: 40, remainingNanoseconds: 500), to: &state, now: now)
+            try state.observeAdmitted(requestID: id, reservedBytes: 30)
+            _ = try send(.start(requestID: id), to: &state, now: now + 1)
+        }
+        _ = try send(.cancel(requestID: first, reason: .callerCancelled), to: &state, now: 112)
+        try state.observeRetired(requestID: first, retirement: .clean)
+        try state.observeRetired(requestID: second, retirement: .clean)
+        _ = try send(.release(requestID: second), to: &state, now: 113)
+        try state.observeRequestResourcesReleased(requestID: second)
+        XCTAssertEqual(try send(.cancel(requestID: second, reason: .deadline), to: &state, now: 114),
+                       .forwardCancel(second, .deadline))
+        XCTAssertFalse(state.status.quarantined)
+        // A cancel for a request that was refused, or never held, is still refused.
+        let refused = UUID()
+        _ = try send(.reserve(requestID: refused, capacityLimitBytes: 40, remainingNanoseconds: 500), to: &state, now: 115)
+        try state.observeRefused(requestID: refused, reason: .capacity)
+        var stale = state
+        XCTAssertThrowsError(try send(.cancel(requestID: refused, reason: .callerCancelled), to: &stale, now: 116))
+        XCTAssertThrowsError(try send(.cancel(requestID: UUID(), reason: .callerCancelled), to: &state, now: 116))
+    }
+
     /// One lane's deadline passing quarantines the owner, as a single request's does.
     func testAnyLaneDeadlineQuarantines() throws {
         var state = try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 1000, lanes: 2)

@@ -125,18 +125,8 @@ struct FlintLiveTests {
                 }
                 #expect(cities.sorted() == (mode == "none" ? [] : mode == "parallel" ? ["Paris", "Tokyo"] : ["Paris"]))
             }
-            for (name, fields) in [
-                ("effort", ["reasoning_effort": "high"]),
-                ("thinking", ["enable_thinking": false]),
-                ("nested-thinking", ["reasoning": ["enabled": true]]),
-                ("mixed-format-tools", ["tools": [tool], "response_format": ["type": "json_object"]]),
-            ] as [(String, [String: Any])] {
-                var request = chat("Hello")
-                request.merge(fields) { _, new in new }; request["stream"] = true
-                let (status, body) = try await post(request, name: "refusal-\(name)")
-                #expect(status == 400)
-                #expect(!String(decoding: body, as: UTF8.self).hasPrefix("data:"))
-            }
+            // Reasoning controls, stop and response_format are accepted; their
+            // behavior is covered by FlintOpenRouterLiveTests.
             for part in [
                 ["type": "image_url", "image_url": ["url": "https://invalid.example/image.png"]],
                 ["type": "video_url", "video_url": ["url": "https://invalid.example/video.mp4"]],

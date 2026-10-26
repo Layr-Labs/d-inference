@@ -78,15 +78,43 @@ struct GLM5NextRegisteredSpecification {
 
     static func handles(configuration: Data) -> Bool { (try? specification(configuration: configuration)) != nil }
 
-    /// The request bounds: the protocol's, cut to the declared context.
+    /// The output limit registered for this model (catalog `max_output_length`
+    /// of `glm-5.3-flash`, the value OpenRouter is given), which the cluster
+    /// advertises as the single-Mac product does. Z.AI lists 131,072; raise
+    /// this with the catalog row (at most `ClusterWorkerLimits.wireOutputTokens`).
+    static let registeredOutputTokens = 65_536
+
+    /// The request bounds the pair advertises and admits: the model's native
+    /// context (its declared `max_position_embeddings`, 1,048,576) and the
+    /// registered output limit. No service-level cap: each rank's live memory
+    /// gate decides, per request, whether its context fits
+    /// (`GLM5NextTensorParallelResidentRuntime.requestCharge`).
     func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens,
+            prefillChunkTokens: Self.prefillChunkTokens, ceiling: .native(outputTokens: Self.registeredOutputTokens))
+    }
+
+    /// The request the memory plan and every LOAD gate size the pair for: the
+    /// protocol's standard request (32,768 prompt and 32,768 output tokens),
+    /// as before the native limits. A longer request is charged at its own
+    /// context when it is reserved (tensor parallel); the pipeline serves up
+    /// to this scope (`GLM5NextResidentDescriptor.memoryProfile`).
+    func memoryLimits() throws -> QwenResidentContextLimits {
         try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens,
             prefillChunkTokens: Self.prefillChunkTokens)
     }
 
     func profile(imageCandidate: Bool = false) throws -> QwenLayerStageGenerationProfile {
-        let limits = try contextLimits()
-        return try .init(identifier: imageCandidate ? ClusterGLMImageCandidate.profileID : profileID, vocabularySize: vocabulary, hiddenSize: hidden,
+        try profile(limits: try contextLimits(), imageCandidate: imageCandidate)
+    }
+
+    /// The profile of the memory plan's request (`memoryLimits`).
+    func memoryProfile(imageCandidate: Bool = false) throws -> QwenLayerStageGenerationProfile {
+        try profile(limits: try memoryLimits(), imageCandidate: imageCandidate)
+    }
+
+    private func profile(limits: QwenResidentContextLimits, imageCandidate: Bool) throws -> QwenLayerStageGenerationProfile {
+        try .init(identifier: imageCandidate ? ClusterGLMImageCandidate.profileID : profileID, vocabularySize: vocabulary, hiddenSize: hidden,
             activationDType: "bfloat16", maximumPromptTokens: limits.maximumPromptTokens,
             maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
             maximumContextTokens: limits.maximumContextTokens, residualStreams: 4)
@@ -119,7 +147,9 @@ struct GLM5NextRegisteredSpecification {
 
     /// The descriptor of one cut of this row, from the artifact's own bytes.
     /// `requestScope` (the single-Mac reference only): limits of exactly one
-    /// request's prompt, chunk and outputs instead of the row's serving scope.
+    /// request's prompt, chunk and outputs instead of the row's serving scope,
+    /// and the memory scope too. Otherwise the profile is the row's native
+    /// limits and the memory scope the standard request (`memoryLimits`).
     /// The Plan does not depend on the limits, so both describe the same stages.
     func descriptor(configuration: Data, manifest: Data, cut: Int,
                     requestScope: (prompt: Int, chunk: Int, output: Int)? = nil, includesVision: Bool = false) throws -> GLM5NextResidentDescriptor {
@@ -135,11 +165,17 @@ struct GLM5NextRegisteredSpecification {
               (1...limits.maximumChunkTokens).contains(chunk), context <= limits.maximumContextTokens else {
             throw ProbeError("GLM request scope exceeds the registered row's limits")
         }
+        let memory = try memoryLimits()
+        let memoryScope = requestScope == nil
+            ? GLM5NextResidentDescriptor.MemoryScope(promptTokens: memory.maximumPromptTokens,
+                outputTokens: memory.maximumOutputTokens, contextTokens: memory.maximumContextTokens)
+            : nil
         return try GLM5NextResidentDescriptor(modelID: model.rawValue,
             artifactIdentity: .init(repository: repository, revision: revision, files: runtimeFiles(manifest: manifest)),
             artifactAggregateSHA256: artifactSHA256, configurationBytes: configuration, cut: cut,
             storage: storage, executionPolicy: executionPolicy, profileID: includesVision ? ClusterGLMImageCandidate.profileID : profileID,
             maximumPromptTokens: prompt, maximumChunkTokens: chunk,
-            maximumOutputTokens: output, maximumContextTokens: context, includesVision: includesVision)
+            maximumOutputTokens: output, maximumContextTokens: context, includesVision: includesVision,
+            memoryScope: memoryScope)
     }
 }

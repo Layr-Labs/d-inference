@@ -112,36 +112,81 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5Next(let runtime): try runtime.releaseReservation(requestID: id)
         }
     }
+    /// GLM tensor parallel also drops its prompt-prefix entries under host
+    /// pressure; every other family gives back its freed-buffer cache only.
+    func releaseIdleMemory(underPressure: Bool) -> Int? {
+        switch owner {
+        case .glm5NextTensorParallel(let runtime): return try? runtime.releaseIdleMemory(underPressure: underPressure)
+        case .qwenDense, .qwenTensorParallel, .mimoV26, .glm5Next: return ClusterIdleMemory.releaseFreedBuffers()
+        }
+    }
     func refreshServingContext() -> Int? {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()
-        case .qwenTensorParallel, .mimoV26, .glm5Next, .glm5NextTensorParallel: nil
+        case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
+        case .qwenTensorParallel, .mimoV26, .glm5Next: nil
         }
     }
+    // Batch lanes: the Qwen family's pipeline lanes and GLM tensor parallel's.
     var batchLanes: Int {
-        if case .qwenDense(let runtime) = owner { return runtime.batch.lanes }
-        return 1
+        switch owner {
+        case .qwenDense(let runtime): runtime.batch.lanes
+        case .glm5NextTensorParallel(let runtime): runtime.lanes.lanes
+        case .qwenTensorParallel, .mimoV26, .glm5Next: 1
+        }
+    }
+    /// GLM tensor parallel publishes each token's logprobs from its decoding
+    /// rank, on its one-request path and in its batch lanes alike.
+    var capturesLogprobs: Bool {
+        if case .glm5NextTensorParallel = owner { return true }
+        return false
     }
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
-        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
-        return try runtime.reserveLane(requestID: id, request: value)
+        switch owner {
+        case .qwenDense(let runtime): try runtime.reserveLane(requestID: id, request: value)
+        case .glm5NextTensorParallel(let runtime): try runtime.reserveLane(requestID: id, request: value)
+        case .qwenTensorParallel, .mimoV26, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        }
     }
     func startLane(_ id: UUID) throws {
-        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
-        try runtime.startLane(requestID: id)
+        switch owner {
+        case .qwenDense(let runtime): try runtime.startLane(requestID: id)
+        case .glm5NextTensorParallel(let runtime): try runtime.startLane(requestID: id)
+        case .qwenTensorParallel, .mimoV26, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        }
     }
-    func cancelLane(_ id: UUID) { if case .qwenDense(let runtime) = owner { runtime.cancelLane(requestID: id) } }
+    func cancelLane(_ id: UUID) {
+        switch owner {
+        case .qwenDense(let runtime): runtime.cancelLane(requestID: id)
+        case .glm5NextTensorParallel(let runtime): runtime.cancelLane(requestID: id)
+        case .qwenTensorParallel, .mimoV26, .glm5Next: break
+        }
+    }
     func withdrawLane(_ id: UUID) -> Bool {
-        if case .qwenDense(let runtime) = owner { return runtime.withdrawLane(requestID: id) }
-        return false
+        switch owner {
+        case .qwenDense(let runtime): runtime.withdrawLane(requestID: id)
+        case .glm5NextTensorParallel(let runtime): runtime.withdrawLane(requestID: id)
+        case .qwenTensorParallel, .mimoV26, .glm5Next: false
+        }
     }
     var hasStartedLanes: Bool {
-        if case .qwenDense(let runtime) = owner { return runtime.hasStartedLanes }
-        return false
+        switch owner {
+        case .qwenDense(let runtime): runtime.hasStartedLanes
+        case .glm5NextTensorParallel(let runtime): runtime.hasStartedLanes
+        case .qwenTensorParallel, .mimoV26, .glm5Next: false
+        }
     }
     func serveBatch(host: QwenBatchServingHost) throws {
-        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
-        try runtime.serveBatch(host: host)
+        switch owner {
+        case .qwenDense(let runtime): try runtime.serveBatch(host: host)
+        case .glm5NextTensorParallel(let runtime): try runtime.serveBatch(host: host)
+        case .qwenTensorParallel, .mimoV26, .glm5Next: throw WorkerFailure.invalid("This family serves one request at a time")
+        }
+    }
+    /// GLM tensor parallel's lane loop retires a cancelled lane alone.
+    var retiresCancelledLanes: Bool {
+        if case .glm5NextTensorParallel = owner { return true }
+        return false
     }
     func cancel(_ id: UUID) {
         switch owner {

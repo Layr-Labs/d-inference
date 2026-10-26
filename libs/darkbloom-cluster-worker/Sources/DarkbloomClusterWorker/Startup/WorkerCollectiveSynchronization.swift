@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Darwin
 import Foundation
 
@@ -46,5 +47,40 @@ enum WorkerCommandBufferBudget {
         }
         setenv(variable, String(tensorParallelMegaElements), 1)
         return "darkbloom-command-buffer-budget-v1 max_mb=\(tensorParallelMegaElements) source=worker"
+    }
+}
+
+/// How a GLM tensor-parallel rank's GPU meets each all-sum. The
+/// hyper-connection site that reads a sum waits for it itself instead of a
+/// separate spinning dispatch (`MLX_METAL_FENCED_INPUTS`; GLM's site kernels
+/// declare the sum as a fenced input): a worker turns that on unless its
+/// launcher chose. Only when and where the GPU waits changes, never what it
+/// computes.
+///
+/// The fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a
+/// launcher's choice: for a partial above 32 KB it splits the update over
+/// several threadgroups and that path never signals the CPU, so a batched
+/// round of two lanes (six rows) stalled about 0.7 s each on the pair, and a
+/// synthetic chain of sites hung at five rows and more.
+enum WorkerFenceFusion {
+    static let variables = ["MLX_METAL_FUSED_FENCE_UPDATE", "MLX_METAL_FENCED_INPUTS"]
+    /// What a worker sets where its launcher set nothing.
+    static let defaults = ["MLX_METAL_FENCED_INPUTS": "1"]
+
+    static func apply(mode: ClusterGenerationMode, family: ClusterResidentModelCatalog.Family?,
+                      environment: [String: String]) -> String? {
+        guard mode == .tensorParallel, family == .glm5Next else { return nil }
+        var values: [String] = []
+        for name in variables {
+            if let explicit = environment[name] {
+                values.append("\(name)=\(explicit)")
+            } else if let value = defaults[name] {
+                setenv(name, value, 1)
+                values.append("\(name)=\(value)")
+            }
+        }
+        let chosen = variables.filter { environment[$0] != nil }
+        let source = chosen.isEmpty ? "worker" : chosen.count == variables.count ? "launcher" : "mixed"
+        return "darkbloom-fence-fusion-v1 " + values.joined(separator: " ") + " source=" + source
     }
 }

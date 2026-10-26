@@ -40,7 +40,7 @@ struct MiMoInstalledEncryptedLinkPolicyTests {
         let fixture = MiMoInstalledImagePolicyTests()
         let image = try fixture.capability(image:true), text = try fixture.capability(image:false)
         let epoch = UUID(), lines = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch:epoch)
-        var object:[String:Any] = ["version":1,"kind":"open","epoch":epoch.uuidString,
+        var object:[String:Any] = ["version":ClusterLinkWorkerWire.version,"kind":"open","epoch":epoch.uuidString,
             "session":UUID().uuidString,"sequence":0,"clusterID":"cpu-wire-policy",
             "rank":1,"planSHA256":image.partitions[0].planSHA256,"remainingNanoseconds":1_000_000_000]
         let legacy = try ClusterLinkWorkerWire.decode(JSONSerialization.data(withJSONObject:object))
@@ -70,7 +70,7 @@ struct MiMoInstalledEncryptedLinkPolicyTests {
         #expect(throws:(any Error).self) {
             try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(image,line:lines[1],epoch:UUID(),rank:1)
         }
-        let wrongKind:[String:Any] = ["version":1,"kind":"accepted","epoch":epoch.uuidString,
+        let wrongKind:[String:Any] = ["version":ClusterLinkWorkerWire.version,"kind":"accepted","epoch":epoch.uuidString,
             "session":UUID().uuidString,"sequence":0,"dataPlaneTrust":lines[1].base64EncodedString()]
         #expect(throws:(any Error).self) { try ClusterLinkWorkerWire.decode(JSONSerialization.data(withJSONObject:wrongKind)) }
         // A successfully decoded control open is deliberately not a native
@@ -79,7 +79,7 @@ struct MiMoInstalledEncryptedLinkPolicyTests {
     @Test func genericFollowerRefusesCredentialUnlessItsOwnPolicyOptsIn() throws {
         let image = try MiMoInstalledImagePolicyTests().capability(image:true)
         let epoch = UUID(), lines = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch:epoch)
-        let object:[String:Any] = ["version":1,"kind":"open","epoch":epoch.uuidString,
+        let object:[String:Any] = ["version":ClusterLinkWorkerWire.version,"kind":"open","epoch":epoch.uuidString,
             "session":UUID().uuidString,"sequence":0,"clusterID":"cpu-wire-policy","rank":1,
             "planSHA256":image.partitions[0].planSHA256,"remainingNanoseconds":1_000_000_000,
             "dataPlaneTrust":lines[1].base64EncodedString()]

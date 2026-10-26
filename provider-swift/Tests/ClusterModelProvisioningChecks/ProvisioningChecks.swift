@@ -126,6 +126,12 @@ import CryptoKit
         expect(ClusterModelStore.dropCachedPages(folder: cacheFolder) == Int64((1 << 20) + 2), "every regular file's pages dropped")
         expect((try? Data(contentsOf: cacheFolder.appendingPathComponent("weights.safetensors")))?.count == 1 << 20, "the bytes unchanged")
         expect(ClusterModelStore.dropCachedPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder drops nothing")
+        // Reading a folder's pages into the cache before a part starts: every regular file once, no link, no folder.
+        try! FileManager.default.createSymbolicLink(at: cacheFolder.appendingPathComponent("link.safetensors"),
+            withDestinationURL: cacheFolder.appendingPathComponent("weights.safetensors"))
+        expect(ClusterModelStore.prefetchPages(folder: cacheFolder) == Int64((1 << 20) + 2), "every regular file's pages read once")
+        expect(ClusterModelStore.prefetchPages(folder: cacheFolder, readers: 1) == Int64((1 << 20) + 2), "one reader reads the same")
+        expect(ClusterModelStore.prefetchPages(folder: cacheFolder.appendingPathComponent("missing")) == 0, "a missing folder reads nothing")
         func mutated(_ change: (inout [String: Any]) -> Void) -> Data {
             var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
             change(&object)

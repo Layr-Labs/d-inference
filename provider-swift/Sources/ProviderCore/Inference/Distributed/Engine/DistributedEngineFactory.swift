@@ -81,6 +81,23 @@ public enum DistributedEngineFactory {
             _ = try DistributedGLMImageIngress(configuration: bytes, expectedSHA256: expectedIdentity.configurationSHA256)
             clusterGLMImageConfiguration = bytes
         }
+        // GLM images and video on the tensor-parallel pair: bound only when both
+        // ranks advertise the media contract (rank 0 holds the vision tower)
+        // for the registered GLM row's text profile.
+        var clusterGLMMediaIngress: DistributedGLMMediaIngress?
+        if modelType == "glm5_next", owner.readiness()?.media == ClusterGLMMedia.contract,
+           profile.id == ClusterGLMImageCandidate.textProfileID,
+           expectedIdentity.modelID == ClusterGLMImageCandidate.runtimeModelID {
+            guard let modelDirectory else { throw DistributedEngineError.invalidConfiguration("GLM media metadata missing") }
+            func read(_ name: String) throws -> Data {
+                let handle = try FileHandle(forReadingFrom: modelDirectory.appendingPathComponent(name))
+                defer { try? handle.close() }
+                return try handle.read(upToCount: 32 * 1024 * 1024 + 1) ?? Data()
+            }
+            clusterGLMMediaIngress = try DistributedGLMMediaIngress(configuration: read("config.json"),
+                processorConfiguration: read("processor_config.json"),
+                expectedSHA256: expectedIdentity.configurationSHA256)
+        }
         return EngineV2Bridge(
             engine: engine, modelId: modelID, tokenizer: tokenizer,
             eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
@@ -90,7 +107,8 @@ public enum DistributedEngineFactory {
             // owner's own admission still bounds and refuses beyond them.
             maxConcurrentRequests: max(1, owner.concurrentRequests), residentPrefixCacheEvidence: residentPrefixEvidence,
             kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy,
-            draftMiMoImageConfiguration:draftMiMoImageConfiguration, clusterGLMImageConfiguration:clusterGLMImageConfiguration)
+            draftMiMoImageConfiguration:draftMiMoImageConfiguration, clusterGLMImageConfiguration:clusterGLMImageConfiguration,
+            clusterGLMMediaIngress: clusterGLMMediaIngress)
     }
 
     /// Registry construction for a successfully started installed

@@ -17,7 +17,16 @@ public enum ClusterWorkerCodec {
         case .shutdown: value["kind"] = "shutdown"
         case .keepWarm(let ordinal): value["kind"] = "keepWarm"; value["ordinal"] = ordinal
         }
-        return try encoded(value, maximum: ClusterWorkerLimits.commandBytes)
+        return try encoded(value, maximum: maximumBytes(frame.command))
+    }
+
+    /// A reservation carrying GLM media bytes may use `mediaCommandBytes`;
+    /// every other command stays within `commandBytes`.
+    static func maximumBytes(_ command: ClusterWorkerCommand) -> Int {
+        if case .reserve(let r) = command, r.glmMedia?.carriesEncodedBytes == true {
+            return ClusterWorkerLimits.mediaCommandBytes
+        }
+        return ClusterWorkerLimits.commandBytes
     }
 
     /// A rank-lease renewal line: outside the request sequence, so it carries
@@ -79,8 +88,9 @@ public enum ClusterWorkerCodec {
 
     /// One control-pipe line: a lease renewal or a sequenced command.
     public static func decodeControl(_ data: Data) throws -> ClusterWorkerControlLine {
-        var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
+        var r = try reader(data, maximum: ClusterWorkerLimits.mediaCommandBytes)
         guard r.peekString("kind") == "extendDeadline" else { return .command(try decodeCommand(data)) }
+        try workerRequire(data.count <= ClusterWorkerLimits.commandBytes, "Worker record exceeds byte limit")
         try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
         _ = try r.string("kind")
         let renewal = try ClusterWorkerLeaseRenewal(membershipEpoch: r.uuid("membershipEpoch"), renewal: r.uint("renewal"),
@@ -96,9 +106,10 @@ public enum ClusterWorkerCodec {
         case .ready(let r): value["kind"] = "ready"; value["ready"] = ready(r)
         case .admitted(let bytes): value["kind"] = "admitted"; value["reservedBytes"] = bytes
         case .refused(let reason): value["kind"] = "refused"; value["reason"] = reason.rawValue
-        case .committedToken(let ordinal, let token, let committed):
+        case .committedToken(let ordinal, let token, let committed, let logprobs):
             value["kind"] = "committedToken"; value["ordinal"] = ordinal
             value["tokenID"] = token; value["committedTokens"] = committed
+            if let logprobs { value["logprobs"] = Self.logprobs(logprobs) }
         case .promptCache(let reused, let stored):
             value["kind"] = "promptCache"; value["reusedTokens"] = reused; value["storedFrontiers"] = stored
         case .requestTelemetry(let t):
@@ -116,7 +127,7 @@ public enum ClusterWorkerCodec {
     }
 
     public static func decodeCommand(_ data: Data) throws -> ClusterWorkerCommandFrame {
-        var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
+        var r = try reader(data, maximum: ClusterWorkerLimits.mediaCommandBytes)
         let (epoch, sequence, requestID) = try header(&r)
         let command: ClusterWorkerCommand
         switch try r.string("kind") {
@@ -130,6 +141,7 @@ public enum ClusterWorkerCodec {
         }
         try r.finish()
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: command)
+        try workerRequire(data.count <= maximumBytes(command), "Worker record exceeds byte limit")
         try ClusterWorkerValidation.command(frame); return frame
     }
 
@@ -141,7 +153,8 @@ public enum ClusterWorkerCodec {
         case "ready": event = .ready(try ready(r.object("ready")))
         case "admitted": event = .admitted(reservedBytes: try r.int("reservedBytes"))
         case "refused": event = .refused(try r.enumeration("reason"))
-        case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"), committedTokens: try r.int("committedTokens"))
+        case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"),
+            committedTokens: try r.int("committedTokens"), logprobs: try r.optionalObject("logprobs").map(Self.logprobs))
         case "promptCache": event = .promptCache(reusedTokens: try r.int("reusedTokens"), storedFrontiers: try r.ints("storedFrontiers"))
         case "requestTelemetry": event = .requestTelemetry(try telemetry(r.object("telemetry")))
         case "finished": event = .finished(try r.enumeration("reason"))
@@ -186,6 +199,20 @@ public enum ClusterWorkerCodec {
         try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
         return try (r.uuid("membershipEpoch"), r.uint("sequence"), r.optionalUUID("requestID"))
     }
+    private static func logprobs(_ l: ClusterWorkerTokenLogprobs) -> [String: Any] {
+        ["logprobBits": Int(l.logprob.bitPattern), "topTokenIDs": l.top.map(\.tokenID),
+         "topLogprobBits": l.top.map { Int($0.logprob.bitPattern) }]
+    }
+    private static func logprobs(_ object: [String: Any]) throws -> ClusterWorkerTokenLogprobs {
+        var r = WorkerObject(object)
+        let bits = try r.int("logprobBits"), tokens = try r.ints("topTokenIDs"), top = try r.ints("topLogprobBits")
+        try workerRequire(tokens.count == top.count
+            && ([bits] + top).allSatisfy({ (0...Int(UInt32.max)).contains($0) }), "Invalid token logprobs")
+        try r.finish()
+        return .init(logprob: Float(bitPattern: UInt32(bits)), top: zip(tokens, top).map {
+            .init(tokenID: $0.0, logprob: Float(bitPattern: UInt32($0.1)))
+        })
+    }
     private static func telemetry(_ t: ClusterWorkerRequestTelemetry) -> [String: Any] {
         var result: [String: Any] = [:]
         if let value = t.handoffNanoseconds { result["handoffNanoseconds"] = NSNumber(value: value) }
@@ -193,6 +220,7 @@ public enum ClusterWorkerCodec {
         if let value = t.mtpDrafted { result["mtpDrafted"] = value }
         if let value = t.mtpAccepted { result["mtpAccepted"] = value }
         if let value = t.prefillNanoseconds { result["prefillNanoseconds"] = NSNumber(value: value) }
+        if let value = t.mtpRounds { result["mtpRounds"] = value }
         return result
     }
     private static func telemetry(_ object: [String: Any]) throws -> ClusterWorkerRequestTelemetry {
@@ -205,12 +233,14 @@ public enum ClusterWorkerCodec {
             handoffBytes: try optional("handoffBytes") { try $0.int("handoffBytes") },
             mtpDrafted: try optional("mtpDrafted") { try $0.int("mtpDrafted") },
             mtpAccepted: try optional("mtpAccepted") { try $0.int("mtpAccepted") },
-            prefillNanoseconds: try optional("prefillNanoseconds") { try $0.uint("prefillNanoseconds") })
+            prefillNanoseconds: try optional("prefillNanoseconds") { try $0.uint("prefillNanoseconds") },
+            mtpRounds: try optional("mtpRounds") { try $0.int("mtpRounds") })
         try r.finish()
         return value
     }
     private static func reservation(_ r: ClusterWorkerReservation) throws -> [String: Any] {
-        var value: [String: Any] = ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,
+        var value: [String: Any] = ["profileID": r.profileID, "promptTokens": try packedTokens(r.promptTokenIDs),
+         "promptTokenCount": r.promptTokenIDs.count, "stopTokenIDs": r.stopTokenIDs,
          "outputCount": r.outputCount, "chunkSize": r.chunkSize,
          "deadlineUptimeNanoseconds": NSNumber(value: r.deadlineUptimeNanoseconds), "capacityLimitBytes": r.capacityLimitBytes]
         // Greedy text has no field at all, so its bytes are unchanged.
@@ -229,8 +259,50 @@ public enum ClusterWorkerCodec {
             try workerRequire(bytes.count <= 135_000,"MiMo envelope exceeds bound")
             value["mimoImages"] = bytes.base64EncodedString()
         }
+        if let media = r.glmMedia { value["glmMedia"] = media.wireObject() }
         return value
     }
+    /// A prompt's token IDs as packed little-endian UInt32 in base64: one JSON
+    /// string instead of one number per token, so each hop a reservation takes
+    /// (provider, link, owner, worker) parses and re-encodes it in a fraction
+    /// of the time. Token IDs are below `ClusterWorkerLimits.vocabularySize`
+    /// (validated before encoding); anything outside UInt32 is refused here.
+    public static func packedTokens(_ tokens: [Int]) throws -> String {
+        var bytes = [UInt8](repeating: 0, count: tokens.count * 4)
+        for (index, token) in tokens.enumerated() {
+            guard let value = UInt32(exactly: token) else { throw ClusterWorkerProtocolError.invalid("Token ID outside UInt32") }
+            bytes[index * 4] = UInt8(truncatingIfNeeded: value)
+            bytes[index * 4 + 1] = UInt8(truncatingIfNeeded: value >> 8)
+            bytes[index * 4 + 2] = UInt8(truncatingIfNeeded: value >> 16)
+            bytes[index * 4 + 3] = UInt8(truncatingIfNeeded: value >> 24)
+        }
+        return Data(bytes).base64EncodedString()
+    }
+
+    /// `packedTokens`' inverse: canonical base64 only (re-encoding gives the
+    /// same text), exactly `count` four-byte IDs, `count` within the wire's
+    /// prompt bound. Ranges against the vocabulary are the reservation's own
+    /// validation, as before.
+    public static func unpackedTokens(_ encoded: String, count: Int) throws -> [Int] {
+        try workerRequire((1...ClusterWorkerLimits.wirePromptTokens).contains(count)
+            && encoded.utf8.count == (count * 4 + 2) / 3 * 4, "Invalid packed token count")
+        guard let data = Data(base64Encoded: encoded), data.count == count * 4,
+              data.base64EncodedString() == encoded else {
+            throw ClusterWorkerProtocolError.invalid("Invalid packed tokens")
+        }
+        let bytes = [UInt8](data)
+        var tokens = [Int](repeating: 0, count: count)
+        for index in 0 ..< count {
+            let base = index * 4
+            var value = UInt32(bytes[base])
+            value |= UInt32(bytes[base + 1]) << 8
+            value |= UInt32(bytes[base + 2]) << 16
+            value |= UInt32(bytes[base + 3]) << 24
+            tokens[index] = Int(value)
+        }
+        return tokens
+    }
+
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
         var r = WorkerObject(object)
         let sampling = r.values["sampling"] == nil ? nil : try ClusterWorkerSamplingCodec.decode(r.object("sampling"))
@@ -257,10 +329,13 @@ public enum ClusterWorkerCodec {
             }
             media = try ClusterMiMoImages.decodeBounded(bytes)
         } else { media = nil }
-        let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: r.ints("promptTokenIDs"),
+        let glmMedia = r.values["glmMedia"] == nil ? nil : try ClusterGLMMedia.decode(wire: r.object("glmMedia"))
+        let promptTokenCount = try r.int("promptTokenCount")
+        let promptTokenIDs = try unpackedTokens(r.string("promptTokens"), count: promptTokenCount)
+        let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: promptTokenIDs,
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
             deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
-            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages)
+            sampling: sampling, route: route, mimoImages: media, stillImages: stillImages, glmMedia: glmMedia)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {
@@ -281,6 +356,7 @@ public enum ClusterWorkerCodec {
          "executionPlanSHA256": r.executionPlanSHA256, "requestCapacityBytes": r.requestCapacityBytes]
             .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
             .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
+            .merging(r.media.map { ["media": $0] } ?? [:]) { first, _ in first }
     }
     private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
         ["transport": p.transport, "keyed": p.keyed,
@@ -320,7 +396,8 @@ public enum ClusterWorkerCodec {
         }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
-            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe)
+            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe,
+            media: r.values["media"] == nil ? nil : try r.string("media"))
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

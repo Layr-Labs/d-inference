@@ -350,6 +350,11 @@ public final class GLM5NextResidentRuntime {
             baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
                 profile: admission.wireProfile, executionPlanSHA256: contract.source.planFingerprint,
                 requestCapacityBytes: admission.resources.requestCapacityBytes, dataPlane: collective.workerDataPlane,
+                // The context its LOAD charged, when below the profile's: the
+                // pair refuses a longer request before asking (`request`).
+                servingContextTokens: admission.descriptor.memoryProfile.maximumContextTokens
+                    < admission.descriptor.profile.maximumContextTokens
+                    ? admission.descriptor.memoryProfile.maximumContextTokens : nil,
                 linkProbe: linkProbe)
             try check()
             try control.loaded()

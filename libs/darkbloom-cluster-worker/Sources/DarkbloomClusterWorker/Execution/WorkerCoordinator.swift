@@ -24,6 +24,17 @@ struct WorkerKeepWarmTiming: Sendable {
                                                backoffNanoseconds: 60_000_000_000)
 }
 
+/// When an idle worker gives back what its runtime holds beyond the model
+/// (`WorkerRuntime.releaseIdleMemory`, `ClusterIdleMemory`): once, `delay`
+/// after a request retired with nothing queued or active since, and on every
+/// idle tick on which the host reports memory pressure.
+struct WorkerIdleRelease: Sendable {
+    let delayNanoseconds: UInt64
+    let hostUnderPressure: @Sendable () -> Bool
+    static let standard = WorkerIdleRelease(delayNanoseconds: ClusterIdleMemory.releaseDelayNanoseconds,
+                                            hostUnderPressure: { ClusterIdleMemory.hostUnderPressure() })
+}
+
 /// The main process thread is the dedicated synchronous native executor. The
 /// reader only validates control, queues one next action, and signals cancel.
 /// All protocol state and event publication share the condition lock; a failed
@@ -34,7 +45,8 @@ struct WorkerKeepWarmTiming: Sendable {
 /// loads; a renewal moves the process deadline on. Any other input before
 /// readiness ends the worker, as before. While idle the executor also runs the
 /// two keep-warm tiers: its own GPU pulse every half second (tier 1), and the
-/// data-plane exchange its owner sequences (tier 2, `keepWarm`).
+/// data-plane exchange its owner sequences (tier 2, `keepWarm`); and it gives
+/// back idle memory (`WorkerIdleRelease`).
 final class WorkerCoordinator: @unchecked Sendable {
     private var runtime: (any WorkerRuntime)?
     private let pipes: WorkerPipes
@@ -43,6 +55,7 @@ final class WorkerCoordinator: @unchecked Sendable {
     private let renewal: @Sendable (UInt64) -> Void
     private let keepWarmEnabled: Bool
     private let keepWarmTiming: WorkerKeepWarmTiming
+    private let idleRelease: WorkerIdleRelease
     private var ready: ClusterWorkerReady?
     private let condition = NSCondition()
     private let readerDone = DispatchGroup()
@@ -62,6 +75,10 @@ final class WorkerCoordinator: @unchecked Sendable {
     /// Lanes given back before they started, whose cancel the executor answers
     /// with their retirement (condition lock).
     private var withdrawnLanes = Set<UUID>()
+    /// Started lanes that left the loop before their owner's cancel arrived
+    /// (rank 0 dropped them, or their deadline passed): the cancel, when it
+    /// comes, is answered with their retirement (condition lock).
+    private var leftLanes = Set<UUID>()
     private static let laneActionBound = 64
     private var failure: Error?
     private var stopped = false
@@ -71,6 +88,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var keepWarmArmed = false
     private var lastActivity: UInt64 = DispatchTime.now().uptimeNanoseconds
     private var keepWarmBackoffUntil: UInt64 = 0
+    /// When the last request retired, until its idle release ran.
+    private var retiredAt: UInt64?
     /// The request this executor admitted and has not started; executor only.
     private var admittedNotStarted: UUID?
 
@@ -78,15 +97,19 @@ final class WorkerCoordinator: @unchecked Sendable {
     /// renewal must carry; `renewal` is told each renewal's time to live, for
     /// the process's alarm. Keep-warm tier 1 runs only when `keepWarm`.
     init(pipes: WorkerPipes, membershipEpoch: UUID?, keepWarm: Bool, exitHooks: WorkerExitHooks = .none,
-         keepWarmTiming: WorkerKeepWarmTiming = .standard, renewal: @escaping @Sendable (UInt64) -> Void = { _ in }) {
+         keepWarmTiming: WorkerKeepWarmTiming = .standard, idleRelease: WorkerIdleRelease = .standard,
+         renewal: @escaping @Sendable (UInt64) -> Void = { _ in }) {
         self.pipes = pipes; self.membershipEpoch = membershipEpoch; self.keepWarmEnabled = keepWarm
-        self.exitHooks = exitHooks; self.keepWarmTiming = keepWarmTiming; self.renewal = renewal
+        self.exitHooks = exitHooks; self.keepWarmTiming = keepWarmTiming; self.idleRelease = idleRelease
+        self.renewal = renewal
     }
 
     /// After load, for a caller that has its runtime already (tests).
-    convenience init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none) throws {
+    convenience init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none,
+                     idleRelease: WorkerIdleRelease = .standard) throws {
         guard let ready = runtime.readiness else { throw WorkerFailure.invalid("Native owner did not establish bilateral readiness") }
-        self.init(pipes: pipes, membershipEpoch: ready.identity.membershipEpoch, keepWarm: false, exitHooks: exitHooks)
+        self.init(pipes: pipes, membershipEpoch: ready.identity.membershipEpoch, keepWarm: false, exitHooks: exitHooks,
+            idleRelease: idleRelease)
         self.runtime = runtime
     }
 
@@ -160,6 +183,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                 while true {
                     guard let command = try nextAction() else {
                         keepWarmPulseIfIdle(runtime)
+                        releaseIdleMemoryIfDue(runtime)
                         continue
                     }
                     if try applyLaneCommand(command, runtime: runtime) {
@@ -168,7 +192,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     while runtime.hasStartedLanes {
                         try runtime.serveBatch(host: LaneHost(coordinator: self, runtime: runtime))
-                        condition.lock(); keepWarmArmed = true; condition.unlock()
+                        condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                        condition.unlock()
                         if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
                     }
                     condition.lock(); lastActivity = DispatchTime.now().uptimeNanoseconds; condition.unlock()
@@ -177,11 +202,13 @@ final class WorkerCoordinator: @unchecked Sendable {
             while true {
                 guard let command = try nextAction() else {
                     keepWarmPulseIfIdle(runtime)
+                    releaseIdleMemoryIfDue(runtime)
                     continue
                 }
                 switch command.command {
                 case .reserve(let value):
                     do {
+                        try Self.requireLogprobCapture(value, runtime: runtime)
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
                         admittedNotStarted = command.requestID
@@ -201,9 +228,9 @@ final class WorkerCoordinator: @unchecked Sendable {
                     // the answer after submitting its next step (the token credit
                     // still holds: the session refuses a token before the answer).
                     let reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
-                        publish: { ordinal, token, frontier in
-                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier),
-                                requestID: id)
+                        publishToken: { ordinal, token, frontier, logprobs in
+                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
+                                logprobs: logprobs), requestID: id)
                         },
                         answer: { try self.nextDecision() == .proceed }))
                     // The native facade returns only after bilateral retirement
@@ -218,7 +245,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     try publish(.finished(reason), requestID: id)
                     try publish(.retired(.clean), requestID: id)
-                    condition.lock(); keepWarmArmed = true; condition.unlock()
+                    condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                    condition.unlock()
                     if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
                 case .keepWarm(let ordinal):
                     // Tier 2. A failure of the data plane is a failed worker:
@@ -228,6 +256,8 @@ final class WorkerCoordinator: @unchecked Sendable {
                     let serving = runtime.refreshServingContext().map { min($0, ready?.profile.maximumContextTokens ?? $0) }
                     try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max))),
                         servingContextTokens: serving), requestID: nil)
+                    // The owner's pings may keep every wait above from timing out.
+                    releaseIdleMemoryIfDue(runtime)
                 case .shutdown:
                     condition.lock(); keepWarmArmed = false; condition.unlock()
                     try runtime.shutdown()
@@ -286,6 +316,24 @@ final class WorkerCoordinator: @unchecked Sendable {
         condition.unlock()
     }
 
+    /// On the executor while idle (nothing queued, reserved or running): the
+    /// runtime gives back what it holds beyond its model, once the last
+    /// retired request is `idleRelease.delayNanoseconds` old, and on any tick
+    /// under host memory pressure.
+    private func releaseIdleMemoryIfDue(_ runtime: any WorkerRuntime) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        condition.lock()
+        let idle = actions.isEmpty && failure == nil && !stopped
+            && session?.activeRequestID == nil && (laneSession?.activeRequestIDs.isEmpty ?? true)
+        let due = idle && retiredAt.map { now >= $0 &+ idleRelease.delayNanoseconds } == true
+        condition.unlock()
+        guard idle else { return }
+        let pressure = idleRelease.hostUnderPressure()
+        guard due || pressure else { return }
+        _ = runtime.releaseIdleMemory(underPressure: pressure)
+        if due { condition.lock(); retiredAt = nil; condition.unlock() }
+    }
+
     /// The reason a reader failure gives the forced exit, for the log.
     static func exitReason(_ error: Error) -> String {
         guard case WorkerFailure.invalid(let message) = error else { return "worker-input" }
@@ -297,27 +345,35 @@ final class WorkerCoordinator: @unchecked Sendable {
 
     private func publish(_ event: ClusterWorkerEvent, requestID: UUID?) throws {
         condition.lock(); defer { condition.unlock() }
+        try publishLocked(event, requestID: requestID)
+    }
+
+    /// `publish` with the condition lock held, so a lane's check and its
+    /// events are one step against the reader.
+    private func publishLocked(_ event: ClusterWorkerEvent, requestID: UUID?,
+                               now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws {
         if let failure { throw failure }
         guard let ready, session != nil || laneSession != nil else { throw WorkerFailure.invalid("Event before readiness") }
         let frame = ClusterWorkerEventFrame(membershipEpoch: ready.identity.membershipEpoch,
             sequence: eventSequence, requestID: requestID, event: event)
         do {
             if var proposed = laneSession {
-                try proposed.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
+                try proposed.accept(frame, now: now)
                 try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: nil)
                 laneSession = proposed; eventSequence += 1
                 if let requestID {
                     switch event {
                     case .admitted: unstartedLanes.insert(requestID)
                     case .retired, .refused:
-                        unstartedLanes.remove(requestID); withdrawnLanes.remove(requestID)
+                        unstartedLanes.remove(requestID); withdrawnLanes.remove(requestID); leftLanes.remove(requestID)
+                        laneDecisions[requestID] = nil
                     default: break
                     }
                 }
                 return
             }
             var proposed = session!
-            try proposed.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
+            try proposed.accept(frame, now: now)
             try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: requestDeadline)
             session = proposed; eventSequence += 1
             switch event {
@@ -342,7 +398,17 @@ final class WorkerCoordinator: @unchecked Sendable {
                 guard normal else { throw WorkerFailure.invalid("EOF preceded explicit worker shutdown") }
                 return
             }
-            let lines = try decoder.append(chunk).map(ClusterWorkerCodec.decodeControl)
+            let lines = try decoder.append(chunk).map { line in
+                // Diagnostic (prefill frame timing on): a long command's decode time.
+                guard GLM5NextTensorParallelPrefillPlan.frameTimingEnabled, line.count >= 65_536 else {
+                    return try ClusterWorkerCodec.decodeControl(line)
+                }
+                let began = DispatchTime.now().uptimeNanoseconds
+                let decoded = try ClusterWorkerCodec.decodeControl(line)
+                FileHandle.standardError.write(Data(String(format: "glm-command-decode-v1 bytes=%d decode_ms=%.1f\n",
+                    line.count, Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6).utf8))
+                return decoded
+            }
             condition.lock()
             do {
                 // Validate every already-read command before waking the native
@@ -441,6 +507,9 @@ final class WorkerCoordinator: @unchecked Sendable {
         switch frame.command {
         case .tokenDecision(_, let value):
             laneDecisions[frame.requestID!] = value
+        case .cancel where !laneSession!.holds(frame.requestID!):
+            // It crossed the request's own retirement: nothing to answer.
+            return
         case .cancel:
             // A repeated cancel before its retirement needs only one queued
             // acknowledgment; the protocol still validates its sequence.
@@ -469,11 +538,24 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
     }
 
+    /// A request asking for logprobs reaches only a runtime that sends them;
+    /// any other refuses it alone (unsupported) and stays available.
+    static func requireLogprobCapture(_ value: ClusterWorkerReservation, runtime: any WorkerRuntime) throws {
+        guard value.sampling?.capturedLogprobs == nil || runtime.capturesLogprobs else {
+            throw ClusterResidentRequestRefusal(reason: .unsupported,
+                message: "This runtime does not send token logprobs")
+        }
+    }
+
     /// One queued command on the executor. True after the model was released
     /// by an acknowledged shutdown.
     private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
         switch command.command {
         case .reserve(let value):
+            if value.sampling?.capturedLogprobs != nil, !runtime.capturesLogprobs {
+                try publish(.refused(.unsupported), requestID: command.requestID)
+                return false
+            }
             do {
                 let bytes = try runtime.reserveLane(command.requestID!, value)
                 try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
@@ -493,11 +575,27 @@ final class WorkerCoordinator: @unchecked Sendable {
             try publish(.shutdownComplete, requestID: nil)
             return true
         case .cancel:
-            try completeLaneWithdrawal(command.requestID!)
+            let id = command.requestID!
+            condition.lock(); let withdrawn = withdrawnLanes.contains(id); condition.unlock()
+            if runtime.retiresCancelledLanes && !withdrawn {
+                // A started lane leaves the loop at its next step boundary,
+                // which publishes its retirement; one that left before this
+                // cancel arrived is retired now.
+                try completeLaneLeft(id)
+            } else {
+                try completeLaneWithdrawal(id)
+            }
         case .tokenDecision:
             throw WorkerFailure.invalid("Token decision escaped its callback credit")
         }
         return false
+    }
+
+    /// Executor-only: the cancel of a lane that already left the loop.
+    private func completeLaneLeft(_ id: UUID) throws {
+        condition.lock(); defer { condition.unlock() }
+        guard leftLanes.contains(id), laneSession?.isCancelled(id) == true else { return }
+        try publishLocked(.retired(.cancelled), requestID: id)
     }
 
     /// Executor-only. Keep the disposition until publication succeeds, so a
@@ -513,14 +611,21 @@ final class WorkerCoordinator: @unchecked Sendable {
         while true {
             condition.lock()
             if let failure { condition.unlock(); throw failure }
+            // A keep-warm exchange is a collective of its own, and shutdown
+            // releases the model: both wait for the loop to end (their owner
+            // sends them only once every lane retired, so it ends at its next step).
+            if let first = actions.first, Self.waitsForLoopEnd(first.command) { condition.unlock(); return }
             let next = actions.isEmpty ? nil : actions.removeFirst()
             condition.unlock()
             guard let next else { return }
-            guard case .shutdown = next.command else {
-                if try applyLaneCommand(next, runtime: runtime) { return }
-                continue
-            }
-            throw WorkerFailure.invalid("Shutdown arrived while batch lanes run")
+            _ = try applyLaneCommand(next, runtime: runtime)
+        }
+    }
+
+    private static func waitsForLoopEnd(_ command: ClusterWorkerCommand) -> Bool {
+        switch command {
+        case .keepWarm, .shutdown: true
+        default: false
         }
     }
 
@@ -549,17 +654,79 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
     }
 
-    fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int) throws {
-        try publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed), requestID: id)
+    fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int,
+                                      logprobs: ClusterWorkerTokenLogprobs? = nil) throws {
+        condition.lock(); defer { condition.unlock() }
+        // A lane its owner cancelled, or past its deadline, publishes nothing
+        // more of its own (the runtime retiring lanes alone then drops it).
+        let now = DispatchTime.now().uptimeNanoseconds
+        if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
+        try publishLocked(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed,
+            logprobs: logprobs), requestID: id, now: now)
     }
 
     fileprivate func publishLanePromptCache(_ id: UUID, reused: Int, stored: [Int]) throws {
-        try publish(.promptCache(reusedTokens: reused, storedFrontiers: stored), requestID: id)
+        condition.lock(); defer { condition.unlock() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
+        try publishLocked(.promptCache(reusedTokens: reused, storedFrontiers: stored), requestID: id, now: now)
+    }
+
+    fileprivate func publishLaneTelemetry(_ id: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {
+        condition.lock(); defer { condition.unlock() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true { return }
+        try publishLocked(.requestTelemetry(telemetry), requestID: id, now: now)
     }
 
     fileprivate func publishLaneFinished(_ id: UUID, reason: ClusterWorkerFinishReason) throws {
-        try publish(.finished(reason), requestID: id)
-        try publish(.retired(.clean), requestID: id)
+        condition.lock(); defer { condition.unlock() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if runtime?.retiresCancelledLanes == true, laneSession?.accepts(id, now: now) != true {
+            // Cancelled (or past its deadline) while it finished: it retires
+            // as cancelled, now or when the cancel arrives.
+            try leaveLaneLocked(id)
+            return
+        }
+        try publishLocked(.finished(reason), requestID: id, now: now)
+        try publishLocked(.retired(.clean), requestID: id, now: now)
+    }
+
+    /// A started lane left the loop without finishing.
+    fileprivate func publishLaneLeft(_ id: UUID) throws {
+        condition.lock(); defer { condition.unlock() }
+        try leaveLaneLocked(id)
+    }
+
+    private func leaveLaneLocked(_ id: UUID) throws {
+        guard laneSession?.holds(id) == true else { return }
+        if laneSession?.isCancelled(id) == true {
+            try publishLocked(.retired(.cancelled), requestID: id)
+        } else {
+            leftLanes.insert(id)
+        }
+    }
+
+    /// Rank 0: the owner's answer to one lane's last token, if it arrived;
+    /// false once the lane was cancelled or passed its deadline.
+    fileprivate func pollLaneDecision(_ id: UUID) throws -> Bool? {
+        condition.lock(); defer { condition.unlock() }
+        return try laneDecisionLocked(id)
+    }
+
+    fileprivate func awaitLaneDecision(_ id: UUID) throws -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        while true {
+            if let value = try laneDecisionLocked(id) { return value }
+            _ = condition.wait(until: Date(timeIntervalSinceNow: 0.01))
+        }
+    }
+
+    private func laneDecisionLocked(_ id: UUID) throws -> Bool? {
+        if let failure { throw failure }
+        if let value = laneDecisions.removeValue(forKey: id) { return value == .proceed }
+        guard laneSession?.accepts(id, now: DispatchTime.now().uptimeNanoseconds) == true else { return false }
+        return nil
     }
 }
 
@@ -572,6 +739,11 @@ private final class LaneHost: QwenBatchServingHost {
     func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
         try coordinator.publishLaneToken(requestID, ordinal: ordinal, token: tokenID, committed: committedTokens)
     }
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
+                      logprobs: ClusterWorkerTokenLogprobs?) throws {
+        try coordinator.publishLaneToken(requestID, ordinal: ordinal, token: tokenID, committed: committedTokens,
+            logprobs: logprobs)
+    }
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] { try coordinator.awaitLaneDecisions(requestIDs) }
     func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {
         try coordinator.publishLaneFinished(requestID, reason: reason)
@@ -579,4 +751,10 @@ private final class LaneHost: QwenBatchServingHost {
     func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
         try coordinator.publishLanePromptCache(requestID, reused: reusedTokens, stored: storedFrontiers)
     }
+    func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {
+        try coordinator.publishLaneTelemetry(requestID, telemetry: telemetry)
+    }
+    func pollDecision(_ requestID: UUID) throws -> Bool? { try coordinator.pollLaneDecision(requestID) }
+    func awaitDecision(_ requestID: UUID) throws -> Bool { try coordinator.awaitLaneDecision(requestID) }
+    func publishLeft(requestID: UUID) throws { try coordinator.publishLaneLeft(requestID) }
 }

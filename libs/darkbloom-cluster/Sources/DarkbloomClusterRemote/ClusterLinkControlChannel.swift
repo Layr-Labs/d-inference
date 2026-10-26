@@ -76,7 +76,9 @@ public typealias ClusterLinkControlEventHandler = @Sendable (ClusterLinkControlE
 /// per-connection budgets (they are bound into the record keys and checked in
 /// the handshake); timing may differ.
 public struct ClusterLinkControlLimits: Sendable, Equatable {
-    public var maximumBodyBytes = 4 * 1024 * 1024
+    /// Holds one worker-wire message (`ClusterLinkWorkerWire.maximumBytes`)
+    /// with its tag, and a request reserve with a 1,048,576-token prompt.
+    public var maximumBodyBytes = 14 * 1024 * 1024
     /// Per connection; the connection rolls over to fresh keys before either cap.
     public var maximumRecordsPerConnection: UInt64 = ClusterRecordLimits.hardMaximumRecords
     public var maximumBytesPerConnection: UInt64 = ClusterRecordLimits.hardMaximumCumulativePlaintextBytes

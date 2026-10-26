@@ -93,6 +93,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     private var launchID: UUID?
     private var incoming: [ClusterWorkerEventFrame] = []
     private var outgoing: [(ClusterWorkerCommandFrame, UInt64)] = []
+    /// Encoded bytes of each queued command, in `outgoing`'s order, and their sum.
+    private var outgoingBytes: [Int] = []
+    private var queuedBytes = 0
     private var nextCommand: UInt64 = 0
     private var nextNativeEvent: UInt64 = 0
     private var nextWireEvent: UInt64 = 0
@@ -251,13 +254,20 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     /// SSH/native IO or invokes an invalidation callback synchronously.
     public func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
         try lock.withLock {
-            guard !invalid, !cleanup, deadline > DispatchTime.now().uptimeNanoseconds, outgoing.count < 16 else { throw ClusterWorkerOwnerError.closed }
+            guard !invalid, !cleanup, deadline > DispatchTime.now().uptimeNanoseconds else { throw ClusterWorkerOwnerError.closed }
             let frame = ClusterWorkerCommandFrame(membershipEpoch: expectedIdentity.membershipEpoch, sequence: nextCommand,
                 requestID: requestID, command: command)
             let bytes = try ClusterWorkerCodec.encode(frame)
-            let queued = try outgoing.reduce(0) { try $0 + ClusterWorkerCodec.encode($1.0).count }
-            guard bytes.count <= 1_048_576 - queued else { throw OwnerWire.invalid("Remote command queue full") }
-            outgoing.append((frame, deadline)); nextCommand += 1
+            // The queue holds the largest command (`queuedCommandBytes`): a
+            // reservation the codec admits fits an empty one. One that cannot
+            // be queued now is that request's refusal, never the session's.
+            guard outgoing.count < 16, bytes.count <= ClusterWorkerLimits.queuedCommandBytes - queuedBytes else {
+                if case .reserve = command { throw ClusterWorkerOwnerError.refused(.busy) }
+                if outgoing.count >= 16 { throw ClusterWorkerOwnerError.closed }
+                throw OwnerWire.invalid("Remote command queue full")
+            }
+            outgoing.append((frame, deadline)); outgoingBytes.append(bytes.count); queuedBytes += bytes.count
+            nextCommand += 1
         }
         writerWake.signal()
     }
@@ -316,13 +326,16 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?, Bool) in
                     let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
                     let renew = renewalCanBeSentLocked && now >= nextRenewalAt
-                    let next = bootstrap == nil && !renew && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
+                    var next: (ClusterWorkerCommandFrame, UInt64)?
+                    if bootstrap == nil && !renew && !invalid && incarnation != nil && !outgoing.isEmpty {
+                        next = outgoing.removeFirst(); queuedBytes -= outgoingBytes.removeFirst()
+                    }
                     return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap, renew)
                 }
                 var wrote = false
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
-                    var writeDeadline = min(ownerRetirementDeadlineUptimeNanoseconds, now + 500_000_000)
+                    var writeDeadline = Self.ownerWriteDeadline(now: now, ownerRetirement: ownerRetirementDeadlineUptimeNanoseconds)
                     if work.2 && !sentRelease {
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
@@ -348,7 +361,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                     } else if let (command, deadline) = work.3 {
                         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
                         frame = try OwnerWire.command(command, lease: leaseID, incarnation: incarnation, sequence: sequence, now: now, deliveryDeadline: deadline)
-                        writeDeadline = min(writeDeadline, deadline)
+                        writeDeadline = Self.ownerWriteDeadline(now: now, ownerRetirement: ownerRetirementDeadlineUptimeNanoseconds,
+                            commandDelivery: deadline)
                     } else { frame = nil }
                     if let frame {
                         try pipe.write(frame.encoded(commandStream: true), until: writeDeadline)
@@ -373,6 +387,16 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
             pipe.closeOutput(); try? input.fileHandleForWriting.close()
         }
     }
+    /// How long the writer may take to build and write one owner record: a
+    /// control record (renewal, fence, release, bootstrap reply) half a
+    /// second; a command until its own delivery deadline. A native-context
+    /// reservation's record is ~7 MB: building it and the owner reading it
+    /// took longer than half a second (candidate 35, ~1,040,000 tokens: the
+    /// writer gave up, the endpoint failed and the pair ended).
+    static func ownerWriteDeadline(now: UInt64, ownerRetirement: UInt64, commandDelivery: UInt64? = nil) -> UInt64 {
+        min(ownerRetirement, commandDelivery ?? (now + 500_000_000))
+    }
+
     private func readLoop(_ pipe: ClusterOwnerPipe) {
         defer {
             // Reaping ssh owns transport only; this never leaves nativeEnded.

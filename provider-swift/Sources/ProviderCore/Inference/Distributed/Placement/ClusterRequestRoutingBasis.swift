@@ -62,7 +62,7 @@ public enum ClusterServedSpeedHistory {
     public static func entries(homeDirectory: URL) -> [ClusterServedSpeedRecords.Entry] {
         guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)) else { return [] }
         return file.records.compactMap { record in
-            guard let sample = ClusterServedSample.fromTelemetry(route: record.route, promptTokens: record.promptTokens,
+            guard record.isSpeedRecord, let sample = ClusterServedSample.fromTelemetry(route: record.route, promptTokens: record.promptTokens,
                 cachedTokens: record.cachedTokens, completionTokens: record.completionTokens,
                 firstTokenMilliseconds: record.firstTokenMilliseconds, decodeTokensPerSecond: record.decodeTokensPerSecond,
                 outcome: record.outcome, finishedAt: record.finishedAt) else { return nil }

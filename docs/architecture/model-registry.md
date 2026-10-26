@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-22
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -13,6 +13,15 @@ publication manifests. `provider-swift/Sources/ProviderCore/Models/ModelDownload
 downloads published artifacts and verifies them. Discovery is not full weight
 hashing: retain fast startup scans and on-demand verification. Broken templates
 must be reported rather than silently repaired.
+
+Foreground downloads (`darkbloom models download` and the `darkbloom start`
+picker) report progress through `provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift`
+(`ProgressRenderer`). On a terminal it redraws a block of one row per in-flight
+file plus a total row, limited to the terminal's height and to one column less
+than its width: each redraw moves the cursor back over the previous block,
+which cannot reach rows that have scrolled off screen. Each completed file is
+printed once above that block. Without a terminal only the completion lines are
+printed.
 
 Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.

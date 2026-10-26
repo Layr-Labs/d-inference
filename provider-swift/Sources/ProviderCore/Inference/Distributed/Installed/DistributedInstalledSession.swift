@@ -357,7 +357,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         do {
             pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
                 timing: prepared.plan.budgets.pairTiming, keepWarm: .standard,
-                lanes: concurrentRequests)
+                lanes: concurrentRequests, lanesRetireAlone: prepared.plan.lanesRetireAlone())
         } catch { throw Self.startFailure(error, endpoints: values) }
         lock.withLock { self.pair = pair }
         // Per-request route (pair, or the member holding the whole model alone), derived from this setup.

@@ -49,12 +49,16 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     /// The members in rank order (their setup labels), so that a speed
     /// record names which Mac held which range. Nil in an older record.
     public let ranks: [String]?
+    /// The most other requests the pair served at the same time while this
+    /// one ran (time-sliced lanes share the pair between them): 0 when it ran
+    /// alone. Nil in a record written before it was counted.
+    public let concurrentRequests: Int?
 
     public init(requestID: String, finishedAt: Double, modelID: String, mode: String, cut: String,
                 promptTokens: Int, cachedTokens: Int, completionTokens: Int, firstTokenMilliseconds: Double?,
                 decodeTokensPerSecond: Double?, handoffMilliseconds: Double?, handoffBytes: Int?,
                 mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil,
-                ranks: [String]? = nil) {
+                ranks: [String]? = nil, concurrentRequests: Int? = nil) {
         self.requestID = requestID; self.finishedAt = finishedAt; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.promptTokens = promptTokens; self.cachedTokens = cachedTokens
         self.completionTokens = completionTokens; self.firstTokenMilliseconds = firstTokenMilliseconds
@@ -67,12 +71,18 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
         self.route = route.map { String($0.prefix(80)) }
         self.routeReason = routeReason.map { String($0.prefix(240)) }
         self.ranks = ranks.flatMap { $0.count <= 8 && $0.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) ? $0 : nil }
+        self.concurrentRequests = concurrentRequests.map { max(0, $0) }
     }
 
     /// A speed record: a completed request that computed its whole prompt
-    /// (nothing restored from a prefix cache) and timed its first token.
+    /// (nothing restored from a prefix cache), timed its first token, and had
+    /// the pair to itself. One that shared it with other requests ran at a
+    /// fraction of the pair's speed (eight lanes: 12 tok/s each where one
+    /// request alone decodes 90): the planner would take that for the mode's
+    /// speed and plan the next start away from it.
     public var isSpeedRecord: Bool {
         cachedTokens == 0 && (outcome == "stop" || outcome == "length") && firstTokenMilliseconds != nil && promptTokens > 0
+            && (concurrentRequests ?? 0) == 0
     }
 }
 

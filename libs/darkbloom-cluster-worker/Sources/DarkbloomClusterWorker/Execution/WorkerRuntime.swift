@@ -21,6 +21,11 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// Keep-warm tier 2: one 1x16 data-plane exchange with the peer while
     /// idle; returns its duration in nanoseconds.
     func dataPlanePing() throws -> UInt64
+    /// Gives back, while idle, what the runtime holds beyond its model
+    /// (`ClusterIdleMemory`): MLX's freed-buffer cache, and its prompt-prefix
+    /// entries too where it drops them while the host is `underPressure`.
+    /// Returns the bytes given back; nil when it holds nothing of the kind.
+    func releaseIdleMemory(underPressure: Bool) -> Int?
     /// The last started request's prefix cache: prompt tokens restored, and
     /// frontiers kept. Read after `start` returns, on the same executor.
     var lastPromptCache: (reused: Int, stored: [Int]) { get }
@@ -47,6 +52,15 @@ protocol WorkerRuntime: AnyObject, Sendable {
     func withdrawLane(_ id: UUID) -> Bool
     var hasStartedLanes: Bool { get }
     func serveBatch(host: QwenBatchServingHost) throws
+    /// True when the batch loop retires a started lane alone (cancelled, or
+    /// past its deadline) and the other lanes go on; false when cancelling a
+    /// started lane ends the batch.
+    var retiresCancelledLanes: Bool { get }
+    /// The runtime sends each committed token's logprobs when a request's
+    /// sampling asks for them (`ClusterWorkerSampling.topLogprobs`). A runtime
+    /// that does not is never given such a request: it is refused as
+    /// unsupported before reservation.
+    var capturesLogprobs: Bool { get }
 }
 
 extension WorkerRuntime {
@@ -61,6 +75,7 @@ extension WorkerRuntime {
         throw WorkerFailure.invalid("This runtime cannot give back a reservation")
     }
     func refreshServingContext() -> Int? { nil }
+    func releaseIdleMemory(underPressure: Bool) -> Int? { nil }
     var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { nil }
     var batchLanes: Int { 1 }
     func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
@@ -73,4 +88,6 @@ extension WorkerRuntime {
     func serveBatch(host: QwenBatchServingHost) throws {
         throw WorkerFailure.invalid("This runtime serves one request at a time")
     }
+    var retiresCancelledLanes: Bool { false }
+    var capturesLogprobs: Bool { false }
 }

@@ -23,6 +23,7 @@ public struct CBv2Request: Sendable {
     public var multimodal: Int?, positionState: Int?, tokenConstraint: Int?
     public var mimoClusterImages: Data? = nil
     public var clusterStillImages: Data? = nil
+    public var clusterGLMMedia: Data? = nil
     public init(id: CBv2RequestID, promptTokens: [Int], sampling: CBv2SamplingParams, maxTokens: Int) {
         self.id = id; self.promptTokens = promptTokens; self.sampling = sampling; self.maxTokens = maxTokens
     }
@@ -31,3 +32,10 @@ public struct CBv2FirstTokenDeadlineAdmission: Sendable { public init() {} }
 public enum CBv2FirstTokenUnboundedReason: Sendable, Equatable { case unsupportedScheduler }
 public enum CBv2FirstTokenProjectedWork: Sendable, Equatable { case unbounded(reason: CBv2FirstTokenUnboundedReason? = nil) }
 public enum CBv2FinishReason: Sendable, Equatable { case stop, length, cancelled, error(String) }
+public struct CBv2TokenLogprob: Sendable {
+    public var token: Int, logprob: Float
+    public var topLogprobs: [(token: Int, logprob: Float)]
+    public init(token: Int, logprob: Float, topLogprobs: [(token: Int, logprob: Float)] = []) {
+        self.token = token; self.logprob = logprob; self.topLogprobs = topLogprobs
+    }
+}

@@ -26,7 +26,8 @@ struct CBv2RequestGeometry {
          host: CBv2StageKVHost? = nil) throws {
         if let nemotron = model as? NemotronHModel {
             self = try CBv2RequestGeometry(nemotronStage: nemotron, layerCount: layerCount,
-                vocabularySize: vocabularySize, configurationData: configurationData, maximumTokens: maximumTokens)
+                vocabularySize: vocabularySize, configurationData: configurationData, maximumTokens: maximumTokens,
+                host: host)
             return
         }
         guard family == .qwen35, feedForwardKind == QwenRoutedExpertStageModel.feedForwardKind(model),

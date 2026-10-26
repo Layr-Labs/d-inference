@@ -862,18 +862,38 @@ public final class ClusterService: @unchecked Sendable {
             }
             let live = self.controlLive
             if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
+            // Both Macs refuse the old parts once their workers changed, and the parts hold the model's memory until
+            // they stop: stop them and wait for the memory before planning. Planned while they run, a tensor-parallel
+            // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
+            // serving intent, so the next check tries again.
+            if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
+            let releasedBy = Date().addingTimeInterval(ClusterOnboardingUpdate.releaseWaitSeconds)
+            while Date() < releasedBy, case .success(let lines) = live.localVerifyTeardown(),
+                  !ClusterOnboardingUpdate.released(lines) {
+                Thread.sleep(forTimeInterval: 2)
+            }
+            func failedStopped(_ lines: [String]) {
+                try? self.store.updateRecord { $0.leadership?.serving = true }
+                failed(lines)
+            }
+            // The same model keeps the mode the pair served it in, unless the planner and the pair's own served
+            // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
+            // its report again: the one `localReachMembers` took above still counts its old part's memory.
+            let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
             let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels() {
+            switch live.localPlanModels(keeping: keeping) {
             case .success(let value): choices = value
-            case .failure(let failure): return failed(failure.lines)
+            case .failure(let failure): return failedStopped(failure.lines)
             }
             // `model` is the model's id (the record keeps ids; the screens show catalog names).
             guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
-                return failed(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
+                return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
             }
-            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
-            say("set the cluster up again after the update: \(model) is starting on both Macs")
+            if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
+            if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
+            // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
+            say("set the cluster up again after the update: \(model) is starting on both Macs ("
+                + choices[index].lines.joined(separator: " ") + ")")
         }
     }
 
@@ -1055,10 +1075,11 @@ public final class ClusterService: @unchecked Sendable {
         }
         // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
         if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
-        // The model's own pages in the file cache (a download, a copy, an earlier load) are not counted by the load
-        // gate while they are active: dropped first, the part's load reads them back into its own memory.
+        // The model's own pages stay in, and are read into, the file cache while the part starts: the load gate
+        // counts all of it as available (58d7371a), and the rank's load reads cached pages at memory speed instead of
+        // from the SSD (GLM tensor parallel: 101 GB/s against 14 GB/s on an M5 Ultra), most of a restart's time.
         if case .cluster = want, let configuration = saved.configuration, configuration.peers.indices.contains(configuration.localRank) {
-            ClusterModelStore.dropCachedPages(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
+            ClusterModelStore.prefetchPagesInBackground(folder: URL(fileURLWithPath: configuration.peers[configuration.localRank].modelDirectory))
         }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable

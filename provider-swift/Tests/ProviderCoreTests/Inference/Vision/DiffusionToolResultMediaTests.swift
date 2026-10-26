@@ -37,7 +37,7 @@ struct DiffusionToolResultMediaTests {
     }
 
     private func color(_ image: UserInput.Image) throws -> [UInt8] {
-        guard case .ciImage(let image) = image else { throw CocoaError(.coderInvalidValue) }
+        guard case .ciImage(let image) = image.source else { throw CocoaError(.coderInvalidValue) }
         var rgba = [UInt8](repeating: 0, count: 4)
         CIContext(options: [.useSoftwareRenderer: true]).render(image, toBitmap: &rgba,
             rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8,

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-20
+> Last updated: 2026-10-23
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -10,8 +10,8 @@ is updated afterwards, and how to remove everything. For operators; at the end
 ## Prerequisites
 
 - An Apple Silicon Mac. The binary targets macOS 14 (`provider-swift/Package.swift`,
-  `.macOS(.v14)`); the installer checks only `uname` = `Darwin` and `uname -m` =
-  `arm64` and prints the macOS version without gating on it. Sizing (RAM, disk,
+  `.macOS(.v14)`); the installer checks `uname` = `Darwin` and `uname -m` =
+  `arm64`, and refuses a new install below macOS 27 (see step 1/5). Sizing (RAM, disk,
   which models fit) is in [hardware requirements](./hardware-requirements.md).
 - New network providers require macOS 27 or later and current qualified App
   Attest authorization, not just a successful install or OS upgrade. Only the
@@ -56,6 +56,11 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 2. **Step 1/5 — release metadata.** `GET $COORD_URL/v1/releases/latest`, then
    extracts `url`, `bundle_hash`, `binary_hash`, `metallib_hash`, `version`,
    `backend` with `sed`. Missing `url`, `bundle_hash` or `version` aborts.
+   `require_supported_macos` then stops a **new** install on macOS 26 or earlier
+   with an upgrade prompt (System Settings › General › Software Update) before
+   anything is downloaded. A Mac that already has the CLI or a provider config
+   (a grandfathered provider reinstalling or repairing) continues with a notice to
+   upgrade; an unknown OS version is not guessed.
 3. **Step 2/5 — download and verify.** Creates `~/.darkbloom` and
    `~/.darkbloom/bin`, downloads the tarball to `/tmp/darkbloom-bundle.tar.gz`
    and requires `shasum -a 256` to equal `bundle_hash` (mismatch deletes the

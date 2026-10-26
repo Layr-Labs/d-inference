@@ -499,6 +499,9 @@ public struct PairBatchRequestTiming: Codable, Equatable, Sendable {
     /// Prompt tokens both ranks restored from their prefix caches (nil: none).
     public var reusedPromptTokens: Int?
     public var selectedTokenIDs: [Int]
+    /// The driver cancelled this request after this many tokens (its tokens
+    /// are then compared as a prefix of its solo run's).
+    public var cancelledAfterTokens: Int?
 
     public init(promptIndex: Int, requestID: String, promptTokens: Int, startOffsetSeconds: Double, tokens: [Int],
                 finishReason: String) {

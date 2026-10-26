@@ -15,6 +15,25 @@ enum ProviderPromptContractPipeline {
             try controls.rawGLM5Controls.validate()
         }
     }
+    /// Why `validateNativeControls` refuses `controls`, or nil when it accepts
+    /// them. MiMo and Flint refuse only reasoning controls.
+    static func nativeControlsRefusal(_ controls: ChatTemplateControls, modelType: String?) -> InferenceRefusalReason? {
+        do {
+            try validateNativeControls(controls, modelType: modelType)
+            return nil
+        } catch {
+            guard GLM5NextPromptPolicy.applies(modelType: modelType) else { return .unsupportedReasoningControl }
+            return controls.rawGLM5Controls.refusalReason ?? .unsupportedReasoningControl
+        }
+    }
+    /// The caller declined reasoning the model still generates. It is never
+    /// framed or returned as logprob entries, but it is counted as reasoning.
+    static func withholdsReasoning(
+        _ request: OpenAIChatCompletionRequest, controls: ChatTemplateControls, modelType: String?
+    ) -> Bool {
+        FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
+            || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
+    }
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -36,17 +55,64 @@ enum ProviderPromptContractPipeline {
     }
 
 
+    /// `promptCacheScope` is the request's prefix-cache scope when caching is
+    /// enabled for it; nil always takes the unchanged tokenizer path.
     static func tokenize(
         prepared: ToolChoicePromptPolicy.Prepared,
         request: OpenAIChatCompletionRequest,
         tokenizer: any MLXLMCommon.Tokenizer,
         modelType: String?,
-        templateControls: ChatTemplateControls
+        templateControls: ChatTemplateControls,
+        promptCacheScope: String? = nil
     ) throws -> [Int] {
         let input = try normalizedInput(prepared: prepared, request: request,
             modelType: modelType, templateControls: templateControls)
+        if let promptCacheScope, let caching = tokenizer as? any PromptTokenCaching {
+            return try caching.applyChatTemplate(messages: input.messages,
+                tools: input.tools, additionalContext: input.additionalContext,
+                promptCacheScope: promptCacheScope)
+        }
         return try tokenizer.applyChatTemplate(messages: input.messages,
             tools: input.tools, additionalContext: input.additionalContext)
+    }
+
+    /// Where `tokenize`'s time goes: the request's normalization, and the
+    /// tokenizer's one chat-template call (the Jinja render and the BPE encode
+    /// of its text, inseparable from outside the tokenizer).
+    struct PrepTiming: Sendable {
+        let normalizeMicroseconds: Int64
+        let templateTokenizeMicroseconds: Int64
+    }
+
+    /// `tokenize`, the same calls on the same inputs, timed.
+    static func tokenizeMeasured(
+        prepared: ToolChoicePromptPolicy.Prepared,
+        request: OpenAIChatCompletionRequest,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        modelType: String?,
+        templateControls: ChatTemplateControls,
+        promptCacheScope: String? = nil
+    ) throws -> (tokens: [Int], timing: PrepTiming) {
+        func microseconds(_ duration: Duration) -> Int64 {
+            let parts = duration.components
+            return parts.seconds * 1_000_000 + parts.attoseconds / 1_000_000_000_000
+        }
+        let started = ContinuousClock.now
+        let input = try normalizedInput(prepared: prepared, request: request,
+            modelType: modelType, templateControls: templateControls)
+        let normalized = ContinuousClock.now
+        let tokens: [Int]
+        if let promptCacheScope, let caching = tokenizer as? any PromptTokenCaching {
+            tokens = try caching.applyChatTemplate(messages: input.messages,
+                tools: input.tools, additionalContext: input.additionalContext,
+                promptCacheScope: promptCacheScope)
+        } else {
+            tokens = try tokenizer.applyChatTemplate(messages: input.messages,
+                tools: input.tools, additionalContext: input.additionalContext)
+        }
+        let rendered = ContinuousClock.now
+        return (tokens, PrepTiming(normalizeMicroseconds: microseconds(normalized - started),
+            templateTokenizeMicroseconds: microseconds(rendered - normalized)))
     }
 
     /// Exposes the SAME production normalization result. The default path is

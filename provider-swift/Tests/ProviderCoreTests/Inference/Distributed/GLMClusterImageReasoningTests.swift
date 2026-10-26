@@ -12,6 +12,26 @@ import Testing
 struct GLMClusterImageReasoningTests {
     @Test(arguments: ["<think>", "</think>"])
     func promptReasoningStateSurvivesLengthTermination(tail: String) async throws {
+        let served = try await serve(tail: tail)
+        #expect(served.finish == "length")
+        #expect(served.answer == (tail == "<think>" ? "" : "t42"))
+        #expect(served.reasoning == (tail == "<think>" ? "t42" : ""))
+    }
+
+    /// `reasoning.exclude` on the pair's image path withholds the thought as
+    /// the single-Mac media path does; an answer after a closed prompt block
+    /// still streams.
+    @Test(arguments: ["<think>", "</think>"])
+    func excludedReasoningIsWithheld(tail: String) async throws {
+        let served = try await serve(tail: tail,
+            controls: ProviderLoop.extractChatTemplateControls(from: Data(#"{"reasoning":{"exclude":true}}"#.utf8)))
+        #expect(served.finish == "length")
+        #expect(served.reasoning.isEmpty)
+        #expect(served.answer == (tail == "<think>" ? "" : "t42"))
+    }
+
+    private func serve(tail: String, controls: ChatTemplateControls = .init()) async throws
+        -> (answer: String, reasoning: String, finish: String?) {
         var config = try #require(JSONSerialization.jsonObject(with:
             JSONEncoder().encode(GLM5NextInventoryFixture.configuration())) as? [String: Any])
         config["image_token_id"] = 154854
@@ -39,7 +59,7 @@ struct GLMClusterImageReasoningTests {
             tokenizer: tokenizer, modelType: "glm5_next", engineV2Bridge: bridge)
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["fixture/glm-image-reasoning": entry]
-        })
+        }, templateControls: controls)
         let png = "data:image/png;base64,"
             + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
             + "WElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAAB"
@@ -68,16 +88,12 @@ struct GLMClusterImageReasoningTests {
             case .content(let chunk): parsed += parser.parse(chunk)
             case .parsed(let value): parsed.append(value)
             case .info(let info): finish = info.stopReason
-            case .toolCall: Issue.record("Unexpected tool call")
+            case .toolCall, .toolCallDelta: Issue.record("Unexpected tool call")
             }
         }
         parsed += parser.finish()
-        #expect(finish == "length")
-        let answer = parsed.map(\.content).joined()
-        let reasoning = parsed.compactMap(\.reasoningContent).joined()
-        #expect(answer == (tail == "<think>" ? "" : "t42"))
-        #expect(reasoning == (tail == "<think>" ? "t42" : ""))
         await distributed.shutdown()
+        return (parsed.map(\.content).joined(), parsed.compactMap(\.reasoningContent).joined(), finish)
     }
 }
 

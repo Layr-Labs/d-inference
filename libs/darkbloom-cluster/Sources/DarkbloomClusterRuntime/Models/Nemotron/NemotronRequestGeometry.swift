@@ -9,9 +9,11 @@ extension CBv2RequestGeometry {
     /// stage model. Unlike a Qwen stage, not every block owns state: a
     /// mixture-of-experts block has none, so the attention and Mamba indices
     /// must be exactly the blocks of those kinds in the stage's own block
-    /// list, and nothing is required of the rest.
+    /// list, and nothing is required of the rest. On a stage KV host (paged
+    /// unless the diagnosis switch names contiguous) the attention rows come
+    /// from the host's pool and its caches; the Mamba state stays per request.
     init(nemotronStage model: NemotronHModel, layerCount: Int, vocabularySize: Int,
-         configurationData: Data, maximumTokens: Int) throws {
+         configurationData: Data, maximumTokens: Int, host: CBv2StageKVHost? = nil) throws {
         guard layerCount > 0, vocabularySize > 0, vocabularySize <= Int(Int32.max), maximumTokens > 0,
               let root = try JSONSerialization.jsonObject(with: configurationData) as? [String: Any],
               let names = root["layers_block_type"] as? [String], names.count == layerCount else {
@@ -22,7 +24,14 @@ extension CBv2RequestGeometry {
             throw ProbeError("CBv2 request exceeds the model's declared context bound")
         }
         let kinds = model.cbv2LayerKinds, recurrent = model.cbv2RecurrentStateSpec
-        let caches = model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
+        let caches = host?.caches ?? model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
+        if let host {
+            // The host was built for this stage's own layers, at least this long.
+            guard host.layerKinds == kinds, host.caches.count == kinds.count,
+                  maximumTokens <= host.maximumTokensPerRequest else {
+                throw ProbeError("Stage KV host differs from this Nemotron stage's attention layers or request bound")
+            }
+        }
         guard !kinds.isEmpty, kinds.count == caches.count,
               let types = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
               types.count == kinds.count, let dtype = types.first,
@@ -43,8 +52,10 @@ extension CBv2RequestGeometry {
                   !kind.hasSinks, !kind.isBidirectional,
                   kind.kvHeads > 0, kind.queryHeads > 0, kind.headDim > 0,
                   kind.queryHeads % kind.kvHeads == 0,
-                  caches[index].kind == kind, caches[index].layerIndex == kind.modelLayerIndex,
-                  caches[index].rows.isEmpty, caches[index] is any KVCache else {
+                  caches[index].kind == kind,
+                  caches[index].layerIndex == (host?.expectedLayerIndex(compact: index) ?? kind.modelLayerIndex),
+                  // A host's caches may hold another request's rows.
+                  host != nil || caches[index].rows.isEmpty, caches[index] is any KVCache else {
                 throw ProbeError("Unsupported Nemotron CBv2 attention cache geometry")
             }
             var bytes = maximumTokens
@@ -67,8 +78,10 @@ extension CBv2RequestGeometry {
             }
         }
         _ = try recurrent.peakBytesPerRequest()
+        guard host == nil || host!.kvDType == dtype else { throw ProbeError("Stage KV host dtype differs from the stage") }
         self.kinds = kinds; self.caches = caches; self.recurrent = recurrent
         self.kvDType = dtype; self.kvCapacityBytes = capacity; self.layerCount = layerCount
+        self.host = host
     }
 }
 

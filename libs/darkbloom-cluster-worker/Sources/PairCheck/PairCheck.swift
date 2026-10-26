@@ -219,7 +219,8 @@ import Foundation
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--tensor-shares", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
-            "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--kv-backend",
+            "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
+            "--kv-backend",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
             "--remote-prefix-ssd-key-file"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
@@ -318,6 +319,8 @@ import Foundation
                 return value
             }
             configuration.batchSolo = fields["--batch-solo"]?.first != "no"
+            configuration.batchStaggerMilliseconds = try integer(fields, "--batch-stagger-ms") ?? 0
+            configuration.batchCancelAfterTokens = try integer(fields, "--batch-cancel-after")
             try configuration.validate()
         }
         for (side, keyPath) in [("local", \PairConfiguration.localPrefixSSD), ("remote", \PairConfiguration.remotePrefixSSD)] {

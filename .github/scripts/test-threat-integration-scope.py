@@ -3,10 +3,12 @@
 import copy
 import json
 import unittest
+from unittest.mock import patch
 
 from threat_review.budget_scan import Scanner
-from threat_review.context import SOL, SONNET, ThreatContext
+from threat_review.context import OPUS, SOL, SONNET, ThreatContext
 from threat_review.integration_context import MAX_REPLAY_BYTES, replay_source
+from threat_review.merge_policy import clean
 
 
 THREAT = "threats:\n  - id: T-SCOPE\n    description: Preserve source citation boundaries.\n"
@@ -37,9 +39,10 @@ class Responses:
     key = "synthetic"
     stopped = None
 
-    def __init__(self, integration_finding=None):
+    def __init__(self, integration_finding=None, reply=None):
         self.requests = []
         self.integration_finding = integration_finding
+        self.reply = reply
 
     def metrics(self):
         return {}
@@ -52,7 +55,148 @@ class Responses:
         response = {"covered_units": [unit["id"] for unit in message["units"]],
                     "analysis": "Synthetic local source analysis.",
                     "needs_deeper_review": False, "findings": findings}
+        if self.reply:
+            response.update(self.reply(payload["model"], message))
         return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response)}}]}
+
+
+class DepthPolicyTests(unittest.TestCase):
+    @staticmethod
+    def files(*paths, lines=1):
+        return [{"filename": path, "status": "added", "source_complete": True,
+                 "head_text": "answer = 42\n" * lines, "patch": ""} for path in paths]
+
+    def scan(self, files, reply=None, state=None, use_cache=True):
+        calls, state = Responses(reply=reply), state or MemoryState()
+        scanner = Scanner(ThreatContext(THREAT), files, state, calls, lambda _: None, "a" * 40)
+        scanner.use_cache = use_cache
+        state.scanner = scanner
+        result = scanner.run()
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["covered_units"], result["total_units"])
+        self.assertEqual(result["depth_batches_pending"], 0)
+        self.assertTrue(result["integration_completed"])
+        return result, scanner, calls
+
+    def test_critical_source_gets_one_independent_reviewer(self):
+        _, _, calls = self.scan(self.files("crypto.py"))
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
+
+    def test_risky_production_source_still_gets_opus(self):
+        _, _, calls = self.scan(self.files("auth.py"))
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, OPUS])
+
+    def test_clean_support_files_keep_full_coverage_without_filename_escalation(self):
+        files = self.files("docs/crypto.md", "Tests/AuthTests.swift", ".github/scripts/test-auth.py",
+                           "src/auth_test.go", "src/auth.spec.ts", "testdata/encryption.json",
+                           "changelog.d/attestation.md")
+        result, _, calls = self.scan(files)
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET])
+        self.assertTrue(clean({"head": "b" * 40, "base": "a" * 40, "review": result}, "b" * 40, "a" * 40))
+
+    def test_workflow_named_as_a_test_still_gets_sol(self):
+        _, _, calls = self.scan(self.files(".github/workflows/test-docs.yml"))
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
+
+    def test_production_attest_and_test_named_sources_keep_independent_depth(self):
+        for path, expected in (("provider-swift/Sources/Security/AppAttest.swift", SOL),
+                               ("provider-swift/Sources/Security/Attest.swift", SOL),
+                               ("provider-swift/Sources/AuthLatest.swift", OPUS),
+                               ("src/test-crypto.py", SOL),
+                               ("src/CryptoTests.swift", SOL),
+                               ("src/AuthTests.swift", OPUS)):
+            with self.subTest(path=path):
+                _, _, calls = self.scan(self.files(path))
+                depth = [model for model, message in calls.requests
+                         if model != SONNET and message["stage"] == "source"]
+                self.assertEqual(depth, [expected])
+
+    def test_support_uncertainty_still_escalates_to_opus(self):
+        def reply(model, message):
+            return {"needs_deeper_review": model == SONNET and message["stage"] == "source"}
+        _, _, calls = self.scan(self.files("Tests/AuthTests.swift"), reply)
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, OPUS])
+
+    def test_high_finding_in_support_source_goes_directly_to_sol(self):
+        issue = dict(finding("docs/crypto.md"), severity="high")
+        def reply(model, message):
+            return {"findings": [issue] if model == SONNET and message["stage"] == "source" else []}
+        result, _, calls = self.scan(self.files("docs/crypto.md"), reply)
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
+        self.assertEqual(result["findings"][0]["models"], [SONNET])
+
+    def test_critical_path_wins_in_a_mixed_source_batch(self):
+        _, scanner, calls = self.scan(self.files("auth.py", "crypto.py"))
+        self.assertEqual(len(scanner.source), 1)
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
+
+    def test_renamed_critical_source_keeps_its_old_path_risk(self):
+        files = self.files("ordinary.py")
+        files[0].update(status="renamed", previous_filename="crypto.py", base_text="answer = 42\n")
+        _, _, calls = self.scan(files)
+        self.assertEqual([model for model, _ in calls.requests], [SONNET, SONNET, SOL, SOL])
+
+    def test_cross_file_uncertainty_does_not_start_a_blanket_rescan(self):
+        def reply(model, message):
+            return {"needs_deeper_review": model == SONNET and message["stage"] == "integration"}
+        result, scanner, calls = self.scan(self.files("one.py", "two.py", lines=10000), reply)
+        self.assertGreater(len(scanner.source), 2)
+        self.assertTrue(all(model == SONNET for model, _ in calls.requests))
+        self.assertTrue(result["manual_review_reasons"])
+        self.assertFalse(clean({"head": "b" * 40, "base": "a" * 40, "review": result}, "b" * 40, "a" * 40))
+
+    def test_integration_findings_target_exact_cited_batches(self):
+        for severity, expected in (("medium", OPUS), ("high", SOL)):
+            with self.subTest(severity=severity):
+                issue = dict(finding("one.py"), severity=severity)
+                def reply(model, message):
+                    return {"findings": [issue] if model == SONNET and message["stage"] == "integration" else []}
+                result, scanner, calls = self.scan(self.files("one.py", "two.py", lines=10000), reply)
+                self.assertGreater(len(scanner.source), 2)
+                depth = [(model, message) for model, message in calls.requests
+                         if model != SONNET and message["stage"] == "source"]
+                self.assertEqual(len(depth), 1)
+                self.assertEqual(depth[0][0], expected)
+                self.assertEqual(result["findings"][0]["file"], "one.py")
+
+    def test_cached_critical_results_preserve_scope_without_an_opus_call(self):
+        state = MemoryState()
+        files = self.files("crypto.py")
+        first, _, _ = self.scan(files, state=state)
+        second, _, calls = self.scan(files, state=state)
+        self.assertFalse(calls.requests)
+        self.assertEqual(first["covered_units"], second["covered_units"])
+        self.assertEqual(second["reused_batches"], 4)
+
+    def test_intermediate_integration_findings_keep_depth_after_reduction_and_repair(self):
+        for severity, expected in (("medium", OPUS), ("high", SOL)):
+            for repair in (False, True):
+                with self.subTest(severity=severity, repair=repair):
+                    issue = dict(finding("one.py"), severity=severity)
+                    reported = False
+
+                    def reply(model, message):
+                        nonlocal reported
+                        response = {"analysis": "a" * 4000}
+                        if model == SONNET and message["stage"] == "integration" and not reported:
+                            reported = True
+                            response.update(findings=[issue], analysis="" if repair else "a" * 4000)
+                        return response
+
+                    def pairs(items):
+                        yield from (items[index:index + 2] for index in range(0, len(items), 2))
+
+                    with patch("threat_review.budget_scan.batches", pairs):
+                        result, _, calls = self.scan(self.files("one.py", "two.py", lines=10000),
+                                                     reply, use_cache=False)
+                    integrations = [message for model, message in calls.requests
+                                    if model == SONNET and message["stage"] == "integration"]
+                    self.assertGreater(len(integrations), 2)
+                    depth = [model for model, message in calls.requests
+                             if model != SONNET and message["stage"] == "source"]
+                    self.assertEqual(depth, [expected])
+                    self.assertEqual(result["findings"][0]["severity"], severity)
+                    self.assertEqual(len(result["response_repairs"]), int(repair))
 
 
 class IntegrationScopeTests(unittest.TestCase):

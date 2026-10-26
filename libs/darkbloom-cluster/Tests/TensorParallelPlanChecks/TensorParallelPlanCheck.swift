@@ -494,6 +494,22 @@ func checkSealPieces() {
     check(crossed && g0.keyGeneration == 3 && g1.keyGeneration == 3, "pieces: rekey every 3 sums, both at generation 3")
     check(open(g1, frame, 19, 0, into: &out) != 0, "pieces: counters only grow")
     print("seal pieces: layout, any-order open, tamper, swap, index, counter, direction, frame kind and rekey checked")
+    // The streamed nonce and authenticated data built on the stack are the
+    // reference builders' bytes.
+    let (h0, _) = Codec.pair(scope: Data("scope-header-\(UInt64.max)".utf8))
+    var same = true
+    for (counter, bytes, sender, piece, pieces) in [
+        (UInt64(0), 8192, 0, 0, 1), (UInt64(1) << 40 | 77, 16 << 20, 1, 64, 65), (UInt64.max - 1, 1, 1, 0xFFFE, 0xFFFF),
+        (UInt64(0x0102_0304_0506_0708), 3 * size + 1000, 0, 3, 4),
+    ] {
+        let built = try? h0.withStreamedHeader(counter: counter, bytes: bytes, sender: sender, piece: piece, of: pieces) {
+            nonce, aad in (nonce.withUnsafeBytes { Data($0) }, Data(aad))
+        }
+        let reference = try? h0.nonce(sender: sender, counter: counter, piece: piece).withUnsafeBytes { Data($0) }
+        same = same && built?.0 == reference
+            && built?.1 == h0.streamedAAD(counter: counter, bytes: bytes, sender: sender, piece: piece, of: pieces)
+    }
+    check(same, "pieces: the stack-built nonce and authenticated data are the reference bytes")
 }
 
 func checkLaunchAgreement() {

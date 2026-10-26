@@ -899,6 +899,22 @@ import Darwin
         expect(U.changed(pinned: pinned, current: [:]).isEmpty, "update: nothing known, nothing re-planned")
         expect(U.statusLine == "Updating the cluster setup after a Darkbloom update.", "update: the status line")
         expect(U.checkEverySeconds <= 60 && U.retryAfterFailureSeconds >= 300, "update: noticed within a minute, a failure not retried in a loop")
+        // The re-plan waits for both Macs' memory: every Mac's summary, and both of them.
+        expect(U.released(["Mac A: nothing left running", "Mac B: nothing left running"]), "update: both released")
+        expect(!U.released(["Mac A: nothing left running", "Mac B: still running: this Mac's part of the model is still running"]),
+               "update: one Mac still holds its part")
+        expect(!U.released(["Mac A: nothing left running", "Mac B: did not answer (timeout)"]), "update: a Mac that did not answer")
+        expect(!U.released(["Mac A: nothing left running"]), "update: one Mac's summary is not both")
+        expect(U.releaseWaitSeconds >= 93, "update: the wait covers a part's forced exit")
+        // The other Mac's memory prices the plan only from a report taken after the parts stopped (2026-10-22: the
+        // report taken before the stop still counted its tensor-parallel part, and a pipeline was chosen).
+        let stoppedAt = Date(timeIntervalSince1970: 1_000)
+        expect(!U.reportPricesPlan(reportedAt: stoppedAt.addingTimeInterval(-22), partsStoppedAt: stoppedAt),
+               "update: a report taken before the stop is asked again")
+        expect(!U.reportPricesPlan(reportedAt: nil, partsStoppedAt: stoppedAt), "update: no report after a stop is asked for")
+        expect(U.reportPricesPlan(reportedAt: stoppedAt.addingTimeInterval(40), partsStoppedAt: stoppedAt),
+               "update: a report taken after the stop prices the plan")
+        expect(U.reportPricesPlan(reportedAt: stoppedAt, partsStoppedAt: nil), "update: without a stop, the report taken before the list prices it")
     }
 
     /// The exact text and key count of a flow, for the evidence.

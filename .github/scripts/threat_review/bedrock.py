@@ -43,8 +43,18 @@ class BedrockCalls:
         if (not isinstance(self.profiles, dict) or set(self.profiles) != set(MODELS.values())
                 or any(not isinstance(p, str) or not PROFILE.fullmatch(p) for p in self.profiles.values())):
             raise ReviewUnavailable("Configure one application inference profile per review model")
-        self.limit = bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100)
-        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS", 4096, 256, 16384)
+        self.call_policy = env.get("BEDROCK_SCAN_CALL_POLICY") or "fixed"
+        if self.call_policy not in ("fixed", "workload"):
+            raise ReviewUnavailable("Invalid BEDROCK_SCAN_CALL_POLICY")
+        # CI plans the actual source/depth/integration work. Standalone probes
+        # retain their explicitly bounded fixed allowance.
+        self.ceiling = (bounded(env, "BEDROCK_SCAN_MAX_WORKLOAD_CALLS", 500, 1, 500)
+                        if self.call_policy == "workload" else
+                        bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100))
+        self.limit = self.ceiling if self.call_policy == "fixed" else 0
+        self.planned_calls = 0
+        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS",
+                                     16384 if self.call_policy == "workload" else 4096, 256, 16384)
         self.calls = self.fallbacks = self.input_tokens = self.output_used = 0
         self.cache_read_input_tokens = self.cache_write_input_tokens = 0
         self.unknown = 0
@@ -53,11 +63,29 @@ class BedrockCalls:
         self.client = client
         self.last_request = {}
         self.accounting_stopped = None
+        self.workload_stopped = None
         self.stop_diagnostic = None
+
+    def plan_calls(self, count):
+        """Admit a scheduled stage, including one shared response-repair slot."""
+        if self.call_policy != "workload":
+            return
+        if type(count) is not int or count < 0:
+            raise ReviewUnavailable("Invalid Bedrock workload plan")
+        self.planned_calls += count
+        requested = self.planned_calls + 1
+        self.limit = min(requested, self.ceiling)
+        if requested > self.ceiling:
+            self.workload_stopped = "Scheduled review exceeds the Bedrock emergency ceiling; human review required"
+            self.stop_diagnostic = {"code": "BEDROCK_WORKLOAD_LIMIT", "call_limit": self.ceiling,
+                                    "planned_calls": self.planned_calls}
+            error = BudgetStopped(self.workload_stopped)
+            error.diagnostic = self.stop_diagnostic
+            raise error
 
     @property
     def stopped(self):
-        return self.accounting_stopped or self.fallback.stopped
+        return self.accounting_stopped or self.workload_stopped or self.fallback.stopped
 
     def record(self, **fields):
         entry = {"run": self.env["GITHUB_RUN_ID"], "attempt": self.env.get("GITHUB_RUN_ATTEMPT", "1"),
@@ -102,7 +130,8 @@ class BedrockCalls:
             import boto3
             from botocore.config import Config
             self.client = boto3.client("bedrock-runtime", region_name=self.env.get("BEDROCK_SCAN_AWS_REGION", "us-east-1"),
-                                       config=Config(connect_timeout=10, read_timeout=240,
+                                       config=Config(connect_timeout=10,
+                                                     read_timeout=600 if self.call_policy == "workload" else 240,
                                                      retries={"total_max_attempts": 1, "mode": "standard"}))
         system = payload["messages"][0]["content"] + "\n" + self.prefix
         schema = payload["response_format"]["json_schema"]["schema"]
@@ -202,6 +231,8 @@ class BedrockCalls:
 
     def metrics(self):
         return {**self.fallback.metrics(), "bedrock_requests": self.calls,
+                "bedrock_call_policy": self.call_policy, "bedrock_call_limit": self.limit,
+                "bedrock_call_ceiling": self.ceiling, "bedrock_planned_calls": self.planned_calls,
                 "bedrock_unknown_usage": self.unknown, "bedrock_input_tokens": self.input_tokens,
                 "bedrock_cache_read_input_tokens": self.cache_read_input_tokens,
                 "bedrock_cache_write_input_tokens": self.cache_write_input_tokens,

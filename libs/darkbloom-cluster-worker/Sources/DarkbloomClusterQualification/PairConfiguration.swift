@@ -145,6 +145,12 @@ public struct PairConfiguration: Sendable {
     public var batchRequests: [QualificationRequest] = []
     public var batchWaves: [Int] = []
     public var batchSolo = true
+    /// Within a wave, request i starts this many milliseconds after request
+    /// i - 1, so later requests join lanes that are already decoding.
+    public var batchStaggerMilliseconds = 0
+    /// In every wave of two or more, the last request is cancelled once it
+    /// has this many tokens: it must retire alone while the others finish.
+    public var batchCancelAfterTokens: Int?
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
     /// The driver reads the key on that side (`prefixSSDKeyScript`) and sends
@@ -313,8 +319,10 @@ public struct PairConfiguration: Sendable {
         try require(followRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "follow-up requests must name the same model and profile")
         try require((1...8).contains(batchLanes), "batch lanes are 1...8")
-        try require(batchRequests.isEmpty || (!recording && generationMode == Self.pipelineMode),
-            "batch requests run with --evidence none in the pipeline mode")
+        try require(batchRequests.isEmpty || (!recording && [Self.pipelineMode, Self.tensorParallelMode].contains(generationMode)),
+            "batch requests run with --evidence none in the pipeline or tensor-parallel mode")
+        try require((0...60_000).contains(batchStaggerMilliseconds) && (batchCancelAfterTokens.map { $0 >= 1 } ?? true),
+            "a batch stagger is 0...60000 ms and a batch cancel comes after at least one token")
         try require(batchRequests.count <= 8 && batchWaves.allSatisfy { (1...batchLanes).contains($0) && $0 <= batchRequests.count },
             "at most 8 batch requests; each wave is 1...lanes and at most the request count")
         try require(batchRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },

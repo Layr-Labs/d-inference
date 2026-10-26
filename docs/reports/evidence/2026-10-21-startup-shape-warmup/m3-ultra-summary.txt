@@ -1,0 +1,21 @@
+gemma-4-26b-qat-4bit   A id=..p1.off.3351 cache_before=no  warmup=off ready= 10.2s hi=  781.3ms ttft=[4401.8, 2930.5, 2981.9] tok=[8018, 8004, 7994] [thermal=nominal load=1.95]
+gemma-4-26b-qat-4bit   B id=..p1.on.3351 cache_before=no  warmup=on  ready= 14.7s hi=  390.4ms ttft=[2956.7, 2929.6, 2935.1] tok=[8038, 7989, 8042] [thermal=nominal load=2.52]
+    warmup: complete 2/2 cells in 5699 ms (attempt 1, probe 1266/106 ms)
+    warmup: skipped (warm shader cache) 0/2 cells in 291 ms (attempt 1, probe 178/101 ms)
+gemma-4-26b-qat-4bit   C id=..p1.on.3351 cache_before=yes warmup=off ready=  4.3s hi=  157.2ms ttft=[2935.0, 2935.6, 3031.4] tok=[8043, 7989, 8016] [thermal=nominal load=2.04]
+gemma-4-26b-qat-4bit   D id=..p1.on.3351 cache_before=yes warmup=on  ready=  4.4s hi=  131.5ms ttft=[2915.5, 2953.8, 2963.9] tok=[8016, 8017, 8030] [thermal=nominal load=1.52]
+    warmup: skipped (warm shader cache) 0/2 cells in 249 ms (attempt 1, probe 112/105 ms)
+    warmup: skipped (warm shader cache) 0/2 cells in 268 ms (attempt 1, probe 149/99 ms)
+gemma-4-26b-qat-4bit   B id=..p2.on.3352 cache_before=no  warmup=on  ready= 14.7s hi=  399.5ms ttft=[2934.3, 2910.5, 2932.9] tok=[7979, 7987, 8000] [thermal=nominal load=1.15]
+    warmup: complete 2/2 cells in 5744 ms (attempt 1, probe 1246/105 ms)
+    warmup: skipped (warm shader cache) 0/2 cells in 258 ms (attempt 1, probe 149/98 ms)
+gemma-4-26b-qat-4bit   A id=..p2.off.3352 cache_before=no  warmup=off ready=  9.0s hi=  780.8ms ttft=[4368.2, 3038.5, 2934.3] tok=[8021, 7985, 8035] [thermal=nominal load=1.67]
+gpt-oss-20b            A id=..p1.off.3351 cache_before=no  warmup=off ready=  9.0s hi= 1521.5ms ttft=[4054.9, 3350.0, 3386.3] tok=[8134, 8145, 8193] [thermal=nominal load=1.78]
+gpt-oss-20b            B id=..p1.on.3351 cache_before=no  warmup=on  ready= 14.2s hi=  132.5ms ttft=[3352.5, 3356.5, 3360.5] tok=[8105, 8145, 8172] [thermal=nominal load=3.24]
+    warmup: complete 2/2 cells in 5972 ms (attempt 1, probe 1527/87 ms)
+gpt-oss-20b            C id=..p1.on.3351 cache_before=yes warmup=off ready=  4.4s hi=  149.9ms ttft=[3350.5, 3353.5, 3363.0] tok=[8114, 8141, 8154] [thermal=nominal load=5.73]
+gpt-oss-20b            D id=..p1.on.3351 cache_before=yes warmup=on  ready=  4.3s hi=  129.1ms ttft=[3366.0, 3346.0, 3351.1] tok=[8155, 8120, 8142] [thermal=nominal load=6.35]
+    warmup: skipped (warm shader cache) 0/2 cells in 217 ms (attempt 1, probe 101/87 ms)
+gpt-oss-20b            B id=..p2.on.3352 cache_before=no  warmup=on  ready= 14.2s hi=  128.2ms ttft=[3368.8, 3439.1, 3347.5] tok=[8138, 8195, 8131] [thermal=nominal load=4.72]
+    warmup: complete 2/2 cells in 6040 ms (attempt 1, probe 1565/88 ms)
+gpt-oss-20b            A id=..p2.off.3352 cache_before=no  warmup=off ready=  8.0s hi= 1561.4ms ttft=[4173.6, 4574.3, 3379.2] tok=[8155, 8197, 8175] [thermal=nominal load=2.84]

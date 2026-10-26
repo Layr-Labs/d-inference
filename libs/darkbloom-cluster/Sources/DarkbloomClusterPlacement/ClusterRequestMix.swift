@@ -7,9 +7,15 @@ import Foundation
 /// requests the pair served, within the model's planned request. A pair that
 /// serves short prompts and long answers is planned decode-heavy, one that
 /// serves long prompts prompt-heavy. Nil before `minimumSamples` requests: the
-/// model's planned request stands.
+/// model's planned request stands. The answer is at least
+/// `minimumOutputTokens`: a pair probed with short readiness requests
+/// (16-token answers, 2026-10-22) had a 10-token median answer, and at that
+/// length the first token decided the served race, so a pipeline decoding
+/// 39.6 tok/s was kept over tensor parallel decoding 114.8.
 public enum ClusterRequestMix {
     public static let minimumSamples = 3
+    /// The shortest answer the reference request has.
+    public static let minimumOutputTokens = 64
 
     public static func reference(_ samples: [ClusterServedSample], layout: ClusterModelLayout)
         -> (promptTokens: Int, outputTokens: Int)? {
@@ -18,7 +24,7 @@ public enum ClusterRequestMix {
               let prompt = ClusterServedCalibration.median(pair.map { Double($0.promptTokens) }),
               let output = ClusterServedCalibration.median(pair.map { Double($0.outputTokens) }) else { return nil }
         return (min(layout.maximumPromptTokens, max(1, Int(prompt.rounded()))),
-                min(layout.maximumOutputTokens, max(1, Int(output.rounded()))))
+                min(layout.maximumOutputTokens, max(minimumOutputTokens, Int(output.rounded()))))
     }
 }
 
@@ -28,6 +34,10 @@ extension ClusterPlacementExplanation {
     /// the other, for the request the plan was made for. Nil without a choice.
     public static func deploymentReason(_ result: ClusterPlacementResult) -> String? {
         guard let chosen = result.chosen else { return nil }
+        if let kept = result.keptModeReason {
+            let name = chosen.mode.usesTensorParallelDecode ? "Tensor parallel" : chosen.mode.isHandOff ? "Hand-off (\(chosen.mode.rawValue))" : "Pipeline"
+            return "\(name): \(kept)."
+        }
         let regime = result.regime
         let request = "requests of \(result.promptTokens) prompt and \(result.outputTokens) answer tokens"
         let mine = chosen.prediction(regime)
@@ -75,6 +85,10 @@ extension ClusterPlacementExplanation {
             return "\(name): tensor parallel is predicted slower for \(request) (\(seconds(theirs.requestSeconds)) against "
                 + "\(seconds(mine.requestSeconds)); \(against(theirs, mine)))."
         case .doesNotFit:
+            // A tensor-parallel placement that would load once memory is given back, ranked after one that loads now.
+            if assessment.tensorParallel != nil || assessment.hybrid != nil {
+                return "\(name): tensor parallel is \(assessment.reason)."
+            }
             return "\(name): tensor parallel does not fit in these Macs' memory."
         case .notExecutedByRuntime:
             return "\(name): \(assessment.reason)."

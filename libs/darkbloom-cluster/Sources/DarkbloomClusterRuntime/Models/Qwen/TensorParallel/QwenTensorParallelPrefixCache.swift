@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 
 /// One rank's prompt-prefix cache under tensor parallel: the request state of
@@ -52,6 +53,29 @@ final class QwenTensorParallelPrefixCache {
         return sha256(Data(text.utf8))
     }
 
+    /// `key(scope:prompt:length:)` for each of `lengths`, joining the prompt
+    /// once: each key hashes the same bytes (scope, length, the prefix's
+    /// tokens joined), taken from the one joined text.
+    static func keys(scope: String, prompt: [Int], lengths: [Int]) -> [String] {
+        guard let longest = lengths.max(), longest > 0 else {
+            return lengths.map { key(scope: scope, prompt: prompt, length: $0) }
+        }
+        var joined = [UInt8]()
+        joined.reserveCapacity(longest * 7)
+        var ends = [Int](repeating: 0, count: longest + 1)
+        for index in 0 ..< min(longest, prompt.count) {
+            if index > 0 { joined.append(44) }
+            joined.append(contentsOf: String(prompt[index]).utf8)
+            ends[index + 1] = joined.count
+        }
+        return lengths.map { length in
+            guard length >= 0, length <= prompt.count else { return key(scope: scope, prompt: prompt, length: length) }
+            var bytes = Array((scope + "|\(length)|").utf8)
+            bytes.append(contentsOf: joined[0 ..< ends[length]])
+            return sha256(Data(bytes))
+        }
+    }
+
     /// The chunk boundaries before the final token that this rank holds for `prompt`.
     func heldBoundaries(scope: String, prompt: [Int], chunk: Int) -> [Bool] {
         let candidates = Self.candidates(promptCount: prompt.count, chunk: chunk)
@@ -93,7 +117,10 @@ final class QwenTensorParallelPrefixCache {
         let state = cache.map { $0.copy() }
         let arrays = state.flatMap { $0.innerState() }
         eval(arrays)
+        // Paged attention histories share the request's pages (their roots
+        // are fences): the entry counts every page it holds.
         let bytes = arrays.reduce(0) { $0 + $1.nbytes }
+            + state.reduce(0) { $0 + (($1 as? PagedAttentionKVCache)?.pagedBytes ?? 0) }
         guard bytes <= budgetBytes else { return }
         lock.withLock {
             let key = Self.key(scope: scope, prompt: prompt, length: length)

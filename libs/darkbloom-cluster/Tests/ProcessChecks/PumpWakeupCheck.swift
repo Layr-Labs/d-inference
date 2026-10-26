@@ -17,7 +17,7 @@ private final class Tokens: @unchecked Sendable {
     private var complete = false
     func accept(_ event: ClusterWorkerRequestEvent) -> Bool {
         lock.withLock {
-            if case .token(let id) = event { ids.append(id) }
+            if case .token(let id, _) = event { ids.append(id) }
             if case .finished(.length) = event { complete = true }
         }; return true
     }

@@ -14,7 +14,7 @@ final class ClusterOwnerPipe: @unchecked Sendable {
     init(input: Int32, output: Int32, readingCommands: Bool) throws {
         let i = fcntl(input, F_DUPFD_CLOEXEC, 3), o = fcntl(output, F_DUPFD_CLOEXEC, 3)
         guard i >= 0, o >= 0 else { if i >= 0 { Darwin.close(i) }; if o >= 0 { Darwin.close(o) }; throw OwnerWire.invalid("Cannot own owner pipes") }
-        self.input = i; self.output = o; decoder = .init(commandStream: true) // Both owner directions capped512KiB; native event decoding remains16KiB.
+        self.input = i; self.output = o; decoder = .init(commandStream: true) // Both owner directions capped at `envelopeBytes`; native event decoding remains 16 KiB.
         for fd in [i, o] {
             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0 else {
                 Darwin.close(i); Darwin.close(o); throw OwnerWire.invalid("Cannot bound owner IO")

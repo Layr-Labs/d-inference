@@ -58,14 +58,22 @@ public enum ClusterLinkWorkerError: Error, Equatable, Sendable {
 public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// The opaque tag of the worker wire on a link edge.
     public static let tag: UInt16 = 0x5708
-    public static let maximumBytes = 1_048_576
-    public static let version = 1
+    /// A command crosses base64-encoded in `worker`: the largest worker
+    /// command (`ClusterWorkerLimits.commandBytes`, a reservation with a
+    /// `wirePromptTokens` prompt) is 4/3 of it, with room for the other fields.
+    public static let maximumBytes = 12 * 1024 * 1024
+    /// 2: carries worker protocol 2 (`ClusterWorkerLimits.version`, packed
+    /// prompt tokens), so a leader and a follower of different builds refuse
+    /// each other at the session's open.
+    public static let version = 2
 
     public enum Kind: String, Codable, Sendable {
         // Leader to follower.
         case open, command, renew, fence, bootstrapReply
-        // Follower to leader.
-        case accepted, refused, invalidated, event, bootstrapRound, cleanup, released
+        // Follower to leader. `commandRefused`: the follower's own owner could
+        // not take a reservation the leader relayed (its queue or its carrier);
+        // nothing reached the worker, and that request alone is refused.
+        case accepted, refused, invalidated, event, bootstrapRound, cleanup, released, commandRefused
         var fromLeader: Bool { [.open, .command, .renew, .fence, .bootstrapReply].contains(self) }
     }
 
@@ -97,6 +105,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     public var termination: String?
     public var status: Int32?
     public var releasedCleanly: Bool?
+    /// The request a `commandRefused` names.
+    public var requestID: UUID?
 
     init(kind: Kind, epoch: UUID, session: UUID, sequence: UInt64) {
         version = Self.version; self.kind = kind; self.epoch = epoch; self.session = session; self.sequence = sequence
@@ -121,6 +131,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if termination != nil { set.insert("termination") }
         if status != nil { set.insert("status") }
         if releasedCleanly != nil { set.insert("releasedCleanly") }
+        if requestID != nil { set.insert("requestID") }
         return set
     }
 
@@ -143,6 +154,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         case .bootstrapRound: required = ["bootstrapSequence", "bootstrapBytes", "ownerIncarnation", "ownerLease"]; optional = []
         case .bootstrapReply: required = ["bootstrapSequence", "bootstrapBytes"]; optional = []
         case .released: required = ["releasedCleanly"]; optional = ["termination", "status", "detail"]
+        case .commandRefused: required = ["requestID", "detail"]; optional = []
         }
         let present = presentFields
         guard required.isSubset(of: present), present.isSubset(of: required.union(optional)) else {
@@ -170,6 +182,11 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         if let bootstrapSequence { guard bootstrapSequence < UInt64(ClusterOwnerBootstrapProfile.maximumRounds) else { throw fail("Bootstrap round outside its bound") } }
         if let bootstrapBytes { guard (1...131_072).contains(bootstrapBytes.count) else { throw fail("Bootstrap payload exceeds its bound") } }
         if let detail { guard detail.utf8.count <= 256, !detail.utf8.contains(0) else { throw fail("Detail exceeds its bound") } }
+        if kind == .commandRefused {
+            guard let reason = detail.flatMap(ClusterWorkerRefusal.init(rawValue:)), reason != .unavailable else {
+                throw fail("A refused command names a request-scoped refusal")
+            }
+        }
         if let termination {
             guard ["launchFailed", "exited", "signalled"].contains(termination), (termination == "launchFailed") == (status == nil) else {
                 throw fail("Owner termination differs")
@@ -240,6 +257,16 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// sentinel that the receiver replaces.
     static func command(_ command: ClusterWorkerCommand, requestID: UUID?, epoch: UUID, session: UUID,
                         sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+        try commandWire(command, requestID: requestID, epoch: epoch, session: session, sequence: sequence, now: now,
+            deliveryDeadline: deliveryDeadline).wire
+    }
+
+    /// `command`, and the worker frame its payload encodes, so a writer that
+    /// stamps the link sequence re-encodes that frame instead of decoding
+    /// the payload back.
+    static func commandWire(_ command: ClusterWorkerCommand, requestID: UUID?, epoch: UUID, session: UUID,
+                            sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws
+        -> (wire: Self, frame: ClusterWorkerCommandFrame) {
         guard deliveryDeadline > now else { throw ClusterWorkerOwnerError.deadline }
         var wire = Self(kind: .command, epoch: epoch, session: session, sequence: sequence)
         wire.deliveryRemainingNanoseconds = min(deliveryDeadline - now, ClusterWorkerLimits.deadlineNanoseconds)
@@ -250,11 +277,33 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
             sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
                 // The sampling and the route cross with the reservation: both ranks get them.
-                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages))
+                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
+                glmMedia: r.glmMedia))
         }
-        wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
-            requestID: requestID, command: sent))
-        return wire
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence, requestID: requestID, command: sent)
+        wire.worker = try ClusterWorkerCodec.encode(frame)
+        return (wire, frame)
+    }
+
+    /// The most the wire's own fields beside `worker` take when encoded
+    /// (kind, IDs, sequence, durations, detail): `worker` crosses in base64.
+    static let fieldBytes = 4 * 1024
+
+    /// Whether this wire, encoded, stays within `maximumBytes`, without
+    /// encoding it: the worker payload's base64 length and `fieldBytes`.
+    func fitsEncoded() -> Bool {
+        ((worker?.count ?? 0) + 2) / 3 * 4 + Self.fieldBytes <= Self.maximumBytes
+    }
+
+    /// The refusal a relayed command's failure is, when it is one request's:
+    /// a reservation the follower's own owner could not take now (`busy`, its
+    /// queue) or could not encode (`profile`). Nothing reached the worker. Any
+    /// other failure (a malformed wire, a closed owner) fences the session.
+    static func requestRefusal(relaying command: ClusterWorkerCommand, failure error: Error) -> ClusterWorkerRefusal? {
+        guard case .reserve = command else { return nil }
+        if case .refused(let reason)? = error as? ClusterWorkerOwnerError, reason != .unavailable { return reason }
+        if error is ClusterWorkerProtocolError { return .profile }
+        return nil
     }
 
     /// The command on this Mac's clock, and its delivery deadline.
@@ -275,7 +324,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
         return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
             outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages)), frame.requestID, end.partialValue)
+            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route,mimoImages:r.mimoImages, stillImages:r.stillImages,
+            glmMedia: r.glmMedia)), frame.requestID, end.partialValue)
     }
 }
 
@@ -320,6 +370,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var terminationValue: ClusterWorkerProcessTermination?
     private var incoming: [ClusterWorkerEventFrame] = []
     private var outgoing: [ClusterLinkWorkerWire] = []
+    /// The worker frames of the commands in `outgoing`, in their order: the
+    /// writer stamps each with its link sequence and encodes it once.
+    private var outgoingFrames: [ClusterWorkerCommandFrame] = []
     private var queuedCommands = 0
     private var nextOutgoing: UInt64 = 0
     private var nextIncoming: UInt64 = 0
@@ -447,12 +500,30 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public func sendWorkerCommand(_ command: ClusterWorkerCommand, requestID: UUID?, deadline: UInt64) throws {
         try lock.withLock {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard !invalid, !cleanup, deadline > now, queuedCommands < 16 else { throw ClusterWorkerOwnerError.closed }
-            // Sequenced when written; encoded now so a bad command fails here.
-            let wire = try ClusterLinkWorkerWire.command(command, requestID: requestID, epoch: expectedIdentity.membershipEpoch,
-                session: session, sequence: 0, now: now, deliveryDeadline: deadline)
-            _ = try wire.encoded()
-            outgoing.append(wire); queuedCommands += 1
+            guard !invalid, !cleanup, deadline > now else { throw ClusterWorkerOwnerError.closed }
+            // A reservation this endpoint cannot take now, or cannot carry, is
+            // that request's refusal: nothing was sent and the session is as it was.
+            let reserve: Bool
+            if case .reserve = command { reserve = true } else { reserve = false }
+            guard queuedCommands < 16 else {
+                if reserve { throw ClusterWorkerOwnerError.refused(.busy) }
+                throw ClusterWorkerOwnerError.closed
+            }
+            // Sequenced when written; validated now so a bad command fails here:
+            // the worker codec encodes and validates the frame, the wire checks
+            // its fields and its encoded bound (without encoding it twice).
+            let built: (wire: ClusterLinkWorkerWire, frame: ClusterWorkerCommandFrame)
+            do {
+                built = try ClusterLinkWorkerWire.commandWire(command, requestID: requestID,
+                    epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0, now: now, deliveryDeadline: deadline)
+                try built.wire.validate()
+                guard built.wire.fitsEncoded() else { throw ClusterLinkWorkerError.invalid("Worker wire exceeds its bound") }
+            } catch let error as ClusterWorkerOwnerError {
+                throw error
+            } catch where reserve {
+                throw ClusterWorkerOwnerError.refused(.profile)
+            }
+            outgoing.append(built.wire); outgoingFrames.append(built.frame); queuedCommands += 1
         }
         wake.signal()
     }
@@ -529,7 +600,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 if invalid && !fenceSent && fenceRequested && !cleanup {
                     fenceSent = true
                     // The fence goes before any queued command: nothing more is wanted.
-                    outgoing.removeAll(where: { $0.kind == .command }); queuedCommands = 0
+                    outgoing.removeAll(where: { $0.kind == .command }); outgoingFrames.removeAll(); queuedCommands = 0
                     var fence = ClusterLinkWorkerWire(kind: .fence, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
                     fence.detail = fenceReason // The follower's incident names the cause (S24).
                     outgoing.append(fence)
@@ -548,9 +619,13 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 var next = outgoing.removeFirst()
                 if next.kind == .command { queuedCommands -= 1 }
                 next.sequence = nextOutgoing; nextOutgoing += 1
-                if next.kind == .command, var frame = try? ClusterWorkerCodec.decodeCommand(next.worker!) {
-                    frame = .init(membershipEpoch: frame.membershipEpoch, sequence: next.sequence, requestID: frame.requestID, command: frame.command)
-                    next.worker = try? ClusterWorkerCodec.encode(frame)
+                if next.kind == .command, !outgoingFrames.isEmpty {
+                    // The queued frame, stamped with its link sequence: one encode, no decode.
+                    let frame = outgoingFrames.removeFirst()
+                    if let stamped = try? ClusterWorkerCodec.encode(.init(membershipEpoch: frame.membershipEpoch,
+                        sequence: next.sequence, requestID: frame.requestID, command: frame.command)) {
+                        next.worker = stamped
+                    }
                 }
                 return (next, false)
             }
@@ -605,6 +680,18 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     } else { guard nextNativeEvent > 0 else { throw ClusterLinkWorkerError.invalid("Event precedes readiness") } }
                     incoming.append(event); nextNativeEvent += 1
                     switch event.event { case .failed, .unavailable: invalidate = true; default: break }
+                case .commandRefused:
+                    // The follower's owner could not take a relayed reservation:
+                    // the worker never saw it and its own event sequence is
+                    // untouched. The pair hears it as that rank's refusal of
+                    // the request (`ClusterWorkerRequest.admit`), which gives
+                    // back what rank 0 admitted; the session goes on.
+                    guard accepted, !cleanup, ready != nil, let id = wire.requestID,
+                          let reason = wire.detail.flatMap(ClusterWorkerRefusal.init(rawValue:)), incoming.count < 32 else {
+                        throw ClusterLinkWorkerError.invalid("Refused command outside the session")
+                    }
+                    incoming.append(ClusterWorkerEventFrame(membershipEpoch: expectedIdentity.membershipEpoch,
+                        sequence: nextNativeEvent, requestID: id, event: .refused(reason)))
                 case .bootstrapRound:
                     guard accepted, let relay = bootstrapRelay, ready == nil, !cleanup, !bootstrapBusy,
                           wire.bootstrapSequence == nextBootstrap, let bytes = wire.bootstrapBytes,
@@ -909,9 +996,16 @@ private final class ServerSession: @unchecked Sendable {
             guard let sequence = wire.bootstrapSequence, let bytes = wire.bootstrapBytes else { return }
             proxy?.deliverReply(sequence: sequence, bytes: bytes)
         case .command:
+            let local: (command: ClusterWorkerCommand, requestID: UUID?, deliveryDeadline: UInt64)
+            do { local = try wire.localCommand(now: now) } catch { fence(reason: "command refused"); return }
             do {
-                let local = try wire.localCommand(now: now)
                 try endpoint?.sendWorkerCommand(local.command, requestID: local.requestID, deadline: local.deliveryDeadline)
+            } catch let error where ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error) != nil {
+                // A reservation this Mac's owner could not take: nothing reached
+                // the worker (no command sequence was spent), so that request
+                // alone is refused and the session goes on.
+                let reason = ClusterLinkWorkerWire.requestRefusal(relaying: local.command, failure: error)!
+                send({ $0.requestID = local.requestID; $0.detail = reason.rawValue }, kind: .commandRefused)
             } catch { fence(reason: "command refused") }
         default:
             fence(reason: "unexpected message")

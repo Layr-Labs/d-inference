@@ -75,5 +75,6 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
     func keepWarmPulse() throws -> UInt64 { try owner.keepWarmPulse() }
     func dataPlanePing() throws -> UInt64 { try owner.dataPlanePing() }
+    func releaseIdleMemory(underPressure: Bool) -> Int? { ClusterIdleMemory.releaseFreedBuffers() }
     func shutdown() throws { try owner.shutdown(); active = nil }
 }

@@ -21,7 +21,11 @@ let package = Package(
         // used only by the Runtime target, never by the control modules or
         // the provider's normal dependency path.
         .package(path: "../mlx-swift"),
-        .package(path: "../mlx-swift-lm"),
+        // Without the SDK's default `FoundationModelsIntegration` trait, as the
+        // provider declares it: SwiftPM enables a trait when any dependent
+        // does, so a default here would link the FoundationModels adapter and
+        // xgrammar into the provider binary.
+        .package(path: "../mlx-swift-lm", traits: []),
     ],
     targets: [
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),

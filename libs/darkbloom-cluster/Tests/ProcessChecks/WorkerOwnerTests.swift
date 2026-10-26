@@ -14,7 +14,7 @@ private final class Captured: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [ClusterWorkerRequestEvent] = []
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
-    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
+    var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id, _) = $0 { return id }; return nil } } }
     var clean: Bool { lock.withLock { values.contains { if case .finished = $0 { return true }; return false } } }
     var failureText: String? { lock.withLock { values.lazy.compactMap { if case .failed(let text) = $0 { return text }; return nil }.first } }
     var telemetry: (ClusterWorkerRequestTelemetry?, ClusterWorkerRequestTelemetry?)? {
@@ -106,7 +106,13 @@ private struct Harness: Sendable {
                 try lease.start { event in captured.append(event); lease.cancel(); return false }
             } else { lease.cancel() }
             try await h.awaitRetirement(lease); lease.releaseResources()
-            try require(!captured.clean && h.pair.readiness == nil, "Cancellation cannot become clean callback stop")
+            try require(!captured.clean, "Cancellation cannot become clean callback stop")
+            // Cancelled before it started, the request gives both reservations
+            // back and the pair serves on; cancelled while it runs, a pair
+            // without lanes ends.
+            try require(insideCallback ? h.pair.readiness == nil : h.pair.readiness != nil && lease.withdrewBeforeStart,
+                insideCallback ? "A cancel inside a running request must end a pair without lanes"
+                    : "A cancel before start must leave the pair serving")
             try await h.finish()
         }
     }

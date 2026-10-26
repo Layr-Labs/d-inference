@@ -5,7 +5,7 @@ import { Button } from '../../components/UI';
 import { gigabytes } from '../../models/facts';
 import { money, plural } from '../../format';
 import type { AutopilotAction } from '../../../shared/autopilot';
-import { recommendedStart } from './recommendations';
+import { recommendedStart, type ChipEarning } from './recommendations';
 import type { ModelActions } from './useModelActions';
 import styles from './recommendations.module.css';
 
@@ -13,6 +13,7 @@ export function RecommendedModels({
   snapshot,
   models,
   earnings,
+  perChip = null,
   actions,
   setup,
   busy,
@@ -21,6 +22,8 @@ export function RecommendedModels({
   snapshot: Snapshot;
   models: NativeModel[];
   earnings: ReadonlyMap<string, bigint> | null;
+  // What Macs with this Mac's chip earned per model; preferred over network totals when present.
+  perChip?: ReadonlyMap<string, ChipEarning> | null;
   actions?: ModelActions;
   setup: boolean;
   busy: boolean;
@@ -50,7 +53,11 @@ export function RecommendedModels({
       <header>
         <div>
           <h3>Recommended for your Mac</h3>
-          <small>Top earning compatible models · network · 7 days</small>
+          <small>
+            {perChip
+              ? `Top earning on ${snapshot.machine.chip} Macs · network · 24 hours`
+              : 'Top earning compatible models · network · 7 days'}
+          </small>
         </div>
         {setup && (
           <Button
@@ -94,7 +101,11 @@ export function RecommendedModels({
             )}
             <div>
               <strong>{model.display_name}</strong>
-              <span>{money(String(earnings?.get(model.id) ?? 0n))} network earnings</span>
+              <span>
+                {perChip
+                  ? `${money(String(perChip.get(model.id)?.median ?? 0n))} a day typical · ${money(String(perChip.get(model.id)?.mean ?? 0n))} average`
+                  : `${money(String(earnings?.get(model.id) ?? 0n))} network earnings`}
+              </span>
               <small>
                 {model.downloaded ? 'Ready on this Mac' : `${gigabytes(model.size_gb)} download`}
               </small>

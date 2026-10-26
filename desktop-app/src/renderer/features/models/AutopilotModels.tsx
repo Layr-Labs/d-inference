@@ -4,7 +4,12 @@ import { Check, Link2, SlidersHorizontal } from 'lucide-react';
 import type { NativeModel } from '../../../shared/contracts';
 import { Button, Empty, Header, Notice } from '../../components/UI';
 import { LinkDialog } from './LinkDialog';
-import { networkEarnings, recommendedModels, rankNetworkModels } from './recommendations';
+import {
+  chipEarnings,
+  networkEarnings,
+  recommendedModels,
+  rankNetworkModels,
+} from './recommendations';
 import { RecommendedModels } from './RecommendedModels';
 import { enableAction, linkFirst } from './TurnOnAutopilot';
 import { pinnedMemory } from '../../models/selection';
@@ -43,7 +48,8 @@ export function AutopilotModels({
   const [remove, setRemove] = useState<NativeModel>();
   const [confirm, setConfirm] = useState<AutopilotChange>();
   const network = networkEarnings(backend.network);
-  const recommended = recommendedModels(state.models, network);
+  const perChip = chipEarnings(backend.network, state.machine.chip);
+  const recommended = recommendedModels(state.models, network, perChip);
   const ranked =
     filter === 'all' || filter === 'available' ? rankNetworkModels(models, network) : models;
   const rows = ranked.map((model) => {
@@ -118,6 +124,7 @@ export function AutopilotModels({
         snapshot={state}
         models={status.enabled ? recommended.filter((model) => !model.downloaded) : recommended}
         earnings={network}
+        perChip={perChip}
         actions={actions}
         setup={!status.enabled}
         busy={busy}

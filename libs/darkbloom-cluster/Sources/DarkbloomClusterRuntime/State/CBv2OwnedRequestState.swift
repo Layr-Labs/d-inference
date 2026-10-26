@@ -33,14 +33,32 @@ final class CBv2OwnedRequestState {
     private(set) var isClosed = false
     private(set) var isFailed = false
     let maximumTokens: Int
+    /// Tokens this request's pages are reserved and backed for: its whole
+    /// length, or what it grew to (`growReservation`) when it was opened for
+    /// its first tokens only. No forward writes past it.
+    private(set) var reservedTokens: Int
 
-    init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
-        guard (1...ClusterWorkerLimits.promptTokens).contains(promptCount), (1...ClusterWorkerLimits.outputTokens).contains(outputCount),
-            promptCount <= ClusterWorkerLimits.contextTokens - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
+    /// `reservedTokens`: nil reserves the request's whole length, as always;
+    /// otherwise its rows on the host's paged pool are reserved for these
+    /// first tokens (at least the prompt) and grow between steps.
+    init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int, reservedTokens: Int? = nil) throws {
+        guard Self.withinWire(promptCount: promptCount, outputCount: outputCount) else {
+            throw ProbeError("CBv2 owned state exceeds the bounded request context")
+        }
         let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
-        let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
-            promptLength: promptCount, maxLength: promptCount + outputCount)
+        let maximum = promptCount + outputCount
+        let rows: [CBv2SequenceKV?]
+        if let reservedTokens {
+            guard let paged = backend as? PagedKVBackend else {
+                throw ProbeError("A growing CBv2 reservation needs the stage's paged pool")
+            }
+            rows = try paged.makeSequenceState(layerKinds: geometry.kinds, promptLength: promptCount,
+                maxLength: maximum, reservedTokens: reservedTokens)
+        } else {
+            rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
+                promptLength: promptCount, maxLength: maximum)
+        }
         let recurrent: CBv2RecurrentRequestState
         do { recurrent = try CBv2RecurrentRequestState(spec: geometry.recurrent) }
         catch { backend.release(rows); throw error }
@@ -56,7 +74,8 @@ final class CBv2OwnedRequestState {
         self.geometry = geometry; self.backend = backend
         self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
-        self.maximumTokens = promptCount + outputCount
+        self.maximumTokens = maximum
+        self.reservedTokens = min(maximum, reservedTokens ?? maximum)
     }
 
     /// Adopts a complete committed state that another owner of the same stage
@@ -67,19 +86,21 @@ final class CBv2OwnedRequestState {
     /// are keyed by the compact stage's own layer index, as recurrent ones are.
     /// `slidingTails`: each sliding-window layer's retained window at the
     /// frontier (its last `min(committed, window)` positions, oldest first),
-    /// in place of a whole-history row.
+    /// in place of a whole-history row. `reservedTokens` as for a fresh
+    /// request (full attention only), at least the adopted frontier.
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int,
          adoptingCommittedTokens committed: Int,
          attention: [Int: (keys: MLXArray, values: MLXArray)],
          slidingTails: [Int: (keys: MLXArray, values: MLXArray)] = [:],
-         recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)]) throws {
+         recurrent adopted: [Int: (conv: MLXArray, ssm: MLXArray)], reservedTokens: Int? = nil) throws {
         // Native arrays cannot become packed rows and their native band
         // exactly; main refuses snapshot adoption into packed storage too.
         try (geometry.host?.quantization ?? .native).requireNative("an adopted prefix or hand-off")
-        guard (1...ClusterWorkerLimits.promptTokens).contains(promptCount), (1...ClusterWorkerLimits.outputTokens).contains(outputCount),
-            promptCount <= ClusterWorkerLimits.contextTokens - outputCount, (1...(promptCount + outputCount)).contains(committed),
+        guard Self.withinWire(promptCount: promptCount, outputCount: outputCount),
+            (1...(promptCount + outputCount)).contains(committed),
             attention.count + slidingTails.count == geometry.kinds.count,
-            adopted.count == geometry.recurrent.layers.count else {
+            adopted.count == geometry.recurrent.layers.count,
+            reservedTokens == nil || slidingTails.isEmpty else {
             throw ProbeError("CBv2 adopted state exceeds the bounded request context or its layer coverage differs")
         }
         var prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
@@ -106,7 +127,15 @@ final class CBv2OwnedRequestState {
         let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
         let rows: [CBv2SequenceKV?]
-        if slidingTails.isEmpty {
+        if let reservedTokens {
+            // Full attention only, into rows reserved for their first tokens.
+            guard let paged = backend as? PagedKVBackend else {
+                throw ProbeError("A growing CBv2 reservation needs the stage's paged pool")
+            }
+            rows = try paged.makeSequenceState(adopting: prefix,
+                plan: paged.prefixReusePlan(adopting: prefix, layerKinds: geometry.kinds, maxLength: promptCount + outputCount),
+                layerKinds: geometry.kinds, maxLength: promptCount + outputCount, reservedTokens: reservedTokens)
+        } else if slidingTails.isEmpty {
             // Full attention only: the backend's own direct plan (paged writes the
             // arrays into fresh pages; contiguous copies them into its rows).
             rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
@@ -153,6 +182,7 @@ final class CBv2OwnedRequestState {
         self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
         self.maximumTokens = promptCount + outputCount
+        self.reservedTokens = min(promptCount + outputCount, reservedTokens ?? promptCount + outputCount)
         self.committedTokens = committed
         // From here deinit retires whatever a failed check leaves behind.
         // Bind the rows as a forward would and materialize the copies, so the
@@ -163,6 +193,31 @@ final class CBv2OwnedRequestState {
             return [snapshot.keys, snapshot.values]
         } + geometry.caches.map { $0.positionOffsets })
         try validateState(after: committed)
+    }
+
+    /// The wire's bounds: each profile holds its requests to its own limits
+    /// (`QwenLayerStageGenerationRequest`), the standard request's for every
+    /// row but one that serves its native context.
+    static func withinWire(promptCount: Int, outputCount: Int) -> Bool {
+        (1...ClusterWorkerLimits.wirePromptTokens).contains(promptCount)
+            && (1...ClusterWorkerLimits.wireOutputTokens).contains(outputCount)
+            && promptCount <= ClusterWorkerLimits.wireContextTokens - outputCount
+    }
+
+    /// Grows this request's page reservation to `tokens` (at most its own
+    /// length) between steps (`PagedKVBackend.extendReservation`): its pool
+    /// reserves and backs the added pages first, so the rows' bound, places
+    /// and every byte they hold stay as they were. A no-op once it holds
+    /// them; on a throw nothing changed.
+    func growReservation(toTokens tokens: Int) throws {
+        try requireOpen()
+        let target = min(maximumTokens, tokens)
+        guard target > reservedTokens else { return }
+        guard let paged = backend as? PagedKVBackend else {
+            throw ProbeError("A growing CBv2 reservation needs the stage's paged pool")
+        }
+        try paged.extendReservation(rows, toTokens: target)
+        reservedTokens = target
     }
 
     func requireOpen() throws {
@@ -176,8 +231,9 @@ final class CBv2OwnedRequestState {
              validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
         do {
             try requireOpen()
-            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens else {
-                throw ProbeError("CBv2 state advance exceeds the admitted capacity")
+            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens,
+                  tokenCount <= reservedTokens - committedTokens else {
+                throw ProbeError("CBv2 state advance exceeds the admitted capacity or its reserved pages")
             }
             let caches = bank.layerCaches(rowStates: [rows])
             evaluation = try recurrent.bind(); evaluationWasStaged = false
@@ -254,8 +310,8 @@ final class CBv2OwnedRequestState {
         do {
             try requireOpen()
             guard windowTokens == nil, windowPhase == nil, tokenCount > 0,
-                  tokenCount <= maximumTokens - committedTokens else {
-                throw ProbeError("CBv2 speculative window exceeds the admitted capacity")
+                  tokenCount <= maximumTokens - committedTokens, tokenCount <= reservedTokens - committedTokens else {
+                throw ProbeError("CBv2 speculative window exceeds the admitted capacity or its reserved pages")
             }
             let caches = bank.layerCaches(rowStates: [rows])
             evaluation = try recurrent.bind(); evaluationWasStaged = false
@@ -287,8 +343,9 @@ final class CBv2OwnedRequestState {
             let host = try requireWindowHost(states)
             for state in states {
                 try state.requireOpen()
-                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens else {
-                    throw ProbeError("CBv2 batched speculative window exceeds a request's admitted capacity")
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens,
+                      tokenCount <= state.reservedTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched speculative window exceeds a request's admitted capacity or reserved pages")
                 }
             }
             let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
@@ -691,8 +748,9 @@ extension CBv2OwnedRequestState {
         do {
             for state in states {
                 try state.requireOpen()
-                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens else {
-                    throw ProbeError("CBv2 batched advance exceeds a request's admitted capacity")
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens,
+                      tokenCount <= state.reservedTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched advance exceeds a request's admitted capacity or reserved pages")
                 }
             }
             let caches = host.bank.layerCaches(rowStates: states.map(\.rows))

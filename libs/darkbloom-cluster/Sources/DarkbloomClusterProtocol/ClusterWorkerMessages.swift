@@ -130,6 +130,21 @@ public struct ClusterWorkerProfile: Equatable, Sendable {
         self.maximumPromptTokens = maximumPromptTokens; self.maximumOutputTokens = maximumOutputTokens
         self.maximumChunkTokens = maximumChunkTokens; self.maximumContextTokens = maximumContextTokens
     }
+
+    /// The request a pair's memory plan, every quote and every LOAD gate size
+    /// for: the standard request (`ClusterWorkerLimits.contextTokens`,
+    /// `promptTokens` and `outputTokens`) cut to this profile, each leaving
+    /// room for one token of the other. It is the profile itself for every
+    /// profile within the standard request; a row that serves a longer native
+    /// context charges each longer request at its own context when a rank
+    /// reserves it.
+    public var memoryScope: ClusterWorkerProfile {
+        let context = min(maximumContextTokens, ClusterWorkerLimits.contextTokens)
+        let prompt = min(maximumPromptTokens, ClusterWorkerLimits.promptTokens, context - 1)
+        return .init(id: id, vocabularySize: vocabularySize, maximumPromptTokens: prompt,
+            maximumOutputTokens: min(maximumOutputTokens, ClusterWorkerLimits.outputTokens, context - 1),
+            maximumChunkTokens: min(maximumChunkTokens, prompt), maximumContextTokens: context)
+    }
 }
 
 /// The data-plane credential of one worker (S16): its per-epoch signing key,

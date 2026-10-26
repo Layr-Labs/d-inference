@@ -30,18 +30,37 @@ struct LongContextLimitsTests {
 
     @Test func limitsFollowTheProtocolAndTheDeclaredContext() throws {
         #expect(Self.declaring == QwenRegisteredDenseModel.allCases)
+        // One row serves its native context with its catalog output limit;
+        // every other keeps the protocol's standard request.
+        #expect(QwenDenseRegisteredSpecification.nativeOutputTokensByModel == [.qwen38TwentySevenB: 32_768])
         for model in Self.declaring {
             let spec = try Self.specification(model)
             #expect(spec.declaredContextTokens == 262_144)
             let limits = try QwenResidentContextLimits(specification: spec)
-            #expect(limits.maximumContextTokens == ClusterWorkerLimits.contextTokens)
-            #expect(limits.maximumPromptTokens == ClusterWorkerLimits.promptTokens)
-            #expect(limits.maximumOutputTokens == ClusterWorkerLimits.outputTokens)
-            #expect(limits.maximumChunkTokens == 512)
+            // Every row's memory plan (LOAD, the planner) is the standard request.
+            let memory = try QwenResidentContextLimits(memoryOf: spec)
+            #expect(memory.maximumContextTokens == ClusterWorkerLimits.contextTokens)
+            #expect(memory.maximumPromptTokens == ClusterWorkerLimits.promptTokens)
+            #expect(memory.maximumOutputTokens == ClusterWorkerLimits.outputTokens)
+            #expect(memory.maximumChunkTokens == 512)
+            if model == .qwen38TwentySevenB {
+                #expect(limits.maximumContextTokens == 262_144 && limits.maximumPromptTokens == 262_143)
+                #expect(limits.maximumOutputTokens == 32_768 && limits.maximumChunkTokens == 512)
+                #expect(limits.declaredContextTokens == 262_144)
+            } else {
+                #expect(limits == memory)
+            }
             let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
             #expect(profile.maximumPromptTokens == limits.maximumPromptTokens)
             #expect(profile.maximumOutputTokens == limits.maximumOutputTokens)
             #expect(profile.maximumContextTokens == limits.maximumContextTokens)
+            let memoryProfile = try QwenResidentAdapterDefinition.memoryProfile(specification: spec)
+            #expect(memoryProfile.identifier == profile.identifier)
+            #expect(memoryProfile.maximumPromptTokens == memory.maximumPromptTokens)
+            #expect(memoryProfile.maximumOutputTokens == memory.maximumOutputTokens)
+            #expect(memoryProfile.maximumContextTokens == memory.maximumContextTokens)
+            // Same fingerprint, so the same bytes everywhere it is bound, on every other row.
+            #expect((memoryProfile == profile) == (model != .qwen38TwentySevenB))
             let full = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
                 promptTokenIDs: Array(repeating: 1000, count: 32_768), chunkSize: 512,
                 outputCount: 32_768, stopTokenIDs: [])
@@ -54,13 +73,34 @@ struct LongContextLimitsTests {
                 #expect(request.maximumTokens == prompt + 128)
                 #expect(request.prefillFrameCount == (prompt + 511) / 512)
             }
+            // The whole context: the longest prompt with one output, and the
+            // longest output after the prompt that fills the rest.
+            let longest = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: Array(repeating: 1000, count: limits.maximumPromptTokens), chunkSize: 512,
+                outputCount: 1, stopTokenIDs: [])
+            #expect(longest.maximumTokens == limits.maximumPromptTokens + 1)
+            let filled = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: Array(repeating: 1000, count: limits.maximumContextTokens - limits.maximumOutputTokens),
+                chunkSize: 512, outputCount: limits.maximumOutputTokens, stopTokenIDs: [])
+            #expect(filled.maximumTokens == limits.maximumContextTokens)
             #expect(throws: (any Error).self) {
                 _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: Array(repeating: 1000, count: 32_769), chunkSize: 512, outputCount: 1, stopTokenIDs: [])
+                    promptTokenIDs: Array(repeating: 1000, count: limits.maximumPromptTokens + 1), chunkSize: 512,
+                    outputCount: 1, stopTokenIDs: [])
             }
             #expect(throws: (any Error).self) {
                 _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
-                    promptTokenIDs: Array(repeating: 1000, count: 16), chunkSize: 16, outputCount: 32_769, stopTokenIDs: [])
+                    promptTokenIDs: Array(repeating: 1000, count: 16), chunkSize: 16,
+                    outputCount: limits.maximumOutputTokens + 1, stopTokenIDs: [])
+            }
+            #expect(throws: (any Error).self) {
+                _ = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                    promptTokenIDs: Array(repeating: 1000, count: limits.maximumContextTokens - limits.maximumOutputTokens + 1),
+                    chunkSize: 512, outputCount: limits.maximumOutputTokens, stopTokenIDs: [])
+            }
+            // The standard rows still refuse what they always refused.
+            if model != .qwen38TwentySevenB {
+                #expect(limits.maximumPromptTokens + 1 == 32_769 && limits.maximumOutputTokens + 1 == 32_769)
             }
         }
     }
@@ -112,8 +152,10 @@ struct LongContextLimitsTests {
             let ceilings = try QwenResidentResourceCeilings(model: model)
             let geometry = try spec.expectedGeometry()
             #expect(ceilings.limits == (try QwenResidentContextLimits(specification: spec)))
+            // At the row's own longest context: 262,144 for the row that serves its native one.
             #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-                maximumTokens: 65_536, chunkSize: 512).conservativeStateAndBoundaryBytes))
+                maximumTokens: model == .qwen38TwentySevenB ? 262_144 : 65_536, chunkSize: 512)
+                .conservativeStateAndBoundaryBytes))
             let previous = try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
                 maximumTokens: 32_768, chunkSize: 512)
             #expect(ceilings.namedStateByteCeiling > previous.conservativeStateAndBoundaryBytes)

@@ -260,12 +260,23 @@ installed artifact, not from a per-model table:
 ### Response length
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
-within a 65,536-token combined ceiling. Each model's declared context and both
+within a 65,536-token combined ceiling, except for a model served at its native
+context (Qwen3.8 27B in tensor parallel, below). Each model's declared context and both
 ranks' live memory admission may reduce that budget. Omitting `max_tokens` on the local endpoint uses the full
 allowance, clamped to the model and remaining context; an explicit
 `max_tokens: 32768` requests the same allowance. A model can finish earlier
 at its stop token. Requests above the output ceiling receive HTTP 400 `output_too_long`;
 requests that exceed the admitted combined context are refused before generation.
+Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
+Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output tokens,
+within 262,144 combined. The pair is still loaded and planned for the
+32,768 + 32,768-token request, at any number of lanes. A longer request is
+admitted on its own when both Macs' memory holds it at that moment. If it does
+not fit, it alone receives HTTP 503 with the context the pair serves now, and
+other requests keep running. The 27B's pipeline modes keep the 65,536-token
+ceiling. See
+[native context](../architecture/inference.md#qwen27-tensor-parallel-native-context).
+
 After updating, let the normal cluster setup refresh both worker capabilities
 and the derived request deadline before serving. For adapters such as GLM that
 reserve their whole request scope at load time, automatic placement prices that

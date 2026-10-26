@@ -142,6 +142,106 @@ struct QwenTensorParallelBatchSessionTests {
             hiddenSize: 256, recurrentLayers: 3)
     }
 
+    /// A request longer than its prompt and one 1,024-token granule opens
+    /// with only those pages reserved and grows them before the decode step
+    /// that needs them (`QwenTensorParallelBatchSession.reservePages`): every
+    /// logits row, key, value and recurrent row on both ranks equals the same
+    /// request's whose pages were reserved for its whole length before its
+    /// first token. Paged only (the contiguous reference backend keeps its
+    /// whole-length rows), at capacity one and two.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN_TP_BATCH_GPU"] == "1"
+        && ProcessInfo.processInfo.environment["QWEN_TP_BATCH_KV"] == "paged"), arguments: [1, 2])
+    func pagesGrowMidDecodeWithoutChangingAByte(capacity: Int) throws {
+        let fixture = QwenTensorParallelFixtures.checkpoint(hidden: 256, layers: 4, heads: 4, kvHeads: 2, vocabulary: 256)
+        try Device.withDefaultDevice(.gpu) {
+            var root = try JSONSerialization.jsonObject(with: fixture.configuration) as! [String: Any]
+            var text = root["text_config"] as! [String: Any]
+            text["max_position_embeddings"] = 4096; root["text_config"] = text
+            let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            let profile = try QwenLayerStageGenerationProfile(identifier: "qwen-tp-paged-growth-tiny",
+                vocabularySize: 256, hiddenSize: 256, activationDType: "bfloat16",
+                maximumPromptTokens: 128, maximumChunkTokens: 64, maximumOutputTokens: 1_200, maximumContextTokens: 1_400)
+            func pair() throws -> [Owned] {
+                let wire = Rendezvous()
+                return try (0..<2).map { rank in
+                    let model = try QwenTensorParallelModel.assemble(configurationData: configuration,
+                        role: .shard(rank: rank, size: 2), reduction: Rank(rank, wire)) { _, keep in
+                        for (name, value) in fixture.tensors { try keep(name, value) }
+                    }
+                    return try Owned(model, lanes: capacity, maximumTokens: 1_400)
+                }
+            }
+            let grown = try pair(), whole = try pair()
+            defer { for owner in grown + whole { for session in owner.sessions { try? session.retire() } } }
+            let request = try QwenLayerStageGenerationRequest(profile: profile, requestID: UUID(),
+                promptTokenIDs: (0..<40).map { ($0 * 17 + 2) % 256 }, chunkSize: 16,
+                outputCount: 1_150, stopTokenIDs: [])
+            for owner in grown + whole {
+                owner.sessions = [try .init(model: owner.model, configuration: configuration, host: owner.host, request: request)]
+            }
+            // The reference reserves every page before its first token.
+            for owner in whole { try owner.sessions[0].state.growReservation(toTokens: request.maximumTokens) }
+            let opened = QwenTensorParallelBatchSession.initialReservedTokens(request)
+            #expect(opened == 40 + QwenTensorParallelBatchSession.pageGrowthTokens && opened < request.maximumTokens)
+            for rank in 0..<2 {
+                #expect(grown[rank].sessions[0].state.reservedTokens == opened)
+                #expect(whole[rank].sessions[0].state.reservedTokens == request.maximumTokens)
+                let small = (grown[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                let large = (whole[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                #expect(small < large)
+            }
+            func compare(_ label: String, state: Bool) throws {
+                for rank in 0..<2 {
+                    let a = grown[rank], b = whole[rank]
+                    let actual = try #require(a.output), expected = try #require(b.output)
+                    #expect(bytes(actual) == bytes(expected), "\(label) rank=\(rank) logits")
+                    let x = a.sessions[0], y = b.sessions[0]
+                    #expect(x.committedTokens == y.committedTokens)
+                    guard state else { continue }
+                    for (left, right) in zip(x.state.rows, y.state.rows) {
+                        let l = left!.snapshot(), r = right!.snapshot()
+                        #expect(l.offset == r.offset && bytes(l.keys) == bytes(r.keys) && bytes(l.values) == bytes(r.values),
+                            "\(label) rank=\(rank) keys and values")
+                    }
+                    let l = x.state.recurrent.confirmedStateSnapshot() ?? [:], r = y.state.recurrent.confirmedStateSnapshot() ?? [:]
+                    #expect(l.keys.sorted() == r.keys.sorted() && l.count == 3)
+                    for layer in l.keys {
+                        #expect(bytes(l[layer]!.conv!) == bytes(r[layer]!.conv!) && bytes(l[layer]!.ssm!) == bytes(r[layer]!.ssm!))
+                    }
+                }
+            }
+            while grown[0].sessions[0].schedule.committedPromptTokens < request.promptCount {
+                let final = grown[0].sessions[0].schedule.committedPromptTokens + request.chunkSize >= request.promptCount
+                try parallel(grown) { $0.output = try $0.sessions[0].prefill(check: {}) }
+                try parallel(whole) { $0.output = try $0.sessions[0].prefill(check: {}) }
+                if final { try compare("prefill", state: true) }
+            }
+            var grewAt: Int?
+            for step in 0..<(request.outputCount - 1) {
+                let token = (step * 13 + 9) % 256
+                let before = grown[0].sessions[0].state.reservedTokens
+                try parallel(grown) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
+                try parallel(whole) { $0.output = try QwenTensorParallelBatchSession.decode($0.sessions, tokens: [token], check: {}) }
+                let after = grown[0].sessions[0].state.reservedTokens
+                #expect(grown[1].sessions[0].state.reservedTokens == after)
+                if after != before { grewAt = grewAt ?? step }
+                let near = grewAt.map { step - $0 <= 1 } ?? false
+                try compare("decode-\(step)", state: near || step == request.outputCount - 2 || step == 0)
+            }
+            // One growth, a granule before the end: from the prompt's granule to the request's length.
+            #expect(grewAt == opened - 40 - QwenTensorParallelBatchSession.pageGrowthMargin)
+            for rank in 0..<2 {
+                #expect(grown[rank].sessions[0].state.reservedTokens == request.maximumTokens)
+                #expect((grown[rank].host.backend as! PagedKVBackend).pool.bytesReserved
+                    == (whole[rank].host.backend as! PagedKVBackend).pool.bytesReserved)
+            }
+            for owner in grown + whole {
+                try owner.sessions[0].retire()
+                #expect(owner.sessions[0].state.isClosed && owner.host.isDrained)
+            }
+        }
+    }
+
     /// One request at capacity one and at capacity two: the same paged
     /// logits, keys, values and recurrent rows on both ranks at every step,
     /// so an owner that widens or narrows serves every row's bytes unchanged.

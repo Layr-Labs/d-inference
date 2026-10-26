@@ -42,7 +42,8 @@ struct CBv2RequestGeometry {
         }
         let text = root["text_config"] as? [String: Any] ?? root
         let declaredContext = try qwenPartitionInteger(text, "max_position_embeddings")
-        guard maximumTokens <= min(declaredContext, ClusterWorkerLimits.contextTokens) else {
+        // The model's own bound; each profile holds its requests to its limits.
+        guard maximumTokens <= min(declaredContext, ClusterWorkerLimits.wireContextTokens) else {
             throw ProbeError("CBv2 request exceeds the model's declared context bound")
         }
         let kinds: [CBv2LayerKind]

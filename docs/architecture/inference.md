@@ -139,7 +139,9 @@ priced by that row's own geometry (per-rank KV heads, recurrent state and, for a
 routed-expert row, the packed MoE payload's source partials).
 `ClusterPlacementArtifact.requestedTensorBatchQuote` validates the canonical
 stored tensor headers and reuses `QwenTensorParallelBatchBudget.derive` at the
-full native LOAD context and maximum frame, even for a short reference request.
+memory plan's full LOAD context and maximum frame, even for a short reference
+request. For Qwen3.8 27B that is the standard request, not its advertised
+262,144-token context ([native context](#qwen27-tensor-parallel-native-context)).
 The TP floor includes all lanes, retained and temporary projection constants,
 shared fusion/prefill/decode work, page-pool slack and eight separately bounded
 sealed collective frames. The quote also carries `rankQuotes`: what each rank of
@@ -4038,6 +4040,81 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime+Batch.swift`
 (`serveBatch`, `prepareBatch`).
 
+### Qwen27 tensor-parallel native context
+
+The registered Qwen3.8 27B row advertises the limits the single-Mac product
+serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
+context (the catalog's `max_context_length` and `max_output_length`;
+`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
+validation on both ranks and every profile fingerprint use these limits. LOAD,
+the placement planner and every width quote still size the pair for the standard
+request, 32,768 prompt plus 32,768 output tokens
+(`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
+No lane reserves KV for the native context in advance, and widths one through
+eight are planned and admitted as before. Every other Qwen row's profile is its
+memory plan, byte for byte.
+
+A tensor-parallel request longer than the memory plan is charged at its own
+context when a rank reserves it (`QwenTensorParallelRequestCharge`). The charge
+covers the lane at the request's prompt plus output: its pages, replacement
+pages, recurrent state, prefix capture and assistant history. It also covers the
+shared workspaces at the longest context any held request has: one prompt
+frame's full-history gather bank, that frame's attention scores, and the decode
+and verify transients. The shared charge is never below LOAD's. Each rank's live
+gate (`reserveLane`, with the same OS and allocator checks) admits the whole
+charge or refuses that request alone. The endpoint then answers 503 with the
+context the pair serves now, and the pair keeps serving. A request within the
+memory plan is charged as before and must still fit LOAD's per-lane quote.
+
+READY's request capacity is the larger of LOAD's quote and one request at
+262,144 tokens. READY, and every keep-warm answer while no lane is held, carry
+the longest context the reservation gate admits now (`servingContextTokens`,
+computed with the gate's own arithmetic). The pair refuses a longer request
+before either rank is asked. With the registered inventory on an M5 Ultra
+(256 GB), eight lanes with the depth-3 assistant reserve 48.4 GB a rank at LOAD
+(4.6 GB a lane). A 262,144-token request beside seven standard ones is charged
+69.4 GB a rank (a 13.9 GB lane and 22.8 GB of shared workspaces), beside at most
+16.3 GB of weights (`QwenTensorParallelNativeContextTests`).
+
+The pipeline and hand-off modes stay at the memory plan. Their LOAD gates size
+it, and they refuse a longer reservation (`requireWithinMemoryProfile`). Provider
+quotes, placement comparisons and installed-plan checks compare memory scopes,
+so a profile's longer native limits never re-price or re-plan a pair.
+
+Pages grow with the request. A paged lane reserves its prompt and one
+1,024-token granule when it opens. Before each prompt frame, decode step or
+assistant window, it keeps what that forward writes plus 64 tokens reserved,
+growing by a granule up to its own length (`QwenTensorParallelBatchSession.reservePages`,
+`CBv2OwnedRequestState.growReservation`, and `PagedKVBackend.extendReservation`
+in the SDK). The pool reserves and backs the added pages before a row's
+reservation moves, so rows, their bounds and every value equal what a
+whole-length reservation holds. A write past the reservation is refused before
+its forward. Growth applies to every Qwen TP row by construction; before it, a
+lane reserved and backed its whole prompt plus output at open. A growth the pool
+cannot back fails the batch, as the periodic live check does; GLM instead ends
+that request at `length`. Arithmetic is unchanged: requests below 32,768 tokens
+produce identical bytes (`CBv2PagedGrowthSyntheticTests`,
+`QwenTensorParallelBatchSessionTests.pagesGrowMidDecodeWithoutChangingAByte`).
+
+Fingerprints: the 27B profile fingerprint changes. With it change the capability
+record's `profileFingerprint`, the resident load agreement (which also binds the
+memory plan's fingerprint, only where it differs from the profile), the TP prefix
+cache's resident scope (prefixed by that agreement), the installed start's
+`profileSHA256`, the native member attachment hashes and request fingerprints.
+Bundled pair qualification records do not bind it. Existing 27B setups re-plan
+after the update, as for any worker change, and 27B qualification records are
+recorded again. Other rows' fingerprints and agreements are unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelRequestCharge.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelResidentRuntime.swift`
+(`servingContext`, `refreshServingContext`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
+(`requireWithinMemoryProfile`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
+(`growReservation`).
+
 ### Qwen27 cluster media ingress ownership
 
 The scheduler routes image/video requests through `DistributedQwenMediaIngress`
@@ -4187,7 +4264,7 @@ A local-only optional `ClusterSetupRecord.stopDrain` token is written atomically
 
 ### Qwen27 capacity changes preserve request arithmetic
 
-The authenticated Qwen3.8 27B tensor-parallel owner uses CBv2 request-owned attention and recurrent history at capacity one and at wider capacities. A singleton adapter keeps the existing one-token worker credit while executing the same native batch driver; its completion is constructed only after both ranks confirm retirement. Native metadata quotations charge the full singleton CBv2 state, workspace, collectives and prefix allowance, including the selected assistant policy. Paged storage still grows on demand inside that reservation. Other model families and unkeyed singleton probes retain their existing execution paths. See `QwenTensorParallelBatchSettings`, `QwenTensorParallelResidentRuntime+Singleton.swift`, `QwenTensorParallelBatchBudget` and `ClusterPlacementTensorBatchBudget` under `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/`.
+The authenticated Qwen3.8 27B tensor-parallel owner uses CBv2 request-owned attention and recurrent history at capacity one and at wider capacities. A singleton adapter keeps the existing one-token worker credit while executing the same native batch driver; its completion is constructed only after both ranks confirm retirement. Native metadata quotations charge the full singleton CBv2 state, workspace, collectives and prefix allowance, including the selected assistant policy. Within that charge a paged lane's pages are reserved as the request grows ([native context](#qwen27-tensor-parallel-native-context)). Other model families and unkeyed singleton probes retain their existing execution paths. See `QwenTensorParallelBatchSettings`, `QwenTensorParallelResidentRuntime+Singleton.swift`, `QwenTensorParallelBatchBudget` and `ClusterPlacementTensorBatchBudget` under `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/`.
 
 Automatic capacity-only replacements retain the current ordered tensor shares for this exact model. The planner still checks the complete simultaneous LOAD and request reservation against current memory; if the existing partition cannot widen, it keeps serving at its current capacity. `DistributedAutomaticBatchPlanner`, `ClusterPlacementFlow` and `ClusterAutomaticSetupHandoff` enforce this restriction; the ordinary initial planner still selects the partition. Installed exact-output comparison across the actual replacement remains a separate acceptance gate.
 

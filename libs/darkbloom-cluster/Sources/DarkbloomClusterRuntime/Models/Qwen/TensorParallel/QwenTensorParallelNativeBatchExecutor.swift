@@ -100,9 +100,11 @@ final class QwenTensorParallelNativeBatchExecutor<Reservation: QwenTensorParalle
                 throw ProbeError("Qwen TP resident assistant differs from its paged batch owner")
             }
             if let cohort = assistant.cohortBudget {
+                // LOAD quoted the memory plan's request; a longer one, up to
+                // the host's bound, was charged at its own context.
                 guard cohort.maximumSpeculativeWidth == host.lanes, cohort.target.lanes == host.lanes,
                       cohort.depth == assistant.depth,
-                      cohort.allowance.maximumContextTokens == host.maximumTokensPerRequest,
+                      cohort.allowance.maximumContextTokens <= host.maximumTokensPerRequest,
                       cohort.maximumSpeculativeWidth > 1, cohort.retainedCohortBytesPerLane > 0,
                       cohort.cohortTransientBytes > 0 else {
                     throw ProbeError("Qwen TP multirow assistant lacks a complete target-cohort quote")

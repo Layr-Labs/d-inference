@@ -41,6 +41,11 @@ import MLXVLM
 /// resident and on its SSD tier (`QwenTensorParallelBatchPrefixCache`); a
 /// request restores the longest boundary BOTH ranks hold (one sealed vote), or
 /// neither restores.
+///
+/// Limits: the profile is the row's (`QwenResidentAdmission.profile`, the
+/// native context for Qwen3.8 27B); LOAD quotes every lane at the memory
+/// plan's request (`memoryProfile`), and a longer request is charged at its
+/// own context when it is reserved (`QwenTensorParallelRequestCharge`).
 public final class QwenTensorParallelResidentRuntime {
     let admission: QwenResidentAdmission
     let control: QwenResidentControl
@@ -65,6 +70,13 @@ public final class QwenTensorParallelResidentRuntime {
     var batchHost: CBv2StageKVHost?
     let batchBudget: QwenTensorParallelBatchBudget?
     let batchMTPBudget: QwenTensorParallelBatchMTPBudget?
+    /// What a request costs this rank at its own context: `reserveLane`
+    /// admits by it, READY's capacity covers the profile's longest.
+    let requestCharge: QwenTensorParallelRequestCharge
+    /// The longest context this rank's gate admits now, for a row whose
+    /// profile is longer than its memory plan (READY, then each keep-warm
+    /// answer: `refreshServingContext`); nil for every other row.
+    private(set) var servingContextTokens: Int?
     let batchPrefix: QwenTensorParallelBatchPrefixCache?
     /// The batch prefix cache's SSD tier on this rank, when the owner configured one.
     let prefixDisk: QwenTensorParallelPrefixDisk?
@@ -140,6 +152,7 @@ public final class QwenTensorParallelResidentRuntime {
         var batchHost: CBv2StageKVHost?
         var batchBudget: QwenTensorParallelBatchBudget?
         var batchMTPBudget: QwenTensorParallelBatchMTPBudget?
+        var requestCharge: QwenTensorParallelRequestCharge?
         var loadedMTPHead: QwenTensorParallelMTPHead?
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
@@ -210,23 +223,26 @@ public final class QwenTensorParallelResidentRuntime {
                 probe = try QwenTensorParallelLinkProbe.measure(collective: collective, group: group,
                     hiddenSize: admission.profile.hiddenSize, chunkTokens: admission.profile.maximumChunkTokens, check: checked)
                 if let probe { log(QwenTensorParallelLinkProbe.line(probe, rank: collective.rank)) }
+                // LOAD quotes every lane at the memory plan's request; a longer
+                // one is charged at its own context when it is reserved.
+                let memory = admission.memoryProfile
                 let value = try autoreleasepool {
                     try QwenTensorParallelVerifiedLoad.load(admission, rank: collective.rank, shares: shares,
                         reduction: reduction, includeVision: mediaEnabled,
                         requestAllowance: { profile, plan in
                             if let terms = speculativeTerms {
                                 let quote = try QwenTensorParallelBatchMTPBudget.derive(geometry: profile.geometry, plan: plan,
-                                    tensors: profile.canonicalTensors, maximumTokens: admission.profile.maximumContextTokens,
-                                    promptTokens: admission.profile.maximumPromptTokens,
-                                    chunkSize: admission.profile.maximumChunkTokens, lanes: batch.lanes, depth: terms.depth,
+                                    tensors: profile.canonicalTensors, maximumTokens: memory.maximumContextTokens,
+                                    promptTokens: memory.maximumPromptTokens,
+                                    chunkSize: memory.maximumChunkTokens, lanes: batch.lanes, depth: terms.depth,
                                     maximumSpeculativeWidth: maximumSpeculativeWidth, rank: collective.rank,
                                     allocationBound: QwenResidentResourceEnvironment.allocationBound)
                                 batchMTPBudget = quote; batchBudget = quote.target
                                 return quote.allowance.reservedBytes
                             }
                             let quote = try QwenTensorParallelBatchBudget.derive(geometry: profile.geometry, plan: plan,
-                                tensors: profile.canonicalTensors, maximumTokens: admission.profile.maximumContextTokens,
-                                chunkSize: admission.profile.maximumChunkTokens, lanes: batch.lanes,
+                                tensors: profile.canonicalTensors, maximumTokens: memory.maximumContextTokens,
+                                chunkSize: memory.maximumChunkTokens, lanes: batch.lanes,
                                 paged: batch.backend == .paged, rank: collective.rank,
                                 allocationBound: QwenResidentResourceEnvironment.allocationBound)
                             batchBudget = quote
@@ -244,7 +260,9 @@ public final class QwenTensorParallelResidentRuntime {
                         target: value.model, reduction: group,
                         remainingResidentAllowanceBytes: requestAllowance.reservedBytes, check: checked)
                 }
-                // Every request's keys and values live in this rank's CBv2 KV host.
+                // Every request's keys and values live in this rank's CBv2 KV
+                // host, bounded by the profile's longest request (a ceiling,
+                // not an allocation: each request's pages grow with it).
                 batchHost = try CBv2StageKVHost(model: value.model.model, kind: batch.backend, lanes: batch.lanes,
                     maximumTokensPerRequest: admission.profile.maximumContextTokens,
                     maximumChunkTokens: max(admission.profile.maximumChunkTokens, (speculativeTerms?.depth ?? 0) + 1),
@@ -287,17 +305,30 @@ public final class QwenTensorParallelResidentRuntime {
                 let complete = batchMTPBudget?.allowance ?? batchBudget.allowance
                 let allowance = QwenResidentRequestAllowance(stateBytes: complete.reservedBytes,
                     fusionBytes: 0, reservedBytes: complete.reservedBytes,
-                    contextTokens: admission.profile.maximumContextTokens)
+                    contextTokens: memory.maximumContextTokens)
                 try allowance.requireLive()
                 try checked()
+                let charge = QwenTensorParallelRequestCharge(geometry: value.profile.geometry, plan: value.model.plan,
+                    tensors: value.profile.canonicalTensors, lanes: batch.lanes, paged: batch.backend == .paged,
+                    assistant: speculativeTerms.map { ($0.depth, maximumSpeculativeWidth) }, rank: collective.rank,
+                    allocationBound: QwenResidentResourceEnvironment.allocationBound,
+                    loadSharedBytes: batchMTPBudget?.sharedBytesExcludingCollectives ?? batchBudget.sharedBytesExcludingCollectives,
+                    collectiveScratchBytes: complete.collectiveScratchBytes)
+                requestCharge = charge
+                // The most one text request is charged: LOAD's quote, or one
+                // request at the profile's longest context when that is longer.
+                let text = admission.profile.maximumContextTokens > memory.maximumContextTokens
+                    ? max(complete.reservedBytes, try charge.bytes(contextTokens: admission.profile.maximumContextTokens,
+                        profile: admission.profile))
+                    : complete.reservedBytes
                 // A ceiling on additional owner bytes, never a memory grant.
                 // Every media reservation derives its full quote and passes
                 // the live OS and allocator gates before creating any pixels.
-                return !mediaEnabled ? complete.reservedBytes : max(complete.reservedBytes,
+                return !mediaEnabled ? text : max(text,
                     min(ClusterWorkerLimits.capacityBytes, Memory.memoryLimit,
                         Int(clamping: ProcessInfo.processInfo.physicalMemory)))
             }
-            guard let loaded = loadedModel, let receipt = shardReceipt, let profile = source else {
+            guard let loaded = loadedModel, let receipt = shardReceipt, let profile = source, let requestCharge else {
                 throw ProbeError("Tensor-parallel load returned no shard")
             }
             let assistantReady = try speculativeTerms.map { terms -> ClusterQwenTensorAssistantReady in
@@ -331,12 +362,21 @@ public final class QwenTensorParallelResidentRuntime {
             log(QwenTensorParallelBatchSession.kernelLine(rank: collective.rank, plan: loaded.plan))
             let shareProbe = try QwenTensorParallelShareProbe.atLoad(model: loaded, reduction: reduction, admission: admission,
                 profile: profile, shares: shares, backend: batch.backend, depth: speculativeTerms?.depth, control: control)
+            // The longest context the reservation gate admits now, beside the
+            // loaded weights and what the probe kept (local: no collective).
+            let grown = max(0, Memory.activeMemory - allocationBaseline)
+            let serving = try servingContext(requestCharge, admission: admission, grownBytes: grown)
+            if let serving {
+                log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(serving) previous=0 grown=\(grown)"
+                    + " profile=\(admission.profile.maximumContextTokens) memory_plan=\(admission.memoryProfile.maximumContextTokens)")
+            }
             return QwenTensorParallelResidentRuntime(admission: admission, control: control, collective: collective,
                 group: group, codec: codec, model: loaded, vision: loadedVision, visionInventory: loadedVisionInventory,
                 profile: profile, shares: shares,
                 allocationBaseline: allocationBaseline, shareProbe: shareProbe,
                 loadAgreement: loadAgreement, capacity: capacity, receipt: receipt, linkProbe: probe,
-                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget, batchPrefixEnabled: prefixEnabled,
+                batchLanes: batch.lanes, batchHost: batchHost, batchBudget: batchBudget, batchMTPBudget: batchMTPBudget,
+                requestCharge: requestCharge, servingContextTokens: serving, batchPrefixEnabled: prefixEnabled,
                 prefixDisk: prefixDisk,
                 mtpTerms: speculativeTerms, mtpHead: loadedMTPHead, assistantReady: assistantReady)
         } catch {
@@ -373,6 +413,7 @@ public final class QwenTensorParallelResidentRuntime {
                  receipt: QwenTensorParallelShardReceipt, linkProbe: ClusterWorkerLinkProbe?,
                  batchLanes: Int, batchHost: CBv2StageKVHost?,
                  batchBudget: QwenTensorParallelBatchBudget?, batchMTPBudget: QwenTensorParallelBatchMTPBudget?,
+                 requestCharge: QwenTensorParallelRequestCharge, servingContextTokens: Int?,
                  batchPrefixEnabled: Bool, prefixDisk: QwenTensorParallelPrefixDisk?, mtpTerms: QwenMTPTerms?,
                  mtpHead: QwenTensorParallelMTPHead?, assistantReady: ClusterQwenTensorAssistantReady?) {
         self.admission = admission; self.control = control; self.collective = collective; self.group = group
@@ -382,6 +423,7 @@ public final class QwenTensorParallelResidentRuntime {
         self.batchAllocationBaseline = allocationBaseline
         self.batchLanes = batchLanes; self.batchHost = batchHost; self.batchBudget = batchBudget
         self.batchMTPBudget = batchMTPBudget
+        self.requestCharge = requestCharge; self.servingContextTokens = servingContextTokens
         self.mtpTerms = mtpTerms; self.mtpHead = mtpHead
         self.mtpPrefix = batchMTPBudget.map {
             .init(enabled: batchPrefixEnabled, budgetBytes: $0.prefix.residentBytes)
@@ -393,9 +435,44 @@ public final class QwenTensorParallelResidentRuntime {
         self.receipt = receipt.storageCommitmentSHA256
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe,
+            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane,
+            servingContextTokens: servingContextTokens, linkProbe: linkProbe,
             media: visionInventory != nil && collective.workerDataPlane?.encryptedAndVerified == true ? ClusterQwenMedia.contract : nil,
             tensorAssistant: assistantReady, shareProbe: shareProbe)
+    }
+
+    /// The longest context this rank's gate admits now when the profile is
+    /// longer than the memory plan LOAD quoted (nil otherwise: every request
+    /// within such a profile was charged at LOAD). Not even the smallest
+    /// useful request fitting reports that smallest one, so a longer request
+    /// is refused up front and a shorter one is still gated at reservation.
+    static func servingContext(_ charge: QwenTensorParallelRequestCharge, admission: QwenResidentAdmission,
+                               grownBytes: Int) throws -> Int? {
+        let profile = admission.profile
+        guard profile.maximumContextTokens > admission.memoryProfile.maximumContextTokens else { return nil }
+        return try charge.servingContextTokens(profile: profile, grownBytes: grownBytes, on: .live())
+            ?? min(profile.maximumContextTokens, profile.maximumChunkTokens + 1)
+    }
+
+    /// The serving context re-derived while idle, on each keep-warm answer
+    /// (`ClusterWorkerEvent.keptWarm`), with the reservation gate's own
+    /// arithmetic: kept prefix entries are part of the charge they were
+    /// allocated under. Nil (and nothing changes) while a lane is held, or for
+    /// a row whose profile is its memory plan. Allocates nothing.
+    public func refreshServingContext() -> Int? {
+        guard servingContextTokens != nil, operation.try() else { return nil }
+        defer { operation.unlock() }
+        guard control.available, batchBook.isEmpty, model != nil else { return nil }
+        let grown = max(0, Memory.activeMemory - batchAllocationBaseline)
+        guard let value = try? Self.servingContext(requestCharge, admission: admission, grownBytes: grown) else {
+            return nil
+        }
+        if value != servingContextTokens {
+            log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(value) previous=\(servingContextTokens ?? 0)"
+                + " grown=\(grown)")
+        }
+        servingContextTokens = value
+        return value
     }
 
     public var readiness: ClusterWorkerReady? {

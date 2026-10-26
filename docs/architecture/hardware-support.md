@@ -368,6 +368,27 @@ of them is serving work, and `no loaded model can be evicted` otherwise. The
 daemon state publishes the same exclusions (`eviction_exclusions`) and the
 ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
+Selected-model recovery (`ProviderLoop+SelectedModelRecovery.swift`) retries
+the startup preload's selected candidates that it skipped or that failed for
+memory, or that a slot cap left untried; before it, nothing retried them, and
+the coordinator cold-routes a model only to an idle machine. The capacity tick
+checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
+minutes, at once after any unload, and at a blocker's known end (a hold's
+expiry, an idle threshold), at most 10 minutes away. A check plans on the same
+figures as the load gate (Super's LOAD-claim room against its narrowest
+configuration, otherwise usable load memory against weights plus headroom) and
+loads with `allowEviction: false`. Before the load it may unload only resident
+models outside the ordinary selection and the Autopilot pins that have no
+`evictionExclusions` entry, have been idle for two minutes when they still
+serve (`SelectedModelRecovery.victimMinimumIdle`), and whose weights make the
+room, least recently used first. It never evicts a selected model, so it cannot
+churn against the operator's own models. It waits while a live Autopilot lease
+or a pause manages residency, and during any load, unload, operation, switch,
+startup preload or drain. A refusal for memory, a slot or a transient state
+keeps the model waiting; any other load failure ends its recovery and leaves
+the request path. The daemon state reports each waiting model, its next check
+and the last blocker (`selected_model_recovery`).
+
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
 is ordinary process heap with no claim or reserve in this gate: at most

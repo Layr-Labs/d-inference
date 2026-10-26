@@ -702,6 +702,14 @@ public actor ProviderLoop {
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
     /// the daemon state so status can distinguish warmup from request loading.
     internal var startupPreloadPendingModels: [String] = []
+    /// Selected models waiting to become resident again
+    /// (`ProviderLoop+SelectedModelRecovery`).
+    internal var selectedModelRecovery = SelectedModelRecovery()
+    /// Replaces the recovery's no-eviction load in tests; nil in production.
+    internal var selectedModelRecoveryLoadOverride: (@Sendable (String) async throws -> Void)?
+    /// The config file's `enabled_models` as last read by the policy refresh;
+    /// the running selection changes only at a start.
+    internal var savedEnabledModels: [String]
 
     /// Per-loop persistence location for embedded/qualification hosts and tests
     /// (default: `LoadedModelsStore.path()`).
@@ -853,6 +861,7 @@ public actor ProviderLoop {
             sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
+        self.savedEnabledModels = config.config.backend.enabledModels
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
             $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
                 && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)

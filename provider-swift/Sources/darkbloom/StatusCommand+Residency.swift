@@ -42,6 +42,36 @@ extension Status {
         return ["Autopilot placements: " + entries.joined(separator: "; ")]
     }
 
+    /// A saved `enabled_models` that differs from the one the running daemon
+    /// started with: the daemon applies it only at its next start. Older
+    /// daemons do not report their start filter.
+    static func pendingSelectionLines(state: DaemonState, enabledModels: [String]) -> [String] {
+        guard let started = state.enabledModelsAtStart, Set(started) != Set(enabledModels) else { return [] }
+        let added = enabledModels.filter { !started.contains($0) }
+        let removed = started.filter { !enabledModels.contains($0) }
+        var changes: [String] = []
+        if !added.isEmpty { changes.append("adds \(added.joined(separator: ", "))") }
+        if !removed.isEmpty { changes.append("removes \(removed.joined(separator: ", "))") }
+        if changes.isEmpty || started.isEmpty || enabledModels.isEmpty {
+            changes = ["was [\(started.joined(separator: ", "))] at start, is [\(enabledModels.joined(separator: ", "))] now"]
+        }
+        return ["Configuration change needs a restart to apply: enabled_models "
+            + changes.joined(separator: "; ") + ". Run `\(BuildEnvironment.current.cliName) restart`."]
+    }
+
+    /// Selected models the daemon keeps trying to load, when the next check
+    /// runs and what kept the last one out.
+    static func recoveryLines(state: DaemonState, now: Double) -> [String] {
+        (state.selectedModelRecovery ?? []).flatMap { entry -> [String] in
+            let next = entry.loading == true ? "loading now"
+                : entry.nextCheckAt.map { "next check in \(compactDuration(max(0, $0 - now)))" } ?? "check pending"
+            var lines = ["Retrying \(entry.model) when memory frees; \(next) "
+                + "(waiting \(compactDuration(max(0, now - entry.waitingSince))))"]
+            if let blocker = entry.blocker { lines.append("  Last check: \(blocker)") }
+            return lines
+        }
+    }
+
     /// Resident models no load can evict now, from the daemon's own gate.
     static func evictionExclusionLines(state: DaemonState) -> [String] {
         guard let exclusions = state.evictionExclusions, !exclusions.isEmpty else { return [] }

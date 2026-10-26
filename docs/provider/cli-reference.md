@@ -988,11 +988,17 @@ Output includes:
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - `Enabled model filter` is the saved config; a running daemon applies a
-  changed `enabled_models` only at its next start. `Serving outside the enabled
-  model filter` names each warm or advertised model the filter omits and why it
-  serves: an Autopilot operation's adoption, the running daemon's selection, or
-  the live Autopilot lease. `Autopilot placements` lists adoptions and placement
-  holds with each hold's UTC expiry and time left. `Not evictable for a load
+  changed `enabled_models` only at its next start. `Configuration change needs
+  a restart to apply: enabled_models adds …; removes …` appears when the saved
+  filter differs from the one the running daemon started with. `Serving
+  outside the enabled model filter` names each warm or advertised model the
+  filter omits and why it serves: an Autopilot operation's adoption, the
+  running daemon's selection, or the live Autopilot lease. `Autopilot
+  placements` lists adoptions and placement holds with each hold's UTC expiry
+  and time left. `Retrying <model> when memory frees; next check in …
+  (waiting …)` names each selected model the daemon keeps trying to load
+  ([selected-model recovery](../architecture/hardware-support.md#load-gate-modelloadadmission)),
+  followed by `Last check:` and what kept it out. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed

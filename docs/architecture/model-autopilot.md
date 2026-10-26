@@ -173,6 +173,17 @@ outside the selected models)`, `ProviderLoop.evictionExclusions`).
 served outside the saved `enabled_models`; `darkbloom autopilot status` prints
 `Adopted` and `Held` lines.
 
+Selected-model recovery ([load gate](hardware-support.md#load-gate-modelloadadmission))
+treats an adoption like any model outside the selection: it may unload an
+adopted slot that has no unexpired hold, no request in flight and two minutes
+of idleness (measured from the hold's expiry when one ended) to load a waiting
+selected model, which ends the adoption as any unload does. It never touches a
+held slot, and it waits while a live lease or a pause manages residency. A
+recovery attempt is busy as `preload`, so an operation is refused while it
+evicts or loads. The policy refresh also re-reads `enabled_models`, which the
+recovery uses only to stop retrying a model the saved filter dropped and to
+name a model that stays in the running daemon's selection until a restart.
+
 ## Busy reasons and stalled transitions
 
 `autopilotBusyReasons` names every condition behind `provider_busy`. It is empty

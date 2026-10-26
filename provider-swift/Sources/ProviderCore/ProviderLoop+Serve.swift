@@ -483,6 +483,7 @@ extension ProviderLoop {
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
         if let autopilotTask { preloads.append(autopilotTask) }
+        if let recovery = selectedModelRecovery.attempt?.task { preloads.append(recovery) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }

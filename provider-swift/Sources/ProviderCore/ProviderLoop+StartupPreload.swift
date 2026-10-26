@@ -296,6 +296,13 @@ extension ProviderLoop {
         }
         logger.info(
             "Startup preload complete in \(StartupPreloader.secs(elapsed)): \(parts.joined(separator: " "))")
+        // Selected candidates left cold for memory or a slot keep trying
+        // (`ProviderLoop+SelectedModelRecovery`); a stalled or stopped run
+        // does not.
+        if !Task.isCancelled, !isShuttingDown, !startupPreloadStopRequested {
+            enqueueSelectedModelRecovery(summary.skippedInsufficientMemory + summary.failedInsufficientMemory
+                + summary.notAttempted)
+        }
         // Also runs when registration already proceeded after the preload timeout.
         // Self-tests and their foreground leases have finished before this point.
         await refreshModelCalibration()

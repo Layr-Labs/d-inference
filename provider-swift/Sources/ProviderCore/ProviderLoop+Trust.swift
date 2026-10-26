@@ -47,8 +47,10 @@ extension ProviderLoop {
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
             servingSelection: ordinaryServingModelIDs.sorted(),
+            enabledModelsAtStart: loopConfig.config.backend.enabledModels,
             evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
+            selectedModelRecovery: selectedModelRecoveryReport(),
             inferenceActive: state.inferenceActive,
             requestWorkPending: DaemonWorkPosture.hasPendingRequest(
                 inflight: hasInflightWork, capacity: cap),

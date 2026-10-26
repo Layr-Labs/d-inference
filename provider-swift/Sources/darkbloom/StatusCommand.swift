@@ -147,6 +147,7 @@ struct Status: AsyncParsableCommand {
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)
+            + Self.pendingSelectionLines(state: state, enabledModels: config.backend.enabledModels)
             + Self.placementLines(state: state, now: now) {
             print(line)
         }
@@ -169,7 +170,9 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
-        for line in Self.evictionExclusionLines(state: state) { print(line) }
+        for line in Self.recoveryLines(state: state, now: now) + Self.evictionExclusionLines(state: state) {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {

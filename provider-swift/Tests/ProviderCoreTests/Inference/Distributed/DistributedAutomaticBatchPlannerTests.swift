@@ -25,10 +25,11 @@ final class DistributedAutomaticBatchPlannerTests {
         return result
     }
 
-    private func profile(free: Int = 200 * 1_073_741_824, decodeIndex: Double = 25_000) throws -> ClusterDeviceProfile {
+    private func profile(free: Int = 200 * 1_073_741_824, decodeIndex: Double = 25_000,
+                         osBuild: String = "CHECK") throws -> ClusterDeviceProfile {
         let physical = 256 * gib
         var p = try ClusterDeviceProfile(chip: "Constructed planner fixture", performanceCores: 8, efficiencyCores: 4,
-            gpuCores: 40, osVersion: "27.0", osBuild: "CHECK", physicalMemoryBytes: physical,
+            gpuCores: 40, osVersion: "27.0", osBuild: osBuild, physicalMemoryBytes: physical,
             gpuRecommendedWorkingSetBytes: 192 * gib, gpuMaximumBufferBytes: 128 * gib,
             allocatorLimitBytes: 230 * gib,
             memory: .init(gatePolicy: "fixture", sampledUTC: "2026-10-23T00:00:00Z", judged: true, unjudgedReason: nil,
@@ -446,20 +447,56 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(replacement == nil)
     }
 
-    @Test func testProfileChildMustReceiveIndexArgument() throws {
+    /// The plan helper's speed index is about a second of GPU work: it runs only while no model is loaded on this
+    /// Mac (`ClusterLocalDeviceProfile`). While one is (a replacement is always previewed beside its running owner,
+    /// and a serving member answers the leader's update check every minute), the index this Mac last measured
+    /// stands in, and only for the chip and OS build it was measured on; memory is read now either way.
+    @Test func testProfileChildMeasuresTheIndexOnlyWhileNoModelIsLoaded() throws {
         let home = try home(), expected = try profile()
-        try expected.encoded().write(to: home.appendingPathComponent("profile.json"))
-        let child = home.appendingPathComponent("plan-helper")
+        var plain = expected; plain.speedIndex = nil
+        var updated = try profile(osBuild: "OTHER"); updated.speedIndex = nil
+        try expected.encoded().write(to: home.appendingPathComponent("indexed.json"))
+        try plain.encoded().write(to: home.appendingPathComponent("plain.json"))
+        try updated.encoded().write(to: home.appendingPathComponent("updated.json"))
+        let child = home.appendingPathComponent("plan-helper"), calls = home.appendingPathComponent("calls.txt")
+        let answer = home.appendingPathComponent("answer")
         let script = """
             #!/bin/sh
-            [ "$#" = 3 ] && [ "$1" = device ] && [ "$2" = --json ] && [ "$3" = --index ] || exit 17
-            exec /bin/cat "\(home.path)/profile.json"
+            echo "$*" >> "\(calls.path)"
+            [ "$1" = device ] && [ "$2" = --json ] || exit 17
+            if [ "$#" = 3 ] && [ "$3" = --index ]; then exec /bin/cat "\(home.path)/indexed.json"; fi
+            [ "$#" = 2 ] || exit 18
+            exec /bin/cat "\(home.path)/$(/bin/cat "\(answer.path)").json"
             """
         try Data(script.utf8).write(to: child)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: child.path)
-        let actual = try DistributedAutomaticBatchPlanner.deviceProfile(tool: child,
-            deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-        #expect(actual.speedIndex == expected.speedIndex)
+        func read(loaded: Bool, answering name: String = "plain") throws -> ClusterDeviceProfile {
+            try Data(name.utf8).write(to: answer)
+            return try DistributedAutomaticBatchPlanner.deviceProfile(tool: child,
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, homeDirectory: home, modelLoaded: loaded)
+        }
+        func called() throws -> [String] {
+            String(decoding: try Data(contentsOf: calls), as: UTF8.self).split(separator: "\n").map(String.init)
+        }
+        // Serving before this Mac ever measured its index: no benchmark, and no index.
+        let first = try read(loaded: true)
+        #expect(first.speedIndex == nil && first == plain)
+        #expect(try called() == ["device --json"])
+        #expect(ClusterDeviceIndexRecord.read(homeDirectory: home) == nil)
+        // Idle: measured now, and kept owner-only.
+        let idle = try read(loaded: false)
+        #expect(idle.speedIndex == expected.speedIndex)
+        #expect(try called() == ["device --json", "device --json --index"])
+        #expect(ClusterDeviceIndexRecord.read(homeDirectory: home)?.index == expected.speedIndex)
+        let mode = try FileManager.default.attributesOfItem(atPath: ClusterDeviceIndexRecord.file(homeDirectory: home).path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        // Serving: no benchmark, the kept index stands in beside the memory read now.
+        let serving = try read(loaded: true)
+        #expect(serving == expected)
+        #expect(try called() == ["device --json", "device --json --index", "device --json"])
+        // After an OS update the kept index is not this Mac's any more: none stands in.
+        let afterUpdate = try read(loaded: true, answering: "updated")
+        #expect(afterUpdate.speedIndex == nil && afterUpdate.osBuild == "OTHER")
     }
 
     private var slowReduction: ClusterLinkCosts {

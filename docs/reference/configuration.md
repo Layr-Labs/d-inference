@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-25
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -852,6 +852,16 @@ mode out (Qwen3.8 27B keeps images, video and logprobs only in tensor parallel),
 the reason line says that instead of "no pipeline placement fits"
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterLinkProbeHistory.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterRequestMix.swift`).
+
+Each Mac's profile carries its model-free speed index
+(`darkbloom-cluster-plan device --json --index`, about a second of GPU work),
+measured only while no model is loaded or loading on that Mac: no cluster
+worker runs there, and its cluster service runs neither its part nor its solo
+server. Otherwise (the leader's update check every minute, an automatic batch
+replacement, `darkbloom cluster plan` beside a serving model) the index the Mac
+last measured stands in, from owner-only `~/.darkbloom/cluster/device-index.json`,
+while the chip and OS build are the ones it was measured on
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterLocalDeviceProfile.swift`).
 
 | Variable | Default | Effect |
 |---|---|---|

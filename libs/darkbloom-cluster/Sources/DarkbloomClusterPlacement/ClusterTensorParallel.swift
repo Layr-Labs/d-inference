@@ -52,11 +52,16 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// Allocator-bounded weights outside the text layout, charged whole to
     /// every TP rank. Nil preserves existing layout bytes and behavior.
     public let additionalResidentBytes: Int?
+    /// The model's own speculative head, when the runtime decodes
+    /// `tensor_parallel_v1` with it on every rank. Nil: one token per step and
+    /// no head (omitted then, so a layout of any other family reads as before).
+    public let speculativeHead: ClusterTensorParallelSpeculativeHead?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, layerPartialBytesPerToken: Int? = nil, stateDividesByHeads: Bool,
                 shareOptions: [[Int]]? = nil, shareUnits: Int? = nil,
-                requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil) {
+                requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil,
+                speculativeHead: ClusterTensorParallelSpeculativeHead? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.layerPartialBytesPerToken = layerPartialBytesPerToken
@@ -65,6 +70,7 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
         self.shareUnits = shareUnits
         self.requestAllowance = requestAllowance
         self.additionalResidentBytes = additionalResidentBytes
+        self.speculativeHead = speculativeHead
     }
 
     /// Bytes a selection reduction carries (the head's best value and token
@@ -103,6 +109,39 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
             return weights.map { Double($0) / total }
         }
         return [equal] + weighted
+    }
+}
+
+/// The model's own speculative (MTP) head as a family's tensor-parallel
+/// runtime decodes with it: every rank of `tensor_parallel_v1` holds the head
+/// whole beside its share (`ClusterModelLayout.speculativeHead`, which no range
+/// loads, each tensor in whole pages), keeps its request state, and decodes in
+/// rounds that verify up to `depth` proposals in one pass of the reductions.
+/// A plan without it priced neither (2026-10-25: GLM-5.3 Flash's NextN layer,
+/// 4,183,320,576 bytes on each rank, and one token per step), so it could
+/// admit a pair the load gate then refused and predicted decode too slow.
+public struct ClusterTensorParallelSpeculativeHead: Codable, Equatable, Sendable {
+    /// Proposals a round verifies.
+    public let depth: Int
+    /// Request memory the head adds on each rank at the layout's planned
+    /// request (its history, its work and the windows a round captures), as
+    /// the runtime's own request charge counts it.
+    public let requestBytes: Int
+    /// Decode the rounds measured over one token per step on the same
+    /// placement: a token's predicted step is the one-token step over it.
+    public let decodeSpeedup: Double
+
+    public init(depth: Int, requestBytes: Int, decodeSpeedup: Double) {
+        self.depth = depth; self.requestBytes = requestBytes; self.decodeSpeedup = decodeSpeedup
+    }
+
+    /// A round commits at most `depth + 1` tokens, so no speed-up is above it.
+    func validate(layout: ClusterModelLayout) throws {
+        guard (1...4).contains(depth), (0...ClusterWorkerLimits.capacityBytes).contains(requestBytes),
+              decodeSpeedup.isFinite, decodeSpeedup >= 1, decodeSpeedup <= Double(depth + 1),
+              layout.speculativeHead != nil else {
+            throw ClusterPlacementError("Model layout's tensor-parallel speculative head is malformed or the layout has no head")
+        }
     }
 }
 
@@ -181,6 +220,17 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
             }
         }
         try f.requestAllowance?.validate(layout: layout, partialBytesPerToken: f.partialBytesPerToken)
+        try f.speculativeHead?.validate(layout: layout)
+    }
+
+    /// What each rank of `mode` holds and decodes with beside its share when the
+    /// family's plan serves the model's head under tensor parallel: the head
+    /// (`ClusterModelLayout.speculativeHead`) and its plan. Nil for any other
+    /// mode, or without a head.
+    func speculativeHead(mode: ClusterGenerationMode, layout: ClusterModelLayout)
+        -> (part: ClusterModelLayout.Part, plan: ClusterTensorParallelSpeculativeHead)? {
+        guard mode == .tensorParallel, let plan = family.speculativeHead, let part = layout.speculativeHead else { return nil }
+        return (part, plan)
     }
 }
 

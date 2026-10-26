@@ -915,8 +915,12 @@ public enum ClusterPlacementPlanner {
                 shard += shareOf(divided: tp.egressDividedBytes, replicated: tp.egressReplicatedBytes)
                 tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
             }
-            let parts = (pipelined ? [(own.loadedBytes, own.tensorCount, own.largestTensorBytes)] : []) + [(shard, tensors, largest)]
-            let textLoad = loadNeed(parts.map { (loaded: $0.0, tensors: $0.1, largest: $0.2) }, memory: memory)
+            var parts = (pipelined ? [(loaded: own.loadedBytes, tensors: own.tensorCount, largest: own.largestTensorBytes)] : [])
+                + [(loaded: shard, tensors: tensors, largest: largest)]
+            // The model's speculative head, whole on every rank after its share, when the family decodes with it.
+            let head = tp.speculativeHead(mode: mode, layout: layout)
+            if let head { parts.append((loaded: head.part.loadedBytes, tensors: head.part.tensorCount, largest: head.part.largestTensorBytes)) }
+            let textLoad = loadNeed(parts, memory: memory)
             let additional = tp.family.additionalResidentBytes ?? 0
             // Resident bytes are additive outside the request maximum. With
             // no extra tensor geometry, conservatively allow two host copies
@@ -946,7 +950,8 @@ public enum ClusterPlacementPlanner {
                 ? quote?.rankReservedBytes(rank: rank, shares: weights) : nil
             let state = rankReserved != nil ? ownState * (quote?.lanes ?? 1)
                 : max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
-            let work = pipelined ? own.requestWorkBytes + share(whole.requestWorkBytes - own.requestWorkBytes) : share(whole.requestWorkBytes)
+            let work = (pipelined ? own.requestWorkBytes + share(whole.requestWorkBytes - own.requestWorkBytes) : share(whole.requestWorkBytes))
+                + (head?.plan.requestBytes ?? 0)
             var extra = 0
             if pipelined {
                 // The share it sends exists until it has gone.
@@ -1082,10 +1087,11 @@ public enum ClusterPlacementPlanner {
             } else {
                 // Serial: each chunk passes through every range in turn. Lookahead:
                 // the slowest range sets the pace and one chunk passes through the rest.
+                // Every chunk's rows of the residual cross each cut (`chunkHopSeconds`).
                 first = schedule == .oneChunkLookahead
                     ? Double(prompt) * slowest + Double(chunk) * (sum - slowest)
                     : Double(prompt) * sum
-                first += Double(chunks * (ranges.count - 1)) * link.perChunkSeconds
+                first += Double(chunks * (ranges.count - 1)) * link.chunkHopSeconds(bytes: chunk * layout.boundaryBytesPerToken)
             }
             var step: Double, handoff = 0.0
             if let tp, let reduction {
@@ -1098,6 +1104,8 @@ public enum ClusterPlacementPlanner {
                 }
                 step = slowest + tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true,
                     reduction: reduction)
+                // Rounds of the model's speculative head: a token costs the one-token step over their measured speed-up.
+                if let head = tp.speculativeHead(mode: mode, layout: layout) { step /= head.plan.decodeSpeedup }
                 if !mode.usesTensorParallelPrefill {
                     // After a pipeline prefill each rank sends the state of the
                     // heads it does not keep: (k - 1) / k of its range's.

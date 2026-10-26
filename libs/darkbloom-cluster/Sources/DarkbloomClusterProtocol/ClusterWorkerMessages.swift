@@ -208,12 +208,12 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
     public var encryptedAndVerified: Bool { protection == Self.encrypted && peerVerified }
 }
 
-/// What a tensor-parallel worker measured of its link to the peer at load,
-/// the way the sharded modes use it (`keyed`: over the keyed data plane, the
-/// all-sums sealed): one-way point-to-point records, small and large, and the
-/// all-sum at a decode step's width and at a prefill chunk's. Medians, in
-/// microseconds. The pair's owner keeps the pair's recent ones; a placement
-/// planner derives the link's costs from their median.
+/// What a worker measured of its link to the peer at load, pipeline or tensor
+/// parallel, the way the sharded modes use it (`keyed`: over the keyed data
+/// plane, the all-sums sealed): one-way point-to-point records, small and
+/// large, and the all-sum at a decode step's width and at a prefill chunk's.
+/// Medians, in microseconds. The pair's owner keeps the pair's recent ones; a
+/// placement planner derives the link's costs from their median.
 public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     public static let transports: Set<String> = ["jaccl"]
     public let transport: String
@@ -296,7 +296,9 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// A rank re-derives it while idle and reports it on every keep-warm
     /// answer (`ClusterWorkerEvent.keptWarm`).
     public let servingContextTokens: Int?
-    /// The link as a tensor-parallel load measured it; nil from other modes.
+    /// The link as this load measured it before reading a weight (every load
+    /// over the cable, pipeline or tensor parallel); nil from a load that
+    /// measured none.
     public let linkProbe: ClusterWorkerLinkProbe?
     /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
     /// text only, and then the record's bytes are those of a worker without it.

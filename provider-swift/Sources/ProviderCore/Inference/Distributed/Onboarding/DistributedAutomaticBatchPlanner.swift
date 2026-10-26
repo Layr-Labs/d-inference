@@ -31,11 +31,11 @@ struct DistributedAutomaticBatchPlanner {
             settings: settings, clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
     }
 
-    /// Read the same device index as initial placement; no model load is involved.
-    static func deviceProfile(tool: URL, deadline: UInt64) throws -> ClusterDeviceProfile {
-        try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
-            arguments: ["device", "--json", "--index"], deadline: deadline,
-            maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+    /// This Mac's profile as initial placement reads it (`ClusterLocalDeviceProfile`). A replacement is planned by
+    /// the running part itself (previewed while its owner serves), so its speed index is the one this Mac last
+    /// measured, never a GPU benchmark beside the model.
+    static func deviceProfile(tool: URL, deadline: UInt64, homeDirectory: URL, modelLoaded: Bool) throws -> ClusterDeviceProfile {
+        try ClusterLocalDeviceProfile.read(tool: tool, deadline: deadline, homeDirectory: homeDirectory, modelLoaded: modelLoaded)
     }
 
     /// Replacement must price the actual pair's recently recorded keyed link
@@ -156,7 +156,8 @@ struct DistributedAutomaticBatchPlanner {
             try DistributedCapabilityProbe.run(executable: tool, arguments: arguments,
                 deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000, maximumOutputBytes: maximum)
         }
-        let profile = try Self.deviceProfile(tool: tool, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000)
+        let profile = try Self.deviceProfile(tool: tool, deadline: DispatchTime.now().uptimeNanoseconds + 30_000_000_000,
+            homeDirectory: paths.homeDirectory, modelLoaded: ClusterService.modelLoaded())
         let layout = try ClusterModelLayout.decode(run(["layout", "--model-dir", local.modelDirectory, "--json"],
             maximum: ClusterModelLayout.maximumEncodedBytes))
         let usesNativeBatchQuote = [.gptossLayerStage, .mimoV26LayerStage].contains(

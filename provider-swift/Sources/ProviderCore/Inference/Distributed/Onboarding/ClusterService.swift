@@ -841,10 +841,15 @@ public final class ClusterService: @unchecked Sendable {
     /// Where this Mac keeps the cache settings its leader synced.
     var cacheStore: ClusterMemberCacheControl.Store { .init(directory: store.paths.directory) }
 
+    /// The answer tokens a test request asks for: fewer than a speed record has
+    /// (`ClusterServedSpeedRule.minimumCompletionTokens`), so the onboarding's
+    /// test answer never steers a plan.
+    static let testAnswerTokens = 48
+
     /// One test request through this Mac's serving API, collected.
     static func prompt(_ context: LiveContext, text: String, port: Int? = nil) -> ClusterServicePromptAnswer {
         let collected = ClusterOnboardingMailbox<ClusterSetupPromptEvent>()
-        context.prompt(text: String(text.prefix(400)), maxTokens: 48, port: port) { collected.post($0) }
+        context.prompt(text: String(text.prefix(400)), maxTokens: testAnswerTokens, port: port) { collected.post($0) }
         var answer = ClusterServicePromptAnswer(text: "", tokens: 0)
         for event in collected.take() {
             switch event {
@@ -1049,6 +1054,14 @@ public final class ClusterService: @unchecked Sendable {
     public static func published() -> ClusterServiceStatus? {
         guard let directory = try? paths().pid.deletingLastPathComponent() else { return nil }
         return published(in: directory)
+    }
+
+    /// Whether a model is loaded, or loading, on this Mac now: this Mac's cluster service runs its part or its solo
+    /// server (its published status, while the process it names still runs), or a cluster worker runs here, whoever
+    /// started it. Nothing that works the GPU for itself (the plan tool's speed index) runs then.
+    public static func modelLoaded() -> Bool {
+        recordedPart(published()) != nil
+            || ClusterOrphanWiredGuard.otherDarkbloomProcesses().contains(ClusterBundledHelpers.workerName)
     }
 
     private static func published(in directory: URL) -> ClusterServiceStatus? {

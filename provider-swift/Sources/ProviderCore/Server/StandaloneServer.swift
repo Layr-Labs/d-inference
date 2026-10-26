@@ -559,10 +559,13 @@ public actor StandaloneServer {
         }
         kvSweepTask?.cancel()
         let sweepInterval = kvSweepInterval
-        kvSweepTask = Task { [kvBudget] in
+        kvSweepTask = Task { [weak self, kvBudget] in
             while !Task.isCancelled {
                 try? await taskSleep(sweepInterval)
                 if Task.isCancelled { break }
+                // Warmup first, so a session this tick starts stops the sweep at
+                // its signal instead of relying on the queued sweep's recheck.
+                await self?.retryShapeWarmups()
                 kvBudget.proactiveReclaimSweep()
             }
         }
@@ -1535,16 +1538,33 @@ public actor StandaloneServer {
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
+        // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
+        // retained free KV segments, so drop both once before evicting a
+        // cached model for room.
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while await availableMemoryGb() < requiredGb {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
+            if !poolDropped {
+                poolDropped = true
+                await releaseReclaimableMemoryForLoad()
+                continue
+            }
             guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
             }
         }
+    }
+
+    /// Drops what a load reclaims without evicting: retained free KV
+    /// segments (engines drop them at their next step; this waits briefly),
+    /// then MLX's buffer cache, which device-filled segments return to.
+    func releaseReclaimableMemoryForLoad() async {
+        await GlobalKVCacheBudget.releaseRetainedKVSegments()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
     }
 
     /// Free memory (GB) for loading a model, via the shared OOM-safe arithmetic:
@@ -1941,14 +1961,12 @@ public actor StandaloneServer {
             let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
-            let preLoadArtifactHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
-            if let glmPlan {
-                guard preLoadArtifactHash == glmPlan.weights.manifest.aggregateSHA256 else {
-                    throw GLM5NextManagedLoadError.identityMismatch
-                }
-                try glmPlan.weights.recheck()
-            }
+            // The managed GLM load SHA-256-verifies every manifest file before
+            // serving; its verified digest replaces both bracketing passes.
+            var preLoadArtifactHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId,
+                required: artifactIdentityRequired && glmPlan == nil)
+            if let glmPlan { try glmPlan.weights.recheck() }
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1978,10 +1996,14 @@ public actor StandaloneServer {
                 try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
             if glmPlan != nil { glmNewcomer = newcomer }
             try Task.checkCancellation()
-            let postLoadArtifactHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
-            if let glmPlan, postLoadArtifactHash != glmPlan.weights.manifest.aggregateSHA256 {
-                throw GLM5NextManagedLoadError.identityMismatch
+            let postLoadArtifactHash: String?
+            if let glmPlan, let glmLoad {
+                postLoadArtifactHash = await glmLoad.verifiedArtifactSHA256
+                try ProviderLoop.requireGLM5NextLoadedArtifact(hash: postLoadArtifactHash, plan: glmPlan)
+                preLoadArtifactHash = postLoadArtifactHash
+            } else {
+                postLoadArtifactHash = await computeStandaloneWeightHash(
+                    modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
             }
             let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?

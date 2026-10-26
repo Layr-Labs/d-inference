@@ -140,6 +140,24 @@ extension ProviderLoop {
         loadedModelsPersistenceEnabled = enabled
     }
 
+    /// Test seam: record verified managed-load hashes to a temp file.
+    func setVerifiedWeightHashesFileForTesting(_ url: URL?) {
+        verifiedWeightHashesFile = url
+    }
+
+    /// Test seam: observe or replace the full weight read behind load-time
+    /// hash captures.
+    func setLoadWeightHasherForTesting(_ hasher: @escaping @Sendable (URL, String) -> String?) {
+        loadWeightHasher = hasher
+    }
+
+    /// Test seam: the `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` choice, read at init.
+    func setColdLoadReleasesWorkFIFOForTesting(_ enabled: Bool) {
+        coldLoadReleasesWorkFIFO = enabled
+    }
+
+    func releasedAdmissionCountForTesting() -> Int { releasedAdmissions.count }
+
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
     /// with a scripted loader (no weights, no disk).
     func setStartupPreloadLoadOverrideForTesting(

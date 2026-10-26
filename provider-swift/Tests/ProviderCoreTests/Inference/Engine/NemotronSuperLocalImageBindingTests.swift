@@ -13,11 +13,17 @@ struct NemotronSuperLocalImageBindingTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
-    /// Bounds the request cannot meet anywhere are invalid input (400), not
-    /// retryable capacity.
+    /// Bounds the request cannot meet anywhere are client faults (400 or
+    /// 413), not retryable capacity.
     @Test func encodedHeaderAdmissionIsBoundedBeforeParsing() throws {
+        let maximum = NemotronSuperServingPolicy.maximumEncodedBodyBytes
+        #expect(try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: maximum, templateBytes: 1)
+                == UInt64(maximum) * 32 + 4 + 16 * 1024 * 1024)
+        #expect(throws: NemotronSuperLocalImageBinding.Failure.bodyTooLarge) {
+            try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: maximum + 1, templateBytes: 1)
+        }
         #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
-            try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 8 * 1024 * 1024 + 1, templateBytes: 1)
+            try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 0, templateBytes: 1)
         }
         #expect(throws: NemotronSuperLocalImageBinding.Failure.invalidInput) {
             try NemotronSuperLocalImageBinding.encodedHeaderQuote(bodyBytes: 1, templateBytes: 1024 * 1024 + 1)
@@ -38,10 +44,13 @@ struct NemotronSuperLocalImageBindingTests {
                 try NemotronSuperLocalImageBinding.parseEncodedBody(data)
             }
         }
-        let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true])
+        let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true, "top_logprobs": 21])
         #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
             try NemotronSuperLocalImageBinding.parseEncodedBody(unsupported)
         }
+        let logprobs = try NemotronSuperLocalImageBinding.parseEncodedBody(
+            body(image: "data:image/png;base64,AQID", extras: ["logprobs": true, "top_logprobs": 3]))
+        #expect(logprobs.request.logprobs == true && logprobs.request.top_logprobs == 3)
         let parsed = try NemotronSuperLocalImageBinding.parseEncodedBody(
             body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
         #expect(parsed.images == [Data([1, 2, 3])])

@@ -120,8 +120,16 @@ public enum ThroughputSweep {
 
         let quantBits = readQuantBits(modelDirectory: modelDirectory)
 
-        let prefill = await measurePrefill(
-            container: container, baseTokens: baseTokens, lengths: promptLengths)
+        let modelType = try ModelBenchmark.decodedModelType(
+            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        let prefill: [ThroughputSweepReport.PrefillSample]
+        if measuresScalarPrefill(modelType: modelType) {
+            prefill = try await measurePrefill(
+                container: container, baseTokens: baseTokens, lengths: promptLengths)
+        } else {
+            log("prefill sweep skipped: \(modelType ?? "model") is paged-only; use --scheduler-prefill")
+            prefill = []
+        }
         let decodeOutcome = try await measureDecode(
             container: container,
             modelID: modelID,
@@ -193,6 +201,13 @@ public enum ThroughputSweep {
 
     // MARK: - Prefill
 
+    /// The sweep's prefill pass runs the model's own scalar caches, which are
+    /// not paged. Flint is served only on paged attention, so its paged prefill
+    /// is measured by the scheduler-prefill benchmark instead.
+    static func measuresScalarPrefill(modelType: String?) -> Bool {
+        modelType != "flint"
+    }
+
     /// For each requested length L, run a single forward pass over an L-token
     /// prompt and report `L / prefill_seconds`. The whole sweep runs inside one
     /// `perform` (serialized GPU access); a small warm-up pass first pays the
@@ -201,15 +216,16 @@ public enum ThroughputSweep {
         container: ModelContainer,
         baseTokens: [Int],
         lengths: [Int]
-    ) async -> [ThroughputSweepReport.PrefillSample] {
+    ) async throws -> [ThroughputSweepReport.PrefillSample] {
         let cleaned = lengths.filter { $0 > 0 }.sorted()
         guard !cleaned.isEmpty else { return [] }
         log("prefill sweep: lengths \(cleaned)")
 
-        return await container.perform { ctx -> [ThroughputSweepReport.PrefillSample] in
+        return try await container.perform { ctx -> [ThroughputSweepReport.PrefillSample] in
             // Warm-up (compile kernels) — not timed.
             let warm = Self.tile(baseTokens, to: 8)
-            let warmCache = ctx.model.newCache(parameters: nil)
+            // Default caches (no parameters) cannot fail validation.
+            guard let warmCache = try? ctx.model.newCache(parameters: nil) else { return [] }
             var warmLogits = ctx.model.callAsFunction(
                 MLXArray(warm.map { UInt32($0) }).reshaped([1, warm.count]), cache: warmCache)
             warmLogits = warmLogits[.ellipsis, -1, 0...]
@@ -219,7 +235,7 @@ public enum ThroughputSweep {
             for length in cleaned {
                 let tokens = Self.tile(baseTokens, to: length)
                 let arr = MLXArray(tokens.map { UInt32($0) }).reshaped([1, length])
-                let cache = ctx.model.newCache(parameters: nil)
+                guard let cache = try? ctx.model.newCache(parameters: nil) else { break }
                 let start = ContinuousClock.now
                 var logits = ctx.model.callAsFunction(arr, cache: cache)
                 logits = logits[.ellipsis, -1, 0...]

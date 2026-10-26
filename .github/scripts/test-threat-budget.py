@@ -661,14 +661,14 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(integration["units"][0]["needs_deeper_review"])
         self.assertFalse(result["errors"])
 
-    def test_cross_file_uncertainty_is_not_cleared_by_independent_local_depth(self):
+    def test_cross_file_uncertainty_hands_off_without_a_redundant_local_rescan(self):
         self.files[0]["filename"] = "ordinary.py"
         def reply(body):
             stage = json.loads(body["messages"][1]["content"])["stage"]
             return self.service.completion(body, uncertain=body["model"] == SONNET and stage == "integration")
         self.service.reply = reply
         result, _ = self.scan()
-        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET, OPUS])
+        self.assertEqual([b["model"] for b in self.service.calls], [SONNET, SONNET])
         self.assertFalse(result["errors"])
         self.assertEqual(result["depth_batches_pending"], 0)
         self.assertTrue(result["manual_review_reasons"])
@@ -946,6 +946,40 @@ class LifecycleTests(unittest.TestCase):
 
     def run_review(self, event=fixtures.EVENT):
         return run(event, self.env, self.github, self.service.state, self.factory)
+
+    def test_manual_github_rerun_hands_off_without_any_paid_work(self):
+        self.env.update(GITHUB_RUN_ATTEMPT="2", THREAT_REVIEW_RESULT_FILE=str(self.root / "result.json"))
+        self.github.files = lambda count: self.fail("A rerun must not start source collection")
+        body = self.run_review()
+        self.assertIn("MANUAL_SCAN_RERUN_DISABLED", body)
+        self.assertIn("Human review required: CI did not complete", body)
+        self.assertEqual(self.service.calls, [])
+        report = json.loads((self.root / "result.json").read_text())
+        self.assertEqual(report["run"], "123-2")
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+
+    def test_scanner_runtime_is_bounded_and_ci_can_use_fifty_minutes(self):
+        seconds = runpy.run_path(str(Path(__file__).with_name("threat-model-review.py")))["runtime_seconds"]
+        self.assertEqual(seconds({}), 900)
+        self.assertEqual(seconds({"THREAT_REVIEW_TIMEOUT_SECONDS": "3000"}), 3000)
+        for invalid in ("0", "59", "3001", "unlimited", "1.5"):
+            with self.subTest(invalid=invalid), self.assertRaises(ReviewUnavailable):
+                seconds({"THREAT_REVIEW_TIMEOUT_SECONDS": invalid})
+
+    def test_workload_ceiling_hands_off_at_the_exact_unadmitted_stage(self):
+        body, report, diagnostic, requests = self.bedrock_run(
+            self.bedrock_response, BEDROCK_SCAN_CALL_POLICY="workload", BEDROCK_SCAN_MAX_WORKLOAD_CALLS="2")
+        self.assertEqual(len(requests), 1)
+        self.assertIn("Human review required: CI did not complete", body)
+        self.assertFalse(clean(report, fixtures.HEAD, fixtures.BASE))
+        failure = diagnostic["diagnostics"][0]
+        self.assertEqual(failure["code"], "BEDROCK_WORKLOAD_LIMIT")
+        self.assertEqual(failure["stage"], "integration")
+        self.assertEqual(failure["phase"], "planning")
+        self.assertNotIn("call", failure)  # do not misattribute the preceding source call
+        self.assertEqual(diagnostic["bedrock_planned_calls"], 2)
+        self.assertTrue(diagnostic["finished"])
+        self.assertFalse(self.service.calls)
 
     def test_scan_continues_after_initial_checkpoint_conflict_without_repeating_provider_calls(self):
         self.service.branch_conflicts = 1

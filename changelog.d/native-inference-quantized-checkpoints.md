@@ -1,9 +1,0 @@
-### Native inference and quantized checkpoints
-
-- Default live attention to native precision and independently request balanced encrypted-checkpoint storage for eligible native paged and contiguous engines. Preserve explicit live `balanced`, `k8v4` and `k8v8` settings; checkpoint compression does not force paging or reduce native serving-memory reservations.
-- Add separate checkpoint configuration, environment and benchmark controls, plus effective live/checkpoint precision and actual layout in local diagnostics. Unsupported storage layouts, persistent assistant state, MiMo, native-block diffusion and Qwen4 selected-index state retain native encoding.
-- Encode and restore older checkpoint rows with bounded CPU conversion, preserving exact recent rows and native recurrent/auxiliary state. Distinct layout/profile identities reject incompatible data. Restoring a native format does not recover precision discarded on disk or guarantee identical output or latency.
-- Add matched-geometry encrypted-checkpoint qualification with real native-memory, cancellation, tenant-isolation and restart evidence. Keep exact-native replay controls separate from lossy output observations.
-- Retain adaptive target-prefix MTP for explicit live-packed execution using measured unchained decode as its baseline; native targets retain their chained baseline. Preserve whole visual-block admission, native-owner feasibility accounting, and packed historical frontier restrictions.
-- Enforce paged model capabilities independently of legacy prefix reuse, and reject invalid checkpoint precision settings on the native Diffusion path without enabling unsupported compression.
-- Preflight live-packed Diffusion kernels before engine construction and include the native-recent feasibility bound in reported request capacity without adding runtime reservations.

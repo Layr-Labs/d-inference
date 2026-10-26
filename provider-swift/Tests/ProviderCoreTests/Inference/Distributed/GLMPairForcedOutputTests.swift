@@ -7,9 +7,9 @@ import Testing
 
 /// GLM on a cluster pair serves `tool_choice` required/named and JSON
 /// `response_format` by prompt forcing plus validation before anything is
-/// exposed; the single-Mac GLM path keeps refusing them. Runs the real
-/// service, scheduler, bridge and distributed engine; only the pair's
-/// committed tokens are scripted. No model or GPU.
+/// exposed, as the single-Mac GLM path does. Runs the real service,
+/// scheduler, bridge and distributed engine; only the pair's committed
+/// tokens are scripted. No model or GPU.
 @Suite("GLM pair forced output", .serialized, .timeLimit(.minutes(1)))
 struct GLMPairForcedOutputTests {
     static let weather = OpenAITool(function: .init(name: "get_weather", parameters: .object([
@@ -82,7 +82,8 @@ struct GLMPairForcedOutputTests {
     @Test func reasoningExclusionWithholdsTheReasoningOnThePair() async throws {
         var controls = ChatTemplateControls()
         controls.rawGLM5Controls.excludesReasoning = true
-        #expect(throws: (any Error).self) { try controls.rawGLM5Controls.validate() }
+        // Exclusion is a valid control on every GLM slot.
+        try controls.rawGLM5Controls.validate()
         let pair = try GLMPairFixture(controls: controls)
         let answer = try await pair.complete(pair.request(), tokens: [10, 11, 14])
         #expect(answer.choices.first?.message.reasoningContent == nil)
@@ -106,26 +107,37 @@ struct GLMPairForcedOutputTests {
         #expect(try other.inner.applyChatTemplate(messages: [], tools: nil, additionalContext: off) == [1, 7])
     }
 
-    @Test func theSingleMacGLMPathStillRefusesForcedOutput() throws {
+    /// Forced output takes the same GLM strategy on one Mac and on a pair;
+    /// the slot never decides it.
+    @Test func forcedOutputTakesTheGLMStrategyOnEverySlot() throws {
         let request = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .user, content: .text("x"))],
             tools: [Self.weather], toolChoice: .mode(.required))
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
         #expect(!prepared.glm5PairPostValidation)
-        #expect(throws: (any Error).self) {
-            try GLM5NextPromptPolicy.normalizedTextInput(request: request, prepared: prepared, controls: .init())
-        }
-        #expect(throws: (any Error).self) {
-            try ToolStreamPreparation.makeHandler(request: request, prepared: prepared, modelType: "glm5_next")
-        }
-        var pairPrepared = prepared
-        pairPrepared.glm5PairPostValidation = true
-        #expect(try ToolStreamPreparation.makeHandler(request: request, prepared: pairPrepared,
+        _ = try GLM5NextPromptPolicy.normalizedTextInput(request: request, prepared: prepared, controls: .init())
+        #expect(try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
             modelType: "glm5_next")?.format == .glm5)
         #expect(throws: (any Error).self) {
-            // Another family never takes the GLM pair strategy.
+            // Another family never takes the GLM strategy.
             try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .required,
-                modelContext: .init(modelId: "m", modelType: "llama"), glm5PairPostValidation: true)
+                modelContext: .init(modelId: "m", modelType: "llama"))
         }
+    }
+
+    /// Only a pair asks for a single call when automatic choice disallows
+    /// parallel calls; the request's JSON contract survives the rewrite.
+    @Test func thePairAsksForOneCallWhenParallelCallsAreOff() throws {
+        var request = OpenAIChatCompletionRequest(model: "m", messages: [.init(role: .user, content: .text("x"))],
+            tools: [Self.weather], toolChoice: .mode(.auto))
+        request.parallelToolCalls = false
+        request.responseFormat = .jsonObject()
+        let pair = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next", glm5PairPostValidation: true)
+        #expect(pair.glm5PairPostValidation && !pair.allowsParallelCalls)
+        #expect(pair.glmResponseFormat != nil)
+        #expect(pair.messages.last?.textContent.hasSuffix(ToolChoicePromptPolicy.singleCallInstruction) == true)
+        let solo = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        #expect(solo.glmResponseFormat != nil)
+        #expect(solo.messages.last?.textContent.contains(ToolChoicePromptPolicy.singleCallInstruction) == false)
     }
 }
 

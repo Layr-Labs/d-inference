@@ -58,6 +58,8 @@ extension ProviderLoop {
         if autopilotControl != nil && !autopilotControlIsValid && autopilotCommand == nil {
             clearAutopilotControl()
         }
+        // Before the rebuild below, so this tick's snapshot counts its stalls.
+        superviseTransitions()
         await retryPendingNativeMiMoRetirements()
         // Proactive trim of the MLX reclaimable buffer pool (DAR-338). Freed
         // KV/activation buffers otherwise sit in MLX's cache up to the cache
@@ -67,12 +69,16 @@ extension ProviderLoop {
         // watchdog drove this sweep every 2s until the v0.7.5 engine deletion
         // removed it with its host; this tick is that watchdog's documented
         // successor. Non-blocking: only signals the off-actor reclaimer
-        // (rate-limited, threshold-gated); the GPU sync never runs here.
+        // (rate-limited, threshold-gated, and windowed so busy engines keep
+        // their pool while headroom is healthy); the GPU sync never runs here.
         if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
+        sweepAutopilotCachedBuilds()
+        refreshAutopilotDownloadStorage()
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         await cleanupAutopilotSupersededModels()
         await refreshModelCalibration()
+        await refreshAutopilotInventoryRegistration()
         writeDaemonState()
     }
 
@@ -169,8 +175,10 @@ extension ProviderLoop {
         let mlxCacheBytes = processMemory.cacheBytes
         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
         let mlxUsed = usedOverflow ? UInt64.max : sumUsed
+        // Held Autopilot placements are never evicted for a cold load, so
+        // their resident weights are no reclaim credit.
         let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets
-            || !nativeMiMoAllowsReclamation() ? 0 : mlxUsed
+            || !nativeMiMoAllowsReclamation() ? 0 : mlxUsed - min(mlxUsed, autopilotHeldWeightBytes())
         let loadReserve = kvBudget.loadReserveBytes
         // The same sample contains usage and only unmaterialized commitments;
         // loaded native backing is already included in active/cache above.
@@ -294,6 +302,7 @@ extension ProviderLoop {
         autopilotFreeNoEvictGb = nativeColdAdmissionBlocked ? 0 : freeForLoadNoEvictGb
         publishModelAutopilotSnapshot()
         state.setModelAutopilotCapacity(capacity, snapshot: state.modelAutopilot)
+        desktopActivityObservedAt = Date().timeIntervalSince1970
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
             -> (String, EngineV2Bridge)? in

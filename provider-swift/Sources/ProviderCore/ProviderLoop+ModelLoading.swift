@@ -44,6 +44,7 @@ extension ProviderLoop {
         }
         let priorFingerprint = modelHashFingerprints[modelId]
         let priorHash = SSDPrefixCacheFactory.verifiedWeightHash(liveModelHashes[modelId])
+        let hasher = loadWeightHasher
         let refresh = await Task.detached(priority: .utility) {
             () -> WeightHashSnapshot in
             let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
@@ -56,8 +57,7 @@ extension ProviderLoop {
             }
             return WeightHashSnapshot(
                 fingerprint: fingerprint,
-                hash: SSDPrefixCacheFactory.verifiedWeightHash(
-                    WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)),
+                hash: SSDPrefixCacheFactory.verifiedWeightHash(hasher(modelPath, modelId)),
                 recomputed: true)
         }.value
         try Task.checkCancellation()
@@ -73,9 +73,9 @@ extension ProviderLoop {
         modelPath: URL,
         fingerprint: String? = nil
     ) async throws -> WeightHashSnapshot {
+        let hasher = loadWeightHasher
         let hash = await Task.detached(priority: .utility) {
-            SSDPrefixCacheFactory.verifiedWeightHash(
-                WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId))
+            SSDPrefixCacheFactory.verifiedWeightHash(hasher(modelPath, modelId))
         }.value
         try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
@@ -210,7 +210,7 @@ extension ProviderLoop {
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         try checkAutopilotLoadOwnership(autopilotCommandId)
-        guard autopilotAllowsModel(modelId)
+        guard autopilotServesModel(modelId)
             || (autopilotCommandId != nil && autopilotCommand?.commandId == autopilotCommandId
                 && autopilotCommand?.loadModelId == modelId)
         else { throw InferenceError.modelLoadFailed("model_not_selected") }
@@ -400,6 +400,7 @@ extension ProviderLoop {
         // Super's own slot state refuses its load before either eviction below.
         if managedSuper { try refuseNemotronSuperReload(modelId) }
         isLoadingAny = true
+        transitionGenerations.begin(.modelLoading)
         let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
         var retainGLMActivity = false
         defer { if !retainGLMActivity { deviceActivity.finish() } }
@@ -420,6 +421,7 @@ extension ProviderLoop {
                 throw InferenceError.invalidModelDirectory(
                     allowEviction
                         ? "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                            + unevictableResidentsSentence()
                         : "All \(maxModelSlots) model slot(s) are occupied and eviction is disabled for this load; cannot load '\(modelId)'"
                 )
             }
@@ -436,6 +438,7 @@ extension ProviderLoop {
         // The generation handle survives every load phase and catch cleanup.
         let pendingLoadID = "pending-load:\(modelId)"
         var pendingLoad: PendingModelLoadLease?
+        transitionGenerations.begin(.modelLoading, subject: modelId)
         modelsLoading.insert(modelId)
         // The insert happens AFTER the specDecPreparation suspension above —
         // a hard swap during that await can have dropped this model from
@@ -545,21 +548,28 @@ extension ProviderLoop {
             // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
-            // start. (See `captureWeightHash` for the full rationale.)
+            // start. (See `captureWeightHash` for the full rationale.) The
+            // managed GLM load instead SHA-256-verifies every manifest file
+            // itself before serving; its verified digest replaces both
+            // bracketing passes (`verifiedGLM5NextWeightHash`).
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
             let artifactIdentityRequired = glmPlan != nil || reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
                 || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
-            let preLoadHash = try await captureWeightHash(
-                modelId: modelId,
-                modelPath: modelPath,
-                requireFreshCryptographicHash: artifactIdentityRequired)
-            if !artifactIdentityRequired {
-                await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
-            }
+            var preLoadHash: WeightHashSnapshot?
+            var glmIdentitiesBeforeLoad: [VerifiedWeightHashStore.FileIdentity]?
             if let glmPlan {
-                try Self.requireGLM5NextLoadedArtifact(hash: preLoadHash.hash, plan: glmPlan)
+                glmIdentitiesBeforeLoad = VerifiedWeightHashStore.fileIdentities(snapshotDir: modelPath)
                 try glmPlan.weights.recheck()
+            } else {
+                let observed = try await captureWeightHash(
+                    modelId: modelId,
+                    modelPath: modelPath,
+                    requireFreshCryptographicHash: artifactIdentityRequired)
+                if !artifactIdentityRequired {
+                    await publishWeightHash(modelId: modelId, snapshot: observed)
+                }
+                preLoadHash = observed
             }
 
             if let beforeModelLoad {
@@ -587,11 +597,13 @@ extension ProviderLoop {
             // weights alive past `release()`.
             try checkAutopilotLoadOwnership(autopilotCommandId)
             let newcomer: EngineV2NewcomerBox
+            var glmLoad: GLM5NextManagedLoad?
             if let glmPlan, let pendingLoad {
-                let glmLoad = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
+                let load = try await GLM5NextManagedLoad.adopting(plan: glmPlan, budget: kvBudget,
                     permit: pendingLoad, artifactOwnership: glmOwnership)
+                glmLoad = load
                 newcomer = EngineV2NewcomerBox(try await ModelContainerLoading.loadServingContainer(
-                    from: modelPath, modelID: modelId, nativeGLM5Load: glmLoad))
+                    from: modelPath, modelID: modelId, nativeGLM5Load: load))
                 glmNewcomer = newcomer
             } else {
                 newcomer = EngineV2NewcomerBox(try await loadModelContainer(
@@ -609,14 +621,20 @@ extension ProviderLoop {
             // slot installation.
             let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
-            if artifactIdentityRequired {
+            if let glmPlan, let glmLoad {
+                let verified = try await verifiedGLM5NextWeightHash(load: glmLoad, plan: glmPlan, modelPath: modelPath)
+                let verifiedArtifact = try await finalizeReusableSSDLoad(
+                    modelId: modelId, preLoad: verified, postLoad: verified, newcomer: newcomer)
+                recordVerifiedGLM5NextWeightHash(
+                    modelId: modelId, modelPath: modelPath, verified: verified,
+                    identitiesBeforeLoad: glmIdentitiesBeforeLoad)
+                modelArtifactSHA256 = verifiedArtifact
+                cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
+            } else if artifactIdentityRequired, let preLoadHash {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                if let glmPlan {
-                    try Self.requireGLM5NextLoadedArtifact(hash: postLoadHash.hash, plan: glmPlan)
-                }
                 let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
@@ -624,7 +642,7 @@ extension ProviderLoop {
                     newcomer: newcomer)
                 modelArtifactSHA256 = verifiedArtifact
                 cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
-            } else {
+            } else if let preLoadHash {
                 var loadedArtifactHash = preLoadHash.hash
                 let postLoadFingerprint = await Task.detached(priority: .utility) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
@@ -644,6 +662,9 @@ extension ProviderLoop {
                 }
                 modelArtifactSHA256 = loadedArtifactHash
                 cacheEligibleWeightHash = nil
+            } else {
+                // A GLM plan always runs the managed load above.
+                throw GLM5NextManagedLoadError.managedLoadRequired
             }
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no
@@ -1149,6 +1170,9 @@ extension ProviderLoop {
         // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)
+        // Leaving residency ends any Autopilot placement now: the awaits below
+        // must not let a new request reload an adopted model under it.
+        reconcileAutopilotPlacements()
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
         // load-admission counts as used — without this the box 503s every load
         // until restart.
@@ -1295,30 +1319,61 @@ extension ProviderLoop {
     }
 
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
-    /// pre-accept admission decisions. Callers still recheck after suspension;
-    /// unloadModel(forEviction:) is the authoritative final gate.
+    /// pre-accept admission decisions: every resident model without an
+    /// `evictionExclusions` entry. Callers still recheck after suspension;
+    /// unloadModel(forEviction:) is the authoritative final gate. An Autopilot
+    /// placement hold is created only by a settled operation, which excludes
+    /// concurrent loads, so a slot cannot become held after this snapshot.
     internal func evictableModelSlots() -> [String: ModelSlot] {
-        let modelsWithInflight = Set(requestToModel.values)
-        return modelSlots.filter {
-            !(autopilotProtectsPins && autopilotPinnedModels.contains($0.key))
-                && !modelsWithInflight.contains($0.key)
-                && !hasLocalReservation($0.key)
-                && !modelsUnloading.contains($0.key)
-                && !isMTPUpgradeTargetRetained($0.key)
-        }
+        let excluded = evictionExclusions()
+        return modelSlots.filter { excluded[$0.key] == nil }
     }
 
-    private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
-        Double(reclaimableMemoryBytes(from: slots)) / 1_073_741_824.0
+    private func reclaimableMemoryGb(
+        from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
+    ) -> Double {
+        Double(reclaimableMemoryBytes(from: slots, countingRetainedKVSegments: countingRetainedKVSegments))
+            / 1_073_741_824.0
     }
 
-    /// What unloading `slots` and clearing MLX's buffer cache hands back:
-    /// their resident weights and the cache.
-    func reclaimableMemoryBytes(from slots: [String: ModelSlot]) -> UInt64 {
-        slots.values.reduce(UInt64(max(0, MLX.Memory.cacheMemory))) { total, slot in
-            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
+    /// `evictUntilAvailable`'s feasibility check: whether evicting every
+    /// model in `evictable` could raise `availableGb` to `requiredGb`.
+    private func evictionCanReach(
+        _ requiredGb: Double, from availableGb: Double, evicting evictable: [String: ModelSlot],
+        countingRetainedKVSegments: Bool
+    ) -> Bool {
+        ModelLoadAdmission.evictionCanReach(
+            availableGb: availableGb,
+            reclaimableGb: reclaimableMemoryGb(
+                from: evictable, countingRetainedKVSegments: countingRetainedKVSegments),
+            requiredGb: requiredGb)
+    }
+
+    /// What unloading `slots` and `releaseReclaimableMemoryForLoad` hand
+    /// back: their resident weights, MLX's buffer cache and, when counted,
+    /// retained free KV segments. Count those only to decide whether that
+    /// release could make room, never once it has run: engines drop them at
+    /// their next step, which can outlast the release's wait, and can park
+    /// more meanwhile, so only the memory sample taken after the release
+    /// shows what it returned. Credit for segments still parked could evict
+    /// an idle model for room the load never gets.
+    func reclaimableMemoryBytes(
+        from slots: [String: ModelSlot], countingRetainedKVSegments: Bool
+    ) -> UInt64 {
+        let retained = countingRetainedKVSegments ? CBv2RetainedKVSegments.retainedBytes : 0
+        let pools = [MLX.Memory.cacheMemory, retained]
+        return (pools + slots.values.map(\.sizing.weightsBytes)).reduce(UInt64(0)) { total, bytes in
+            let (sum, overflow) = total.addingReportingOverflow(UInt64(max(0, bytes)))
             return overflow ? .max : sum
         }
+    }
+
+    /// Drops what a load reclaims without evicting: retained free KV
+    /// segments (engines drop them at their next step; this waits briefly),
+    /// then MLX's buffer cache, which device-filled segments return to.
+    func releaseReclaimableMemoryForLoad() async {
+        await GlobalKVCacheBudget.releaseRetainedKVSegments()
+        clearCacheAfterConfirmedNativeOwnership()
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1339,6 +1394,11 @@ extension ProviderLoop {
         weightsGb: Double, allowEviction: Bool = true,
         waitForQwen4Retirement: Bool = false
     ) async throws {
+        // Busy engines keep the MLX buffer pool (idle-gated sweep) and their
+        // retained free KV segments, so drop both once before unloading a
+        // resident model for room. Retained segments are eviction credit
+        // only until then (`reclaimableMemoryBytes`).
+        var poolDropped = !GlobalKVCacheBudget.busyEnginesKeepReclaimableMemory()
         while true {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -1365,7 +1425,8 @@ extension ProviderLoop {
             // serve for one it cannot — the #653 32 GB report's "a request
             // for a model I can't serve killed the one I could".
             if allowEviction, !evictable.isEmpty {
-                let reclaimableGb = reclaimableMemoryGb(from: evictable)
+                let reclaimableGb = reclaimableMemoryGb(
+                    from: evictable, countingRetainedKVSegments: !poolDropped)
                 if !ModelLoadAdmission.evictionCanReach(
                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
                 {
@@ -1374,7 +1435,8 @@ extension ProviderLoop {
                     let reclaimableText = String(format: "%.1f", reclaimableGb)
                     throw InferenceError.modelLoadFailed(
                         "Insufficient memory (\(availableText) GB free, need \(requiredText) GB) even after "
-                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting")
+                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting"
+                            + unevictableResidentsSentence())
                 }
             }
             let candidate = allowEviction
@@ -1385,7 +1447,7 @@ extension ProviderLoop {
                 // Nothing idle to evict — drop the reclaimable pool and resample
                 // before failing, so a pool-inflated box isn't refused a load
                 // that fits. Same self-heal as fastAdmissionReject.
-                clearCacheAfterConfirmedNativeOwnership()
+                await releaseReclaimableMemoryForLoad()
                 let retried = await availableMemoryGb()
                 let retriedRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: weightsGb, headroomGb: loadHeadroomGb)
@@ -1394,9 +1456,14 @@ extension ProviderLoop {
                 let required = String(format: "%.1f", retriedRequiredGb)
                 throw InferenceError.modelLoadFailed(
                     allowEviction
-                        ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
+                        ? "Insufficient memory (\(available) GB free, need \(required) GB) " + noEvictionCandidateClause()
                         : "Insufficient memory (\(available) GB free, need \(required) GB) to load without evicting resident models"
                 )
+            }
+            if !poolDropped {
+                poolDropped = true
+                await releaseReclaimableMemoryForLoad()
+                continue
             }
 
             logger.info("Evicting idle model \(modelId) to free memory")
@@ -1459,7 +1526,14 @@ extension ProviderLoop {
             return false
         }
         if NemotronSuperServingPolicy.isServingIdentity(modelID: modelId, modelType: modelInfo.modelType) {
-            return nemotronSuperLoadIsCertainToFail(modelInfo)
+            let certainToFail = await nemotronSuperLoadIsCertainToFail(modelInfo)
+            // Its release can suspend: re-check the verdicts above.
+            if nativeMiMoRefusesRequest(modelId) || nemotronSuperRefusesRequest(modelId)
+                || isRefusedByRetirement(modelId)
+            {
+                return true
+            }
+            return modelSlots[modelId] == nil && certainToFail
         }
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and
@@ -1506,19 +1580,22 @@ extension ProviderLoop {
         // the load path refuses without evicting (see evictUntilAvailable),
         // so reject fast here and let the coordinator reroute instead of
         // accepting a request that would only fail after the same check.
-        if available < requiredGb, hasEvictable {
-            let reclaimableGb = reclaimableMemoryGb(from: evictable)
-            if !ModelLoadAdmission.evictionCanReach(
-                availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
-            {
-                if !mayStillReclaim { return true }
-            }
+        // As there, retained free KV segments count only until released:
+        // when only they could close the gap, release them and resample.
+        var resampleAfterRelease = !hasEvictable
+        if available < requiredGb, hasEvictable,
+            !evictionCanReach(requiredGb, from: available, evicting: evictable, countingRetainedKVSegments: false)
+        {
+            resampleAfterRelease = evictionCanReach(
+                requiredGb, from: available, evicting: evictable, countingRetainedKVSegments: true)
+            if !resampleAfterRelease, !mayStillReclaim { return true }
         }
 
-        // Not enough free memory and nothing idle to evict. Drop the reclaimable
-        // pool and resample once before rejecting (the wedge self-heal).
-        if available < requiredGb && !hasEvictable {
-            clearCacheAfterConfirmedNativeOwnership()
+        // Not enough free memory and nothing idle to evict, or only retained
+        // segments could make room. Release them, drop the reclaimable pool
+        // and resample once before rejecting (the wedge self-heal).
+        if available < requiredGb && resampleAfterRelease {
+            await releaseReclaimableMemoryForLoad()
             let retried = await availableMemoryGb()
             // The retry sample is another suspension: re-resolve the
             // requirement (a concurrent prefetch can have raised the floor)
@@ -1532,7 +1609,12 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb && !mayStillReclaim {
+            // What is still parked after the release is no credit.
+            let reachable = hasEvictable
+                ? evictionCanReach(
+                    requiredGb, from: retried, evicting: evictableModelSlots(), countingRetainedKVSegments: false)
+                : retried >= requiredGb
+            if !reachable && !mayStillReclaim {
                 return true
             }
         }

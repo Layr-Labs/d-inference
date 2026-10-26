@@ -41,8 +41,7 @@ enum ToolChoiceEnforcementPolicy {
 
     static func forcedStrategy(
         mode: ToolConstraintMode,
-        modelContext: ChatTemplateFixContext,
-        glm5PairPostValidation: Bool = false
+        modelContext: ChatTemplateFixContext
     ) throws -> Strategy {
         switch mode {
         case .required, .named:
@@ -52,13 +51,11 @@ enum ToolChoiceEnforcementPolicy {
         }
 
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
-        // GLM on a cluster pair: the forcing instruction plus the native GLM
-        // parser's withheld calls, validated at EOS (`NativeToolStreamRouter`).
-        if glm5PairPostValidation, GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
-            return .structuredPostValidation
-        }
+        // GLM's native engine refuses sampler constraints: its forced calls
+        // are prompt-forced, withheld and validated like Qwen and Nemotron.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
-            || modelContext.modelType == "mimo_v2" {
+            || modelContext.modelType == "mimo_v2"
+            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
@@ -82,6 +79,13 @@ enum ToolChoiceEnforcementPolicy {
         // requests and withholds output until the call validates
         // (`NemotronSuperLocalOutput`); its image requests refuse tools.
         if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
+            return true
+        }
+        // GLM-5.3-Flash prompt-forces text calls and withholds them until the
+        // native parser and schema validator accept them; media refuses forced
+        // choice before any media work.
+        if GLM5NextPromptPolicy.applies(modelType: model.modelType),
+            GLM5NextCoordinatorServing.isManagedModelID(model.id) {
             return true
         }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)

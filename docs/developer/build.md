@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -134,6 +134,22 @@ The Qwen3.5/3.6 MoE tensor-parallel path uses these same native targets and pinn
 SDK; it introduces no alternate build flags. Run its
 [focused metadata and tensor checks](test.md#focused-qwen35-moe-tensor-parallel-checks)
 before installing a worker for paired hardware qualification.
+
+## Electron Desktop App
+
+`make desktop-install`, `make desktop-build`, and `make desktop-package` build
+and package the app without publishing. The frontend uses the Swift CLI's local
+API. See [desktop development](desktop-app.md) for the isolated preview,
+component boundary, and signed release qualification.
+
+For a Developer ID signed desktop DMG with a bundled review API, follow the
+[signed local preview procedure](desktop-app.md#signed-local-preview).
+`desktop-app/scripts/package-preview.mjs` keeps this build separate from the
+regular release app and verifies the bundled API's signing team.
+
+`make desktop-api-test` exercises the real Swift control API against isolated
+local fixtures (`scripts/test-desktop-api.py`). The fixture never starts a
+serving provider or changes its credentials.
 
 ## SDK 27 Release Builds And Caches
 
@@ -309,6 +325,16 @@ The local lifecycle checks inject invalid analysis/acknowledgment, native usage
 failures, concurrent state writes and failed final-result delivery. They verify
 bounded recovery, retained findings and denial of incomplete/stale clearance;
 a successful normal response alone does not test recovery.
+CI admits source, selected depth and integration work from the actual batch plan,
+with an emergency ceiling and a bounded deadline that leaves time for reporting.
+Native workload defaults allow larger reviews and output; maintainers can lower
+the dedicated call ceiling and output settings without a code change.
+Normal depth routing sends critical batches directly to Sol and other risky or
+uncertain batches to Opus. Full Sonnet coverage and integration remain; clean
+support files avoid filename-only extra passes, and integration findings target
+their cited batches. Global uncertainty retains the human-review handoff.
+Paid manual dispatches and job reruns are disabled; incomplete final reviews
+explicitly hand off to a human. See the verification guide for the exact limits.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.

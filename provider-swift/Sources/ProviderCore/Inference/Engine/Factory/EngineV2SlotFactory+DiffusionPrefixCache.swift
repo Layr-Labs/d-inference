@@ -27,8 +27,8 @@ extension EngineV2SlotFactory {
         }
         let resident = try PrefixCachePolicy.diffusionResidentConfig(modelDirectory: modelDirectory,
             weightHash: weightHash, kvBytesCapacity: kvBytesCapacity, environment: environment)
-        func fallback(_ reason: PrefixCacheStatusReason, state: PrefixCacheStatusState = .disabled) -> DiffusionPrefixPreparation {
-            .init(snapshots: resident, store: nil, retainMemory: resident != nil, status: .init(state: state, reason: reason))
+        func fallback(_ reason: PrefixCacheStatusReason) -> DiffusionPrefixPreparation {
+            .init(snapshots: resident, store: nil, retainMemory: resident != nil, status: .init(state: .disabled, reason: reason))
         }
         guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else { return fallback(.configDisabled) }
         guard kvBudget != nil else { return fallback(.runtimeIdentityUnavailable) }
@@ -46,11 +46,16 @@ extension EngineV2SlotFactory {
         else { return fallback(.runtimeIdentityUnavailable) }
         let bytes = min(1 << 30, max(0, kvBytesCapacity / 8))
         guard bytes > 0, bytes < kvBytesCapacity else { return fallback(.unsupportedLayout) }
-        guard let store = await SSDHybridCheckpointStoreFactory.make(modelId: modelId, identity: identity,
+        let store: SSDHybridCheckpointStore
+        switch await SSDHybridCheckpointStoreFactory.build(modelId: modelId, identity: identity,
             backendLayout: CBv2CompleteCheckpointManifest.diffusionBlockLayout,
             nativePrefillChunkSize: diffusionPrefillChunkSize, kvBudget: kvBudget,
-            environment: environment, persistentTestNamespace: persistentTestNamespace)
-        else { return fallback(.cacheInitFailed, state: .error) }
+            environment: environment, persistentTestNamespace: persistentTestNamespace) {
+        case .success(let built): store = built
+        case .failure(let refusal):
+            return .init(snapshots: resident, store: nil, retainMemory: resident != nil,
+                status: .init(refusal: refusal.reason))
+        }
         let snapshots = try DiffusionGemmaResidentPrefixConfiguration(maximumBytes: bytes,
             artifactIdentity: identity.modelAggregateHash, templateIdentity: identity.promptContractID,
             numericalProfile: identity.numericsFingerprint)

@@ -91,9 +91,9 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
                 String(describing: type(of: target)))
         }
 
-        let assistant: Gemma4AssistantDraftModel
+        let assistant: MLXLLM.Gemma4AssistantDraftModel
         do {
-            assistant = try await Gemma4AssistantDraftModel.load(
+            assistant = try await MLXLLM.Gemma4AssistantDraftModel.load(
                 from: artifact.directory)
         } catch {
             throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))

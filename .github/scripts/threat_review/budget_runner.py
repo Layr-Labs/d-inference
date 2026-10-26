@@ -35,11 +35,17 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
                   [] if compact else snapshot.get("limited_files", []),
                   "Report exceeds comment capacity; see saved findings" if compact else error,
                   diff_base, [] if compact else snapshot.get("outcomes", []))
-    if complete and (snapshot.get("manual_review_reasons") or any(
+    if not complete and (snapshot.get("finished") or errors):
+        body += ("\n\n**Human review required: CI did not complete the security review.** "
+                 "A maintainer must review the saved findings and remaining scope. "
+                 "A green advisory job is not security clearance; do not manually rerun the paid scan.")
+    elif complete and (snapshot.get("manual_review_reasons") or any(
             finding.get("severity") in ("medium", "high") for finding in snapshot.get("findings", []))):
         body += "\n\n**Scan completed; human review required.**"
         if snapshot.get("manual_review_reasons"):
             body += "\n" + "; ".join(snapshot["manual_review_reasons"])
+    elif complete:
+        body += "\n\n**Scan completed.**"
     if snapshot.get("diagnostics"):
         body += "\n\nFailure diagnostics: " + "; ".join(
             f"`{item['code']}`" for item in snapshot["diagnostics"])
@@ -85,6 +91,11 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
                  f"{snapshot['bedrock_unknown_usage']} request(s) with unknown usage. "
                  f"OpenRouter backup used {snapshot['openrouter_fallbacks']} time(s). "
                  "Dollar amounts above cover OpenRouter only; AWS billing is reconciled separately.")
+        if snapshot.get("bedrock_call_policy") == "workload":
+            body += (f"\nWorkload allowance: {snapshot['bedrock_call_limit']} native request(s), including "
+                     "one shared response repair; "
+                     f"{snapshot['bedrock_call_ceiling']} emergency ceiling. "
+                     "Selected depth and integration rounds are admitted as their scope becomes known.")
     return body
 
 
@@ -161,12 +172,16 @@ def run(event, env, github=None, state=None, paid_factory=PaidCalls):
         publish()
 
     try:
+        if env.get("GITHUB_RUN_ATTEMPT", "1") != "1":
+            raise ReviewFailure("Manual scanner reruns are disabled; independent human review required",
+                                "MANUAL_SCAN_RERUN_DISABLED")
         if env.get("THREAT_REVIEW_ENABLED") != "true":
             snapshot["errors"] = ["Paid review is paused. Budgeted pilot must be explicitly enabled by a maintainer"]
             publish()
             return "Paid review paused; no provider requests made."
         # A normal PR cannot request expensive depth by adding text or a label.
-        # Dispatch is the only override, checked against current permissions.
+        # Trusted callers retain the deep-review option, with current permissions
+        # checked even though the CI workflow no longer exposes paid dispatch.
         force_deep = event.get("review_depth") == "deep"
         if force_deep:
             actor = event["sender"]["login"]
@@ -207,6 +222,7 @@ def run(event, env, github=None, state=None, paid_factory=PaidCalls):
         snapshot = scanner.run(force_deep)
     except Exception as error:
         snapshot = scanner.snapshot() if scanner else snapshot
+        snapshot["finished"] = True
         snapshot.setdefault("errors", []).append(failure(error))
         snapshot.setdefault("diagnostics", []).append(failure_record(
             error, {"stage": "lifecycle", "phase": lifecycle_phase}))

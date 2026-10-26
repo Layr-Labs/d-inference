@@ -177,6 +177,10 @@ extension EngineV2Factory {
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
         try configureNativeQwen4Batching(model: model, environment: environment)
+        // Flint is qualified only on paged attention. Automatic selection is an
+        // explicit paged request: no crash-guard or failure fallback, and any
+        // resolution other than paged refuses the load below.
+        let kvBackend: EngineV2KVBackendSelection = model is FlintModel && kvBackend == .auto ? .paged : kvBackend
 
         guard let adapter = ProductionModelAdapter(model: model) else {
             throw EngineV2ProductionError.unsupportedModel(
@@ -215,6 +219,12 @@ extension EngineV2Factory {
         {
             resolvedKind = .contiguous
             fallbackReason = "crash_loop_guard"
+        }
+
+        if model is FlintModel, resolvedKind != .paged {
+            throw EngineV2ProductionError.pagedUnavailable(
+                "Flint requires the paged KV backend; resolved \(resolvedKind.rawValue)"
+                    + (fallbackReason.map { " (\($0))" } ?? ""))
         }
 
         if let glm = glm5Next {
@@ -256,9 +266,15 @@ extension EngineV2Factory {
             let maximumBuffer = MLX.GPU.deviceInfo().maxBufferSize
             guard maximumBuffer > 0 else { throw EngineV2ProductionError.noKVHeadroom }
             var scheduler = glm5NextServingScheduler(policy.scheduler, context: context)
+            scheduler.decodeStepsBetweenPrefillChunks = try glm5NextDecodeStepsBetweenChunks(
+                environment: environment)
+            // The native MTP profile verifies up to its speculative batch of rows in
+            // one window, so the gathered-attention batch must hold it even when an
+            // operator narrows the serving width below it.
+            let speculativeBatch = (model as? GLM5NextProtectedModel)?.execution.maximumSpeculativeBatch ?? 1
             let paged = try glm.makeCBv2PagedBackend(
                 kvBytesCapacity: cappedCapacity,
-                maximumBatchSize: scheduler.maxConcurrentRequests,
+                maximumBatchSize: max(scheduler.maxConcurrentRequests, speculativeBatch),
                 maximumQueryTokens: max(scheduler.maxBatchedTokensPerStep, scheduler.prefillChunkSize,
                     scheduler.soloPrefillStripeTokens ?? 0),
                 maximumContextTokens: context,
@@ -454,7 +470,8 @@ extension EngineV2Factory {
                     maxBufferLength: MLX.GPU.deviceInfo().maxBufferSize,
                     quantization: precision.configuration,
                     nativeLayerIndices: nativeKVLayerIndices,
-                    residentPrefixCache: resolvedResidentPrefix)
+                    residentPrefixCache: resolvedResidentPrefix,
+                    environment: environment)
                 let pagedCaches = paged.makeLayerCaches()
                 // Hybrid models number caches by model layer, while paged storage
                 // is dense over attending layers. Convert before indexing the pool.

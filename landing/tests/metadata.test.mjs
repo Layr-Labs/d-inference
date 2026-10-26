@@ -53,7 +53,7 @@ test("crawl discovery lists canonical public pages and source-backed freshness d
   assert.match(xml, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
   const urls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => new URL(match[1]));
   assert.equal(new Set(urls.map(String)).size, urls.length);
-  assert.deepEqual(urls.map((url) => url.pathname).sort(), ["/", "/about", "/contact", "/developers", "/pricing", "/privacy", "/terms"]);
+  assert.deepEqual(urls.map((url) => url.pathname).sort(), ["/", "/about", "/pricing", "/privacy", "/terms"]);
   assert.ok(urls.every((url) => url.origin === "https://darkbloom.ai"));
   for (const entry of xml.matchAll(/<url>(.*?)<\/url>/gs)) {
     const path = new URL(entry[1].match(/<loc>([^<]+)<\/loc>/)[1]).pathname;

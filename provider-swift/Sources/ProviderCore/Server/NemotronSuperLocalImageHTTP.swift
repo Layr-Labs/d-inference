@@ -52,21 +52,32 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     func drain() async { await text.drain() }
 
     func service(body: Data, request: OpenAIChatCompletionRequest,
-                 responseStore: InMemoryResponseStore, metrics: ServerMetrics) -> MLXOpenAIService? {
+                 responseStore: InMemoryResponseStore, metrics: ServerMetrics,
+                 logprobs: EngineV2LogprobsChannel? = nil) -> MLXOpenAIService? {
         guard request.model == owner.modelID else { return nil }
-        return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request)),
+        return MLXOpenAIService(engine: engine(body: body, hasMedia: MediaIngest.hasMedia(request),
+                                               logprobs: logprobs),
             responseStore: responseStore, metrics: metrics)
     }
 
     /// The engine for one immutable raw request body. `cacheScope` partitions
     /// prefix reuse (nil: none); the hook's single local operator shares one
     /// partition. Image requests reuse only within their image identity.
-    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`.
+    /// `trustsSchemaMetadata`: see `NemotronSuperRequestPlan`. A `logprobs`
+    /// request's entries leave on the caller's `logprobs` channel, which
+    /// splices them into the response; without one it is refused. A text
+    /// request reports its prefix-cache outcome to `usageSignal` (the
+    /// coordinator request's, which also carries its cache receipts), else to
+    /// its own.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
-                trustsSchemaMetadata: Bool = false) -> any MLXServerEngine {
+                trustsSchemaMetadata: Bool = false,
+                logprobs: EngineV2LogprobsChannel? = nil,
+                usageSignal: EngineV2RequestUsageSignal? = nil,
+                donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
-                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata)
+                               cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
+                               logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand)
     }
 }
 
@@ -84,6 +95,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let owner: NemotronSuperLocalBridgeBuilder.Owner
     let cacheScope: String?
     let trustsSchemaMetadata: Bool
+    let logprobs: EngineV2LogprobsChannel?
+    /// The caller's signal for this request's prefix-cache outcome; a text
+    /// request without one submits under its own.
+    let usageSignal: EngineV2RequestUsageSignal?
+    /// The coordinator's repeat hint for a text request's durable checkpoint write.
+    let donationDemand: SSDCheckpointDonationDemand?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -109,17 +126,26 @@ private struct SuperHTTPEngine: MLXServerEngine {
         defer { if !admissionTransferred { owner.finishLocalRequest() } }
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
+        let completeLogprobs: NemotronSuperCompleteLogprobs?
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
+        // The engine records reused prompt tokens here before terminal usage.
+        var textUsage: EngineV2RequestUsageSignal?
         do {
             let plan = try NemotronSuperRequestPlan(body: body, formatted: request, modelID: owner.modelID,
                                                     trustsSchemaMetadata: trustsSchemaMetadata)
-            output = try NemotronSuperLocalOutput(plan: plan, streaming: request.stream == true)
+            let streaming = request.stream == true
+            output = try NemotronSuperLocalOutput(plan: plan, streaming: streaming)
+            let requested = plan.topLogprobs > 0 ? self.logprobs : nil
+            // A stream's frames select its entries; a complete response carries the same ones.
+            completeLogprobs = try streaming ? nil
+                : requested.map { try NemotronSuperCompleteLogprobs(plan: plan, carried: $0) }
+            let logprobs = completeLogprobs?.produced ?? requested
             switch route {
             case .image(let images):
                 let body = self.body, template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await images.runEncoded(body: body, templateBytes: template,
-                                                cacheScope: cacheScope, onEvent: onEvent)
+                                                cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
@@ -127,16 +153,22 @@ private struct SuperHTTPEngine: MLXServerEngine {
                                                        tokenizer: tokenizer.inner)
                 // translate keeps the request's max_tokens (nil: the bridge default).
                 let translated = MultiModelBatchSchedulerEngine.translate(
-                    openAIRequest: plan.request, defaultMaxTokens: 1)
-                let cacheScope = self.cacheScope
+                    openAIRequest: plan.request, defaultMaxTokens: 1,
+                    logprobs: plan.topLogprobs > 0 ? true : nil,
+                    topLogprobs: plan.topLogprobs > 0 ? plan.topLogprobs : nil)
+                let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
+                let donationDemand = self.donationDemand
+                textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
-                                          cacheScope: cacheScope, onEvent: onEvent)
+                                          cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
+                                          donationDemand: donationDemand, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output)
+        let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
+                                        usageSignal: textUsage)
         let scope = LocalRequestCancellation.current
         let task = Task {
             let registration = scope?.register { relay.cancel() }
@@ -175,6 +207,8 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidInput:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
+            case .bodyTooLarge:
+                return MediaIngest.MediaError.mediaTooLarge("the inline media request exceeds the Super body bound")
             case .invalidFeatures:
                 return MultiModelBatchSchedulerEngineError.generationFailed("native media features were not finite")
             case .inconsistentVideoFeatures:
@@ -233,18 +267,26 @@ enum SuperHTTPErrors {
 actor SuperImageHTTPRelay {
     private let continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation
     private var output: NemotronSuperLocalOutput
+    /// A complete response's logprob entries; nil when streamed or not requested.
+    private var logprobs: NemotronSuperCompleteLogprobs?
     private var startup: Result<Void, Error>?
     private var waiter: CheckedContinuation<Void, Error>?
     private var terminal: ServerGenerationInfo?
     private var failure: Error?
     private let startedAt = Date()
     private var firstChunkAt: Date?
+    /// Where the engine recorded the request's reused prompt tokens before
+    /// its terminal usage; nil reports none.
+    private let usageSignal: EngineV2RequestUsageSignal?
     private nonisolated let cancellation = SuperImageHTTPCancellation()
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
-         output: NemotronSuperLocalOutput) {
+         output: NemotronSuperLocalOutput, logprobs: NemotronSuperCompleteLogprobs? = nil,
+         usageSignal: EngineV2RequestUsageSignal? = nil) {
         self.continuation = continuation
         self.output = output
+        self.logprobs = logprobs
+        self.usageSignal = usageSignal
     }
     nonisolated func installCancellation(_ action: @escaping @Sendable () -> Void) { cancellation.install(action) }
     nonisolated func cancel() { cancellation.cancel() }
@@ -270,6 +312,7 @@ actor SuperImageHTTPRelay {
             if firstChunkAt == nil { firstChunkAt = Date() }
             do {
                 yield(try output.append(text))
+                logprobs?.accept(text)
                 // Held output (structured content, tool calls) yields nothing
                 // until finish; generation has started all the same.
                 if failure == nil { started(.success(())) }
@@ -281,7 +324,7 @@ actor SuperImageHTTPRelay {
             terminal = .init(promptTokens: prompt, completionTokens: completion,
                 promptTime: (firstChunkAt ?? Date()).timeIntervalSince(startedAt),
                 generationTime: firstChunkAt.map { Date().timeIntervalSince($0) } ?? 0,
-                stopReason: reason ?? "stop", cachedPromptTokens: 0)
+                stopReason: reason ?? "stop", cachedPromptTokens: usageSignal?.prefixCacheHitTokens ?? 0)
         case .error(let message):
             failure = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         case .terminal(let cause, let message, let prompt, let completion):
@@ -299,6 +342,8 @@ actor SuperImageHTTPRelay {
         }
         do { yield(try output.finish().events) }
         catch { fail(SuperHTTPErrors.map(error, media: false)); return }
+        // Before the stream ends: the response reads its entries once it has.
+        logprobs?.finish()
         if let failure { fail(failure); return }
         yield([.info(terminal)])
         if let failure { fail(failure); return }

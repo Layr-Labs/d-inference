@@ -35,7 +35,11 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../libs/mlx-swift"),
-        .package(path: "../libs/mlx-swift-lm"),
+        // Without the SDK's default `FoundationModelsIntegration` trait. No
+        // provider code uses its Apple FoundationModels adapter, and the trait
+        // would link that adapter, a weak FoundationModels.framework load and
+        // the vendored xgrammar C++ (MLXGuidedGeneration) into the binary.
+        .package(path: "../libs/mlx-swift-lm", traits: []),
         // Private cluster foundation (slice 1 staging): MLX-free membership
         // protocol module mirrored by the native-pair public control codec.
         // Build-graph only; no serving call site consumes it yet.
@@ -123,6 +127,22 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
+        // DarkbloomHardwareLoad: sudoless whole-machine load sampling for the
+        // desktop control API (per-core CPU, GPU, ANE, memory, best-effort
+        // IOReport SoC counters). MLX-free so its tests build in seconds.
+        // ----------------------------------------------------------------
+        .target(
+            name: "DarkbloomHardwareLoad",
+            path: "Sources/DarkbloomHardwareLoad",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .testTarget(
+            name: "DarkbloomHardwareLoadTests",
+            dependencies: ["DarkbloomHardwareLoad"],
+            path: "Tests/DarkbloomHardwareLoadTests"
+        ),
+
+        // ----------------------------------------------------------------
         // ProviderCoreFoundation: Linux-buildable subset containing the
         // model hashing primitives (ModelScanner file discovery,
         // WeightHasher) and the registry manifest types. Has NO Apple-
@@ -172,6 +192,8 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                // Tokenizer configurations for the prompt token cache.
+                .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
@@ -217,9 +239,12 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "DarkbloomHardwareLoad",
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -372,7 +397,10 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: [
+                "darkbloom", "DarkbloomHardwareLoad",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ],
             path: "Tests/DarkbloomCLITests"
         ),
 

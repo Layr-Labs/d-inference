@@ -121,8 +121,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let engineV2Usage: EngineV2RequestUsageSignal?
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
-    /// the engine captures them, and the bridge publishes OpenAI-shaped
-    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame decorator.
+    /// the engine captures them, and the bridge yields OpenAI-shaped entries
+    /// in stream order. This engine forwards them to the SDK's encoder, or
+    /// appends them to `engineV2Logprobs.relay` for the coordinator's frame
+    /// splicer (see `EngineV2Logprobs.swift`).
     private let engineV2Logprobs: EngineV2LogprobsPlumbing?
     /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
     /// (the upstream `OpenAIChatCompletionRequest` models neither — same
@@ -331,7 +333,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Only invalid native-control evidence warrants this extra read-only
         // resident lookup. It must never load/provision, infer type from the
         // requested name, or convert cancellation into a cold-model fallback.
-        if templateControls.rawMiMoControls.invalid {
+        if templateControls.rawMiMoControls.invalid || templateControls.rawFlintControls.invalid {
             let knownType: String?
             if let tokenizerProvider {
                 do { knownType = try await tokenizerProvider(request.model).modelType }
@@ -342,13 +344,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 knownType = resident[request.model]?.modelType
             }
             try checkFirstContentDeadline()
-            // Hidden GLM reasoning is decided by the acquired slot (a cluster
-            // pair serves it, single-Mac refuses it: `prepareCompletion`);
-            // this early check must not refuse it for every slot. MiMo's
-            // evidence marks `reasoning.exclude` invalid for its own rules, so
-            // a GLM request carrying it reaches this check too.
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType,
-                glm5PairPostValidation: GLM5NextPromptPolicy.applies(modelType: knownType))
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: knownType)
         }
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure
@@ -495,14 +491,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ? (nativeLocalCacheScope ?? cacheScope) : cacheScope
         let prepared: ToolChoicePromptPolicy.Prepared
         let nativeMiMoThinkingEnabled: Bool
-        // GLM on a cluster pair prompt-forces and post-validates required/named
-        // tool choice and JSON output; the single-Mac GLM slot refuses them.
+        // A GLM request on a cluster pair (`Prepared.glm5PairPostValidation`).
         let glm5PairPostValidation = GLM5NextPromptPolicy.applies(modelType: modelType)
             ? await engineV2Bridge?.servesDistributedPair == true : false
         do {
             try checkFirstContentDeadline()
-            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType,
-                glm5PairPostValidation: glm5PairPostValidation)
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
             try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
             request = try templateControls.rawMiMoTools.restoring(request, modelType: modelType)
             try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
@@ -513,14 +507,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             } else { nativeMiMoThinkingEnabled = true }
             try DiffusionGemmaReasoningControl.validate(
                 request: request, controls: templateControls, modelType: modelType)
-            var preparedRequest = try ToolChoicePromptPolicy.prepare(
+            prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
-            preparedRequest.glm5PairExcludesReasoning = glm5PairPostValidation
-                && templateControls.rawGLM5Controls.excludesReasoning
-            prepared = preparedRequest
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -571,6 +562,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
+        // Only the GLM text path withholds and validates a JSON answer or a
+        // forced call, on one Mac and on a cluster pair alike.
+        if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
+            await releaseBox.fire()
+            let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
+                ? ("required/named tool_choice", .unsupportedForcedToolChoice)
+                : ("JSON response_format", .unsupportedResponseFormat)
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "GLM5: \(mode) is not supported with image or video input", refusal: refusal)
+        }
+        // Declined reasoning is classified on the native channel and dropped
+        // there, so GLM routes reasoning to that channel whenever it is withheld.
+        let withholdsReasoning = ProviderPromptContractPipeline.withholdsReasoning(
+            request, controls: templateControls, modelType: modelType)
+        let glmWithholdsReasoning = GLM5NextPromptPolicy.withholdsReasoning(templateControls, modelType: modelType)
         // GLM images and video on the tensor-parallel pair: the product's own
         // media preparation on this leader, the vision tower on rank 0.
         if glmMedia, let bridge = engineV2Bridge, bridge.clusterGLMMediaIngress != nil {
@@ -822,6 +828,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
+                        modelType: modelType,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
                     try checkFirstContentDeadline()
@@ -833,7 +840,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         releaseBox: releaseBox,
                         usageSignal: requestUsage,
                         reasoningPrefix: reasoningPrefix,
-                        nativeReasoningPrefix: nativeMediaTools
+                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
@@ -841,7 +848,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             .init(modelId: modelId, modelType: modelType)),
                         nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
                         nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
-                            || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls)
+                            || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls),
+                        withholdReasoning: withholdsReasoning
                     )
                 } catch {
                     // Every failed media construction releases the same reservations
@@ -913,7 +921,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                templateControls: templateControls)
+                templateControls: templateControls,
+                // Token reuse is partitioned exactly like the prefix KV cache.
+                promptCacheScope: cacheEnabled ? requestCacheScope : nil)
             promptTokens = measured.tokens
             prepTiming = measured.timing
             try checkFirstContentDeadline()
@@ -949,6 +959,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
+            modelType: modelType,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
         ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
         do {
@@ -986,6 +997,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
+        let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
@@ -1016,7 +1028,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         logprobs: engineV2Logprobs != nil ? true : nil,
                         topLogprobs: engineV2Logprobs?.topLogprobs,
                         logitBias: engineV2Sampling?.logitBias,
-                        seed: engineV2Sampling?.seed),
+                        seed: engineV2Sampling?.seed,
+                        // Exact Flint matches stops on its answer channel only.
+                        engineStopStrings: modelType != "flint"),
                     requestId: requestId,
                     // Same per-tenant scope the legacy submit threads into the
                     // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
@@ -1055,6 +1069,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
+        // GLM's JSON answer and forced calls are withheld until they validate,
+        // so its reasoning must already be a separate typed channel, as on the
+        // native families.
+        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
@@ -1067,14 +1085,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // span. Empty initial content state keeps native splitting active
             // without fabricating prompt/seed bytes. Output permission is the
             // independently validated Boolean, never this generic probe.
-            // A forced GLM call on a pair splits reasoning first, so only text
-            // after the think block counts as visible before the call.
             nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
-                ChatTemplateFixContext(modelId: modelId, modelType: modelType))
-                || (prepared.glm5PairPostValidation && prepared.requiresToolCall) || prepared.glm5PairExcludesReasoning
+                ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMOutput
+                || glmWithholdsReasoning
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil),
+            recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                 .init(modelId: modelId, modelType: modelType)),
             nativeGemmaChannels: modelType == "diffusion_gemma",
@@ -1083,7 +1100,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeMiMoChannels: modelType == "mimo_v2",
             nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
             absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
-                .init(modelId: modelId, modelType: modelType))
+                .init(modelId: modelId, modelType: modelType)),
+            answerStopFilter: answerStopFilter,
+            withholdReasoning: withholdsReasoning
         )
     }
 
@@ -1130,13 +1149,29 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: host.tokens,
                 decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
             ) ?? contentSeed(parser: request.reasoningParser, stream: request.stream)
+            let withheld = pairWithheldReasoningPrefix(controls: templateControls, modelType: acquired.modelType,
+                promptTokens: host.tokens, tokenizer: acquired.tokenizer.inner)
             return try await makeDeadlineCheckedEventStream(
                 upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
                 toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
-                reasoningPrefix: reasoningPrefix,
+                reasoningPrefix: reasoningPrefix, nativeReasoningPrefix: withheld,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                    .init(modelId: request.model, modelType: acquired.modelType)))
+                    .init(modelId: request.model, modelType: acquired.modelType)),
+                withholdReasoning: withheld != nil)
         } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
+    /// Reasoning a pair media request excludes is withheld as the single-Mac
+    /// media path withholds it: classified on the native channel from the
+    /// rendered prompt's think state and dropped there (still counted). Nil
+    /// when the request keeps its reasoning, so the parser seed alone applies.
+    private func pairWithheldReasoningPrefix(controls: ChatTemplateControls, modelType: String?,
+        promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer
+    ) -> String? {
+        guard GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType) else { return nil }
+        return ReasoningPromptProbe.streamingPrefix(forPromptTail: tokenizer.decode(
+            tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)), skipSpecialTokens: false))
+            ?? "<think></think>"
     }
 
     /// GLM-5.3-Flash images and video on the tensor-parallel pair, served as
@@ -1219,12 +1254,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 promptTokens: host.tokens,
                 decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
             ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            let withheld = pairWithheldReasoningPrefix(controls: templateControls, modelType: modelType,
+                promptTokens: host.tokens, tokenizer: acquired.tokenizer.inner)
             return try await makeDeadlineCheckedEventStream(
                 upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
                 toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
-                reasoningPrefix: reasoningPrefix,
+                reasoningPrefix: reasoningPrefix, nativeReasoningPrefix: withheld,
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                    .init(modelId: request.model, modelType: modelType)))
+                    .init(modelId: request.model, modelType: modelType)),
+                withholdReasoning: withheld != nil)
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 
@@ -1442,12 +1480,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
-        absorbStrayThinkClose: Bool = false
+        absorbStrayThinkClose: Bool = false,
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1466,12 +1507,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 usageSignal: usageSignal,
                 reasoningPrefix: reasoningPrefix,
                 nativeReasoningPrefix: nativeReasoningPrefix,
+                recordsWithheldOutput: recordsWithheldOutput,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
                 nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
-                absorbStrayThinkClose: absorbStrayThinkClose)
+                absorbStrayThinkClose: absorbStrayThinkClose,
+                answerStopFilter: answerStopFilter,
+                withholdReasoning: withholdReasoning)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1497,13 +1541,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
         nativeMiMoThinkingEnabled: Bool = true,
         nativeMediaTerminalDrain: Bool = false,
-        absorbStrayThinkClose: Bool = false
+        absorbStrayThinkClose: Bool = false,
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1533,7 +1580,29 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdsReasoning: prepared.glm5PairExcludesReasoning)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                // Withheld reasoning must not return as logprob entry tokens. A
+                // prompt that opens the thought (GLM with thinking on, which
+                // seeds the native channel with an open block) starts inside it.
+                var reasoningLogprobs = withholdReasoning && engineV2Logprobs != nil
+                    ? WithheldReasoningLogprobsFilter(
+                        startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
+                    : nil
+                // Raw output passes this holdback before channel/tool parsing,
+                // so a matched answer stop and its tail are never parsed.
+                var answerStops = answerStopFilter
+                var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
+                var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
+                /// A GLM JSON answer leaves only after it validates; its
+                /// reasoning and every other event stream unchanged.
+                func emit(_ routed: MLXServerGenerationEvent) {
+                    formatOutput?.observe(routed)
+                    if glmAnswer == nil {
+                        continuation.yield(routed)
+                    } else if let visible = glmAnswer?.withholding(routed) {
+                        continuation.yield(visible)
+                    }
+                }
                 startedAt = Date()
 
                 #if DEBUG
@@ -1593,13 +1662,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     switch event {
                     case .logprobs(let entries):
                         guard let engineV2Logprobs else { continue }
-                        continuation.yield(.logprobs(engineV2Logprobs.requested(entries)))
-                    case .chunk(let text):
+                        let requested = engineV2Logprobs.requested(entries)
+                        let visible = reasoningLogprobs?.visible(requested) ?? requested
+                        // Before the chunk these entries precede, as the frames
+                        // loop expects of its relay.
+                        if let relay = engineV2Logprobs.relay { relay.append(visible) }
+                        else { continuation.yield(.logprobs(visible)) }
+                    case .chunk(let generated):
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
+                        // Before any frame: generated output ends the
+                        // pre-content interval even while it is withheld.
+                        if recordsWithheldOutput, !generated.isEmpty { usageSignal.recordWithheldOutput() }
+                        let text = answerStops?.ingest(generated) ?? generated
                         if !text.isEmpty {
                             do {
-                                for routed in try router.process(text) { continuation.yield(routed) }
+                                let events = try router.process(text)
+                                // Before any later frame: see recordWithheldReasoning.
+                                usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                                for routed in events { emit(routed) }
                             } catch {
                                 await cancelUpstream()
                                 if nativeMediaTerminalDrain {
@@ -1703,10 +1784,53 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // and fail closed here before a call is exposed. This remains
                 // defense in depth for every mode.
                 do {
-                    for routed in try router.finishText() { continuation.yield(routed) }
+                    var events: [MLXServerGenerationEvent] = []
+                    if let tail = answerStops?.finish(), !tail.isEmpty {
+                        events += try router.process(tail)
+                    }
+                    events += try router.finishText()
+                    usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
+                    for routed in events { emit(routed) }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
+                    return
+                }
+                if router.streamsToolCalls {
+                    // `auto` calls already left as deltas, each validated when
+                    // its frame closed; settle a call closed by a stop token
+                    // and re-check the whole set. The other terminal checks
+                    // match the complete-call path below.
+                    do {
+                        for routed in try router.finishToolCalls(truncated: stopReason == "length") {
+                            emit(routed)
+                        }
+                        try router.checkNativeToolFailure()
+                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
+                        try formatOutput?.validate(finishReason: stopReason)
+                        if let answer = try glmAnswer?.finalAnswer(
+                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
+                        {
+                            continuation.yield(answer)
+                        }
+                    } catch {
+                        await releaseBox.fire()
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                    if (toolHandler?.parseFailureCount ?? 0) > 0 {
+                        emitToolConstraintTelemetry(
+                            operation: "tool_constraint_fallback",
+                            reason: "parser",
+                            severity: .warn)
+                    }
+                    Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
+                        completionTokens: completionTokens, startedAt: startedAt,
+                        firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
+                        stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
+                        usageSignal: usageSignal)
+                    await releaseBox.fire()
+                    continuation.finish()
                     return
                 }
                 let toolCalls = toolHandler?.finish() ?? []
@@ -1721,7 +1845,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    continuation.yield(router.visibleEvent(residual))
+                    emit(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
@@ -1737,6 +1861,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
+                do {
+                    // Exact-Flint response_format: the completed content, not
+                    // a truncated or schema-invalid prefix, reaches success.
+                    try formatOutput?.validate(finishReason: stopReason)
+                    // GLM's withheld JSON answer leaves only once it validates.
+                    if let answer = try glmAnswer?.finalAnswer(
+                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
+                    {
+                        continuation.yield(answer)
+                    }
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
                 if prepared.mode.requiresInferenceConstraint {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
@@ -1745,23 +1884,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 for toolCall in toolCalls {
                     continuation.yield(.toolCall(toolCall))
                 }
-
-                let now = Date()
-                let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
-                let generateTime = (lastTokenAt ?? now)
-                    .timeIntervalSince(firstTokenAt ?? startedAt)
-                continuation.yield(
-                    .info(
-                        ServerGenerationInfo(
-                            promptTokens: promptTokenCount,
-                            completionTokens: completionTokens,
-                            promptTime: max(0, promptTime),
-                            generationTime: max(0, generateTime),
-                            stopReason: stopReason,
-                            cachedPromptTokens: usageSignal.prefixCacheHitTokens
-                        )
-                    )
-                )
+                Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
+                    completionTokens: completionTokens, startedAt: startedAt,
+                    firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
+                    stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
+                    usageSignal: usageSignal)
                 await releaseBox.fire()
                 continuation.finish()
         }
@@ -1797,6 +1924,38 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
     }
 
+    /// The terminal usage/timing event every successful stream ends with.
+    private static func yieldTerminalInfo(
+        _ continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
+        promptTokenCount: Int, completionTokens: Int, startedAt: Date, firstTokenAt: Date?,
+        lastTokenAt: Date?, stopReason: String, matchedAnswerStop: String?,
+        usageSignal: EngineV2RequestUsageSignal
+    ) {
+        var stopReason = stopReason
+        if let matchedAnswerStop {
+            // OpenAI semantics, even if the match landed on the final
+            // budgeted token: the stop sequence ended the answer.
+            stopReason = "stop"
+            usageSignal.record(matchedStopSequence: matchedAnswerStop)
+        }
+        let now = Date()
+        let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
+        let generateTime = (lastTokenAt ?? now)
+            .timeIntervalSince(firstTokenAt ?? startedAt)
+        continuation.yield(
+            .info(
+                ServerGenerationInfo(
+                    promptTokens: promptTokenCount,
+                    completionTokens: completionTokens,
+                    promptTime: max(0, promptTime),
+                    generationTime: max(0, generateTime),
+                    stopReason: stopReason,
+                    cachedPromptTokens: usageSignal.prefixCacheHitTokens
+                )
+            )
+        )
+    }
+
     #if DEBUG
     /// Exercise the production forwarding body with real host streams. This
     /// bypasses only acquisition/tokenization, never substitutes parser output.
@@ -1806,11 +1965,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
         reasoningPrefix: String? = nil,
-        toolHandler: BatchedToolStreamHandler? = nil
+        toolHandler: BatchedToolStreamHandler? = nil,
+        nativeReasoningPrefix: String? = nil,
+        recordsWithheldOutput: Bool = false,
+        usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
+        answerStopFilter: FlintAnswerStopFilter? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
-            usageSignal: EngineV2RequestUsageSignal(), reasoningPrefix: reasoningPrefix)
+            usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
+            answerStopFilter: answerStopFilter)
     }
     #endif
 

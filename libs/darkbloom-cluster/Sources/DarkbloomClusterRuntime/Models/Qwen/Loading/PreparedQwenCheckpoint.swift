@@ -29,7 +29,7 @@ struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
         // Only converted MLX Qwen layouts are supported. This makes per-tensor sanitize equivalent
         // to the ordinary whole-checkpoint sanitize; raw HF norm shifting is deliberately rejected.
         for (source, tensor) in descriptors {
-            let names = model.sanitize(weights: [source: MLXArray.zeros([1], dtype: tensor.dtype)]).keys
+            let names = try model.sanitize(weights: [source: MLXArray.zeros([1], dtype: tensor.dtype)]).keys
             guard names.count <= 1 else { throw ProbeError("Unsupported multi-output tensor sanitizer") }
             guard let name = names.first else { continue }
             if name.contains("conv1d.weight") && tensor.shape.last != 1 {

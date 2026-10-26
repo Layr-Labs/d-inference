@@ -117,6 +117,7 @@ extension ProviderLoop {
         // cannot clobber the real ~/.darkbloom/loaded-models.json). A
         // control-only member never persists solo residency.
         loadedModelsPersistenceEnabled = !isClusterMember
+        if usesHostServices { verifiedWeightHashesFile = VerifiedWeightHashStore.path() }
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -307,12 +308,13 @@ extension ProviderLoop {
         // followed by a long disconnect is still subject to the unload
         // timer.
         // A control-only member holds no solo residency to unload, keeps the
-        // empty capacity it published at preparation, and never relaunches
-        // its binary unattended.
+        // empty capacity it published at preparation, never relaunches its
+        // binary unattended and verifies no Autopilot candidates.
         if !isClusterMember {
             startIdleMonitor()
             startCapacityRefreshMonitor()
             startAutoUpdateMonitor()
+            startAutopilotCandidateVerification()
         }
 
         logger.info(.coordinatorClientStarted)
@@ -324,6 +326,9 @@ extension ProviderLoop {
         let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
         let workTask = Task {
             for await event in workEvents {
+                // Only order-free events overtake a request waiting for its
+                // model load (`ProviderLoop+WorkFIFO.swift`).
+                if !event.overtakesReleasedAdmissions { await awaitReleasedAdmissions() }
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
@@ -352,26 +357,31 @@ extension ProviderLoop {
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
                 ):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        cacheReceiptNonce: cacheReceiptNonce,
-                        authenticatedCacheScope: cacheScope,
-                        prefixCacheProtocol: prefixCacheProtocol,
-                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
-                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
-                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
-                        firstContentDeadline: firstContentDeadline,
-                        receivedAt: receivedAt,
-                        profile: profile,
-                        serviceReservationID: serviceReservationID,
-                        promptWork: promptWork,
-                        send: send
-                    )
+                    await admitInWorkFIFO(requestId: requestId) { gate in
+                        await self.handleInferenceRequest(
+                            requestId: requestId,
+                            ciphertext: ciphertext,
+                            senderPublicKey: senderPublicKey,
+                            cacheReceiptNonce: cacheReceiptNonce,
+                            authenticatedCacheScope: cacheScope,
+                            prefixCacheProtocol: prefixCacheProtocol,
+                            cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                            cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                            toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                            firstContentDeadline: firstContentDeadline,
+                            receivedAt: receivedAt,
+                            profile: profile,
+                            serviceReservationID: serviceReservationID,
+                            promptWork: promptWork,
+                            send: send,
+                            workFIFOGate: gate
+                        )
+                    }
 
                 case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
+                    if !deferCancelForReleasedAdmission(requestId) {
+                        await handleCancellation(requestId: requestId)
+                    }
 
                 case .attestationChallenge(let nonce, let timestamp):
                     await handleAttestationChallenge(
@@ -414,6 +424,8 @@ extension ProviderLoop {
 
                 }
             }
+            // The consumer ends only after every admission it started.
+            await awaitReleasedAdmissions()
         }
         let eventTask = Task {
             // Model admission, hashing and cancellation may suspend for longer
@@ -524,6 +536,10 @@ extension ProviderLoop {
         if let prefetchCoordinator {
             await prefetchCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
         }
+        if let autopilotDownloadCoordinator {
+            await autopilotDownloadCoordinator.shutdown(timeout: Self.preloadShutdownTimeout)
+        }
+        autopilotCandidateVerification?.cancel()
         // Cancel BOTH preload flavors: coordinator-driven load_model tasks and
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).

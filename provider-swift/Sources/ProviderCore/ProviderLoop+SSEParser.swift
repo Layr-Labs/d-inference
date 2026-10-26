@@ -32,7 +32,7 @@ extension ProviderLoop {
     internal struct StreamChunkExtract: Equatable {
         let contentDelta: String?
         let reasoningDelta: String?
-        let toolCallsDelta: [OpenAIToolCall]?
+        let toolCallsDelta: [OpenAIToolCallDelta]?
         let usage: OpenAIUsage?
         let finishReason: String?
         let role: String?
@@ -124,7 +124,7 @@ extension ProviderLoop {
         // encoder so the hash is stable.
         var contentParts: [String] = []
         var reasoningParts: [String] = []
-        var toolCalls: [OpenAIToolCall] = []
+        var toolCalls: [OpenAIToolCallDelta] = []
         for choice in chunk.choices {
             if let c = choice.delta.content { contentParts.append(c) }
             if let r = choice.delta.reasoningContent { reasoningParts.append(r) }
@@ -228,6 +228,14 @@ extension ProviderLoop {
         return "data: \(json)\n\n"
     }
 
+    /// Whether a model's relay logprobs ride the reasoning frames that carry
+    /// their tokens as well as content frames (vLLM-style), so a response that
+    /// ends while reasoning still returns its entries: GLM5-Next and Nemotron
+    /// Super. Other models keep content-frame attachment.
+    internal static func logprobsCoverReasoning(modelType: String?, nemotronSuper: Bool) -> Bool {
+        nemotronSuper || GLM5NextPromptPolicy.applies(modelType: modelType)
+    }
+
     /// Splice OpenAI-standard streaming logprobs
     /// (`choices[0].logprobs = {"content": [...]}`) into a content-bearing
     /// SSE chunk. v2-engine path only — the legacy engine never emitted
@@ -236,18 +244,21 @@ extension ProviderLoop {
     ///
     /// Returns the modified frame when `frame` is a chat-completion chunk
     /// whose `choices[0].delta.content` is a non-empty string (the frames
-    /// logprobs semantically attach to). Returns nil — caller keeps the
-    /// entries pending for the next frame — for role preambles, reasoning-
-    /// only deltas, usage/terminal chunks, `[DONE]`, and anything that
-    /// fails to parse (never corrupt a frame we cannot faithfully edit).
+    /// logprobs semantically attach to), or, with `includingReasoning`, whose
+    /// `delta.reasoning_content` or `delta.reasoning` is. Returns nil — caller
+    /// keeps the entries pending for the next frame — for role preambles,
+    /// other reasoning-only deltas, usage/terminal chunks, `[DONE]`, and
+    /// anything that fails to parse (never corrupt a frame we cannot
+    /// faithfully edit).
     ///
     /// Like `injectReasoningTokens`, the edit is a generic JSON splice:
     /// upstream's `OpenAIChatCompletionChunk` has no logprobs field, so we
     /// decode the `data:` payload to a dictionary, attach the logprobs
     /// object, and re-serialize with every other field untouched.
     internal static func injectLogprobs(
-        into frame: String, entries: [SSETokenLogprob]
+        into frame: String, entries: [SSETokenLogprob], includingReasoning: Bool = false
     ) -> String? {
+        let carriesText = { (delta: [String: Any], key: String) in (delta[key] as? String)?.isEmpty == false }
         guard !entries.isEmpty,
               let payload = joinedDataPayload(frame),
               payload.trimmingCharacters(in: .whitespacesAndNewlines) != "[DONE]",
@@ -256,8 +267,8 @@ extension ProviderLoop {
               var choices = obj["choices"] as? [[String: Any]],
               var choice = choices.first,
               let delta = choice["delta"] as? [String: Any],
-              let content = delta["content"] as? String,
-              !content.isEmpty
+              carriesText(delta, "content") || (includingReasoning
+                  && (carriesText(delta, "reasoning_content") || carriesText(delta, "reasoning")))
         else {
             return nil
         }
@@ -298,11 +309,13 @@ extension ProviderLoop {
     /// JSON encoding uses `[.sortedKeys, .withoutEscapingSlashes]`
     /// so two equivalent tool-call payloads always produce the same
     /// byte sequence regardless of Foundation's internal field order.
+    /// A call streamed as several fragments contributes one marker per
+    /// fragment, in wire order; a complete call encodes exactly as before.
     ///
     /// Encoding failure (which shouldn't happen for the closed
-    /// `OpenAIToolCall` shape) falls back to a fixed sentinel so the
+    /// `OpenAIToolCallDelta` shape) falls back to a fixed sentinel so the
     /// hash domain stays disjoint from "no tool calls at all".
-    internal static func encodeToolCallsForHash(_ calls: [OpenAIToolCall]) -> String {
+    internal static func encodeToolCallsForHash(_ calls: [OpenAIToolCallDelta]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var out = ""

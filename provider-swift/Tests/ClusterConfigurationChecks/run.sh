@@ -31,6 +31,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
   "$task_provider/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift" \
   "$task_provider/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift" "$task_provider/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterModelFeaturePolicy.swift" \
   "$task_config/ClusterConfigurationStore.swift" "$task_fixtures/ConfigurationCheck.swift" \
   -o "$task_build/configuration-check"
 "$task_build/configuration-check"

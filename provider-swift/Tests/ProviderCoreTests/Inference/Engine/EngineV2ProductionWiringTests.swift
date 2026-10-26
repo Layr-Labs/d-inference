@@ -1587,6 +1587,26 @@ struct EngineV2RequestRoutingTests {
         #expect(emitted.isEmpty)
     }
 
+    @Test("required Qwen tool choice refuses output that is only framing whitespace")
+    func requiredQwenToolChoiceRefusesWhitespaceOnlyOutput() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "\n", tokens: [10], logprobs: nil),
+            .delta(text: " \r", tokens: [11], logprobs: nil),
+            .delta(text: "\n", tokens: [12], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 3)),
+        ]))
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await Self.qwenForcedEngine(engine, model: "qwen35-moe", modelType: "qwen3_5_moe")
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: "qwen35-moe"))
+            for try await event in stream { emitted.append(event) }
+            Issue.record("expected a missing forced call to fail")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
+        }
+        #expect(emitted.isEmpty)
+    }
+
     private static func qwenWeatherCall(_ city: String) -> String {
         "<tool_call>\n<function=get_weather>\n<parameter=city>\n\(city)\n</parameter>\n</function>\n</tool_call>"
     }

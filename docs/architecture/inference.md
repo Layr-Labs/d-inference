@@ -2032,10 +2032,12 @@ its own `model_type`:
 These calls are prompt-forced, withheld and schema-validated
 (`ToolChoiceEnforcementPolicy.forcedStrategy` `.structuredPostValidation`).
 GPT-OSS (`gpt_oss`, `.harmony`) has no forced strategy and is not listed. In
-forced mode `NativeToolStreamRouter` drops framing whitespace
-(`ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and between call
-frames on every path, including legacy Qwen text without native channels; any
-other visible text is a `tool_choice` violation (422).
+forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
+tab, CR and LF; `ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and
+between call frames on every path, including legacy Qwen text without native
+channels. Whitespace alone is still a missing call
+(`ToolConstraintValidation.validate`), and any other visible text, including
+other Unicode whitespace, is a `tool_choice` violation (422).
 
 ### Streamed auto tool calls
 

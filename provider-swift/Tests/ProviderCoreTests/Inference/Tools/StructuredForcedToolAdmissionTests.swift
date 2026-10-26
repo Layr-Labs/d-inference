@@ -74,11 +74,12 @@ struct StructuredForcedToolAdmissionTests {
             // A catalog ID on another architecture is not the qualified artifact:
             // its parser or forcing path differs.
             info("Qwen3.5-9B", "qwen3_5_moe"), info("Qwen3.5-9B", nil), info("Qwen3.5-9B", "llama"),
+            info("Qwen3.5-9B", "Qwen3_5"),
             info("qwen3.5-35b-a3b", "qwen3_5"), info("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_vl_moe"),
             info("mimo-v2.6-flash-mopd", "qwen3_5"),
-            // Lookalike IDs of the admitted families.
+            // Lookalike IDs of the admitted families; matching is case-sensitive.
             info("Qwen3.5-27B", "qwen3_5"), info("qwen3.6-35b-a3b", "qwen3_5_moe"),
-            info("mimo-v2.6-flash", "mimo_v2"),
+            info("qwen3.5-9b", "qwen3_5"), info("mimo-v2.6-flash", "mimo_v2"),
             // Harmony has no forced strategy.
             info("gpt-oss-20b", "gpt_oss"),
         ]
@@ -152,10 +153,13 @@ struct StructuredForcedToolAdmissionTests {
                 #expect(calls.first?.function.name == "get_weather")
                 #expect(calls.first?.function.arguments["city"] == .string("Paris"))
             }
-            let parallel = try serve(build, request, prepared, output: answer(build,
-                frame(build, "get_weather", ["city": "Paris"]) + "\n"
-                    + frame(build, "get_time", ["timezone": "Europe/Paris"])))
-            #expect(parallel.map(\.function.name) == ["get_weather", "get_time"], "\(build.id)")
+            // The template's newline between calls, split at every chunk boundary.
+            let parallelOutput = answer(build, frame(build, "get_weather", ["city": "Paris"]) + "\n"
+                + frame(build, "get_time", ["timezone": "Europe/Paris"]))
+            for width in [1, 2, 3, 5, 7, Int.max] {
+                let parallel = try serve(build, request, prepared, output: parallelOutput, width: width)
+                #expect(parallel.map(\.function.name) == ["get_weather", "get_time"], "\(build.id) width \(width)")
+            }
         }
     }
 
@@ -199,8 +203,9 @@ struct StructuredForcedToolAdmissionTests {
         for build in Self.admitted {
             let request = try request(build, choice: Self.required)
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: build.modelType)
-            // Prose instead of a call, prose before a call, no output and an
-            // undeclared function are all model noncompliance (422).
+            // Prose instead of a call, prose before a call, no output, framing
+            // whitespace alone and an undeclared function are all model
+            // noncompliance (422).
             try expectViolation(build) {
                 _ = try serve(build, request, prepared, output: answer(build, "It is sunny in Paris."))
             }
@@ -210,6 +215,9 @@ struct StructuredForcedToolAdmissionTests {
             }
             try expectViolation(build) {
                 _ = try serve(build, request, prepared, output: answer(build, ""))
+            }
+            try expectViolation(build) {
+                _ = try serve(build, request, prepared, output: answer(build, "\n \n"), width: 1)
             }
             try expectViolation(build) {
                 _ = try serve(build, request, prepared,

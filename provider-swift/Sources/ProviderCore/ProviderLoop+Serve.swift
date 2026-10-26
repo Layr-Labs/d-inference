@@ -290,6 +290,8 @@ extension ProviderLoop {
 
         logger.info(.coordinatorClientStarted)
 
+        noteCoordinatorConnection(connected: false)
+
         // 5. The event reader outlives cancellation of the calling task.
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
@@ -414,6 +416,7 @@ extension ProviderLoop {
                                       authorization: authorization)
                     continue
                 case .connected, .disconnected:
+                    noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
                 default:
@@ -423,6 +426,7 @@ extension ProviderLoop {
                 // disconnect cleanup before the next connection's work.
                 workContinuation.yield(event)
             }
+            noteCoordinatorConnection(connected: false)
             clearConnectionAuthorization()
             cancelAppAttestShadow()
             workContinuation.finish()

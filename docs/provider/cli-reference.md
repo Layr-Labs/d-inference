@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -995,6 +995,17 @@ Output includes:
   holds with each hold's UTC expiry and time left. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
+- `Traffic:` whether the coordinator can route work to this connection. `eligible
+  for coordinator work` names the App Attest lease or legacy verification;
+  `NOT receiving coordinator work:` names the cause with a `→ fix:` line
+  (disconnected, no coordinator verdict 90 seconds after connecting, an expired
+  lease, or the coordinator's reason, such as a locked login keychain, a stalled
+  Apple call, App Attest unavailable on macOS 26 or outside a logged-in GUI
+  session, or a connection without a linked account). Omitted while a drain line
+  is shown, for a stale snapshot, and for daemons that predate the
+  `coordinator_connection` state field
+  (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`,
+  `provider-swift/Sources/darkbloom/StatusCommand+Traffic.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it

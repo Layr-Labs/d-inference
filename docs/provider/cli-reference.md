@@ -441,10 +441,10 @@ retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
 `performLifecycleDrain`). A drain completes without the coordinator
-acknowledgement only when the provider has no registered coordinator session,
-for example while it is reconnecting; the command then reports the
-acknowledgement as `not needed (no coordinator connection)`. A registered
-session must acknowledge before the deadline.
+acknowledgement only when no work is left and the provider has no registered
+coordinator session, for example while it is reconnecting; the command then
+reports the acknowledgement as `not needed (no coordinator connection)`. A
+registered session must acknowledge before the deadline.
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt

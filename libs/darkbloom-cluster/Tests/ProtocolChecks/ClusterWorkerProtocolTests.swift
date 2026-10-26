@@ -333,7 +333,7 @@ struct ClusterWorkerProtocolTests {
         func reservation(prompt: Int, output: Int) -> ClusterWorkerReservation {
             .init(profileID: p.id, promptTokenIDs: Array(repeating: 248_319, count: prompt),
                 stopTokenIDs: Array(248_064..<248_320), outputCount: output, chunkSize: 512,
-                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)
+                deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)
         }
         for (prompt, output) in [(229_376, 32_768), (262_143, 1), (65_537, 32_768)] {
             let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(Int64.max) - 1,

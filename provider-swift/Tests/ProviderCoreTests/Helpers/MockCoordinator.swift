@@ -443,7 +443,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     /// Force-close the active provider WebSocket so the provider's reconnect
     /// loop kicks in. The close frame carries `closeCode` and `reason`, so a
-    /// test can inject the close that a coordinator restart sends (1012).
+    /// test can inject the close that the edge sends on a Conductor change (1012).
     public func dropActiveWebSocket(
         closeCode: UInt16 = 1001, reason: String? = "mock dropping"
     ) async {

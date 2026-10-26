@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -137,7 +137,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 
 | Symptom | Mechanism | Fix |
 |---|---|---|
-| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`ExponentialBackoff`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
+| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`CoordinatorReconnectPolicy`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
 | Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |

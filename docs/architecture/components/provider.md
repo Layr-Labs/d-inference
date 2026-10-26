@@ -116,7 +116,8 @@ whether the new connection may serve. Unexpected disconnect still cancels that
 connection's inference requests; this does not resume interrupted completions
 or prove two-minute engine continuity.
 
-`CoordinatorClient.runLoop` waits before each new connection attempt.
+When a connection attempt fails or a session ends with an error,
+`CoordinatorClient.runLoop` waits before the next attempt.
 `CoordinatorReconnectPolicy` chooses the range of that wait from how the last
 attempt ended, and `runLoop` draws the wait at random from that range.
 `CoordinatorSessionRecorder` records how long the session stayed open after its
@@ -125,18 +126,21 @@ side. A session that stayed open for `stableSessionDuration` or more resets the
 backoff. A drop after a long session then does not pay the waits that earlier
 drops grew. A close frame with code `1012` (service restart) gives
 `serviceRestartDelayRange`, and the backoff does not grow. Every other end takes
-the next `ExponentialBackoff` range. The receive callback records the close code
-on the connection queue, because the transport state change that follows the
-frame can end the session first. Network.framework reports a code that it does
-not name, such as `1012`, as `noStatusReceived`; the callback then reads the
-code from the first two bytes of the frame's payload (`sentCloseCode`). The
+the next `ExponentialBackoff` range and grows the backoff. The receive callback
+records the close code on the connection queue, because the transport state
+change that follows the frame can end the session first. Network.framework
+reports a code that it does not name, such as `1012`, as `noStatusReceived`;
+the callback then reads the code from the first two bytes of the frame's
+payload (`sentCloseCode`). The
 [close codes](../../reference/protocol-messages.md#close-codes-and-the-reconnect-wait)
 and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
 give the codes and the values. Sources:
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`
-(`CoordinatorReconnectPolicy`) and
+(`CoordinatorReconnectPolicy`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`
-(`CoordinatorSessionRecorder`).
+(`CoordinatorSessionRecorder`) and
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
+(`runLoop`, `receiveLoop`, `sentCloseCode`).
 
 Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
 `NWConnection`, rather than the reconnectable outbound router. Late results are

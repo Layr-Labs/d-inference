@@ -1,6 +1,6 @@
 // CoordinatorClient connection lifecycle: reconnect loop with its reconnect
 // policy, a single WebSocket session (ping/heartbeat/reachability), the receive
-// loop, and reconnect telemetry.
+// loop with its close-code reader, and reconnect telemetry.
 
 import Foundation
 import Network
@@ -432,9 +432,9 @@ extension CoordinatorClient {
 
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
 
-            // A WebSocket close frame arrives as a (typically dataless) message
-            // tagged `.close`; surface it as a connection close so runLoop
-            // reconnects rather than spinning on empty receives.
+            // A WebSocket close frame arrives as a message tagged `.close`. Its
+            // content, if any, is the close payload, not a JSON message: surface
+            // it as a connection close so runLoop reconnects.
             if let wsMeta, wsMeta.opcode == .close {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }

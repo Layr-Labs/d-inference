@@ -508,21 +508,20 @@ internal final class CoordinatorSessionRecorder: @unchecked Sendable {
     private var openedAt: ContinuousClock.Instant?
     private var closeCode: UInt16?
 
-    func markOpened(at instant: ContinuousClock.Instant = .now) {
-        lock.withLock { openedAt = instant }
+    func markOpened() {
+        let now = ContinuousClock.now
+        lock.withLock { openedAt = now }
     }
 
-    /// Keeps the first code: one connection receives at most one close frame.
+    /// `receiveLoop` ends at the first close frame, so this runs at most once.
     func recordCloseCode(_ code: UInt16) {
-        lock.withLock {
-            if closeCode == nil { closeCode = code }
-        }
+        lock.withLock { closeCode = code }
     }
 
-    func end(at instant: ContinuousClock.Instant = .now) -> CoordinatorSessionEnd {
-        lock.withLock {
-            CoordinatorSessionEnd(
-                openDuration: openedAt.map { instant - $0 }, closeCode: closeCode)
+    func end() -> CoordinatorSessionEnd {
+        let now = ContinuousClock.now
+        return lock.withLock {
+            CoordinatorSessionEnd(openDuration: openedAt.map { now - $0 }, closeCode: closeCode)
         }
     }
 }

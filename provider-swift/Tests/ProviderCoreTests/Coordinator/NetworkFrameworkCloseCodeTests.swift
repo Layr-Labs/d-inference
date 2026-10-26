@@ -70,7 +70,8 @@ struct NetworkFrameworkCloseCodeTests {
 }
 
 /// TCP plus the WebSocket protocol with automatic ping replies, as
-/// `CoordinatorClient` uses them for a `ws://` URL.
+/// `CoordinatorClient` uses them for a `ws://` URL, without its TCP_NODELAY
+/// and maximum message size options.
 private func webSocketParameters() -> NWParameters {
     let parameters = NWParameters.tcp
     let options = NWProtocolWebSocket.Options()

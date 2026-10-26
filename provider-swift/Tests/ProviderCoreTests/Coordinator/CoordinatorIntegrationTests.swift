@@ -457,72 +457,36 @@ struct CoordinatorIntegrationTests {
 
     /// Fault injected at the socket seam: the stand-in coordinator writes a
     /// WebSocket close frame with code 1012 (service restart) and the reason
-    /// "conductor failover" on the live provider socket. Two ordinary closes
-    /// first grow the backoff to a 2-4 s wait, so a provider that handled 1012
-    /// like any other close cannot register again within the bound.
+    /// "conductor failover" on the live provider socket. The provider's grown
+    /// backoff would wait 2-4 s, so a provider that handled 1012 like any other
+    /// close cannot register again within the bound.
     @Test("a 1012 close from the coordinator side brings the provider back within 1 s")
     func serviceRestartCloseReconnectsWithinOneSecond() async throws {
-        let mock = MockCoordinator()
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
-
-        let coordinator = makeClient(
-            url: baseURL.mockProviderWebSocketURL(),
-            publicKey: NodeKeyPair.generate().publicKeyBase64,
-            heartbeatInterval: 60
-        )
-        let (events, _) = await coordinator.start()
-        let drainTask = Task { for await _ in events {} }
-        defer {
-            drainTask.cancel()
-            Task { await coordinator.shutdown() }
+        try await withGrownReconnectBackoff { mock in
+            let restart = try await reregistrationTime(
+                after: mock, closeCode: 1012, reason: "conductor failover")
+            let elapsed = try #require(restart, "no registration after the 1012 close")
+            // The wait is 0-1 s, plus a loopback reconnect. The grown backoff waits 2 s or more.
+            #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the 1012 close")
         }
-
-        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
-        try #require(first != nil)
-        try await growReconnectBackoff(of: mock, ordinaryCloses: 2)
-
-        let restart = try await reregistrationTime(
-            after: mock, closeCode: 1012, reason: "conductor failover")
-        let elapsed = try #require(restart, "no registration after the 1012 close")
-        // The wait is 0-1 s, plus a loopback reconnect. The grown backoff waits 2 s or more.
-        #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the 1012 close")
     }
 
     // MARK: 3d. A stable session resets the reconnect backoff
 
     /// The policy here resets the backoff after a session of 1 s instead of
-    /// 60 s. Two short sessions grow the backoff to a 2-4 s wait. The third
-    /// session stays open for 1.5 s, so its ordinary close (code 1001) must
-    /// reconnect after the shortest wait, 0.5-1 s.
+    /// 60 s. After the backoff has grown to a 2-4 s wait, the next session
+    /// stays open for 1.5 s, so its ordinary close (code 1001) must reconnect
+    /// after the shortest wait, 0.5-1 s.
     @Test("a session open past the stable duration reconnects after the shortest wait")
     func stableSessionCloseReconnectsAfterShortestWait() async throws {
-        let mock = MockCoordinator()
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
-
-        let coordinator = makeClient(
-            url: baseURL.mockProviderWebSocketURL(),
-            publicKey: NodeKeyPair.generate().publicKeyBase64,
-            heartbeatInterval: 60,
-            reconnectPolicy: CoordinatorReconnectPolicy(stableSessionDuration: .seconds(1))
-        )
-        let (events, _) = await coordinator.start()
-        let drainTask = Task { for await _ in events {} }
-        defer {
-            drainTask.cancel()
-            Task { await coordinator.shutdown() }
+        let policy = CoordinatorReconnectPolicy(stableSessionDuration: .seconds(1))
+        try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
+            try await Task.sleep(for: .milliseconds(1500))
+            let stable = try await reregistrationTime(after: mock)
+            let elapsed = try #require(stable, "no registration after the stable session closed")
+            // The wait is 0.5-1 s, plus a loopback reconnect. Without the reset it is 2-4 s.
+            #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the close")
         }
-
-        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
-        try #require(first != nil)
-        try await growReconnectBackoff(of: mock, ordinaryCloses: 2)
-
-        try await Task.sleep(for: .milliseconds(1500))
-        let stable = try await reregistrationTime(after: mock)
-        let elapsed = try #require(stable, "no registration after the stable session closed")
-        // The wait is 0.5-1 s, plus a loopback reconnect. Without the reset it is 2-4 s.
-        #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the close")
     }
 
     // MARK: 4. EnrollmentService round-trip
@@ -713,29 +677,53 @@ private func makeClient(
 }
 
 /// Closes the provider's socket from the coordinator side and returns how long
-/// the provider took to send its next `register`; nil when none came in `timeout`.
+/// the provider took to send its next `register`; nil when none came in 10 s.
 private func reregistrationTime(
     after mock: MockCoordinator,
     closeCode: UInt16 = 1001,
-    reason: String? = "mock dropping",
-    timeout: Duration = .seconds(10)
+    reason: String? = "mock dropping"
 ) async throws -> Duration? {
     let registersBefore = mock.snapshot().registers.count
     let closedAt = ContinuousClock.now
     await mock.dropActiveWebSocket(closeCode: closeCode, reason: reason)
-    let after = try await mock.waitForSnapshot(timeout: timeout) {
+    let after = try await mock.waitForSnapshot(timeout: .seconds(10)) {
         $0.registers.count > registersBefore
     }
     return after.map { _ in ContinuousClock.now - closedAt }
 }
 
-/// Grows the provider's reconnect backoff with ordinary closes (code 1001) of
-/// short sessions. Each close waits for the registration that follows it.
-private func growReconnectBackoff(of mock: MockCoordinator, ordinaryCloses: Int) async throws {
-    for _ in 0..<ordinaryCloses {
+/// Connects a provider with `reconnectPolicy` to a fresh `MockCoordinator` and
+/// grows its reconnect backoff with two ordinary closes (code 1001) of short
+/// sessions, each followed by the next registration. The provider's next
+/// ordinary wait is then 2-4 s. Runs `body` against the connected stand-in.
+private func withGrownReconnectBackoff(
+    reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
+    _ body: (MockCoordinator) async throws -> Void
+) async throws {
+    let mock = MockCoordinator()
+    let baseURL = try await mock.start()
+    defer { Task { await mock.shutdown() } }
+
+    let coordinator = makeClient(
+        url: baseURL.mockProviderWebSocketURL(),
+        publicKey: NodeKeyPair.generate().publicKeyBase64,
+        heartbeatInterval: 60,
+        reconnectPolicy: reconnectPolicy
+    )
+    let (events, _) = await coordinator.start()
+    let drainTask = Task { for await _ in events {} }
+    defer {
+        drainTask.cancel()
+        Task { await coordinator.shutdown() }
+    }
+
+    let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+    try #require(first != nil)
+    for _ in 0..<2 {
         let elapsed = try await reregistrationTime(after: mock)
         try #require(elapsed != nil, "no registration after an ordinary close")
     }
+    try await body(mock)
 }
 
 private func integrationHardware() -> HardwareInfo {

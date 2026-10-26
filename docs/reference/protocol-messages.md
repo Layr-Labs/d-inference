@@ -173,10 +173,10 @@ deliver a graceful-drain acknowledgement.
 ## Close codes and the reconnect wait
 
 The provider reads the code of a WebSocket close frame from the coordinator side
-only to choose the wait before its next connection attempt
+to choose the wait before its next connection attempt
 (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`,
-`CoordinatorReconnectPolicy`). It does not read the close reason, and no JSON
-frame changes.
+`CoordinatorReconnectPolicy`). It does not read the close reason. The code is
+part of the WebSocket close frame, not of a JSON frame.
 
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|

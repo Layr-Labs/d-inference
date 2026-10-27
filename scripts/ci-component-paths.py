@@ -10,7 +10,7 @@ import re
 import subprocess
 
 
-COMPONENTS = ("provider",)
+COMPONENTS = ("provider", "console")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
     ".github/workflows/darkbloom-route.yml",
@@ -32,6 +32,11 @@ PROVIDER = (
     "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
+CONSOLE = (
+    "console-ui/**", ".githooks/**",
+    "coordinator/tests/protocol/testdata/paged_footprint_wire.json",
+    "coordinator/tests/protocol/testdata/process_memory_wire.json",
+)
 
 
 def matches(path, patterns):
@@ -50,6 +55,7 @@ def classify(paths):
         ci = path == ".github/workflows/ci.yml"
         provider = matches(path, PROVIDER)
         selected["provider"] |= ci or provider
+        selected["console"] |= ci or matches(path, CONSOLE)
     return selected
 
 

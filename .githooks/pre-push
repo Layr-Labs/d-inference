@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# Pre-push hook for d-inference.
+# Runs the retained console checks before pushing.
+#
+# Install: git config core.hooksPath .githooks
+#
+
+set -euo pipefail
+
+FAILED=0
+
+# Check which components have changes being pushed.
+# Compare local HEAD against the remote ref being pushed to.
+RANGE=""
+while read local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+        continue  # deleting branch
+    fi
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        RANGE="$local_sha"  # new branch
+    else
+        RANGE="$remote_sha..$local_sha"
+    fi
+done
+
+if [ -z "$RANGE" ]; then
+    exit 0
+fi
+
+CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
+
+# Avoid an early-exit grep pipeline: with pipefail, a large list can make the
+# producer receive SIGPIPE and incorrectly classify a matching component as absent.
+HAS_TS=0
+if grep -q '^console-ui/' <<< "$CHANGED_FILES"; then
+    HAS_TS=1
+fi
+
+# ---------------------------------------------------------------------------
+# TypeScript — lint + build
+# ---------------------------------------------------------------------------
+if [ "$HAS_TS" = "1" ]; then
+    echo ">> [pre-push] TypeScript lint check..."
+    if ! (cd console-ui && npx eslint --quiet src/ 2>&1 | tail -10); then
+        echo "ERROR: TypeScript lint failed. Fix with: cd console-ui && npx eslint --fix src/"
+        FAILED=1
+    fi
+
+    echo ">> [pre-push] Next.js build check..."
+    if ! (cd console-ui && npm run build 2>&1 | tail -10); then
+        echo "ERROR: Next.js build failed."
+        FAILED=1
+    fi
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "Pre-push checks failed. Fix the issues above before pushing."
+    exit 1
+fi
+
+echo ">> [pre-push] All checks passed."

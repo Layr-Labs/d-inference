@@ -1,6 +1,6 @@
 # Repository Ownership And Navigation
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-13
 
 Use this map to find the provider/native owner before changing code. Centralized
 backend and web-application development belongs to a different repository.
@@ -10,8 +10,8 @@ backend and web-application development belongs to a different repository.
 Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
 checkouts. Never nest them. Check remotes, branch and the full diff before pushing.
 New backend, Rust sidecar, console and admin code must never be uploaded here.
-The web console lives in darkbloom-platform (`console-ui`); this repository no
-longer keeps a console snapshot.
+The existing console snapshot and its build/test/hosting configuration remain
+local; this retention does not change the platform's development ownership.
 
 For coordinator diagnosis or changes, fetch the platform's current default
 branch and read its `AGENTS.md` and relevant implementation. Old d-inference
@@ -24,8 +24,8 @@ copies and immutable evidence links do not describe the latest coordinator.
 | Native execution, kernels and model families | `libs/mlx-swift/`, `libs/mlx-swift-lm/`, `libs/mlx/` |
 | Provider and native regression coverage | `provider-swift/Tests/`, SDK test targets |
 | Marketing app, including local API routes | `landing/` |
-| Web console | Platform repository; see [console](../architecture/components/console-ui.md) |
-| Shared protocol JSON fixtures | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
+| Retained console snapshot and existing tooling | `console-ui/`; [architecture](../architecture/components/console-ui.md), new development owned by the platform |
+| Shared JSON fixtures used by console tests | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
 | Coordinator, private integration, consumer console and admin | [Current platform source](https://github.com/Layr-Labs/darkbloom-platform) |
 | Backend contracts and deployment runbooks | [Current platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/master/docs) |
 

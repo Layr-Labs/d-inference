@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-26
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -995,6 +995,7 @@ python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
+python3 scripts/test-darkbloom-route.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
@@ -1019,6 +1020,15 @@ with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
 publication.
+
+`scripts/test-darkbloom-route.py` runs the actual
+[CI runner routing](build.md#ci-runner-routing) shell step against a loopback
+HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
+and openssl. It covers the default-off switch, fork pull requests, exact label
+grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows on literal Blacksmith
+runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical

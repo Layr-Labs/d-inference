@@ -1,0 +1,162 @@
+name: Darkbloom Route
+
+# Chooses a runner for each read-only CI lane: a Darkbloom Sandbox when the
+# plane grants one, otherwise the lane's fallback label. Callers run each job on
+# `fromJSON(needs.route.outputs.routes)['<lane>']`. Routing is off unless the
+# DARKBLOOM_ROUTING variable is exactly `on`; the plane can never fail this job.
+on:
+  workflow_call:
+    inputs:
+      lanes:
+        description: >-
+          One lane per line: `<lane> <profile> <fallback-label> [count]`.
+          Profiles are linux_arm64 and macos_arm64. Count is the number of jobs
+          that will run (default 1); 0 keeps the fallback without asking.
+        type: string
+        required: true
+    outputs:
+      routes:
+        description: JSON object mapping every lane to its runs-on value.
+        value: ${{ jobs.select.outputs.routes }}
+
+permissions: {}
+
+jobs:
+  select:
+    name: Select Runners
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 3
+    outputs:
+      routes: ${{ steps.route.outputs.routes }}
+    steps:
+      - name: Choose a Darkbloom or fallback runner for each lane
+        id: route
+        shell: bash
+        env:
+          LANES: ${{ inputs.lanes }}
+          ROUTING: ${{ vars.DARKBLOOM_ROUTING }}
+          PLANE_URL: ${{ vars.DARKBLOOM_SANDBOX_URL }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          # The only labels a lane can receive besides its fallback. A plane
+          # decision is used only when it repeats its profile's array exactly.
+          profiles='{"linux_arm64":["self-hosted","linux","ARM64","darkbloom-linux-arm64"],"macos_arm64":["self-hosted","macOS","ARM64","darkbloom-macos-arm64"]}'
+          # Plane text is untrusted: keep it short, on one line, and free of
+          # Markdown, HTML and workflow-command syntax before printing it.
+          clean='def clean: tostring | gsub("[^A-Za-z0-9 _.,:;/=+()-]"; "?") | .[0:120];'
+
+          configuration_error() {
+            echo "::error title=Darkbloom route configuration::$1"
+            exit 1
+          }
+
+          requested='[]'
+          seen=' '
+          while read -r lane profile fallback count extra; do
+            [ -n "$lane" ] || continue
+            count=${count:-1}
+            [ -z "$extra" ] || configuration_error "lane $lane has more than four fields"
+            [[ $lane =~ ^[A-Za-z0-9_-]+$ ]] || configuration_error "invalid lane name: $lane"
+            jq -e --arg profile "$profile" 'has($profile)' <<<"$profiles" >/dev/null \
+              || configuration_error "lane $lane has unknown profile: $profile"
+            [[ $fallback =~ ^[A-Za-z0-9._-]+$ ]] \
+              || configuration_error "lane $lane has invalid fallback label: $fallback"
+            [[ $count =~ ^(0|[1-9][0-9]?)$ ]] || configuration_error "lane $lane has invalid count: $count"
+            case $seen in *" $lane "*) configuration_error "lane $lane is listed twice" ;; esac
+            seen="$seen$lane "
+            requested=$(jq -c --arg lane "$lane" --arg profile "$profile" --arg fallback "$fallback" \
+              --argjson count "$count" '. + [{$lane, $profile, $fallback, $count}]' <<<"$requested")
+          done <<<"${LANES:-}"
+          [ "$requested" != '[]' ] || configuration_error "no lanes are configured"
+
+          plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
+          wanted=$(jq '[.[] | select(.count > 0)] | length' <<<"$requested")
+          body=$(mktemp)
+          trap 'rm -f "$body"' EXIT
+          reply=/dev/null
+          reason=""
+          if [ "${ROUTING:-}" != on ]; then
+            reason="routing is off"
+            note="Routing is off: DARKBLOOM_ROUTING is not 'on'. No request was sent."
+          elif [[ ${EVENT_NAME:-} == pull_request* && ${HEAD_REPOSITORY:-} != "${REPOSITORY:-}" ]]; then
+            reason="pull request from a fork"
+            note="Pull requests from forks keep their fallback runners. No request was sent."
+          elif [ "$wanted" = 0 ]; then
+            note="No lane has jobs to run. No request was sent."
+          elif [[ $plane_url != https://* ]]; then
+            reason="plane URL is not https"
+            note="DARKBLOOM_SANDBOX_URL must start with https://. No request was sent."
+          elif ! [[ ${RUN_ID:-} =~ ^[0-9]+$ && ${RUN_ATTEMPT:-} =~ ^[0-9]+$ ]]; then
+            reason="run identity is unavailable"
+            note="The run ID or attempt is not numeric. No request was sent."
+          else
+            request=$(jq -c --arg repository "$REPOSITORY" --argjson run_id "$RUN_ID" \
+              --argjson run_attempt "$RUN_ATTEMPT" \
+              '{$repository, $run_id, $run_attempt, lanes: [.[] | select(.count > 0) | {lane, profile, count}]}' \
+              <<<"$requested")
+            # One attempt plus at most one retry after a transport failure,
+            # timeout or transient status; each attempt is bounded to 5 seconds.
+            for attempt in 1 2; do
+              status=$(curl --disable --silent --show-error --proto '=https' --max-time 5 \
+                --max-filesize 65536 --user-agent darkbloom-route/1 --request POST \
+                --header 'Content-Type: application/json' --header 'Accept: application/json' \
+                --data-binary @- --output "$body" --write-out '%{http_code}' \
+                "${plane_url%/}/v1/ci/routes" <<<"$request") || status=000
+              case $status in
+                000|408|429|5??) [ "$attempt" = 2 ] || sleep 1 ;;
+                *) break ;;
+              esac
+            done
+            if [ "$status" != 200 ]; then
+              reason="plane request failed (HTTP $status)"
+            elif ! jq -e -s 'length == 1 and (.[0] | type == "object"
+                and (.route_id | type == "string" and length > 0)
+                and (.expires_at | type == "string")
+                and (.lanes | type == "object"))' "$body" >/dev/null 2>&1; then
+              reason="plane reply is malformed"
+            else
+              reply=$body
+            fi
+            if [ -n "$reason" ]; then
+              note="Asked $plane_url: $reason. Requested lanes keep their fallback runners."
+            else
+              note=$(jq -r --arg url "$plane_url" \
+                "$clean"'"Asked \($url): route \(.route_id | clean), expires \(.expires_at | clean)."' "$body")
+            fi
+          fi
+
+          decisions=$(jq -n -c --argjson requested "$requested" --argjson profiles "$profiles" \
+            --arg reason "$reason" --slurpfile reply "$reply" "$clean"'
+            ($reply[0].lanes // {}) as $granted
+            | [ $requested[]
+                | ($granted[.lane] | if type == "object" then . else {} end) as $decision
+                | if .count == 0 then .target = "fallback" | .reason = "not requested"
+                  elif $reason != "" then .target = "fallback" | .reason = $reason
+                  elif $decision.target == "darkbloom" and $decision.runs_on == $profiles[.profile]
+                  then .target = "darkbloom" | .reason = "granted"
+                  elif $decision.target == "fallback"
+                  then .target = "fallback" | .reason = "plane: " + ($decision.reason // "no reason" | clean)
+                  else .target = "fallback" | .reason = "plane decision is missing or invalid"
+                  end
+                | .runs_on = (if .target == "darkbloom" then $profiles[.profile] else .fallback end) ]')
+          routes=$(jq -c 'map({key: .lane, value: .runs_on}) | from_entries' <<<"$decisions")
+          echo "routes=$routes" >> "$GITHUB_OUTPUT"
+
+          echo "$note"
+          jq -r '.[] | "\(.lane): \(.runs_on | if type == "array" then join(",") else . end) (\(.reason))"' <<<"$decisions"
+          {
+            echo "### Darkbloom runner routing"
+            echo
+            echo "$note"
+            echo
+            echo "| Lane | Profile | Jobs | Runner | Decision |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '.[] | "| `\(.lane)` | \(.profile) | \(.count) | `\(.runs_on | if type == "array" then join(", ") else . end)` | \(.target): \(.reason) |"' <<<"$decisions"
+          } >> "$GITHUB_STEP_SUMMARY"

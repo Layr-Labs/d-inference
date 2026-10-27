@@ -133,6 +133,49 @@ struct AddonIPCServerTests {
         #expect(!handled.value)
     }
 
+    @Test func silentUnsignedPeersCannotTakeTheAddonsConnectionSlots() throws {
+        let fixture = try AddonRuntimeFixture()
+        defer { fixture.remove() }
+        let signer = AddonTestSigner()
+        let server = try makeServer(fixture, authenticate: { signer.check($0) })
+        defer { server.stop() }
+        // Unsigned programs open every slot and never send a request.
+        let silent = try (0..<AddonIPCServer.maximumConnections).map { _ in
+            try AddonSocketClient(path: fixture.paths.socket.path)
+        }
+        // Each is checked when accepted, not at its first request line.
+        #expect(addonPoll(.seconds(2)) { signer.checks >= silent.count })
+        signer.admit()
+        let addon = try AddonSocketClient(path: fixture.paths.socket.path)
+        let hello = try addon.request(#"{"v":1,"op":"hello"}"#)
+        try #require(hello["ok"] as? Bool == true, "the signed add-on found no slot: \(hello)")
+        for client in silent {
+            #expect(client.readLine()?.contains("unauthorized") == true)
+            #expect(client.readLine() == nil)
+        }
+    }
+
+    @Test func anUnfinishedRequestLineIsBoundedWhileItsBytesTrickleIn() throws {
+        let fixture = try AddonRuntimeFixture()
+        defer { fixture.remove() }
+        let server = AddonIPCServer(socketURL: fixture.paths.socket, authenticate: { _ in Self.peer },
+                                    handle: { _, _ in .hello(providerVersion: "test") },
+                                    requestTimeout: .milliseconds(300))
+        try server.start()
+        defer { server.stop() }
+        let client = try AddonSocketClient(path: fixture.paths.socket.path)
+        let started = ContinuousClock.now
+        // One byte every 100 ms keeps the connection active but never
+        // completes a line.
+        for _ in 0..<10 {
+            client.send("{")
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        #expect(client.readLine()?.contains("invalid_request") == true)
+        #expect(client.readLine() == nil)
+        #expect(ContinuousClock.now - started < .seconds(5))
+    }
+
     @Test func aStaleSocketIsReplacedButALiveOneIsNeverTakenOver() throws {
         let fixture = try AddonRuntimeFixture()
         defer { fixture.remove() }
@@ -176,4 +219,29 @@ final class AddonLockedFlag: @unchecked Sendable {
     private var flag = false
     func set() { lock.withLock { flag = true } }
     var value: Bool { lock.withLock { flag } }
+}
+
+/// Verifies peers as the signed add-on only once admitted; counts checks.
+final class AddonTestSigner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var admitted = false
+    private var count = 0
+    var checks: Int { lock.withLock { count } }
+    func admit() { lock.withLock { admitted = true } }
+    func check(_: audit_token_t) -> AddonPeer? {
+        lock.withLock {
+            count += 1
+            return admitted ? AddonPeer(identifier: "io.darkbloom.sandbox") : nil
+        }
+    }
+}
+
+/// Polls `condition` from a synchronous test for up to `timeout`.
+func addonPoll(_ timeout: Duration, _ condition: () -> Bool) -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if condition() { return true }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return condition()
 }

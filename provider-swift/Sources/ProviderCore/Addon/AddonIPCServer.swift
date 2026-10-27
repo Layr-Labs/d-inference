@@ -1,9 +1,11 @@
 import Darwin
 import Foundation
 
-/// Serves `hold.v1` on the owner-only add-on socket. Connections are few and
-/// short, so each gets a dedicated thread with bounded, polled blocking I/O;
-/// nothing here runs on the Swift cooperative pool except the handler call.
+/// Serves `hold.v1` on the owner-only add-on socket. A connection is verified
+/// when accepted, before it takes one of `maximumConnections` slots, and again
+/// for every request. Connections are few and short, so each gets a dedicated
+/// thread with bounded, polled blocking I/O; nothing here runs on the Swift
+/// cooperative pool except the handler call.
 final class AddonIPCServer: @unchecked Sendable {
     typealias Authenticate = @Sendable (audit_token_t) -> AddonPeer?
     typealias Handle = @Sendable (AddonIPC.Request, AddonPeer) async -> AddonIPC.Response
@@ -25,6 +27,9 @@ final class AddonIPCServer: @unchecked Sendable {
     static let maximumConnections = 8
     /// An idle connection is closed; the add-on reconnects for its next renew.
     static let idleTimeout: Duration = .seconds(300)
+    /// A request line must complete this long after its first byte arrives,
+    /// however slowly the rest trickles in.
+    static let requestTimeout: Duration = .seconds(10)
     static let handlerTimeout: Duration = .seconds(30)
     private static let writeTimeout: Duration = .seconds(5)
     private static let pollMilliseconds: Int32 = 200
@@ -32,6 +37,8 @@ final class AddonIPCServer: @unchecked Sendable {
     let socketURL: URL
     private let authenticate: Authenticate
     private let handle: Handle
+    private let idleTimeout: Duration
+    private let requestTimeout: Duration
     private let log: @Sendable (String) -> Void
     private let lock = NSLock()
     private var stopped = false
@@ -41,10 +48,14 @@ final class AddonIPCServer: @unchecked Sendable {
     private var boundSocket: (device: dev_t, inode: ino_t)?
 
     init(socketURL: URL, authenticate: @escaping Authenticate, handle: @escaping Handle,
+         idleTimeout: Duration = AddonIPCServer.idleTimeout,
+         requestTimeout: Duration = AddonIPCServer.requestTimeout,
          log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.socketURL = socketURL
         self.authenticate = authenticate
         self.handle = handle
+        self.idleTimeout = idleTimeout
+        self.requestTimeout = requestTimeout
         self.log = log
     }
 
@@ -125,6 +136,13 @@ final class AddonIPCServer: @unchecked Sendable {
             let fd = Darwin.accept(listener, nil, nil)
             guard fd >= 0 else { continue }
             guard (try? Self.configure(fd)) != nil else { Darwin.close(fd); continue }
+            // Verify the signer before the connection takes a slot: a peer
+            // that never sends a request must not keep the add-on out.
+            guard verifiedPeer(fd) != nil else {
+                _ = Self.write(AddonIPC.encode(.failure(.unauthorized)), to: fd)
+                Darwin.close(fd)
+                continue
+            }
             let admitted: Bool = lock.withLock {
                 guard !stopped, connections.count < Self.maximumConnections else { return false }
                 connections.insert(fd)
@@ -150,16 +168,22 @@ final class AddonIPCServer: @unchecked Sendable {
         }
         var buffer = Data()
         var lastActivity = ContinuousClock.now
+        /// When the server first held the unfinished line now in `buffer`.
+        var lineStarted: ContinuousClock.Instant?
         var chunk = [UInt8](repeating: 0, count: 4_096)
         while !isStopped {
             while let newline = buffer.firstIndex(of: 0x0A) {
                 let line = Data(buffer[buffer.startIndex..<newline])
                 buffer = Data(buffer[buffer.index(after: newline)...])
+                lineStarted = nil
                 let (response, keepOpen) = respond(to: line, on: fd)
                 guard Self.write(AddonIPC.encode(response), to: fd), keepOpen else { return }
             }
-            // A line that cannot fit cannot be resynchronized: answer once, close.
-            guard buffer.count <= AddonIPC.maximumMessageBytes else {
+            if !buffer.isEmpty, lineStarted == nil { lineStarted = .now }
+            // A line that cannot fit, or does not finish in time however its
+            // bytes trickle in, cannot be resynchronized: answer once, close.
+            if buffer.count > AddonIPC.maximumMessageBytes
+                || lineStarted.map({ ContinuousClock.now - $0 >= requestTimeout }) == true {
                 _ = Self.write(AddonIPC.encode(.failure(.invalidRequest)), to: fd)
                 return
             }
@@ -167,7 +191,7 @@ final class AddonIPCServer: @unchecked Sendable {
             let ready = poll(&descriptor, 1, Self.pollMilliseconds)
             if ready < 0 && errno != EINTR { return }
             if ready <= 0 {
-                if ContinuousClock.now - lastActivity >= Self.idleTimeout { return }
+                if ContinuousClock.now - lastActivity >= idleTimeout { return }
                 continue
             }
             let count = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
@@ -181,19 +205,25 @@ final class AddonIPCServer: @unchecked Sendable {
         }
     }
 
-    /// The peer is verified for every request: a peer that later executed
-    /// other code no longer matches the audit token captured at connect.
+    /// The peer is verified again for every request: a peer that later
+    /// executed other code no longer matches the audit token captured at connect.
     private func respond(to line: Data, on fd: Int32) -> (AddonIPC.Response, keepOpen: Bool) {
-        guard let token = AddonPeerPolicy.peerToken(fd), let peer = authenticate(token) else {
-            log("Add-on IPC: refused an unauthenticated peer")
-            return (.failure(.unauthorized), false)
-        }
+        guard let peer = verifiedPeer(fd) else { return (.failure(.unauthorized), false) }
         switch AddonIPC.parse(line) {
         case .failure(let code):
             return (.failure(code), true)
         case .success(let request):
             return (invoke(request, peer: peer), true)
         }
+    }
+
+    /// The connection's kernel audit token checked against the add-on policy.
+    private func verifiedPeer(_ fd: Int32) -> AddonPeer? {
+        guard let token = AddonPeerPolicy.peerToken(fd), let peer = authenticate(token) else {
+            log("Add-on IPC: refused an unauthenticated peer")
+            return nil
+        }
+        return peer
     }
 
     private func invoke(_ request: AddonIPC.Request, peer: AddonPeer) -> AddonIPC.Response {

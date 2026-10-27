@@ -193,8 +193,6 @@ extension ProviderLoop {
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
-        // A member answers only through its published pair slot (S09).
-        if isClusterMember && clusterPairSlot == nil { rejectClusterMemberInference(requestId, send: send); return }
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
             send.send(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -256,6 +254,17 @@ extension ProviderLoop {
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
             }
+        }
+
+        // A member answers only through its published pair slot (S09). The
+        // slot can retire after the dispatcher let this request through, so
+        // the refusal runs after the reservation and receipt owners exist:
+        // the defer above releases the reservation and settles the receipt.
+        if isClusterMember && clusterPairSlot == nil {
+            lookupReceiptFinalizer.sendTerminal(
+                Self.clusterMemberInferenceRefusal(requestId),
+                fallbackFailure: .capacity, send: send)
+            return
         }
 
         if rejectIfFirstContentDeadlineExpired(

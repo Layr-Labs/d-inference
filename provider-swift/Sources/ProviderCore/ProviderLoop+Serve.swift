@@ -21,7 +21,9 @@ extension ProviderLoop {
     public func run() async throws {
         startLifecycleMonitor()
         defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
-        if servingDrain.refusing { return }
+        // An add-on hold refuses inference but keeps this startup going; only
+        // a stop, update or other service change ends it before registration.
+        if servingDrain.refusingForServiceChange { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -69,9 +71,14 @@ extension ProviderLoop {
             if usesHostServices { OOMDetector.clearMarker() }
         }
 
+        // A persisted add-on hold must close admission before the local
+        // endpoint or the startup preload could load a model.
+        startAddonHoldService()
+        defer { stopAddonHoldService() }
+
         // 1. Apply security hardening
         try await applySecurityHardening()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -83,7 +90,7 @@ extension ProviderLoop {
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -125,7 +132,7 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -194,7 +201,7 @@ extension ProviderLoop {
 
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }
@@ -217,7 +224,7 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             await coordinator.shutdown()
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
@@ -225,7 +232,7 @@ extension ProviderLoop {
             return
         }
         let (events, sendFn) = await coordinator.start()
-        if Task.isCancelled || servingDrain.refusing {
+        if Task.isCancelled || servingDrain.refusingForServiceChange {
             guard await shutdownBeforeRegistration() else {
                 throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
             }

@@ -8,7 +8,10 @@ extension ProviderLoop {
         // admission; the serve task performs slot teardown before returning.
         startupPreloadTask?.cancel()
         startupPreloadGateWaiter?.cancel()
-        if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
+        // An add-on hold reports through its own daemon-state record.
+        if servingDrain.owner != .lifecycle && servingDrain.owner != .addonHold {
+            lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining)
+        }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
     }
@@ -148,6 +151,7 @@ extension ProviderLoop {
                     Task { await self?.handleLifecycleCommand(request) }
                 }
                 _ = await self?.acceptPendingModelSwitch(from: mailbox)
+                _ = await self?.acceptPendingAddonControl(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }

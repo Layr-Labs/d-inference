@@ -167,13 +167,14 @@ Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. While it is off, and for pull requests from forks, every job keeps its
 fallback and the plane is not contacted. When it is on, the route job sends one
 `POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
-`https://api-sandbox.darkbloom.dev`) for the jobs that will run and retries
-once. It uses a grant only when the grant repeats the exact Darkbloom labels
-for the job's profile. Errors, timeouts and malformed replies keep the
-fallback; the plane never fails the route job. Release, signing, publication,
-model registration, review automation, `cache-swift` and `master` or dispatched
-cache warming keep literal Blacksmith labels. The component classifier and the
-`Provider Tests` gate run on `ubuntu-24.04`.
+`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
+most once after a transient failure. It uses a grant only when the grant
+repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+malformed replies keep the fallback; the plane never fails the route job.
+Release, signing, publication, model registration, review automation,
+`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
+labels. The component classifier and the `Provider Tests` gate run on
+`ubuntu-24.04`.
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.

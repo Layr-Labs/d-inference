@@ -57,7 +57,7 @@ jobs:
             exit 1
           }
 
-          requested='[]'
+          configured='[]'
           seen=' '
           while read -r lane profile fallback count extra; do
             [ -n "$lane" ] || continue
@@ -71,36 +71,35 @@ jobs:
             [[ $count =~ ^(0|[1-9][0-9]?)$ ]] || configuration_error "lane $lane has invalid count: $count"
             case $seen in *" $lane "*) configuration_error "lane $lane is listed twice" ;; esac
             seen="$seen$lane "
-            requested=$(jq -c --arg lane "$lane" --arg profile "$profile" --arg fallback "$fallback" \
-              --argjson count "$count" '. + [{$lane, $profile, $fallback, $count}]' <<<"$requested")
+            configured=$(jq -c --arg lane "$lane" --arg profile "$profile" --arg fallback "$fallback" \
+              --argjson count "$count" '. + [{$lane, $profile, $fallback, $count}]' <<<"$configured")
           done <<<"${LANES:-}"
-          [ "$requested" != '[]' ] || configuration_error "no lanes are configured"
+          [ "$configured" != '[]' ] || configuration_error "no lanes are configured"
+          requested=$(jq -c '[.[] | select(.count > 0) | {lane, profile, count}]' <<<"$configured")
 
           plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
-          wanted=$(jq '[.[] | select(.count > 0)] | length' <<<"$requested")
           body=$(mktemp)
           trap 'rm -f "$body"' EXIT
           reply=/dev/null
-          reason=""
+          fallback_reason=""
           if [ "${ROUTING:-}" != on ]; then
-            reason="routing is off"
+            fallback_reason="routing is off"
             note="Routing is off: DARKBLOOM_ROUTING is not 'on'. No request was sent."
           elif [[ ${EVENT_NAME:-} == pull_request* && ${HEAD_REPOSITORY:-} != "${REPOSITORY:-}" ]]; then
-            reason="pull request from a fork"
+            fallback_reason="pull request from a fork"
             note="Pull requests from forks keep their fallback runners. No request was sent."
-          elif [ "$wanted" = 0 ]; then
+          elif [ "$requested" = '[]' ]; then
             note="No lane has jobs to run. No request was sent."
           elif [[ $plane_url != https://* ]]; then
-            reason="plane URL is not https"
+            fallback_reason="plane URL is not https"
             note="DARKBLOOM_SANDBOX_URL must start with https://. No request was sent."
           elif ! [[ ${RUN_ID:-} =~ ^[0-9]+$ && ${RUN_ATTEMPT:-} =~ ^[0-9]+$ ]]; then
-            reason="run identity is unavailable"
+            fallback_reason="run identity is unavailable"
             note="The run ID or attempt is not numeric. No request was sent."
           else
-            request=$(jq -c --arg repository "$REPOSITORY" --argjson run_id "$RUN_ID" \
-              --argjson run_attempt "$RUN_ATTEMPT" \
-              '{$repository, $run_id, $run_attempt, lanes: [.[] | select(.count > 0) | {lane, profile, count}]}' \
-              <<<"$requested")
+            request=$(jq -n -c --arg repository "$REPOSITORY" --argjson run_id "$RUN_ID" \
+              --argjson run_attempt "$RUN_ATTEMPT" --argjson lanes "$requested" \
+              '{$repository, $run_id, $run_attempt, $lanes}')
             # One attempt plus at most one retry after a transport failure,
             # timeout or transient status; each attempt is bounded to 5 seconds.
             for attempt in 1 2; do
@@ -115,30 +114,30 @@ jobs:
               esac
             done
             if [ "$status" != 200 ]; then
-              reason="plane request failed (HTTP $status)"
+              fallback_reason="plane request failed (HTTP $status)"
             elif ! jq -e -s 'length == 1 and (.[0] | type == "object"
                 and (.route_id | type == "string" and length > 0)
                 and (.expires_at | type == "string")
                 and (.lanes | type == "object"))' "$body" >/dev/null 2>&1; then
-              reason="plane reply is malformed"
+              fallback_reason="plane reply is malformed"
             else
               reply=$body
             fi
-            if [ -n "$reason" ]; then
-              note="Asked $plane_url: $reason. Requested lanes keep their fallback runners."
+            if [ -n "$fallback_reason" ]; then
+              note="Asked $plane_url: $fallback_reason. Requested lanes keep their fallback runners."
             else
               note=$(jq -r --arg url "$plane_url" \
                 "$clean"'"Asked \($url): route \(.route_id | clean), expires \(.expires_at | clean)."' "$body")
             fi
           fi
 
-          decisions=$(jq -n -c --argjson requested "$requested" --argjson profiles "$profiles" \
-            --arg reason "$reason" --slurpfile reply "$reply" "$clean"'
-            ($reply[0].lanes // {}) as $granted
-            | [ $requested[]
-                | ($granted[.lane] | if type == "object" then . else {} end) as $decision
+          decisions=$(jq -n -c --argjson configured "$configured" --argjson profiles "$profiles" \
+            --arg fallback_reason "$fallback_reason" --slurpfile reply "$reply" "$clean"'
+            ($reply[0].lanes // {}) as $plane_decisions
+            | [ $configured[]
+                | ($plane_decisions[.lane] | if type == "object" then . else {} end) as $decision
                 | if .count == 0 then .target = "fallback" | .reason = "not requested"
-                  elif $reason != "" then .target = "fallback" | .reason = $reason
+                  elif $fallback_reason != "" then .target = "fallback" | .reason = $fallback_reason
                   elif $decision.target == "darkbloom" and $decision.runs_on == $profiles[.profile]
                   then .target = "darkbloom" | .reason = "granted"
                   elif $decision.target == "fallback"

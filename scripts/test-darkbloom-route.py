@@ -70,12 +70,38 @@ RUNS_ON = {"warm": "${{ github.event_name == 'pull_request' && "
                    "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}"}
 
 
+def literal_block(text, key, indent):
+    """Return the first `key: |` block at this indent, dedented as YAML reads it."""
+    lines = text.split(f"{' ' * indent}{key}: |\n", 1)[1].splitlines()
+    end = next((index for index, line in enumerate(lines)
+                if line.strip() and not line.startswith(" " * (indent + 2))), len(lines))
+    return textwrap.dedent("\n".join(lines[:end]))
+
+
 def route_step():
     """Return the router's only run block, dedented exactly as the runner sees it."""
-    lines = ROUTER.read_text().split("        run: |\n", 1)[1].splitlines()
-    end = next((index for index, line in enumerate(lines)
-                if line.strip() and not line.startswith("          ")), len(lines))
-    return textwrap.dedent("\n".join(lines[:end]))
+    return literal_block(ROUTER.read_text(), "run", 8)
+
+
+def run_route_step(script, work, **variables):
+    """Run the route step in `work` as the runner's `bash` shell does.
+
+    The host's proxy, `CURL_*` and `SSL_CERT_*` settings are dropped, so only
+    `variables` choose the plane and its CA. Returns the process, every `routes`
+    output the step wrote and its step summary.
+    """
+    output, summary = work / "output", work / "summary"
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("CURL_", "SSL_CERT_"))
+                   and key.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
+    environment.update(NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
+                       GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
+    environment.update(variables)
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=60)
+    written = output.read_text().splitlines() if output.exists() else []
+    routes = [json.loads(line.split("=", 1)[1]) for line in written if line.startswith("routes=")]
+    return result, routes, summary.read_text() if summary.exists() else ""
 
 
 def jobs(workflow):
@@ -98,9 +124,7 @@ def needs(job):
 
 def lane_lines(route_job):
     """Return the caller's literal `lanes` block lines, before expression evaluation."""
-    lines = route_job.split("      lanes: |\n", 1)[1].splitlines()
-    end = next((index for index, line in enumerate(lines) if not line.startswith("        ")), len(lines))
-    return [line.strip() for line in lines[:end]]
+    return literal_block(route_job, "lanes", 6).splitlines()
 
 
 def route_lanes(route_job):
@@ -208,25 +232,15 @@ class RouteStepTests(unittest.TestCase):
     def route(self, plane_url, routing="on", lanes=LANES, trust=True, **context):
         if routing == "on" and not plane_url:
             raise AssertionError("Tests must never fall through to the production plane")
-        work = Path(tempfile.mkdtemp(prefix="darkbloom-route-run-", dir=self.scratch.name))
-        output, summary = work / "output", work / "summary"
-        environment = {key: value for key, value in os.environ.items()
-                       if not key.startswith(("CURL_", "SSL_CERT_"))
-                       and key.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
-        environment.update(
-            NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
-            GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary),
-            LANES=lanes, ROUTING=routing, PLANE_URL=plane_url, REPOSITORY="Layr-Labs/d-inference",
-            EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2")
-        environment.update(context)
+        variables = dict(LANES=lanes, ROUTING=routing, PLANE_URL=plane_url, REPOSITORY="Layr-Labs/d-inference",
+                         EVENT_NAME="push", HEAD_REPOSITORY="", RUN_ID="40408691758", RUN_ATTEMPT="2")
+        variables.update(context)
         if trust:
-            environment["CURL_CA_BUNDLE"] = str(self.certificate)
-        result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", self.script],
-                                cwd=work, env=environment, capture_output=True, text=True, timeout=60)
-        written = output.read_text().splitlines() if output.exists() else []
-        routes = [json.loads(line.split("=", 1)[1]) for line in written if line.startswith("routes=")]
-        self.assertLessEqual(len(routes), 1, written)
-        return result, routes[0] if routes else None, summary.read_text() if summary.exists() else ""
+            variables["CURL_CA_BUNDLE"] = str(self.certificate)
+        work = Path(tempfile.mkdtemp(prefix="darkbloom-route-run-", dir=self.scratch.name))
+        result, routes, summary = run_route_step(self.script, work, **variables)
+        self.assertLessEqual(len(routes), 1, routes)
+        return result, routes[0] if routes else None, summary
 
     def assertRoutes(self, result, routes, expected=FALLBACKS):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -503,18 +517,12 @@ class RouteWorkflowTests(unittest.TestCase):
                 lanes = re.sub(r"\$\{\{ .+? && (\d+) \|\| 0 \}\}",
                                lambda match: match.group(1) if outcome == "1" else "0", text)
                 with self.subTest(workflow=filename, requested=outcome), tempfile.TemporaryDirectory() as work:
-                    output = Path(work) / "output"
-                    result = subprocess.run(
-                        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script], cwd=work,
-                        env=dict(os.environ, LANES=lanes, ROUTING="", PLANE_URL="", EVENT_NAME="push",
-                                 HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1",
-                                 RUN_ATTEMPT="1", GITHUB_OUTPUT=str(output),
-                                 GITHUB_STEP_SUMMARY=str(Path(work) / "summary")),
-                        capture_output=True, text=True, timeout=30)
+                    result, routes, _ = run_route_step(
+                        script, Path(work), LANES=lanes, ROUTING="", PLANE_URL="", EVENT_NAME="push",
+                        HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    routes = json.loads(output.read_text().split("routes=", 1)[1])
-                    self.assertEqual(routes, {name: fallback for name, (_, fallback, _)
-                                              in ROUTED[filename].items()})
+                    self.assertEqual(routes, [{name: fallback for name, (_, fallback, _)
+                                               in ROUTED[filename].items()}])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:

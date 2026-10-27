@@ -1970,6 +1970,8 @@ predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
 own template context, and Flint's template ignores the switch.
 The coordinator prompt sidecar mirrors the rule so cache planning renders the
 same prompt; the public prompt vectors pin it for the Qwen-family JSON cases.
+On `qwen3_5` and `qwen3_5_moe` text requests the answer itself is then
+grammar-constrained ([constrained Qwen JSON answers](#constrained-qwen-json-answers)).
 
 A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
 no think marker also receives the empty closed block
@@ -2005,6 +2007,80 @@ Responses continuation reconstructs input history before tokenization; it does
 not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### Constrained Qwen JSON answers
+
+The format instruction alone leaves some Qwen answers outside the requested
+schema: a near-miss key, a string for an integer, or prose. On the Qwen text
+path the answer is therefore sampled under a grammar, as on
+[exact Flint](#native-flint). `ToolConstraintFactory.make` asks
+`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
+`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
+The prompt is unchanged (the service's format instruction and the no-thinking
+default above), so the coordinator prompt sidecar needs no rule.
+
+The rendered prompt's tail selects the first phase
+(`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
+After `</think>` output starts in the answer. After `<think>` it starts in
+reasoning, which stays free except that every EOS is masked, the spellings
+`<|im_end|>`, `<|endoftext|>` and `<|im_start|>` cannot complete, and the first
+`</think>`, as its token or spelled from ordinary pieces, ends it. The answer is
+one JSON value of the grammar compiled from the schema (`JSONAnswerFormat`: the
+shared fail-closed subset and the byte-level `FlintJSONGrammar` automaton), so
+declared properties are the only keys generated. `<think>`, `</think>`,
+`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and
+`<|endoftext|>` cannot complete anywhere in it, strings included, and
+`<|im_end|>` or `<|endoftext|>` is allowed only once the value is complete.
+
+`JSONAnswerVocabulary` admits the byte-level BPE ids below `<|endoftext|>`
+(248044) and the `<think>`/`</think>` tokens only. Other added and special tokens
+and the model's padding up to 248,320 ids are never allowed. Before constraining,
+it checks `<think>` 248068, `</think>` 248069, `<|im_end|>` 248046 and
+`<|endoftext|>` 248044 by id, spelling, encoding and decoding, that every base
+id decodes as a byte-level piece, and that both terminators are engine stop
+tokens. It is built on the first such request per loaded tokenizer and stop set
+and cached like Flint's (`TokenizerVocabularyCache`, four entries).
+
+A constraint's budget must equal the engine request's `maxTokens`, or the engine
+refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
+resolves an omitted `max_tokens` with its own default (`EngineV2Bridge`
+`defaultMaxTokens`, from the model's sizing), so the text path builds every token
+constraint, Qwen's and Flint's, from that same default.
+
+The request streams through the native reasoning split (`NativeToolStreamRouter`
+seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
+only the answer when generation ends: content that is not one JSON value of the
+schema, or a budget that ends first, is a 422
+`MLXOpenAIServiceError.invalidResponseFormatOutput` (`tool_noncompliance`) after
+the content has streamed. Engine `stop` strings still apply as for the other
+Qwen requests; a stop that cuts the value short fails the same check.
+
+Every other case keeps prompt-only steering and gains no refusal. A schema
+outside the subset (including an enum value containing a forbidden spelling), a
+tokenizer that fails the checks, a prompt tail without a think marker or a
+nonpositive budget logs one content-free private line (category `json-answer`).
+Tools or `tool_choice` beside the format keep today's behavior; Flint's
+format-over-tools precedence does not apply. Image and video requests take the
+media path, which installs no token constraint.
+
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Qwen 3.5
+targets do not declare the row-exact recurrent fallback
+(`CBv2RecurrentMTPRequestScopedMediaFallback`), so
+`ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
+`EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
+row is in a decode step, no row in that step speculates. A `stop`,
+`logit_bias`, penalty or logprob row has the same effect on these engines.
+Decoding such rows beside speculation needs that SDK capability and row-exactness
+evidence for the Qwen target.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
 
 ### Tool-call parsers
 
@@ -2606,6 +2682,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint
@@ -2690,9 +2767,11 @@ in Recursive's guide. `FlintJSONContentAutomaton` replaces the boundary's
 content phase: reasoning is unconstrained, and visible content must be one JSON
 value of the compiled grammar; declared object properties are the only keys
 generated. A schema outside the subset is a 400 before generation.
-`FlintResponseFormat.validate` decodes and checks the completed content again;
-a failure, including an output budget that ends before the value completes, is
-a typed 422 rather than a successful completion. Tools plus a response format
+`JSONAnswerFormat.validate`, shared with
+[constrained Qwen answers](#constrained-qwen-json-answers), decodes and checks
+the completed content again; a failure, including an output budget that ends
+before the value completes, is a typed 422 rather than a successful completion.
+Tools plus a response format
 get only the response format, whatever `tool_choice` asked: the prompt renders
 as it would without the format, so the coordinator prompt sidecar needs no
 format rule, and no call may be generated or returned.
@@ -2799,6 +2878,7 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/FlintAnswerStopConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),

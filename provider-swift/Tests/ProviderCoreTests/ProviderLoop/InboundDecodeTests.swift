@@ -295,8 +295,12 @@ struct InboundDecodeTests {
         }
         #expect(budget(#"{"max_tokens":2048}"#) == 2048)
         #expect(budget(#"{"effort":"high","max_tokens":1}"#) == 1)
+        // JSONDecoder reads Int from integral floats; the prompt sidecar mirrors this.
+        #expect(budget(#"{"max_tokens":2048.0}"#) == 2048)
+        #expect(budget(#"{"max_tokens":1e3}"#) == 1000)
         for ignored in [#"{"max_tokens":0}"#, #"{"max_tokens":-5}"#, #"{"max_tokens":"2048"}"#,
-                        #"{"max_tokens":2.5}"#, #"{"enabled":true}"#, #""high""#, "null"] {
+                        #"{"max_tokens":2.5}"#, #"{"max_tokens":true}"#, #"{"max_tokens":1.0e19}"#,
+                        #"{"enabled":true}"#, #""high""#, "null"] {
             #expect(budget(ignored) == nil, "\(ignored)")
         }
     }

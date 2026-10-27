@@ -1044,7 +1044,8 @@ extension ProviderLoop {
     /// its caller's cancellation (`CancellationError`), or an add-on hold.
     /// Nil while the load may continue.
     private func modelLoadInterruption(_ modelID: String) -> (any Error)? {
-        isShuttingDown || Task.isCancelled ? CancellationError() : addonHoldLoadRefusal(for: modelID)
+        if isShuttingDown || Task.isCancelled { return CancellationError() }
+        return addonHoldLoadRefusal(for: modelID)
     }
 
     /// Hand a completed load to calibration while retaining the transition gate.

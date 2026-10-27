@@ -135,25 +135,24 @@ final class AddonIPCServer: @unchecked Sendable {
             guard (try? Self.configure(fd)) != nil else { Darwin.close(fd); continue }
             // Verify the signer before the connection takes a slot: a peer
             // that never sends a request must not keep the add-on out.
-            guard verifiedPeer(fd) != nil else {
-                _ = Self.write(AddonIPC.encode(.failure(.unauthorized)), to: fd)
-                Darwin.close(fd)
-                continue
-            }
+            guard verifiedPeer(fd) != nil else { Self.refuseUnadmitted(fd, with: .unauthorized); continue }
             let admitted: Bool = lock.withLock {
                 guard !stopped, connections.count < Self.maximumConnections else { return false }
                 connections.insert(fd)
                 return true
             }
-            guard admitted else {
-                _ = Self.write(AddonIPC.encode(.failure(.unavailable)), to: fd)
-                Darwin.close(fd)
-                continue
-            }
+            guard admitted else { Self.refuseUnadmitted(fd, with: .unavailable); continue }
             let thread = Thread { [self] in serve(fd) }
             thread.name = "darkbloom.addon-ipc.connection"
             thread.start()
         }
+    }
+
+    /// Answers once and closes a connection that never entered `connections`,
+    /// so closing it here cannot race `stop`.
+    private static func refuseUnadmitted(_ fd: Int32, with code: AddonIPC.ErrorCode) {
+        _ = Self.write(AddonIPC.encode(.failure(code)), to: fd)
+        Darwin.close(fd)
     }
 
     // MARK: - Connection

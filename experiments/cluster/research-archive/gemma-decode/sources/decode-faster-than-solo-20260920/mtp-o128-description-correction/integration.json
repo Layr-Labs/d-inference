@@ -1,0 +1,47 @@
+{
+  "schema": "gemma4_o128_description_correction_v1",
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/remote-measurement-composition-1/sources.json",
+    "bytes": 90915,
+    "sha256": "9c764084bb1eeed46760267d844424908e22cdbb879f36223934b56054f91e50"
+  },
+  "workspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "files": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift",
+        "bytes": 9613,
+        "sha256": "88462d3838ad45d3207f744ecfc85c23bbec40a01bdc8956543764e6a49df07f"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-description-correction/Runtime/Gemma4BenchmarkInput.swift",
+        "bytes": 9873,
+        "sha256": "a1f8641abfbbd6e4fb71bcd8cc094cf6dff144ab693680c8e79c7f555542ac56"
+      }
+    }
+  ],
+  "helper": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkOutputEnvelope.swift",
+    "bytes": 609,
+    "sha256": "f7b72b3252c0c8b35725923c6b5100fb878c6605b0a3d436607888d75453e679"
+  },
+  "failedMetadata": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-native-metadata-failure-2/receipt.json",
+    "bytes": 1037,
+    "sha256": "fa999b9b2862a739e3398fbf53899e5b6b0c504efd0e4848510f031920e05468"
+  },
+  "typeSource": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardSelection.swift",
+    "bytes": 1792,
+    "sha256": "e6fd04e1997b78fa8008714accf4eb3119d6ddba7a3edcb329072836b5f3863a"
+  },
+  "requestSource": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardRequest.swift",
+    "bytes": 4094,
+    "sha256": "d23dc4887a9f6e42021b065dc59cb2b244ee154b59360f3a1478a029ec3c17d8"
+  },
+  "oldLoop": "        for target in [Gemma4ForwardTarget.fullReference, .stage(0), .stage(1)] {",
+  "newLoop": "        // O16 retains all three diagnostic budgets. O128 is admitted only for\n        // a full job, so metadata must not request unadmitted stage budgets.\n        let describedTargets: [Gemma4ForwardTarget] = job.outputCount == 16\n            ? [.fullReference, .stage(0), .stage(1)] : [job.target]\n        for target in describedTargets {",
+  "nativeExecuted": false
+}

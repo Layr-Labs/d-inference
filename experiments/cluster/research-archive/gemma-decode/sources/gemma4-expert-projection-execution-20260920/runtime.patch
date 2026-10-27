@@ -1,0 +1,224 @@
+--- originals/deploy.py
++++ deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920'
+ PRODUCTS=('GemmaExpertAxisCheck','GemmaExpertRDMACheck')
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+@@ -55,10 +55,8 @@
+     for row in manifest['files']:
+         path=ROOT/row['path']
+         assert path.stat().st_size==row['bytes'] and digest(path)==row['sha256'],'Harness source changed'
+-    bindings=json.loads((ROOT/'artifact-bindings.json').read_bytes())
+-    for row in [bindings['appliedSources']]+[x['receipt'] for x in bindings['products']]:
+-        assert digest(Path(row['path']))==row['sha256'],'Actual build receipt changed'
+-    return bindings
++    from build_binding import verify
++    return verify()
+ 
+ def prepare():
+     bindings=verify_sources();directory=Path(bindings['binaryDirectory'])
+--- originals/run_case.py
++++ run_case.py
+@@ -26,7 +26,7 @@
+ 
+ CREATE=r'''
+ import json,os,pathlib,sys
+-base=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920')
++base=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
+ sys.path.insert(0,str(base))
+ from gemma_inputs import validate_job,write_json
+ job=json.load(sys.stdin);validate_job(job);root=pathlib.Path(sys.argv[1])
+@@ -38,7 +38,7 @@
+ '''
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -49,7 +49,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_expert_cancellation_v1','jobSHA256':wanted}
+--- originals/validate_returned.py
++++ validate_returned.py
+@@ -44,6 +44,7 @@
+         and terminal['packageSHA256']==package_sha and terminal['jobSHA256']==jobsha and terminal['primaryFailure'] is None
+         and terminal['cleanupErrors']==[] and terminal['exitCodes']==[0] and terminal['outputComplete'] is True
+         and terminal['groupsAbsent'] is True and terminal['journalEmptyAndProcessesRetired'] is True
++        and terminal['numericalValidationAfterRetirement'] is True
+         and 0<terminal['elapsedSeconds']<315,'Actual terminal/cleanup contract')
+     require(terminal['encryptedRDMAEstablished'] is False and terminal['externalHTTPTTFTMeasured'] is False,'Scope claims')
+     result=one_line(returned/'native/worker-0.stdout',2*1024**2+1)
+--- originals/test_contracts.py
++++ test_contracts.py
+@@ -7,17 +7,22 @@
+ ROOT=Path(__file__).resolve().parent
+ sys.path.insert(0,str(ROOT/'package'))
+ from gemma_inputs import MODEL, validate_job
+-from expert_results import ARTIFACT, comparison, digest, scope, validate_result, validate_pair
++from expert_results import ARTIFACT, comparison, digest, scope, validate_result, validate_pair, projection_policies
+ 
+ H='1'*64
+ 
+ def difference(count):return dict(exactBytes=True,values=count,maximumAbsoluteError=0,relativeRMSError=0,referenceSHA256=H,candidateSHA256=H)
++def policy(global_count,experts,owned,local,sort=False,hint=False,executed=None):
++    return dict(globalAssignments=global_count,globalExperts=experts,ownedExperts=owned,
++                localAssignments=local,sortAssignments=sort,sortedProjection=hint,
++                executedAssignments=local if executed is None else executed)
+ def fixture(rank):
+     n=dict(schema='gemma4_expert_rdma_check_v1',modelDirectory=MODEL,membershipEpoch='11111111-1111-4111-8111-111111111111',
+         requestID='22222222-2222-4222-8222-222222222222',buildIdentitySHA256=H,ownership='contiguous48_80',rank=rank,layer=0,tokenCounts=[1],timeoutSeconds=300)
+     job=dict(schema='gemma4_expert_physical_job_v1',kind='rdma',mode='stage'+str(rank),layer=0,modelDirectory=MODEL,nativeSHA256=H,timeoutSeconds=300,nativeJob=n)
+     c=dict(label='checkpoint-layer-0/two-rank/contiguous48_80',inputDType='bfloat16',tokenCount=1,topK=8,assignmentCounts=[4,4],
+-        selectedGlobalIDs=[[0,48,1,49,2,50,3,51]],routingWeightsSHA256=H,expertOutputs=difference(8*2816),weighted=difference(2816),postNorm=difference(2816))
++        selectedGlobalIDs=[[0,48,1,49,2,50,3,51]],routingWeightsSHA256=H,expertOutputs=difference(8*2816),weighted=difference(2816),postNorm=difference(2816),
++        projectionPolicies=[policy(8,128,48,4),policy(8,128,80,4)])
+     case=dict(ordinal=0,tokenCount=1,localAssignmentCount=4,routeSHA256=digest(c['selectedGlobalIDs']),inputSHA256=H,weightsSHA256=H,
+         transferredOutputSHA256=H,referenceResultSHA256=digest(c),acceptedByReferenceRank=True)
+     if rank==0:case['comparison']=c
+@@ -71,4 +76,41 @@
+     def test_synthetic_job_cannot_activate_rdma(self):
+         j,_=fixture(0);j['kind']='synthetic-small';j['mode']='full'
+         with self.assertRaises(ValueError):validate_job(j)
++    def test_missing_extra_or_changed_policy_is_refused(self):
++        for field in ('missing','extra','globalAssignments','globalExperts','ownedExperts','localAssignments',
++                      'sortAssignments','sortedProjection','executedAssignments'):
++            j,v=fixture(0);c=v['cases'][0]['comparison']
++            if field=='missing':del c['projectionPolicies']
++            elif field=='extra':c['projectionPolicies'][0]['unreviewed']=1
++            elif field in ('sortAssignments','sortedProjection'):c['projectionPolicies'][0][field]=True
++            else:c['projectionPolicies'][0][field]+=1
++            with self.assertRaises(ValueError):comparison(c,1,2816,v['globalExpertIDsByRank'])
++    def test_policy_scalar_types_are_exact(self):
++        for field,value in [('globalAssignments',8.0),('localAssignments',True),('sortAssignments',0),('sortedProjection',1)]:
++            _,v=fixture(0);c=v['cases'][0]['comparison'];c['projectionPolicies'][0][field]=value
++            with self.assertRaises(ValueError):comparison(c,1,2816,v['globalExpertIDsByRank'])
++    def test_small_global_tile_requires_bounded_padding(self):
++        ownership=[list(range(6)),list(range(6,16))]
++        c=dict(topK=8,assignmentCounts=[25,39],projectionPolicies=[
++            policy(64,16,6,25,True,True,32),policy(64,16,10,39,True,True,64)])
++        projection_policies(c,8,ownership)
++        for executed in (25,39,63,65,320,512):
++            bad=copy.deepcopy(c);bad['projectionPolicies'][1]['executedAssignments']=executed
++            with self.assertRaises(ValueError):projection_policies(bad,8,ownership)
++    def test_real_global_policy_stays_unsorted_projection_despite_local_density(self):
++        ownership=[list(range(48)),list(range(48,128))]
++        c=dict(topK=8,assignmentCounts=[264,0],projectionPolicies=[
++            policy(264,128,48,264,True),policy(264,128,80,0,True)])
++        projection_policies(c,33,ownership)
++        for rank,field,value in [(0,'sortedProjection',True),(0,'executedAssignments',320),(1,'executedAssignments',1)]:
++            bad=copy.deepcopy(c);bad['projectionPolicies'][rank][field]=value
++            with self.assertRaises(ValueError):projection_policies(bad,33,ownership)
++    def test_padding_cannot_escape_into_assignment_output_or_wire(self):
++        for change in ('assignments','outputs','sent','received'):
++            j,v=fixture(0);c=v['cases'][0]['comparison']
++            if change=='assignments':c['assignmentCounts'][0]+=1
++            elif change=='outputs':c['expertOutputs']['values']+=2816
++            elif change=='sent':v['sentTensorBytes']+=2816*2
++            else:v['receivedTensorBytes']+=2816*2
++            with self.assertRaises(ValueError):validate_result(v,j)
+ if __name__=='__main__':unittest.main()
+--- originals/package/expert_results.py
++++ package/expert_results.py
+@@ -15,12 +15,39 @@
+     require(type(value) is dict and value['exactBytes'] is True and type(value['values']) is int and value['values']==count,'Exact expert difference geometry')
+     require(sha(value['referenceSHA256']) and value['referenceSHA256']==value['candidateSHA256'],'Exact expert bytes/digest')
+     require(value['maximumAbsoluteError']==0 and value['relativeRMSError']==0,'Numerical error exceeds exact acceptance')
++def projection_policies(value,rows,ownership):
++    global_count=rows*value['topK'];experts=sum(map(len,ownership))
++    require(1<=global_count<=264 and 2<=experts<=128,'Projection global geometry')
++    policies=value.get('projectionPolicies')
++    require(type(policies) is list and len(policies)==len(ownership),'Projection policy coverage')
++    fields={'globalAssignments','globalExperts','ownedExperts','localAssignments',
++            'sortAssignments','sortedProjection','executedAssignments'}
++    for rank,(bank,policy) in enumerate(zip(ownership,policies)):
++        local=value['assignmentCounts'][rank];owned=len(bank)
++        require(type(policy) is dict and set(policy)==fields,'Projection policy exact fields')
++        require(all(type(policy[k]) is int for k in fields-{'sortAssignments','sortedProjection'})
++                and type(policy['sortAssignments']) is bool and type(policy['sortedProjection']) is bool,
++                'Projection scalar types')
++        sort=global_count>=64;hint=sort and global_count//experts>=4
++        executed=local
++        if local and hint:
++            tile=32 if global_count//experts<64 else 64
++            minimum=max(local,16,4*owned,64*owned if tile==64 else 0)
++            executed=minimum+(global_count%tile-minimum%tile+tile)%tile
++            require(executed<=global_count and (32 if executed//owned<64 else 64)==tile,
++                    'Projection cannot preserve global kernel tile')
++        expected=dict(globalAssignments=global_count,globalExperts=experts,ownedExperts=owned,
++            localAssignments=local,sortAssignments=sort,sortedProjection=hint,executedAssignments=executed)
++        same(policy,expected,'Actual source-bound global projection policy')
++        require(0<=local<=executed<=global_count and (local>0 or executed==0),'Padded execution bound')
+ def comparison(value,rows,hidden,ownership):
+     top=value['topK'];ids=value['selectedGlobalIDs'];counts=value['assignmentCounts'];experts=sum(map(len,ownership))
+     require(value['tokenCount']==rows and type(top) is int and 1<=top<=8 and len(ids)==rows,'Expert case geometry')
+     require(all(len(x)==top and len(set(x))==top and all(type(i) is int and 0<=i<experts for i in x) for x in ids),'Expert selected IDs')
+     expected=[sum(i in bank for row in ids for i in row) for bank in ownership]
+     same(counts,expected,'Expert original-slot assignment conservation')
++    require(sum(counts)==rows*top and all(type(x) is int and 0<=x<=264 for x in counts),'Only original assignments may be returned')
++    projection_policies(value,rows,ownership)
+     require(sha(value['routingWeightsSHA256']),'Expert route weight digest')
+     difference(value['expertOutputs'],rows*top*hidden);difference(value['weighted'],rows*hidden)
+     if value.get('postNorm') is not None:difference(value['postNorm'],rows*hidden)
+--- originals/package/gemma_inputs.py
++++ package/gemma_inputs.py
+@@ -6,7 +6,7 @@
+ from pathlib import Path
+ from binding_common import require
+ 
+-REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-expert-execution-20260920')
++REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-expert-projection-execution-20260920')
+ PRODUCTS=('GemmaExpertAxisCheck','GemmaExpertRDMACheck')
+ MODEL='/Users/developer/DarkbloomDev/models/Gemma4-26B'
+ 
+--- originals/package/run_benchmark.py
++++ package/run_benchmark.py
+@@ -14,6 +14,7 @@
+ from target_processes import observe as processes
+ from worker_contract import WorkerSpec
+ from worker_processes import PipeWorkers, cleanup_error_text
++from expert_retirement import collect_retired_result
+ 
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+@@ -80,14 +81,13 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            from expert_results import validate_result
+-            validate_result(value,job)
+-            # Numerical/timing acceptance is performed separately against the
+-            # exact description and both rank outputs, after process retirement.
+             return value
+-        record['result']=pipes.collect('benchmark',result)[0]
+-        pipes.finish()
++        record['result'],codes=collect_retired_result(pipes,result)
+         if stderr is not None:record['startupStderr']=stderr.summary()
++        record['numericalValidationAfterRetirement']=True
++        from expert_results import validate_result
++        validate_result(record['result'],job)
++        require(codes==[0],'Worker exit was nonzero')
+         record['status']='completed'
+     except BaseException as error:
+         record['primaryFailure']=cleanup_error_text(error)[0]

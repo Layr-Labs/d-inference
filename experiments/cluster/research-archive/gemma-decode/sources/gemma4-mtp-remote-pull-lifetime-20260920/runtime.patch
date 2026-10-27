@@ -1,0 +1,47 @@
+--- a/Gemma4MTPPullTarget.swift
++++ b/Gemma4MTPPullTarget.swift
+@@ -15,6 +15,8 @@
+     private var branch: AsyncMTPProposalLedger.BranchID?
+     private var outstanding: AsyncMTPProposalLedger.Grant?
+     private var activeWindow: AsyncMTPProposalLedger.Window?
++    // Retained until exact seeded ACK or actual original-owner retirement.
++    private var pendingCapture: Gemma4OwnedMTPConditioning?
+     private var highestProduced: Int
+     private var branchOrdinal: UInt64 = 0
+     private var failed = false, stopped = false
+@@ -36,7 +38,7 @@
+                 check: () throws -> Void) throws {
+         do {
+             try requireActive()
+-            guard ledger.canReseed, branch == nil, outstanding == nil,
++            guard ledger.canReseed, branch == nil, outstanding == nil, pendingCapture == nil,
+                   session.committedTokens == ledger.inputFrontier else { throw ProbeError("Remote MTP reseed precedes exact branch retirement/frontier") }
+             let capture = try session.mtpConditioning(after:window,check:check)
+             let dtype = try Gemma4MTPPullSnapshot.typeCode(capture.hidden.dtype)
+@@ -49,10 +51,14 @@
+             branch = id; highestProduced = capture.frontier
+             var command = record(.seed,branch:id)
+             command.frontier = ledger.inputFrontier; command.seed = ledger.seedToken; command.hiddenDType = dtype
+-            let response = try channel.exchange(command,expecting:.seeded,transfer:{
+-                try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,check:check)
+-            },check:check)
++            pendingCapture = capture
++            let response = try withExtendedLifetime(capture) {
++                try channel.exchange(command,expecting:.seeded,transfer:{
++                    try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,check:check)
++                },check:check)
++            }
+             try requireReply(response,command.changingKind(.seeded))
++            pendingCapture = nil
+             branchOrdinal += 1
+         } catch { failed = true; throw error }
+     }
+@@ -152,6 +158,8 @@
+         guard !stopped else { throw ProbeError("Remote MTP request is already retired") }
+         ledger.cancelRequest()
+         try session.cancel()
++        // Only actual target retirement/fences permit a failed transfer loan to end.
++        pendingCapture = nil
+         if let activeWindow {
+             try ledger.targetAborted(activeWindow,evaluationCompleted:true,requestStateRetired:true)
+             self.activeWindow = nil

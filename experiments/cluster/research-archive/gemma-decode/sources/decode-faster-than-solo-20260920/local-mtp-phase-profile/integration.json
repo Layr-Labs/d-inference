@@ -1,0 +1,10 @@
+{
+  "source": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp/Gemma4LocalMTPDriver.swift",
+  "beforeSHA256": "07576a587189e40a87f7df4a1e0a9a1c7501909851a8ca6495d4570a5c066e31",
+  "afterSHA256": "533f1640a808ea1e8f9b3777a35329e812903f618679cc1072d7badef7e0be4b",
+  "newSource": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/local-mtp-phase-profile/Gemma4LocalMTPDriver.swift",
+  "arithmeticChanged": false,
+  "extraNativeEvaluations": 0,
+  "compiled": false,
+  "executed": false
+}

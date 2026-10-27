@@ -1,0 +1,18 @@
+{
+  "schema": "expert_prefill_description_successor_v1",
+  "requiredPrefillManifestSHA256": "96b09205616dc075d0efb09c6962a630f7e88ba14ee8a7b76e6613fe34b44a06",
+  "entries": [
+    {
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/GemmaExpertRDMACheck.swift",
+      "source": "GemmaExpertRDMACheck.swift",
+      "before": {
+        "bytes": 5877,
+        "sha256": "f3fb676a114215ec1b37a1512b3f38ac3c9e9c144c80c33cab7f5a71ff037bfc"
+      },
+      "after": {
+        "bytes": 5922,
+        "sha256": "78323743ec54d2ef86dc7d4af5f61484f99043a5a5c85a9bf26577b98fc0df86"
+      }
+    }
+  ]
+}

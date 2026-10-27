@@ -1,0 +1,1 @@
+import os,json;from pathlib import Path;p=Path('/Users/developer/DarkbloomDev/models');s=os.statvfs(p);print(json.dumps(dict(path=str(p),canonical=p.resolve()==p,availableBytes=s.f_bavail*s.f_frsize,freeBytes=s.f_bfree*s.f_frsize,payloadBytes=15641239295,minimumWith6GiBHeadroom=15641239295+6*1024**3)))

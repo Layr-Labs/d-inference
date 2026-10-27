@@ -1,0 +1,15 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
+@@ -81,7 +81,11 @@
+     }
+     func description() throws -> Data {
+         var targets: [[String: Any]] = []
+-        for target in [Gemma4ForwardTarget.fullReference, .stage(0), .stage(1)] {
++        // O16 retains all three diagnostic budgets. O128 is admitted only for
++        // a full job, so metadata must not request unadmitted stage budgets.
++        let describedTargets: [Gemma4ForwardTarget] = job.outputCount == 16
++            ? [.fullReference, .stage(0), .stage(1)] : [job.target]
++        for target in describedTargets {
+             let budget = try Gemma4BenchmarkResourceBudget.derive(plan: plan, target: target,
+                 request: requests[0], captureEvidence: job.captureEvidence,
+                 prefillPolicy: target == .fullReference ? .serial : job.prefill, bound: { $0 })

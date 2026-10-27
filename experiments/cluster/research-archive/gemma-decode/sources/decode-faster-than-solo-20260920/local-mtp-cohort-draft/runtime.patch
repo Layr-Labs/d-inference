@@ -1,0 +1,554 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -5,10 +5,19 @@
+ /// Private bounded benchmark only. No Provider registration or serving catalog.
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+-        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state"].contains(arguments[0]) else {
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state",
++            "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+         }
+-        let input = try Gemma4BenchmarkInput(job: Gemma4BenchmarkJob.read(URL(fileURLWithPath: arguments[1])))
++        let local: Gemma4LocalMTPInput?
++        if ["--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) {
++            local = try Gemma4LocalMTPInput(url: URL(fileURLWithPath: arguments[1]),
++                qualifyConditioning: arguments[0] == "--qualify-mtp-conditioning")
++        } else { local = nil }
++        let input: Gemma4BenchmarkInput
++        if let local { input = local.benchmark }
++        else { input = try Gemma4BenchmarkInput(job: Gemma4BenchmarkJob.read(URL(fileURLWithPath: arguments[1]))) }
++        if arguments[0] == "--describe-local-mtp" { return try local!.description() }
+         if ["--describe", "--check-arguments"].contains(arguments[0]) { return try input.description() }
+         let (deadline, overflow) = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(
+             UInt64(input.job.timeoutSeconds) * 1_000_000_000)
+@@ -38,6 +47,11 @@
+             do {
+                 try freshCheck()
+                 let bytes: Data = try autoreleasepool {
++                    if let local {
++                        let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
++                        return try Gemma4LocalMTPRuntime.execute(local, deadline: deadline, sidecars: sidecars,
++                            guardMetrics: guardMetrics, check: check)
++                    }
+                     if arguments[0] == "--qualify-mtp-state" {
+                         #if CBV2_WINDOW_STATE_FIXTURE
+                         return try Gemma4MTPStateQualification.run(input: input, check: freshCheck)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPCohortReport.swift
+@@ -0,0 +1,32 @@
++import Foundation
++
++struct Gemma4LocalMTPCohortSample: Encodable {
++    let requestID: String, scopeSHA256: String, selectedTokenIDsSHA256: String
++    let binding: Gemma4ShortSessionBinding
++    let generation: Gemma4LocalMTPSample
++    let evidence: Gemma4LocalMTPRequestEvidence
++    let requestStateRetired = true
++    // Conditioning equality proves assistant arithmetic only. Timing and target
++    // batched acceptance remain experimental until separately compared to solo.
++    let performanceQualified = false, modelNumericsQualified = false
++}
++
++struct Gemma4LocalMTPCohortReport: Encodable {
++    let schema = "gemma4_local_mtp_cohort_result_v1"
++    let configuration: Gemma4LocalMTPJob
++    let benchmarkJob: Gemma4BenchmarkJob
++    let scopeSHA256: String, ordinaryInputScopeSHA256: String, planSHA256: String
++    let sourceLoad: Gemma4ForwardLoadReceipt, assistantLoad: Gemma4AssistantLoadReceipt
++    let loadStartedNanoseconds: UInt64, targetLoadCompletedNanoseconds: UInt64
++    let assistantLoadCompletedNanoseconds: UInt64, probeCompletedNanoseconds: UInt64
++    let samples: [Gemma4LocalMTPCohortSample]
++    let resources: Gemma4BenchmarkResourceReceipt, auxiliaryResources: Gemma4MTPAuxiliaryReceipt
++    let files: [Gemma4ShortFile]
++    let conditioningQualificationRequested: Bool, conditioningQualificationPassed: Bool
++    let measuredRequests = 3, warmupRequests = 1
++    let mtpEnabled = true, remoteAssistant = false, nativeExecuted = true
++    let modelReleased = true, assistantReleased = true
++    let targetBatchNumericsQualified = false, numericalComparisonPerformed = false, performanceQualified = false
++    let runtimeServingEnabled = false, encryptedRDMAEstablished = false
++    let physicalProcessOrLeaseRetirementEstablished = false
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPConditioningCheck.swift
+@@ -0,0 +1,120 @@
++import Foundation
++import MLX
++import MLXLMCommon
++@_spi(DarkbloomCluster) import MLXLLM
++
++struct Gemma4LocalMTPConditioningReceipt: Encodable {
++    let schema = "gemma4_local_mtp_conditioning_parity_v1"
++    let frontier: Int, seedToken: Int
++    let depths: [Int], exactTokenColumns: Int, exactHiddenColumns: Int
++    let exactBatchedTokenColumns: Int, exactBatchedHiddenColumns: Int, negativeControls: Int
++    let fullTargetEmbeddingUsed = true, targetForwardInvoked = false
++    let targetBatchNumericsQualified = false, remoteExecutionQualified = false
++    let outsideGenerationTiming = true
++}
++
++/// Compare the actual conditioning branch with the SDK's original CBv2 drafter.
++/// All branches share one immutable actual capture and are retired sequentially.
++/// Depth never exceeds the auxiliary's two-proposal/five-graph live allowance.
++enum Gemma4LocalMTPConditioningCheck {
++    private struct Column: Equatable {
++        let tokens: Data, tokenShape: [Int]
++        let hidden: Data, hiddenShape: [Int], hiddenDType: String
++    }
++
++    static func run(target: any Gemma4MTPTarget, assistant: Gemma4AssistantDraftModel,
++        capture: Gemma4OwnedMTPConditioning, seedToken: Int, auxiliary: Gemma4MTPAuxiliaryOwner,
++        check: () throws -> Void
++    ) throws -> Gemma4LocalMTPConditioningReceipt {
++        try check(); try auxiliary.requireGrant(count: 2, capture: capture)
++        guard (0..<262_144).contains(seedToken), target.mtpConfiguration.vocabSize == 262_144 else {
++            throw ProbeError("Local conditioning parity seed/target differs")
++        }
++        assistant.unbind(); defer { assistant.unbind() }
++        return try MLX.withError { native in
++            func checked() throws { try native.check(); try check(); try native.check() }
++            func column(_ tokens: MLXArray, _ hidden: MLXArray) throws -> Column {
++                try checked(); eval(tokens, hidden); Stream.gpu.synchronize(); try checked()
++                guard tokens.dtype == .int32, tokens.shape == [1,1], hidden.shape == [1,1,2816] else {
++                    throw ProbeError("Local conditioning parity returned unexpected columns")
++                }
++                let result = Column(tokens: tokens.asData(access: .copy).data, tokenShape: tokens.shape,
++                    hidden: hidden.asData(access: .copy).data, hiddenShape: hidden.shape,
++                    hiddenDType: String(describing: hidden.dtype))
++                try checked(); return result
++            }
++            func refuses(_ body: () throws -> Void) throws {
++                do { try body() } catch is Gemma4MTPError { try checked(); return }
++                throw ProbeError("Local conditioning negative control accepted")
++            }
++            do {
++                let row = CBv2MTPRowCapture(fullKeys: capture.fullKeys, fullValues: capture.fullValues,
++                    slidingKeys: capture.slidingKeys, slidingValues: capture.slidingValues,
++                    slidingStart: capture.frontier - capture.slidingKeys.dim(2), anchor: capture.frontier)
++                let conditioning = Gemma4MTPConditioning(targetConfiguration: target.mtpConfiguration,
++                    scaledEmbedding: { target.embedTokensForDrafter($0) })
++                var wrong = row; wrong.anchor += 1
++                try refuses { _ = try Gemma4MTPFrozenProposalBranch(drafter: assistant, conditioning: conditioning,
++                    row: wrong, seedToken: seedToken, hidden: capture.hidden, maximumProposals: 2) }
++                try refuses { _ = try Gemma4MTPFrozenProposalBranch(drafter: assistant, conditioning: conditioning,
++                    row: row, seedToken: 262_144, hidden: capture.hidden, maximumProposals: 2) }
++                try refuses { _ = try Gemma4MTPFrozenProposalBranch(drafter: assistant, conditioning: conditioning,
++                    row: row, seedToken: seedToken, hidden: capture.hidden, maximumProposals: 0) }
++                var exact = 0
++                for depth in [1,2] {
++                    let expected: [Column] = try autoreleasepool {
++                        try auxiliary.requireGrant(count: depth, capture: capture); try checked()
++                        let branch = try Gemma4MTPFrozenProposalBranch(drafter: assistant,
++                            conditioning: conditioning, row: row, seedToken: seedToken,
++                            hidden: capture.hidden, maximumProposals: depth)
++                        var values: [Column] = []
++                        for _ in 0..<depth {
++                            let batch = try branch.build(grantedCount: 1)
++                            values.append(try column(batch.tokens, batch.lastHidden))
++                        }
++                        try refuses { _ = try branch.build(grantedCount: 1) }
++                        return values
++                    }
++                    Stream.gpu.synchronize(); try checked(); assistant.unbind()
++                    try autoreleasepool {
++                        try auxiliary.requireGrant(count: depth, capture: capture); try checked()
++                        let branch = try Gemma4MTPFrozenProposalBranch(drafter: assistant,
++                            conditioning: conditioning, row: row, seedToken: seedToken,
++                            hidden: capture.hidden, maximumProposals: depth)
++                        let batch = try branch.build(grantedCount: depth)
++                        eval(batch.tokens, batch.lastHidden); Stream.gpu.synchronize(); try checked()
++                        var tokenBytes = Data()
++                        for value in expected { tokenBytes.append(value.tokens) }
++                        guard let last = expected.last, batch.tokens.shape == [1,depth], batch.tokens.dtype == .int32,
++                              batch.tokens.asData(access: .copy).data == tokenBytes,
++                              batch.lastHidden.shape == last.hiddenShape,
++                              String(describing: batch.lastHidden.dtype) == last.hiddenDType,
++                              batch.lastHidden.asData(access: .copy).data == last.hidden else {
++                            throw ProbeError("Batched local proposal columns differ from evaluated single steps")
++                        }
++                        try checked()
++                    }
++                    Stream.gpu.synchronize(); try checked(); assistant.unbind()
++                    try autoreleasepool {
++                        try auxiliary.requireGrant(count: depth, capture: capture); try checked()
++                        let original = try Gemma4CBv2MTPDrafter(drafter: assistant, target: target)
++                        let prepared = original.prepare(rows: [row])
++                        var token = MLXArray([Int32(seedToken)]).reshaped([1,1]), hidden = capture.hidden
++                        for index in 0..<depth {
++                            let value = original.draftStep(tokens: token, hidden: hidden, prepared: prepared)
++                            token = value.tokens.asType(.int32).reshaped([1,1]); hidden = value.hidden
++                            guard try column(token, hidden) == expected[index] else {
++                                throw ProbeError("Local conditioned branch differs from actual SDK CBv2 drafter")
++                            }
++                            exact += 1
++                        }
++                    }
++                    Stream.gpu.synchronize(); try checked(); assistant.unbind()
++                }
++                return .init(frontier: capture.frontier, seedToken: seedToken, depths: [1,2],
++                    exactTokenColumns: exact, exactHiddenColumns: exact,
++                    exactBatchedTokenColumns: 3, exactBatchedHiddenColumns: 2, negativeControls: 5)
++            } catch { try native.check(); throw error }
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPEvidence.swift
+@@ -0,0 +1,95 @@
++import Foundation
++import MLX
++import MLXLLM
++
++struct Gemma4LocalMTPRequestEvidence: Encodable {
++    let finalRow: Gemma4ShortFile?, finalState: Gemma4ShortState?
++    let conditioning: Gemma4LocalMTPConditioningReceipt?
++    let capturedBeforeRequestRetirement = true, outsideGenerationTiming = true
++    let numericalComparisonPerformed = false
++}
++
++/// Retains only the LAST reconciled native window. There is no all-row recorder
++/// or previous-window overlap; numerical comparison remains an external action.
++final class Gemma4LocalMTPEvidence {
++    private let input: Gemma4BenchmarkRequestInput
++    private let captureEvidence: Bool, qualifyConditioning: Bool
++    private var terminalWindow: Gemma4OwnedMTPWindow?
++    private var terminalKeep: Int?
++    private var consumed = false
++    private(set) var result: Gemma4LocalMTPRequestEvidence?
++
++    init(input: Gemma4BenchmarkRequestInput, captureEvidence: Bool, qualifyConditioning: Bool) {
++        self.input = input; self.captureEvidence = captureEvidence; self.qualifyConditioning = qualifyConditioning
++    }
++
++    func observe(_ window: Gemma4OwnedMTPWindow, keeping: Int) throws {
++        guard !consumed, (1...window.inputTokens.count).contains(keeping) else {
++            throw ProbeError("Local MTP evidence received a replayed or invalid window")
++        }
++        if window.base + keeping == input.request.finalCommittedTokens && (captureEvidence || qualifyConditioning) {
++            guard terminalWindow == nil else { throw ProbeError("Local MTP terminal window was repeated") }
++            terminalWindow = window; terminalKeep = keeping
++        }
++    }
++
++    func finish(session: Gemma4OwnedForwardSession, selected: [Int], assistant: Gemma4AssistantDraftModel,
++        auxiliary: Gemma4MTPAuxiliaryOwner, sidecars: Gemma4BenchmarkSidecars, check: () throws -> Void
++    ) throws {
++        guard !consumed, !session.isClosed, !session.isFailed, session.request == input.request,
++              selected.count == input.request.outputCount, session.committedTokens == input.request.finalCommittedTokens,
++              let seed = selected.last else { throw ProbeError("Local MTP evidence lost its original open request") }
++        consumed = true
++        defer { terminalWindow = nil; terminalKeep = nil }
++        try check()
++        var rowFile: Gemma4ShortFile?, stateFile: Gemma4ShortState?
++        var conditioning: Gemma4LocalMTPConditioningReceipt?
++        if captureEvidence || qualifyConditioning {
++            guard let window = terminalWindow, let keep = terminalKeep,
++                  window.base + keep == session.committedTokens else {
++                throw ProbeError("Local MTP evidence omitted the actual terminal window")
++            }
++            if qualifyConditioning {
++                guard case .full(let full) = session.loaded.model else { throw ProbeError("Conditioning needs full target") }
++                // This scope retires parity arrays/captures before the host state export.
++                conditioning = try autoreleasepool {
++                    let capture = try session.mtpConditioning(after: window, check: check)
++                    return try Gemma4LocalMTPConditioningCheck.run(target: full.textModel, assistant: assistant,
++                        capture: capture, seedToken: seed, auxiliary: auxiliary, check: check)
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++            }
++            if captureEvidence {
++                let row = window.logits[0..., (keep-1)..<keep, 0...].reshaped([1,262_144])
++                let record = try QwenRecordedLogits(row, vocabularySize: 262_144, check: check)
++                guard let maximum = record.record.values.max(), record.record.values.firstIndex(of: maximum) == seed else {
++                    throw ProbeError("Local MTP final row differs from its published target token")
++                }
++                rowFile = try sidecars.write("request-\(input.ordinal)-final-row.json", data: canonicalJSONData(record), check: check)
++                stateFile = try captureState(session, sidecars: sidecars, check: check)
++            }
++        }
++        result = .init(finalRow: rowFile, finalState: stateFile, conditioning: conditioning)
++        try check()
++    }
++
++    private func captureState(_ session: Gemma4OwnedForwardSession,
++        sidecars: Gemma4BenchmarkSidecars, check: () throws -> Void
++    ) throws -> Gemma4ShortState {
++        let snapshot = try session.snapshot(includeBytes: true, check: check)
++        guard snapshot.committedTokens == input.request.finalCommittedTokens else {
++            throw ProbeError("Local MTP evidence snapshot frontier differs")
++        }
++        var entries: [Gemma4ShortState.Entry] = []
++        for value in snapshot.entries {
++            guard let bytes = value.bytes, bytes.count == value.byteCount, sha256(bytes) == value.sha256 else {
++                throw ProbeError("Local MTP state lacks actual raw evidence")
++            }
++            let file = try sidecars.write("request-\(input.ordinal)-state-\(value.globalLayerIndex)-\(value.component).bin", data: bytes, check: check)
++            entries.append(.init(localLayerIndex: value.localLayerIndex, globalLayerIndex: value.globalLayerIndex,
++                component: value.component, dtype: value.dtype, sha256: value.sha256, shape: value.shape,
++                byteCount: value.byteCount, logicalRange: value.logicalRange.map { [$0.lowerBound,$0.upperBound] } ?? [], file: file))
++        }
++        return .init(frontier: snapshot.committedTokens, fingerprint: snapshot.fingerprint, entries: entries)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPInput.swift
+@@ -0,0 +1,97 @@
++import Foundation
++
++/// An explicit experiment wrapper around an unchanged, hash-bound ordinary job.
++/// Its own scope/flags are authoritative for MTP and evidence, never mtp=false
++/// in the retained ordinary input identity. No environment-selected assistant.
++struct Gemma4LocalMTPJob: Codable {
++    let schema: String
++    let benchmarkJob: String, benchmarkJobSHA256: String
++    let assistantModelDirectory: String, assistantMetadataDirectory: String
++    let maximumDraftTokens: Int
++    let captureEvidence: Bool
++
++    func validate() throws {
++        guard schema == "gemma4_local_mtp_cohort_job_v1", (1...2).contains(maximumDraftTokens),
++              qwenStageWireIsSHA256(benchmarkJobSHA256),
++              [benchmarkJob, assistantModelDirectory, assistantMetadataDirectory].allSatisfy({
++                  $0.hasPrefix("/") && $0.utf8.count <= 2048 && !$0.contains("\0")
++                    && URL(fileURLWithPath: $0).standardizedFileURL.path == $0
++              }) else { throw ProbeError("Local MTP job identity, paths or admitted depth differs") }
++    }
++}
++
++struct Gemma4LocalMTPInput {
++    let job: Gemma4LocalMTPJob
++    let benchmark: Gemma4BenchmarkInput
++    let assistant: Gemma4AssistantArtifact
++    let qualifyConditioning: Bool
++    let scopeSHA256: String
++
++    init(url: URL, qualifyConditioning: Bool) throws {
++        let bytes = try BoundedProbeInput.data(url, maximumBytes: 16_384)
++        try validateWorkerJSON(bytes)
++        let job = try JSONDecoder().decode(Gemma4LocalMTPJob.self, from: bytes)
++        try job.validate()
++        try QwenLayerStageGenerationWireJSON.requireExact(QwenLayerStageGenerationWireJSON.object(bytes), job)
++        let original = try BoundedProbeInput.data(URL(fileURLWithPath: job.benchmarkJob), maximumBytes: 16_384)
++        guard sha256(original) == job.benchmarkJobSHA256 else { throw ProbeError("Local MTP ordinary job changed") }
++        try validateWorkerJSON(original)
++        let ordinary = try JSONDecoder().decode(Gemma4BenchmarkJob.self, from: original)
++        try ordinary.validate()
++        try QwenLayerStageGenerationWireJSON.requireExact(QwenLayerStageGenerationWireJSON.object(original), ordinary)
++        guard ordinary.mode == "full", ordinary.rank == nil, ordinary.prefill == .serial,
++              !ordinary.captureEvidence, ordinary.chunkSize == 64, ordinary.outputCount == 16,
++              [128, 4096].contains(ordinary.promptCount), ordinary.cut == 7,
++              ordinary.residualDType == "bfloat16",
++              ordinary.modelDirectory != job.assistantModelDirectory,
++              ordinary.outputDirectory != job.assistantModelDirectory,
++              ordinary.outputDirectory != job.assistantMetadataDirectory else {
++            throw ProbeError("Local MTP requires the pinned full P128/P4096 C64 O16 cut7 BF16 workload")
++        }
++        let benchmark = try Gemma4BenchmarkInput(job: ordinary)
++        let directory = URL(fileURLWithPath: job.assistantMetadataDirectory, isDirectory: true)
++        func metadata(_ name: String, bound: Int) throws -> Data {
++            try BoundedProbeInput.data(directory.appendingPathComponent(name), maximumBytes: bound)
++        }
++        assistant = try .init(configuration: metadata("config.json", bound: 4096),
++            manifest: metadata("manifest.json", bound: 16_384),
++            header: metadata("model.safetensors.header.json", bound: 16_384))
++        self.job = job; self.benchmark = benchmark; self.qualifyConditioning = qualifyConditioning
++        scopeSHA256 = sha256(Data((["gemma4-local-mtp-cohort-v1", sha256(bytes), job.benchmarkJobSHA256,
++            benchmark.scopeSHA256, Gemma4AssistantArtifact.aggregateSHA256, assistant.parameterLayoutSHA256,
++            "maximumDraftTokens=\(job.maximumDraftTokens)", "captureEvidence=\(job.captureEvidence)",
++            "qualifyConditioning=\(qualifyConditioning)", "mtp=true", "remote=false"]
++            + benchmark.requests.map(\.fingerprint)).joined(separator: "\n").utf8))
++    }
++
++    func iteration(_ ordinal: Int) throws -> Gemma4BenchmarkRequestInput {
++        let original = try benchmark.iteration(ordinal)
++        return .init(job: original.job, artifact: original.artifact, plan: original.plan,
++            request: original.request, ordinal: ordinal,
++            scopeSHA256: sha256(Data([scopeSHA256, "iteration=\(ordinal)", original.request.fingerprint]
++                .joined(separator: "\n").utf8)))
++    }
++
++    func description() throws -> Data {
++        let auxiliary = try Gemma4MTPAuxiliaryBudget(artifact: assistant, placement: .localTarget,
++            requestSHA256: benchmark.requests[0].fingerprint,
++            maximumFrontier: benchmark.requests[0].finalCommittedTokens, bound: { $0 })
++        return try canonicalJSONData(Gemma4LocalMTPCapability(job: job, scopeSHA256: scopeSHA256,
++            ordinaryJobSHA256: job.benchmarkJobSHA256, assistantArtifactSHA256: Gemma4AssistantArtifact.aggregateSHA256,
++            maximumDraftTokens: job.maximumDraftTokens, auxiliaryLogicalNativeBytes: auxiliary.liveNativeBytes,
++            auxiliaryLogicalHostBytes: auxiliary.liveHostBytes, auxiliaryConstructorLogicalBytes: auxiliary.constructorBytes,
++            qualification: qualifyConditioning))
++    }
++}
++
++struct Gemma4LocalMTPCapability: Encodable {
++    let schema = "gemma4_local_mtp_cohort_capability_v1"
++    let job: Gemma4LocalMTPJob
++    let scopeSHA256: String, ordinaryJobSHA256: String, assistantArtifactSHA256: String
++    let maximumDraftTokens: Int
++    let auxiliaryLogicalNativeBytes: Int, auxiliaryLogicalHostBytes: Int, auxiliaryConstructorLogicalBytes: Int
++    let qualification: Bool
++    let metadataOnly = true, actualAllocatorBoundsApplied = false
++    let mtpEnabled = true, remoteAssistant = false, servingEnabled = false
++    let targetBatchNumericsQualified = false, physicalOwnerRetirementEstablished = false
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPRuntime.swift
+@@ -0,0 +1,159 @@
++import Foundation
++import MLX
++import MLXLMCommon
++import MLXNN
++
++/// Local adapter over the existing target/auxiliary owners. No Collective,
++/// second device owner, lease, unchecked loader or alternate request state.
++enum Gemma4LocalMTPRuntime {
++    static func execute(_ local: Gemma4LocalMTPInput, deadline: UInt64,
++        sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
++        check: (Gemma4BenchmarkGuardObservation?) throws -> Void
++    ) throws -> Data {
++        let input = local.benchmark
++        weak var releasedModel: Module?
++        weak var releasedAssistant: Module?
++        return try withoutActuallyEscaping(check) { borrowedCheck in
++            try MLX.withError { native in
++                func outer(_ observation: Gemma4BenchmarkGuardObservation?) throws {
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                    try borrowedCheck(observation)
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                }
++                func fresh() throws { try outer(nil) }
++                var auxiliary: Gemma4MTPAuxiliaryOwner?
++                do {
++                    let environment = ProcessInfo.processInfo.environment
++                    _ = try QwenLongPrefillArithmeticEnvironment.admit(environment)
++                    for name in ["MLX_QUANTIZED_CONSTANT_CACHE", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT",
++                        "MLX_GATHER_QMM_EXPERT_SLICES", "MLX_COMPILED_DECODE",
++                        "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL", "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS",
++                        "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK", "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY"] {
++                        guard environment[name] == nil else { throw ProbeError("Local MTP requires ordinary default " + name) }
++                    }
++                    try QwenResidentAllocatorPolicy.disableFreedBufferCache.configure(
++                        setCacheLimit: { Memory.cacheLimit = $0 }, check: fresh)
++                    Memory.clearCache(); try fresh()
++                    let owner = try Gemma4BenchmarkResourceOwner(plan: input.plan, target: .fullReference,
++                        requests: input.requests, residualDType: input.job.dtype,
++                        captureEvidence: local.job.captureEvidence, prefillPolicy: .serial,
++                        deadline: deadline, guardMetrics: guardMetrics)
++                    let budget = try Gemma4MTPAuxiliaryBudget(artifact: local.assistant, placement: .localTarget,
++                        requestSHA256: owner.budget.requestSHA256,
++                        maximumFrontier: input.requests[0].finalCommittedTokens,
++                        bound: QwenResidentResourceEnvironment.allocationBound)
++                    let admitted = try Gemma4MTPAuxiliaryOwner(budget: budget, deadline: deadline)
++                    auxiliary = admitted
++                    try owner.attachMTPAuxiliary(admitted)
++                    func checked() throws {
++                        try guardMetrics.measure(.logicalGuard) {
++                            let observation = Gemma4BenchmarkGuardObservation(mode: .combined, deadline: deadline)
++                            defer { observation.close() }
++                            try outer(observation); try owner.check(observation: observation)
++                            try outer(observation); try observation.finish(deadline: deadline)
++                        }
++                    }
++                    try checked()
++                    let loadStarted = DispatchTime.now().uptimeNanoseconds
++                    var targetLoaded: UInt64 = 0, assistantLoaded: UInt64 = 0, probeCompleted: UInt64 = 0
++                    let execution: (Gemma4ForwardLoadReceipt, Gemma4AssistantLoadReceipt, [Gemma4LocalMTPCohortSample]) = try autoreleasepool {
++                        let source = try Gemma4RegisteredSource.prepare(
++                            directory: URL(fileURLWithPath: input.job.modelDirectory, isDirectory: true),
++                            artifact: input.artifact, cut: input.job.cut, check: checked)
++                        try owner.construction(source.selection(.fullReference)); try checked()
++                        let prepared = try Gemma4PreparedForwardModel.prepare(source: source, target: .fullReference, check: checked)
++                        releasedModel = prepared.model.module
++                        try owner.prepared(prepared)
++                        let loaded = try materializeRegisteredGemma4(prepared, beforeTensor: owner.beforeTensor,
++                            afterTensor: owner.afterTensor, check: checked)
++                        try owner.loaded(loaded.receipt); try checked()
++                        targetLoaded = DispatchTime.now().uptimeNanoseconds
++                        let probe = try loaded.probe(incomingDType: nil, incoming: nil, observeIngress: nil, check: checked)
++                        try owner.probeCompleted(); try checked()
++                        probeCompleted = DispatchTime.now().uptimeNanoseconds
++                        let assistant = try loadRegisteredGemma4Assistant(
++                            directory: URL(fileURLWithPath: local.job.assistantModelDirectory, isDirectory: true),
++                            artifact: local.assistant, auxiliary: admitted, check: checked)
++                        releasedAssistant = assistant.model
++                        defer { assistant.model.unbind() }
++                        try checked(); assistantLoaded = DispatchTime.now().uptimeNanoseconds
++                        var samples: [Gemma4LocalMTPCohortSample] = []
++                        for ordinal in input.requests.indices {
++                            let request = try local.iteration(ordinal)
++                            try owner.beginRequest(request.request)
++                            weak var releasedSession: Gemma4OwnedForwardSession?
++                            let sample = try autoreleasepool {
++                                let session = try Gemma4OwnedForwardSession(loaded: loaded, request: request.request,
++                                    probe: probe, residualDType: input.job.dtype, admitGeometry: owner.request, check: checked)
++                                releasedSession = session
++                                do {
++                                    let binding = try session.shortDiagnosticBinding()
++                                    let recorder = Gemma4LocalMTPEvidence(input: request,
++                                        captureEvidence: local.job.captureEvidence,
++                                        qualifyConditioning: local.qualifyConditioning && ordinal == 0)
++                                    let generation = try Gemma4LocalMTPDriver.execute(input: request, session: session,
++                                        assistant: assistant.model, maximumDraftTokens: local.job.maximumDraftTokens,
++                                        admitVerification: { plan in
++                                            try admitted.admitVerification(plan); try checked()
++                                        }, requireGrant: { count, capture in
++                                            try checked(); try admitted.requireGrant(count: count, capture: capture); try checked()
++                                        }, observeVerifiedWindow: recorder.observe,
++                                        beforeFinish: { current, selected in
++                                            try recorder.finish(session: current, selected: selected, assistant: assistant.model,
++                                                auxiliary: admitted, sidecars: sidecars, check: checked)
++                                        }, check: checked)
++                                    guard let evidence = recorder.result, session.isClosed, !session.isFailed else {
++                                        throw ProbeError("Local MTP request omitted evidence callback or retirement")
++                                    }
++                                    try owner.retiredRequest(session)
++                                    return Gemma4LocalMTPCohortSample(requestID: request.request.requestID.uuidString.lowercased(),
++                                        scopeSHA256: request.scopeSHA256,
++                                        selectedTokenIDsSHA256: qwenGenerationTokenHash(generation.selectedTokenIDs),
++                                        binding: binding, generation: generation, evidence: evidence)
++                                } catch {
++                                    let primary = error
++                                    do { try session.cancel() }
++                                    catch { throw ProbeError("Local MTP failed (\(primary)); request cleanup failed (\(error))") }
++                                    throw primary
++                                }
++                            }
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                            guard releasedSession == nil else { throw ProbeError("Local MTP request owner escaped its iteration") }
++                            samples.append(sample)
++                        }
++                        guard samples.count == 4, Set(samples.map(\.selectedTokenIDsSHA256)).count == 1,
++                              samples.filter({ $0.evidence.conditioning != nil }).count == (local.qualifyConditioning ? 1 : 0) else {
++                            throw ProbeError("Fresh local MTP requests differ or conditioning qualification is missing")
++                        }
++                        return (loaded.receipt, assistant.receipt, samples)
++                    }
++                    Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                    guard releasedModel == nil, releasedAssistant == nil else {
++                        throw ProbeError("Local MTP target or assistant escaped its cohort")
++                    }
++                    Memory.clearCache(); try checked()
++                    let auxiliaryReceipt = try admitted.completedAfterNativeFence(check: checked)
++                    let receipt = try owner.completed()
++                    return try canonicalJSONData(Gemma4LocalMTPCohortReport(configuration: local.job,
++                        benchmarkJob: input.job, scopeSHA256: local.scopeSHA256,
++                        ordinaryInputScopeSHA256: input.scopeSHA256, planSHA256: input.plan.fingerprint,
++                        sourceLoad: execution.0, assistantLoad: execution.1,
++                        loadStartedNanoseconds: loadStarted, targetLoadCompletedNanoseconds: targetLoaded,
++                        assistantLoadCompletedNanoseconds: assistantLoaded, probeCompletedNanoseconds: probeCompleted,
++                        samples: execution.2, resources: receipt, auxiliaryResources: auxiliaryReceipt, files: sidecars.files,
++                        conditioningQualificationRequested: local.qualifyConditioning,
++                        conditioningQualificationPassed: local.qualifyConditioning))
++                } catch {
++                    let primary = error
++                    auxiliary?.poison()
++                    Stream.gpu.synchronize(); Stream.cpu.synchronize(); Memory.clearCache()
++                    try native.check()
++                    guard releasedModel == nil, releasedAssistant == nil else {
++                        throw ProbeError("Local MTP failed (\(primary)); model remains retained")
++                    }
++                    throw primary
++                }
++            }
++        }
++    }
++}

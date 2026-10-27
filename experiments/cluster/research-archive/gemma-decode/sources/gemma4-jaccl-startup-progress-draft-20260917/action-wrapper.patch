@@ -1,0 +1,72 @@
+--- /Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/execute_physical.py
++++ execute_physical.py
+@@ -6,10 +6,12 @@
+ import sys
+ 
+ ROOT = Path(__file__).resolve().parent
+-INPUTS = ROOT / 'actual-inputs-1'
+-SOURCE = INPUTS / 'source'
++INPUTS = ROOT / 'preparation-1'
++SOURCE = ROOT / 'source'
+ ACTIONS = ROOT / 'physical-actions-1'
+ from check_process import run_owned
++sys.path[:0] = [str(SOURCE), str(SOURCE / 'package')]
++from reference_binding import FULL_DIRECTORY, FULL_RUN, FULL_RUN_SHA
+ 
+ 
+ def sha(path):
+@@ -19,7 +21,7 @@
+ def check_source(preparation_sha256):
+     assert sha(INPUTS / 'receipt.json') == preparation_sha256
+     prepared = json.loads((INPUTS / 'receipt.json').read_bytes())
+-    assert sha(ROOT / 'manifest.json') == prepared['templateManifestSHA256']
++    assert sha(ROOT / 'manifest.json') == prepared['draftManifestSHA256']
+     for row in json.loads((ROOT / 'manifest.json').read_bytes())['members']:
+         assert sha(ROOT / row['path']) == row['sha256']
+     assert sha(SOURCE / 'manifest.json') == prepared['sourceManifestSHA256']
+@@ -29,8 +31,7 @@
+ 
+ def main():
+     parser = argparse.ArgumentParser(allow_abbrev=False)
+-    parser.add_argument('action', choices=['copy', 'full', 'collect-full', 'stages',
+-                                         'collect-stage0', 'collect-stage1', 'compare'])
++    parser.add_argument('action', choices=['copy', 'stages', 'collect-stage0', 'collect-stage1', 'compare'])
+     parser.add_argument('--preparation-sha256', required=True)
+     args = parser.parse_args()
+     assert sha(INPUTS / 'receipt.json') == args.preparation_sha256
+@@ -38,7 +39,7 @@
+     prepared = json.loads((INPUTS / 'receipt.json').read_text())
+     assert prepared['status'] == 'passed'
+     source_sha = prepared['sourceManifestSHA256']
+-    bound = INPUTS / 'bound'
++    bound = ROOT / 'bound'
+     binding_sha = sha(bound / 'binding-receipt.json')
+     assert binding_sha == prepared['bindingReceiptSHA256']
+     ACTIONS.mkdir(mode=0o700, exist_ok=True)
+@@ -49,6 +50,8 @@
+                   '--output', str(output / 'action')]
+ 
+     def pin(label, flag):
++        if label == 'full':
++            return [flag, str(FULL_RUN), '--full-run-sha256', FULL_RUN_SHA]
+         previous = ACTIONS / label
+         outer = json.loads((previous / 'receipt.json').read_text())
+         assert outer['status'] == 'passed' and outer['bindingSHA256'] == binding_sha
+@@ -63,7 +66,7 @@
+         command += ['run', '--mode', args.action, '--attempt', '1'] + bound_args
+         command += pin('copy', '--copy-proof')
+         if args.action == 'stages':
+-            command += ['--full-dir', str(ACTIONS / 'collect-full/action/returned')]
++            command += ['--full-dir', str(FULL_DIRECTORY)]
+             command += pin('full', '--full-run-receipt')
+         timeout = 540
+     elif args.action.startswith('collect-'):
+@@ -72,7 +75,7 @@
+     else:
+         command += ['compare'] + bound_args
+         for mode in ('full', 'stage0', 'stage1'):
+-            command += ['--' + mode + '-dir', str(ACTIONS / ('collect-' + mode) / 'action/returned')]
++            command += ['--' + mode + '-dir', str(FULL_DIRECTORY if mode == 'full' else ACTIONS / ('collect-' + mode) / 'action/returned')]
+         command += pin('full', '--full-run-receipt') + pin('stages', '--stages-run-receipt')
+         timeout = 150
+     receipt = dict(status='failed', action=args.action, bindingSHA256=binding_sha,

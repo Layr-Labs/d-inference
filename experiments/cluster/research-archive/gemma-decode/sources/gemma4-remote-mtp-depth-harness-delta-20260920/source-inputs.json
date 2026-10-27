@@ -1,0 +1,90 @@
+{
+  "schema": "gemma4_remote_depth_harness_delta_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1765,
+      "sha256": "8f4dbc141aa6346e027aab08d0b9d20a0997ea3042ba11b0339ed99de4927927"
+    },
+    {
+      "path": "Tests/test_depth.py",
+      "bytes": 2220,
+      "sha256": "a29097d46ad182292a660a57693b8c2f4decce1dbfe845f039e2220122614cfa"
+    },
+    {
+      "path": "check_sources.py",
+      "bytes": 1270,
+      "sha256": "4af20bddb94ca2d28e590bae70f58283323a76622c1f9da2030a9c5b7b101ef4"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 4295,
+      "sha256": "8a2be66076e0dcc56d434885afa19dfd1dc04dadfc38b8f8c9f14430078b68ed"
+    },
+    {
+      "path": "depth.patch",
+      "bytes": 11433,
+      "sha256": "ad991d46608f71f5b35bf800859a1c13be3c01ee609b8fa11b2dcdabfd207c1b"
+    },
+    {
+      "path": "preimages/compare.py",
+      "bytes": 14521,
+      "sha256": "36d47f52613bea00b223a925c50881ab3be0e64abd52fec92da5eed7b31f9ce9"
+    },
+    {
+      "path": "preimages/jobs.py",
+      "bytes": 2522,
+      "sha256": "70a49902d5390ecea6e34eae4775c3e2829a5d395d064f1d9190499e129db554"
+    },
+    {
+      "path": "preimages/package/remote_mtp_contract.py",
+      "bytes": 9805,
+      "sha256": "0bd3b528d0dd3555ec5a508f71510c71ae59298694b7cefe571ee304a5ba6bb6"
+    },
+    {
+      "path": "preimages/prepare_case.py",
+      "bytes": 429,
+      "sha256": "125388617c7f9d76ba15f881978d7ed963cc11975a220708a67099faeb9c6969"
+    },
+    {
+      "path": "preimages/remote_metadata.py",
+      "bytes": 4488,
+      "sha256": "4e73d87f773766ccb1edb76c6f396100fdaaeb1c48f752889621e3d0a01d9fea"
+    },
+    {
+      "path": "preimages/root_run.py",
+      "bytes": 4341,
+      "sha256": "bf79b0e73b7bfb2f29fa21d2630e12a823d61130b226be9f69ac8bcde38528c1"
+    },
+    {
+      "path": "proposed/compare.py",
+      "bytes": 14604,
+      "sha256": "da9305cdd102433821934bfcee003eecf597a27c1afeb4e0d4e4a67307ed2786"
+    },
+    {
+      "path": "proposed/jobs.py",
+      "bytes": 2599,
+      "sha256": "69872c81cbc666994468911bde03cebe11cd569007693b68feb2ea8f6d765972"
+    },
+    {
+      "path": "proposed/package/remote_mtp_contract.py",
+      "bytes": 10724,
+      "sha256": "0b2f7baab714cd877b418a313ea5a6e0632c44f609631d684a91158bb0af41a9"
+    },
+    {
+      "path": "proposed/prepare_case.py",
+      "bytes": 496,
+      "sha256": "00c6a4a0ec4a61df57aa841ac48fc5cf9257e309ed841f77ce5dcb3cbce3d58c"
+    },
+    {
+      "path": "proposed/remote_metadata.py",
+      "bytes": 4474,
+      "sha256": "576fca7e31e217b3f40ba34144777c035766893564eca6afe182b08e3c1112a9"
+    },
+    {
+      "path": "proposed/root_run.py",
+      "bytes": 4427,
+      "sha256": "e3e2d22e487ef99bc7c49902149b22b72e24bb904243a466e67f88de1d77ff9c"
+    }
+  ]
+}

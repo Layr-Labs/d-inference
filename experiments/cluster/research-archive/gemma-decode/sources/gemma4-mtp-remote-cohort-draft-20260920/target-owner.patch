@@ -1,0 +1,65 @@
+--- a/Gemma4BenchmarkResourceOwner.swift
++++ b/Gemma4BenchmarkResourceOwner.swift
+@@ -43,6 +43,7 @@
+     private var constructorActive = 0, constructorPeak = 0
+     // BEGIN MTP auxiliary attachment
+     private var mtpAuxiliary: Gemma4MTPAuxiliaryOwner?
++    private var mtpRemoteTarget: Gemma4MTPRemoteTargetResources?
+     // END MTP auxiliary attachment
+ 
+     init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+@@ -72,7 +73,7 @@
+     // BEGIN MTP auxiliary attachment
+     func attachMTPAuxiliary(_ auxiliary: Gemma4MTPAuxiliaryOwner) throws {
+         do {
+-            guard phase == .source, mtpAuxiliary == nil else {
++            guard phase == .source, mtpAuxiliary == nil, mtpRemoteTarget == nil else {
+                 throw ProbeError("Assistant auxiliary must attach before original target construction")
+             }
+             try auxiliary.attachToPrimary(deadline: deadline, requestSHA256: budget.requestSHA256)
+@@ -81,6 +82,18 @@
+         } catch { phase = .failed; progress.poison(); auxiliary.poison(); throw error }
+     }
+     // END MTP auxiliary attachment
++
++    func attachRemoteMTPResources(_ resources: Gemma4MTPRemoteTargetResources) throws {
++        do {
++            guard phase == .source, mtpAuxiliary == nil, mtpRemoteTarget == nil else {
++                throw ProbeError("Remote MTP resources must attach before target construction")
++            }
++            try resources.attach(deadline:deadline,requestSHA256:budget.requestSHA256,
++                maximumFrontier:requests[0].finalCommittedTokens)
++            mtpRemoteTarget = resources
++            try check()
++        } catch { phase = .failed; progress.poison(); resources.poison(); throw error }
++    }
+ 
+     func check(observation supplied: Gemma4BenchmarkGuardObservation? = nil) throws {
+         let owned = supplied == nil ? Gemma4BenchmarkGuardObservation(mode: .owner, deadline: deadline) : nil
+@@ -138,6 +151,16 @@
+                     auxiliaryReservation.nativeBytes])
+             }
+             // END MTP auxiliary attachment
++            let remoteReservation = try mtpRemoteTarget?.reservation()
++            if let remoteReservation {
++                free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++                    try sum([remaining, host, copy, scratch, budget.namedNativeBytes,
++                        budget.hostEvidenceBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes,
++                        remoteReservation.nativeBytes, remoteReservation.hostBytes]))
++                allocator = try sum([native.activeBytes, native.cacheBytes, remaining, copy,
++                    budget.namedNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes,
++                    remoteReservation.nativeBytes])
++            }
+             guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
+                   native.allocatorLimitBytes >= allocator else {
+                 throw ProbeError("Gemma resources refused: completed=\(progress.completed)/\(budget.selected.count), pending=\(progress.pending.map(String.init) ?? "none"), actualFree=\(os.actualFreeBytes), requiredFree=\(free), active=\(native.activeBytes), cache=\(native.cacheBytes), requiredAllocator=\(allocator), allocatorLimit=\(native.allocatorLimitBytes)")
+@@ -147,6 +170,9 @@
+                 try mtpAuxiliary!.acceptedObservation(auxiliaryReservation, os: os, native: native)
+             }
+             // END MTP auxiliary attachment
++            if let remoteReservation {
++                try mtpRemoteTarget!.acceptedObservation(remoteReservation,os:os,native:native)
++            }
+             observations = try sum([observations, 1]); minimumFree = min(minimumFree, os.actualFreeBytes)
+             maximumActive = max(maximumActive, native.activeBytes); maximumPeak = max(maximumPeak, native.peakBytes)
+             guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma deadline expired during observation") }

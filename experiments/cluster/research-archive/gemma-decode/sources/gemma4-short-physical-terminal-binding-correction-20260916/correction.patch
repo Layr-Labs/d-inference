@@ -1,0 +1,95 @@
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -18,6 +18,7 @@
+ from alias import Alias
+ from receive_collection import receive
+ from validate_collected import validate
++from terminal_binding import describe_launch, recheck_launch, require_terminal
+ 
+ 
+ def verify_source():
+@@ -71,7 +72,8 @@
+             require(value['launchExitCode']==0 and value['retirement']['nativeProcessesAbsent']
+                     and value['retirement']['journalsEmpty'],'Root retirement proof')
+             if mode=='stages':require(value['aliasRelease']['restored'] is True,'Alias restoration proof')
+-            return dict(path=str(path),sha256=wanted,attempt=value['attempt'])
++            recheck_launch(value['launchReceipt'],mode)
++            return dict(path=str(path),sha256=wanted,attempt=value['attempt'],launchReceipt=value['launchReceipt'])
+         if a.action=='copy':
+             require(a.mode is None,'Copy includes both hosts and has no mode')
+             code=execute(['/usr/bin/python3','-B',str(BASE/'prepare_copy.py'),'--bound',str(a.bound),
+@@ -94,6 +96,7 @@
+                 record['fullRootRun']=completed_run(a.full_run_receipt,a.full_run_sha256,'full')
+                 record['fullReferencePrerequisite']=validate(a.bound,a.full_dir,'full')
+                 same(record['fullRootRun']['attempt'],record['fullReferencePrerequisite']['attempt'],'Full run/collection attempt')
++                require_terminal(record['fullRootRun']['launchReceipt'],'full',record['fullReferencePrerequisite']['terminalSHA256'])
+             selected=[('full','darkbloom-48')] if a.mode=='full' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
+             for mode,host in selected:
+                 command=shlex.join(['/usr/bin/python3','-B',str(REMOTE/'run_gemma.py'),'--package-sha256',bound['packageSHA256'],
+@@ -104,6 +107,8 @@
+                 if alias:record['aliasReady']=alias.start()
+                 record['launchExitCode']=execute(['/usr/bin/python3','-B',str(BASE/'launch_remote.py'),'--mode',a.mode,
+                     '--package-sha256',bound['packageSHA256'],'--attempt',str(a.attempt),'--output',str(a.output/'launch')],a.output,'launch',360)
++                if record['launchExitCode']==0:
++                    record['launchReceipt']=describe_launch(a.output/'launch/terminal.json',a.mode)
+             finally:
+                 try:record['retirement']=observe_retirement(origin+420,postflight,observations.append)
+                 finally:
+@@ -130,7 +135,10 @@
+                                 completed_run(a.stages_run_receipt,a.stages_run_sha256,'stages')]
+             checked={mode:validate(a.bound,directory,mode) for mode,directory in [('full',a.full_dir),('stage0',a.stage0_dir),('stage1',a.stage1_dir)]}
+             same(checked['full']['attempt'],record['rootRuns'][0]['attempt'],'Full attempt')
+-            for mode in ('stage0','stage1'):same(checked[mode]['attempt'],record['rootRuns'][1]['attempt'],'Stage attempt')
++            require_terminal(record['rootRuns'][0]['launchReceipt'],'full',checked['full']['terminalSHA256'])
++            for mode in ('stage0','stage1'):
++                same(checked[mode]['attempt'],record['rootRuns'][1]['attempt'],'Stage attempt')
++                require_terminal(record['rootRuns'][1]['launchReceipt'],mode,checked[mode]['terminalSHA256'])
+             sources=parse((a.bound/'sources.json').read_bytes())
+             packet=dict(schema='gemma4_short_comparison_packet_v1',expected=dict(path=sources['expected.json']['path'],sha256=bound['binding']['expectedSHA256']),
+                 prompt=dict(path=sources['prompt.ids.json']['path'],sha256=bound['binding']['promptSHA256']),
+--- a/validate_collected.py
++++ b/validate_collected.py
+@@ -59,6 +59,7 @@
+         name='native/worker-0.'+stream['stream'];same(stream['sha256'],declared[name]['sha256'],'Stream retained SHA');same(stream['bytes'],declared[name]['bytes'],'Stream size')
+     same(inputs['attempt'],collection['attempt'],'Input/collection attempt')
+     return dict(mode=mode,attempt=collection['attempt'],passed=True,report=report_ref,sidecarsDirectory=str(directory/'sidecars'),
++        terminalSHA256=declared['terminal.json']['sha256'],
+         resourceSamples=len(resource_rows),minimumActualFreeBytes=min(r['actualFreeBytes'] for r in resource_rows),
+         numericalCrossRankComparisonPerformed=False,protocolOwnerLeaseReleaseObserved=False,
+         physicalExclusionAndRetirementObserved=True,modelWholePayloadRehashedByHarness=False)
+--- /dev/null
++++ b/terminal_binding.py
+@@ -0,0 +1,33 @@
++"""Join original SSH-delivered terminal digests to later collected exact bytes."""
++from pathlib import Path
++from binding_common import fields, parse, pin, require, same
++from binding_inputs import snapshot
++
++
++def describe_launch(path,mode):
++    require(mode in ('full','stages'),'Unknown launch cohort')
++    modes=['full'] if mode=='full' else ['stage0','stage1']
++    path=Path(path);require(path.is_absolute() and path.parent.resolve()==path.parent,'Canonical launch receipt')
++    item=snapshot(path,1_048_576);value=parse(item['raw'])
++    same(value['status'],'completed','Successful original SSH launch')
++    same(value['exitCodes'],[0]*len(modes),'Original SSH exits')
++    same(value['cleanupErrors'],[],'Original SSH cleanup')
++    require(value['reaped'] is True and value['outputComplete'] is True and value['watchdogExpired'] is False
++            and 'cleanupFailure' not in value,'Incomplete original launch')
++    require(type(value['results']) is list and len(value['results'])==len(modes),'Remote result coverage')
++    remote={}
++    for wanted,row in zip(modes,value['results']):
++        fields(row,'mode status terminalSHA256','Original remote result')
++        same(row['mode'],wanted,'Original remote role/order');same(row['status'],'completed','Original remote completion')
++        remote[wanted]=pin(row['terminalSHA256'])
++    return dict(path=str(path),sha256=item['sha256'],remoteTerminalSHA256=remote)
++
++
++def recheck_launch(reference,mode):
++    fields(reference,'path sha256 remoteTerminalSHA256','Pinned launch receipt')
++    same(describe_launch(reference['path'],mode),reference,'Original launch receipt changed')
++
++
++def require_terminal(reference,mode,collected_sha256):
++    require(mode in reference['remoteTerminalSHA256'],'Collected role not launched')
++    same(pin(collected_sha256),reference['remoteTerminalSHA256'][mode],'Collected terminal differs from original SSH result')

@@ -1,0 +1,522 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkDriver.swift
+@@ -20,9 +20,10 @@
+     let frames: [Gemma4BenchmarkFrameTiming]
+     let finalRow: Gemma4ShortFile?, finalState: Gemma4ShortState?
+     let committedTokens: Int
++    let prefillSummary: QwenGenerationPrefillSummary?
+     let requestStateRetired = true, evidenceOutsideTimedPath = true
+     let timingsAreSameProcess = true, clockAcrossHostsCompared = false
+-    let durationIncludesResourceChecksAndSerialTransport = true
++    let durationIncludesResourceChecksAndSerialTransport: Bool
+     let mtpEnabled = false, numericalComparisonPerformed = false
+ }
+ 
+@@ -34,6 +35,9 @@
+         guard (input.job.rank != nil) == (wire != nil) else { throw ProbeError("Gemma benchmark peer responsibility differs") }
+         let binding = try session.shortDiagnosticBinding()
+         try wire?.checkpoint("ready", check: check)
++        let producer = input.job.prefill == .oneChunkLookahead && input.job.rank == 0
++            ? try Gemma4BenchmarkLookahead(request: input.request) : nil
++        defer { producer?.cancel() }
+         var selected: [Int] = [], agreements: [UInt64] = [], frames: [Gemma4BenchmarkFrameTiming] = []
+         var firstLogits: UInt64?, retainedFinalRow: MLXArray?
+         let frameCount = (input.request.promptCount + input.request.chunkSize - 1) / input.request.chunkSize
+@@ -43,7 +47,7 @@
+             try autoreleasepool {
+                 try check()
+                 let frame = try Gemma4BenchmarkFrames.frame(sequence, request: input.request)
+-                let frameStart = DispatchTime.now().uptimeNanoseconds
++                var frameStart = DispatchTime.now().uptimeNanoseconds
+                 let tokens: [Int]
+                 if frame.phase == .prefill {
+                     tokens = Array(input.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset+frame.tokenCount)])
+@@ -52,53 +56,45 @@
+                     tokens = [last]
+                 }
+                 var phases: [Gemma4BenchmarkPhase] = []
+-                let observer: CBv2OwnerPhaseObserver = { value in
+-                    guard phases.count < CBv2OwnerPhase.allCases.count,
+-                          value.phase == CBv2OwnerPhase.allCases[phases.count], value.tokenCount == frame.tokenCount,
+-                          value.committedTokens == (value.phase == .validationCommitEnd
+-                            ? frame.tokenOffset+frame.tokenCount : frame.tokenOffset) else {
+-                        throw ProbeError("Gemma scalar owner phase order/frontier differs")
++                var localToken: Int?
++                if let producer, frame.phase == .prefill {
++                    guard let wire else { throw ProbeError("Gemma lookahead lacks the original wire") }
++                    let observation = try producer.run(frame: frame, session: session, wire: wire, check: check)
++                    guard observation.committedTokens == frame.tokenOffset + frame.tokenCount else {
++                        throw ProbeError("Gemma lookahead ACK changed its captured frontier")
+                     }
+-                    phases.append(.init(name: value.phase.rawValue, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
+-                                        tokenCount: value.tokenCount, committedTokens: value.committedTokens))
+-                }
+-                let incoming = input.job.rank == 1 ? try wire!.receiveFrame(frame, tokens: tokens, check: check) : nil
+-                let output: Gemma4ForwardOutput
+-                if frame.phase == .prefill {
+-                    output = try session.prefillChunk(tokens, offset: frame.tokenOffset, final: frame.finalPromptChunk,
+-                        incoming: incoming, observer: observer, check: check)
++                    frameStart = observation.startedNanoseconds; phases = observation.phases
+                 } else {
+-                    output = try session.decode(tokens[0], offset: frame.tokenOffset, incoming: incoming,
+-                                                observer: observer, check: check)
+-                }
+-                guard phases.count == CBv2OwnerPhase.allCases.count,
+-                      session.committedTokens == frame.tokenOffset+frame.tokenCount else {
+-                    throw ProbeError("Gemma benchmark forward did not complete all native/state phases")
+-                }
+-                var localToken: Int?
+-                switch output {
+-                case .residual(let boundary):
+-                    guard input.job.rank == 0, let wire else { throw ProbeError("Gemma residual lacks peer") }
+-                    try wire.sendFrame(boundary, check: check)
+-                case .evaluationHandle:
+-                    guard frame.phase == .prefill, !frame.finalPromptChunk, input.job.rank != 0 else {
+-                        throw ProbeError("Gemma evaluation handle appeared at a selected-token boundary")
++                    guard producer == nil || producer!.isComplete else { throw ProbeError("Gemma decode precedes prompt drain") }
++                    let incoming = input.job.rank == 1 ? try wire!.receiveFrame(frame, tokens: tokens, check: check) : nil
++                    let step = try Gemma4BenchmarkForward.run(frame: frame, tokens: tokens, session: session,
++                                                              incoming: incoming, check: check)
++                    phases = step.phases
++                    let output = step.output
++                    switch output {
++                    case .residual(let boundary):
++                        guard input.job.rank == 0, let wire else { throw ProbeError("Gemma residual lacks peer") }
++                        try wire.sendFrame(boundary, check: check)
++                    case .evaluationHandle:
++                        guard frame.phase == .prefill, !frame.finalPromptChunk, input.job.rank != 0 else {
++                            throw ProbeError("Gemma evaluation handle appeared at a selected-token boundary")
++                        }
++                        try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
++                    case .logits(let logits):
++                        guard input.job.rank != 0, frame.phase == .decode || frame.finalPromptChunk else {
++                            throw ProbeError("Gemma logits appeared before final prefill")
++                        }
++                        if firstLogits == nil { firstLogits = DispatchTime.now().uptimeNanoseconds }
++                        try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
++                        guard logits.shape == [1,262_144] else { throw ProbeError("Gemma sampling row shape differs") }
++                        let maximum = argMax(logits), finite = all(isFinite(logits))
++                        eval(maximum, finite); try check()
++                        guard maximum.dtype == .uint32, maximum.size == 1, finite.item(Bool.self) else {
++                            throw ProbeError("Gemma sampling did not produce a finite native argmax")
++                        }
++                        localToken = Int(maximum.item(UInt32.self))
++                        if sequence == frameCount-1 && input.job.captureEvidence { retainedFinalRow = logits }
+                     }
+-                    try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
+-                case .logits(let logits):
+-                    guard input.job.rank != 0, frame.phase == .decode || frame.finalPromptChunk else {
+-                        throw ProbeError("Gemma logits appeared before final prefill")
+-                    }
+-                    if firstLogits == nil { firstLogits = DispatchTime.now().uptimeNanoseconds }
+-                    try wire?.consume(sequence: sequence, frontier: session.committedTokens, check: check)
+-                    guard logits.shape == [1,262_144] else { throw ProbeError("Gemma sampling row shape differs") }
+-                    let maximum = argMax(logits), finite = all(isFinite(logits))
+-                    eval(maximum, finite); try check()
+-                    guard maximum.dtype == .uint32, maximum.size == 1, finite.item(Bool.self) else {
+-                        throw ProbeError("Gemma sampling did not produce a finite native argmax")
+-                    }
+-                    localToken = Int(maximum.item(UInt32.self))
+-                    if sequence == frameCount-1 && input.job.captureEvidence { retainedFinalRow = logits }
+                 }
+                 if frame.phase == .decode || frame.finalPromptChunk {
+                     let token: Int
+@@ -118,6 +114,12 @@
+               session.committedTokens == input.request.promptCount + input.request.outputCount-1 else {
+             throw ProbeError("Gemma benchmark timing/token/frontier completion differs")
+         }
++        guard producer == nil || producer!.isComplete else { throw ProbeError("Gemma lookahead did not drain before retirement") }
++        let prefillSummary: QwenGenerationPrefillSummary?
++        if let rank = input.job.rank, input.job.prefillPolicy != nil {
++            prefillSummary = producer?.summary ?? .init(policy: input.job.prefill.rawValue, rank: rank,
++                preparedAheadFrames: 0, maximumPreparedBoundaries: 0)
++        } else { prefillSummary = nil }
+         // The timed interval has ended. No serialization or full-row/state copy occurs above.
+         var finalRow: Gemma4ShortFile?, finalState: Gemma4ShortState?
+         if input.job.captureEvidence {
+@@ -143,7 +145,9 @@
+             prefillNanoseconds: first-start, decodeNanoseconds: last-first,
+             prefillTokensPerSecond: Double(input.request.promptCount) * 1e9 / Double(first-start),
+             decodeTokensPerSecond: Double(selected.count-1) * 1e9 / Double(last-first), frames: frames,
+-            finalRow: finalRow, finalState: finalState, committedTokens: session.committedTokens)
++            finalRow: finalRow, finalState: finalState, committedTokens: session.committedTokens,
++            prefillSummary: prefillSummary,
++            durationIncludesResourceChecksAndSerialTransport: input.job.prefill == .serial)
+     }
+ 
+     private static func captureState(_ session: Gemma4OwnedForwardSession, ordinal: Int,
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkForward.swift
+@@ -0,0 +1,35 @@
++import Foundation
++import MLX
++
++/// The same synchronous owner call and scalar observer used by serial and
++/// prepared prefill. No request/state lifetime or transport is introduced here.
++enum Gemma4BenchmarkForward {
++    static func run(frame: QwenLayerStageFrame, tokens: [Int], session: Gemma4OwnedForwardSession,
++                    incoming: Gemma4ForwardBoundary?, check: () throws -> Void
++    ) throws -> (output: Gemma4ForwardOutput, phases: [Gemma4BenchmarkPhase]) {
++        var phases: [Gemma4BenchmarkPhase] = []
++        let observer: CBv2OwnerPhaseObserver = { value in
++            guard phases.count < CBv2OwnerPhase.allCases.count,
++                  value.phase == CBv2OwnerPhase.allCases[phases.count], value.tokenCount == frame.tokenCount,
++                  value.committedTokens == (value.phase == .validationCommitEnd
++                    ? frame.tokenOffset + frame.tokenCount : frame.tokenOffset) else {
++                throw ProbeError("Gemma scalar owner phase order/frontier differs")
++            }
++            phases.append(.init(name: value.phase.rawValue, timestampNanoseconds: DispatchTime.now().uptimeNanoseconds,
++                                tokenCount: value.tokenCount, committedTokens: value.committedTokens))
++        }
++        let output: Gemma4ForwardOutput
++        if frame.phase == .prefill {
++            output = try session.prefillChunk(tokens, offset: frame.tokenOffset, final: frame.finalPromptChunk,
++                incoming: incoming, observer: observer, check: check)
++        } else {
++            output = try session.decode(tokens[0], offset: frame.tokenOffset, incoming: incoming,
++                                        observer: observer, check: check)
++        }
++        guard phases.count == CBv2OwnerPhase.allCases.count,
++              session.committedTokens == frame.tokenOffset + frame.tokenCount else {
++            throw ProbeError("Gemma benchmark forward did not complete all native/state phases")
++        }
++        return (output, phases)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
+@@ -8,12 +8,16 @@
+     let requestIDs: [String]
+     let promptCount: Int, chunkSize: Int, outputCount: Int, timeoutSeconds: Int, cut: Int
+     let captureEvidence: Bool
++    let prefillPolicy: String?
++    var prefill: QwenResidentPrefillPolicy { prefillPolicy.flatMap(QwenResidentPrefillPolicy.init(rawValue:)) ?? .serial }
+     var rank: Int? { mode == "stage0" ? 0 : mode == "stage1" ? 1 : nil }
+     var target: Gemma4ForwardTarget { rank.map(Gemma4ForwardTarget.stage) ?? .fullReference }
+     var dtype: DType { residualDType == "bfloat16" ? .bfloat16 : residualDType == "float16" ? .float16 : .float32 }
+ 
+     func validate() throws {
+-        guard schema == "gemma4_resident_benchmark_v1", ["full", "stage0", "stage1"].contains(mode),
++        guard prefillPolicy == nil || ["serial", "oneChunkLookahead"].contains(prefillPolicy!),
++              mode != "full" || prefill == .serial,
++              schema == "gemma4_resident_benchmark_v1", ["full", "stage0", "stage1"].contains(mode),
+               [128,256,1024,4096,8192].contains(promptCount), [64,128].contains(chunkSize), outputCount == 16, [6,7,8,10].contains(cut),
+               (1...300).contains(timeoutSeconds), requestIDs.count == 4, Set(requestIDs).count == 4,
+               (requestIDs + [membershipEpoch]).allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+@@ -65,7 +69,8 @@
+         self.job = job
+         scopeSHA256 = sha256(Data((["gemma4-resident-benchmark-v1", job.membershipEpoch, job.buildIdentitySHA256,
+             plan.fingerprint, job.promptFileSHA256, "cut=\(job.cut)", "warmup=1", "measure=3", "mtp=false",
+-            "capture=\(job.captureEvidence)"] + requests.map(\.fingerprint)).joined(separator: "\n").utf8))
++            "capture=\(job.captureEvidence)"] + requests.map(\.fingerprint)
++            + (job.prefillPolicy.map { ["prefill=" + $0] } ?? [])).joined(separator: "\n").utf8))
+     }
+     func iteration(_ ordinal: Int) throws -> Gemma4BenchmarkRequestInput {
+         guard requests.indices.contains(ordinal) else { throw ProbeError("Gemma benchmark iteration differs") }
+@@ -76,11 +81,14 @@
+         var targets: [[String: Any]] = []
+         for target in [Gemma4ForwardTarget.fullReference, .stage(0), .stage(1)] {
+             let budget = try Gemma4BenchmarkResourceBudget.derive(plan: plan, target: target,
+-                request: requests[0], captureEvidence: job.captureEvidence, bound: { $0 })
++                request: requests[0], captureEvidence: job.captureEvidence,
++                prefillPolicy: target == .fullReference ? .serial : job.prefill, bound: { $0 })
+             targets.append(["target": target == .fullReference ? "full" : target == .stage(0) ? "stage0" : "stage1",
+                 "selectedTensorCount": budget.selected.count,
+                 "selectedBytes": try QwenLongPrefillCheckedBytes.sum(budget.selected.map { $0.source.layout.byteCount }),
+                 "namedNativeLogicalBytes": budget.namedNativeBytes, "hostEvidenceBytes": budget.hostEvidenceBytes,
++                "extraPrefillNativeBytes": budget.prefillAllowance?.extraNativeBytes ?? 0,
++                "extraPrefillHostBytes": budget.prefillAllowance?.extraHostBytes ?? 0,
+                 "stateLogicalBytes": budget.stateLogicalBytes,
+                 "minimumFreeBeforeLoadLogicalLowerBound": max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+                     try QwenLongPrefillCheckedBytes.sum([QwenLongPrefillCheckedBytes.sum(budget.selectedBounds),
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkLookahead.swift
+@@ -0,0 +1,85 @@
++import Foundation
++import MLX
++
++/// Reuses the qualified Qwen single-slot frontier guard. Only this producer
++/// invokes the existing Gemma session; no local forward overlaps local P2P IO.
++final class Gemma4BenchmarkLookahead {
++    struct Observation {
++        let startedNanoseconds: UInt64
++        let phases: [Gemma4BenchmarkPhase]
++        let committedTokens: Int
++    }
++    private struct Prepared {
++        let boundary: Gemma4ForwardBoundary
++        let observation: Observation
++    }
++    private let request: QwenLayerStageGenerationRequest
++    private var window: QwenGenerationPrefillWindow
++    private var prepared: Prepared?
++    var isComplete: Bool { window.complete && prepared == nil }
++    var summary: QwenGenerationPrefillSummary {
++        .init(policy: QwenResidentPrefillPolicy.oneChunkLookahead.rawValue, rank: 0,
++              preparedAheadFrames: window.preparedAheadFrames,
++              maximumPreparedBoundaries: window.maximumPreparedBoundaries)
++    }
++
++    init(request: QwenLayerStageGenerationRequest) throws {
++        self.request = request
++        window = try .init(promptCount: request.promptCount, chunkSize: request.chunkSize)
++    }
++    func cancel() { prepared = nil; window.cancel() }
++
++    private func prepare(_ sequence: Int, session: Gemma4OwnedForwardSession,
++                         check: () throws -> Void) throws {
++        guard prepared == nil else { throw ProbeError("Gemma lookahead prepared slot is occupied") }
++        let frame = try Gemma4BenchmarkFrames.frame(sequence, request: request)
++        guard frame.phase == .prefill else { throw ProbeError("Gemma lookahead cannot prepare decode") }
++        try window.beginPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++        prepared = try autoreleasepool {
++            try check()
++            let started = DispatchTime.now().uptimeNanoseconds
++            let tokens = Array(request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
++            let value = try Gemma4BenchmarkForward.run(frame: frame, tokens: tokens, session: session,
++                                                       incoming: nil, check: check)
++            guard case .residual(let boundary) = value.output, boundary.frame == frame else {
++                throw ProbeError("Gemma lookahead lacks its actual committed ingress boundary")
++            }
++            try window.commitPreparation(sequence: sequence, nativeCommittedTokens: session.committedTokens)
++            return .init(boundary: boundary, observation: .init(startedNanoseconds: started,
++                phases: value.phases, committedTokens: session.committedTokens))
++        }
++    }
++
++    func run(frame: QwenLayerStageFrame, session: Gemma4OwnedForwardSession,
++             wire: Gemma4BenchmarkWire, check: () throws -> Void) throws -> Observation {
++        do {
++            guard wire.rank == 0, wire.input.job.prefill == .oneChunkLookahead,
++                  frame.phase == .prefill else { throw ProbeError("Gemma lookahead producer policy/rank differs") }
++            if prepared == nil { try prepare(frame.sequence, session: session, check: check) }
++            weak var original: MLXArray?
++            let sent: (Gemma4BenchmarkWire.SentFrameTicket, QwenGenerationPrefillWindow.Commit, Observation) = try autoreleasepool {
++                guard let value = prepared, value.boundary.frame == frame,
++                      session.committedTokens == value.observation.committedTokens else {
++                    throw ProbeError("Gemma prepared boundary lost its captured native frontier")
++                }
++                let commit = try window.beginSend(sequence: frame.sequence,
++                    nativeCommittedTokens: value.observation.committedTokens)
++                original = value.boundary.array
++                let ticket = try wire.sendFrameUntilSent(value.boundary, check: check)
++                prepared = nil
++                return (ticket, commit, value.observation)
++            }
++            guard original == nil, prepared == nil else { throw ProbeError("Gemma retained a sent boundary wrapper") }
++            try window.completeSend(sent.1)
++            if frame.sequence + 1 < window.frameCount {
++                try prepare(frame.sequence + 1, session: session, check: check)
++            }
++            try wire.finishFrameConsumed(sent.0, check: check)
++            // ACK k binds k's actual captured commit, even if local state is k+1.
++            try window.consume(sent.1)
++            return sent.2
++        } catch {
++            cancel(); wire.poison(); throw error
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -23,9 +23,11 @@
+     let stateLayers: [LayerAttentionStateLayout.Layer]
+     let planSHA256: String
+     let requestSHA256: String
++    let prefillAllowance: QwenGenerationPrefillAllowance?
+ 
+     static func derive(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+-        request: QwenLayerStageGenerationRequest, captureEvidence: Bool, bound: (Int) throws -> Int
++        request: QwenLayerStageGenerationRequest, captureEvidence: Bool,
++        prefillPolicy: QwenResidentPrefillPolicy = .serial, bound: (Int) throws -> Int
+     ) throws -> Self {
+         guard [128,256,1024,4096,8192].contains(request.promptCount), [64,128].contains(request.chunkSize), request.outputCount == 16,
+               request.stopTokenIDs.isEmpty, request.maximumTokens == request.promptCount + 16,
+@@ -128,17 +130,33 @@
+         if ownsHead {
+             for name in ["logits", "float32Logits", "softcapTemporary", "samplingRow"] { try add(name, [262_144]) }
+         }
++        let allowance: QwenGenerationPrefillAllowance?
++        if prefillPolicy == .oneChunkLookahead {
++            guard case .stage(let rank) = target else { throw ProbeError("Gemma lookahead requires a selected stage") }
++            allowance = try .derive(rank: rank, promptCount: request.promptCount, chunkSize: m,
++                hiddenSize: text.hiddenSize, elementBytes: 4, bound: rounded)
++            if allowance!.extraNativeBytes > 0 {
++                // Same F32 element ceiling as the retained named-array ledger.
++                try add("lookaheadPreparedBoundary", [m, text.hiddenSize])
++            }
++        } else { allowance = nil }
+         let allocations = try selected.map { try rounded($0.source.layout.byteCount) }
+         let host = selected.map { $0.source.layout.byteCount }.max()!
+         let namedBounds = try arrays.map { try rounded($0.bytes) }
++        if let allowance, allowance.extraNativeBytes > 0 {
++            guard arrays.last?.name == "lookaheadPreparedBoundary", namedBounds.last == allowance.extraNativeBytes else {
++                throw ProbeError("Gemma lookahead named allocation does not match the shared allowance")
++            }
++        }
+         let native = try sum(namedBounds)
+         let hostEvidence = try sum([captureEvidence ? logicalSnapshot : 0,
+-            captureEvidence ? 8 * 262_144 * 4 : 0, 2 * m * text.hiddenSize * 4, 8_388_608])
++            captureEvidence ? 8 * 262_144 * 4 : 0, 2 * m * text.hiddenSize * 4, 8_388_608,
++            allowance?.extraHostBytes ?? 0])
+         return .init(selected: selected, selectedBounds: allocations, namedArrays: arrays, namedAllocationBounds: namedBounds,
+             namedNativeBytes: native, hostEvidenceBytes: hostEvidence,
+             largestHostTensorBytes: host, largestNativeCopyBytes: try rounded(host),
+             persistentCastLogicalBytes: casts, stateLogicalBytes: state,
+             stateLayers: stateLayers,
+-            planSHA256: plan.fingerprint, requestSHA256: request.fingerprint)
++            planSHA256: plan.fingerprint, requestSHA256: request.fingerprint, prefillAllowance: allowance)
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
+@@ -13,6 +13,7 @@
+     let selectedAllocationBounds: [Int]
+     let namedArrays: [Gemma4BenchmarkResourceBudget.ArrayTerm]
+     let namedAllocationBounds: [Int]
++    let prefillAllowance: QwenGenerationPrefillAllowance?
+     let observationCount: Int, minimumActualFreeBytes: Int
+     let maximumObservedActiveBytes: Int, maximumObservedNativePeakBytes: Int
+     let actualAllocatorBoundsUsed = true
+@@ -40,7 +41,8 @@
+     private var constructorActive = 0, constructorPeak = 0
+ 
+     init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+-         requests: [QwenLayerStageGenerationRequest], residualDType: DType, captureEvidence: Bool, deadline: UInt64) throws {
++         requests: [QwenLayerStageGenerationRequest], residualDType: DType, captureEvidence: Bool,
++         prefillPolicy: QwenResidentPrefillPolicy = .serial, deadline: UInt64) throws {
+         guard requests.count == 4, Set(requests.map(\.requestID)).count == 4, let request = requests.first,
+               requests.allSatisfy({ $0.promptTokenIDs == request.promptTokenIDs && $0.chunkSize == request.chunkSize
+                 && $0.outputCount == request.outputCount && $0.profile == request.profile && $0.stopTokenIDs.isEmpty }) else {
+@@ -54,7 +56,7 @@
+         try Gemma4ForwardRequest.validate(request, dtype: residualDType)
+         try QwenResidentResourceEnvironment.require()
+         let budget = try Gemma4BenchmarkResourceBudget.derive(plan: plan, target: target, request: request,
+-            captureEvidence: captureEvidence, bound: QwenResidentResourceEnvironment.allocationBound)
++            captureEvidence: captureEvidence, prefillPolicy: prefillPolicy, bound: QwenResidentResourceEnvironment.allocationBound)
+         self.budget = budget; self.deadline = deadline; self.requests = requests
+         progress = .init(expected: budget.selected)
+         try check()
+@@ -205,6 +207,7 @@
+             persistentCastLogicalBytes: budget.persistentCastLogicalBytes, stateLogicalBytes: budget.stateLogicalBytes,
+             selectedAllocationBounds: budget.selectedBounds,
+             namedArrays: budget.namedArrays, namedAllocationBounds: budget.namedAllocationBounds,
++            prefillAllowance: budget.prefillAllowance,
+             observationCount: observations, minimumActualFreeBytes: minimumFree,
+             maximumObservedActiveBytes: maximumActive, maximumObservedNativePeakBytes: maximumPeak)
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift
+@@ -38,7 +38,7 @@
+                     Memory.clearCache(); try outerCheck()
+                     let owner = try Gemma4BenchmarkResourceOwner(plan: input.plan, target: input.job.target,
+                         requests: input.requests, residualDType: input.job.dtype,
+-                        captureEvidence: input.job.captureEvidence, deadline: deadline)
++                        captureEvidence: input.job.captureEvidence, prefillPolicy: input.job.prefill, deadline: deadline)
+                     func checked() throws { try outerCheck(); try owner.check(); try outerCheck() }
+                     var releaseWire: Gemma4BenchmarkWire?
+                     let loadStarted = DispatchTime.now().uptimeNanoseconds
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
+@@ -1,13 +1,15 @@
+ import Foundation
+ import MLX
+ 
+-/// Serial qualification transport over the existing completed P2P primitives.
++/// Qualification transport over the existing completed P2P primitives.
++/// Optional prefill tickets defer only the consumed ACK, never native completion.
+ /// It supplies checksums/scope binding, not authenticated or encrypted RDMA.
+ final class Gemma4BenchmarkWire {
+     let input: Gemma4BenchmarkRequestInput
+     let group: Collective
+     private var sent = 0, received = 0, busy = false, failed = false
+     private var pending: Gemma4BenchmarkWireValue?
++    struct SentFrameTicket { let value: Gemma4BenchmarkWireValue }
+     var rank: Int { group.rank }
+ 
+     init(input: Gemma4BenchmarkRequestInput, group: Collective) throws {
+@@ -83,6 +85,18 @@
+         }
+     }
+ 
++    func finishFrameConsumed(_ ticket: SentFrameTicket, check: () throws -> Void) throws {
++        try operation {
++            let value = ticket.value
++            guard rank == 0, input.job.prefill == .oneChunkLookahead, value.event == "frame",
++                  pending == value else { throw ProbeError("Gemma consumed ticket differs or was replayed") }
++            let expected = Gemma4BenchmarkWireValue(event: "frame-consumed", sequence: value.sequence,
++                frontier: value.frontier, count: value.count, tokenIDsSHA256: value.tokenIDsSHA256,
++                payloadSHA256: value.payloadSHA256, dtype: value.dtype)
++            try require(expected, check: check); pending = nil
++        }
++    }
++
+     func retainPending(_ value: Gemma4BenchmarkWireValue) throws {
+         guard pending == nil else { throw ProbeError("Gemma unconsumed frame overlap") }; pending = value
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWirePayload.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWirePayload.swift
+@@ -20,7 +20,7 @@
+             dtype: input.job.residualDType), receipt: "probe-buffer-received", check: check).0
+     }
+ 
+-    func sendFrame(_ boundary: Gemma4ForwardBoundary, check: () throws -> Void) throws {
++    private func ownedFrame(_ boundary: Gemma4ForwardBoundary, check: () throws -> Void) throws -> Gemma4ForwardBoundary {
+         let frame = try Gemma4BenchmarkFrames.frame(boundary.frame.sequence, request: input.request)
+         guard boundary.frame == frame, boundary.requestSHA256 == input.request.fingerprint,
+               boundary.artifactSHA256 == Gemma4ArtifactMetadata.artifactAggregateSHA256,
+@@ -30,10 +30,31 @@
+         }
+         let owned = try boundary.ownedCopy(check: check)
+         try owned.requireOwned(tokens: frame.tokenCount, hidden: 2816, dtype: input.job.dtype)
++        return owned
++    }
++
++    func sendFrame(_ boundary: Gemma4ForwardBoundary, check: () throws -> Void) throws {
++        let owned = try ownedFrame(boundary, check: check)
++        let frame = owned.frame
+         try sendPayload(owned.array, value: .init(event: "frame", sequence: frame.sequence,
+             frontier: frame.tokenOffset + frame.tokenCount, count: frame.tokenCount,
+             tokenIDsSHA256: owned.tokenIDsSHA256, payloadSHA256: owned.payloadSHA256,
+             dtype: input.job.residualDType), receipt: "frame-consumed", check: check)
++    }
++
++    /// Completed-send credit only. The returned ticket is CPU metadata; the
++    /// original and transport copy can retire before preparing one next chunk.
++    func sendFrameUntilSent(_ boundary: Gemma4ForwardBoundary, check: () throws -> Void) throws -> SentFrameTicket {
++        guard input.job.prefill == .oneChunkLookahead, boundary.frame.phase == .prefill else {
++            throw ProbeError("Gemma deferred consumption is prefill-only and explicitly selected")
++        }
++        let owned = try ownedFrame(boundary, check: check)
++        let frame = owned.frame
++        let value = try sendPayload(owned.array, value: .init(event: "frame", sequence: frame.sequence,
++            frontier: frame.tokenOffset + frame.tokenCount, count: frame.tokenCount,
++            tokenIDsSHA256: owned.tokenIDsSHA256, payloadSHA256: owned.payloadSHA256,
++            dtype: input.job.residualDType), receipt: nil, check: check)
++        return .init(value: value)
+     }
+ 
+     func receiveFrame(_ frame: QwenLayerStageFrame, tokens: [Int],
+@@ -51,8 +72,9 @@
+             tokenIDsSHA256: qwenGenerationTokenHash(tokens), array: array, payloadSHA256: payload)
+     }
+ 
+-    private func sendPayload(_ array: MLXArray, value: Gemma4BenchmarkWireValue, receipt: String,
+-                             check: () throws -> Void) throws {
++    @discardableResult
++    private func sendPayload(_ array: MLXArray, value: Gemma4BenchmarkWireValue, receipt: String?,
++                             check: () throws -> Void) throws -> Gemma4BenchmarkWireValue {
+         try operation {
+             try requireNoPending(); try check()
+             guard rank == 0, array.shape == [1, value.count, 2816], array.dtype == input.job.dtype else {
+@@ -69,7 +91,9 @@
+             let ready = changedEvent(header, "payload-ready")
+             try require(ready, check: check)
+             _ = try group.sendCompleted(array, to: 1, maximumBytes: bytes, check: check)
+-            try require(changedEvent(header, receipt), check: check)
++            if let receipt { try require(changedEvent(header, receipt), check: check) }
++            else { try retainPending(header) }
++            return header
+         }
+     }
+ 

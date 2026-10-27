@@ -1,0 +1,217 @@
+{
+  "schema": "gemma4_owned_snapshot_batch_source_inputs_v1",
+  "sourceOnly": true,
+  "buildExecuted": false,
+  "cpuTestsExecuted": false,
+  "physicalExecuted": false,
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/o128-description-composition-1/sources.json",
+    "bytes": 91431,
+    "sha256": "c7216fb6cca15dc110f4f069458558558e13a42b21fac4b515ade01f3d015bfa"
+  },
+  "audit": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/conditioning-batch-fence-audit/manifest.json",
+    "bytes": 464,
+    "sha256": "dad4543c34d85df394d02f924f42aac02bc09510c20993585789631fd0a8301c"
+  },
+  "overlays": 14,
+  "additions": 2,
+  "expectedSourceCount": 124,
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 8770,
+      "sha256": "391e8f889725f40ba824ae676faed6b6f028c0dd896884edc4aba55c9d68a9d4"
+    },
+    {
+      "path": "Original/Collective.swift",
+      "bytes": 8002,
+      "sha256": "d668e73c39b4a45da25753f12be2584b5b84b830fd220a37d7763be805ca0207"
+    },
+    {
+      "path": "Original/CollectivePointToPoint.swift",
+      "bytes": 9416,
+      "sha256": "e5c24b76f4dd3a947a0cafe7df2809011114a054ab508a01784314d08ad3dccc"
+    },
+    {
+      "path": "Original/Gemma4BenchmarkEntry.swift",
+      "bytes": 9880,
+      "sha256": "040c63e86d83399216186646379c2e003c292228cbc012b3148fd7d9d2010745"
+    },
+    {
+      "path": "Original/Gemma4MTPPullChannel.swift",
+      "bytes": 5427,
+      "sha256": "5f36fbae6adaee23d56668642a489d8fff5a7f3da1f8e594b76bea4c549b3c1d"
+    },
+    {
+      "path": "Original/Gemma4MTPPullQualification.swift",
+      "bytes": 5975,
+      "sha256": "06b65c66b6bb9717e4280491e1e7d8b3ee2f6bb3a21b00e4d33068d98cbb0794"
+    },
+    {
+      "path": "Original/Gemma4MTPPullQualificationFaults.swift",
+      "bytes": 4404,
+      "sha256": "ccab7745b1adbb635c3fb631888ec5fe33174d490a50208531857e2f49e43d1f"
+    },
+    {
+      "path": "Original/Gemma4MTPPullQualificationPipeline.swift",
+      "bytes": 7089,
+      "sha256": "6b7f337793f023689f7c0bb8b65c05a0bf7a3ab501590cc3c213fac8284e90a8"
+    },
+    {
+      "path": "Original/Gemma4MTPPullQualificationSupport.swift",
+      "bytes": 4083,
+      "sha256": "e008d1255b405756aac9dec3b4aae8ef9e323d80b1ff0ff0c03d17d9c2dee201"
+    },
+    {
+      "path": "Original/Gemma4MTPPullSnapshot.swift",
+      "bytes": 5652,
+      "sha256": "2a54033be779fc139ae675cd4bafd0fdba02df8616f421d44fb46741ed893c9f"
+    },
+    {
+      "path": "Original/Gemma4MTPPullTarget.swift",
+      "bytes": 13578,
+      "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPAssistantRuntime.swift",
+      "bytes": 6435,
+      "sha256": "648363cdb5ba6fa4c5ec6f6e9f47a2e0e323b6f78d7d0566036bbb8bc6960593"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPDriver.swift",
+      "bytes": 14617,
+      "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPInput.swift",
+      "bytes": 6522,
+      "sha256": "61418f1ddb568c9da112cc3e0daa5c36ea6323ab28c0aa254920968374fbeb81"
+    },
+    {
+      "path": "Original/Gemma4RemoteMTPRuntime.swift",
+      "bytes": 3978,
+      "sha256": "5b2bdf115afa40a8fad277dd22b10afe5976232a3ca411c6d120f3cc14bc9529"
+    },
+    {
+      "path": "Runtime/Collective.swift",
+      "bytes": 8952,
+      "sha256": "8f4e411b5b786136b9f657cd674c1dcdb08538ce3f8dbad2fcf320853329ab22"
+    },
+    {
+      "path": "Runtime/CollectivePointToPoint.swift",
+      "bytes": 16309,
+      "sha256": "7b93245a535adcd717d2ca26040219e9253a7be4d1dda4f529f873afef61c575"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkEntry.swift",
+      "bytes": 9999,
+      "sha256": "dc1e09d7a32bb616607b1af1c774d76deead41a3a255f8fb8c1a85acfbd76558"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullChannel.swift",
+      "bytes": 5591,
+      "sha256": "57a5297b396ecd7dfe1c5f8042279b42675fca1a0960de108e24c45160132e49"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualification.swift",
+      "bytes": 6761,
+      "sha256": "a2c10c17df43f0fd83d3b60f2af82ba358e658008b3b5ea5c7cd3cdaa6cb9405"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationFaults.swift",
+      "bytes": 6050,
+      "sha256": "25957739b422feb8916cefd4dfe6bfb7d994ba7e4f2d996bce1d3b9f236424aa"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationPipeline.swift",
+      "bytes": 7557,
+      "sha256": "0ac8eee2e3ccb4f2e8f0301781b9f2e95d54377b778d5ad747f5c55e6ca2bd92"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationSupport.swift",
+      "bytes": 4619,
+      "sha256": "8e456fea573613c69dbda4345ad4347f443a57c2549496b3e777cd6d1142920b"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullSnapshot.swift",
+      "bytes": 8555,
+      "sha256": "0439e793146e886e43539f2ff66f49c64291a5dbe9566a07eef2ca6180ba83eb"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullSnapshotBatch.swift",
+      "bytes": 3314,
+      "sha256": "dd587ce0ebbedfff8784ae66398b4680c0c35a42d018795ba557c68ba886aaa4"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullSnapshotPolicy.swift",
+      "bytes": 2572,
+      "sha256": "8742dcae4a8b557631aaeaf2302ccd058a23ca3495bd67f8f888c3cafae8307a"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullTarget.swift",
+      "bytes": 14078,
+      "sha256": "8512a8665b65f865fe641ecab1d615623398447dd74fdd4bd21325248c57f55c"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPAssistantRuntime.swift",
+      "bytes": 6496,
+      "sha256": "a1466c33414231977167db4f95d504cf64fed325234a443e195273fe4c3304b9"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPDriver.swift",
+      "bytes": 14674,
+      "sha256": "892831a0dff5667357efdc0dd38974ec19078d36616895e8a33d37f62d148eff"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPInput.swift",
+      "bytes": 6961,
+      "sha256": "ad351203fa181e4abdef4b5996db053e83e8074b073fe5561176eae10d484f9b"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPRuntime.swift",
+      "bytes": 5155,
+      "sha256": "a4c7dec4600172706181bb1c680e3ee1bdfa13c725c6327e43e31133cb2d550c"
+    },
+    {
+      "path": "Tests/commands.json",
+      "bytes": 724,
+      "sha256": "56780fe518b4737c6030b69743c689ffc98a172167b24350ccfe2b89e7fb651c"
+    },
+    {
+      "path": "Tests/main.swift",
+      "bytes": 5082,
+      "sha256": "0355d55ff5f5ccde452886dac1d0103382ca50ffca6f218a78bcbf5d7c5a9675"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 5853,
+      "sha256": "6a127ec27d50941fbf3de413e0a6d909ecd198e17cf276ca799a7a7e1a6904b0"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 27260,
+      "sha256": "1d7446d9353613a2ff28ed1a2974702a3bd3cf3814ea9de0c5bf889763736e5f"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 10874,
+      "sha256": "00b69b092e36edc8655be43df82d4f6334d9d9b911da1e683f64ef40e5a82e7e"
+    },
+    {
+      "path": "refill-composition-check.json",
+      "bytes": 1016,
+      "sha256": "9f6c9d28f212038e28fc9bcfa33ffd834be04923701cc2dc0cde540ef1d32800"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 48899,
+      "sha256": "a3b0ab747c986fc1230f3bc33464cc0a1e224a6ffeb7b25b0004c91c651feb95"
+    },
+    {
+      "path": "transforms.json",
+      "bytes": 8262,
+      "sha256": "30ca8855127571a4bf5b6a8fd0adf1822ea43c6c78f500bee1877b9486b7f252"
+    }
+  ]
+}

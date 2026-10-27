@@ -1,0 +1,226 @@
+--- a/Tests/test_contract.py
++++ b/Tests/test_contract.py
+@@ -98,9 +98,9 @@
+             with self.assertRaises(ValueError):validate_result(*rows)
+         rows=assistant_fixture();rows[0]['embeddingLoad']['readAccounting']['unknown']=0
+         with self.assertRaises(ValueError):validate_result(*rows)
+-    def test_only_exact_serial_head_policy_summary(self):
++    def test_only_exact_packed_head_policy_summary(self):
+         target_summary(dict(SUMMARY))
+-        for field,value in [('policy','packed-head'),('expectedDenseModules',234),('expectedTiedHeads',2),('expectedTiedHeads',True),('gatheredOverrideEnabled',True),('singleRowOverrideEnabled',True),('wholeModelNumericsQualified',True)]:
++        for field,value in [('policy','gemma4_verification_packed_m1_dense_serial_head_v1'),('policy','packed-head'),('expectedDenseModules',234),('expectedTiedHeads',2),('expectedTiedHeads',True),('gatheredOverrideEnabled',True),('singleRowOverrideEnabled',True),('wholeModelNumericsQualified',True)]:
+             wrong=dict(SUMMARY);wrong[field]=value
+             with self.assertRaises(ValueError):target_summary(wrong)
+     def test_four_individually_admitted_head_rows(self):
+--- a/activation.py
++++ b/activation.py
+@@ -15,6 +15,9 @@
+     required=json.loads((ROOT/'required-native-sources.json').read_bytes())
+     for name in ['activationPredecessor','activationManifest','argumentOrderManifest','activationComposition','argumentOrderComposition','unionManifest','unionIntegration','packedHeadManifest']:
+         row=required[name];assert sha(Path(row['path']))==row['sha256']
++    for name in ['packedHeadActivationManifest','packedHeadActivationComposition','packedHeadActivationExpectedSources','packedHeadActivationPredecessor']:
++        row=required[name];assert sha(Path(row['path']))==row['sha256']
++    assert json.loads(Path(required['packedHeadActivationExpectedSources']['path']).read_bytes())['files']==required['requiredFiles']
+     sources=json.loads(sources_path.read_bytes());assert sources['files']==required['requiredFiles']
+     assert sources['workspaceMutated'] is True
+     assert sources['denseActivationManifestSHA256']==required['activationManifest']['sha256']
+@@ -23,6 +26,10 @@
+     assert sources['denseExecutionCompositionManifestSHA256']==required['unionManifest']['sha256']
+     assert sources['denseExecutionIntegrationSHA256']==required['unionIntegration']['sha256']
+     assert sources['packedHeadManifestSHA256']==required['packedHeadManifest']['sha256']
++    assert sources['packedHeadActivationPredecessor']==required['packedHeadActivationPredecessor']
++    assert sources['packedHeadActivationManifestSHA256']==required['packedHeadActivationManifest']['sha256']
++    assert sources['packedHeadActivationCompositionSHA256']==required['packedHeadActivationComposition']['sha256']
++    assert sources['packedHeadQualification']==required['packedHeadQualification']
+     from prerequisites import bind as qualification_bind
+     prerequisites=qualification_bind(tiny_qualification)
+     build=json.loads(build_path.read_bytes())
+--- a/check_sources.py
++++ b/check_sources.py
+@@ -14,7 +14,12 @@
+  old=Path(row['source']).read_bytes();new=(ROOT/row['path']).read_bytes()
+  assert hashlib.sha256(old).hexdigest()==row['beforeSHA256'] and hashlib.sha256(new).hexdigest()==row['sha256']
+  if row.get('unchangedRequired'):assert old==new,row['path']
+-required={row['path']:row for row in json.loads((ROOT/'required-native-sources.json').read_bytes())['requiredFiles']}
++native=json.loads((ROOT/'required-native-sources.json').read_bytes())
++required={row['path']:row for row in native['requiredFiles']}
++for key in ['packedHeadActivationManifest','packedHeadActivationComposition','packedHeadActivationExpectedSources','packedHeadActivationPredecessor']:
++ row=native[key];raw=Path(row['path']).read_bytes()
++ assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
++assert json.loads(Path(native['packedHeadActivationExpectedSources']['path']).read_bytes())['files']==native['requiredFiles']
+ producers=json.loads((ROOT/'receipt-producer-inputs.json').read_bytes())['members']
+ for row in producers:
+  raw=Path(row['path']).read_bytes()
+--- a/compare.py
++++ b/compare.py
+@@ -97,7 +97,7 @@
+             and terminal['outputComplete'] is True and terminal['journalEmptyAndProcessesRetired'] is True and terminal['cleanupErrors']==[]
+             and terminal['primaryFailure'] is None and 0<=terminal['elapsedSeconds']<315,'Native parent did not retire')
+         require(terminal['packageSHA256']==package_sha and terminal['jobSHA256']==job_sha and terminal['localMTPConfigSHA256']==local_sha
+-            and terminal['remoteMTPConfigSHA256']==wrapper_sha and terminal['nativeOperation']=='execute-remote-mtp-dense'
++            and terminal['remoteMTPConfigSHA256']==wrapper_sha and terminal['nativeOperation']=='execute-remote-mtp-dense-head'
+             and terminal['encryptedRDMAEstablished'] is False and terminal['externalHTTPTTFTMeasured'] is False,'Physical input/claim differs')
+         native_lines=inputs.raw(returned/'native/worker-0.stdout',8*1024**2).splitlines()
+         require(len(native_lines)==1 and parse(native_lines[0])==terminal['result'] and inputs.raw(returned/'native/worker-0.stdin')==b'','Actual native output')
+@@ -122,7 +122,7 @@
+         processes(gate['processObservation'])
+         require(native_launch['binary']==REMOTE+'/bundle/GemmaResidentBenchmark' and native_launch['job']==remote+'/job.json'
+             and native_launch['jobSHA256']==job_sha and native_launch['localMTPConfigSHA256']==local_sha and native_launch['remoteMTPConfigSHA256']==wrapper_sha
+-            and native_launch['nativeOperation']=='execute-remote-mtp-dense' and native_launch['role']==role
++            and native_launch['nativeOperation']=='execute-remote-mtp-dense-head' and native_launch['role']==role
+             and native_launch['environment']['JACCL_RANK']==('1' if role=='target' else '0')
+             and native_launch['environment']['JACCL_IBV_DEVICES']==REMOTE+'/matrix.json'
+             and native_launch['environment']['JACCL_COORDINATOR']=='192.0.2.250:51361','Actual launch topology/inputs')
+@@ -132,7 +132,7 @@
+         require((t['requestID'],t['requestSHA256'],t['scopeSHA256'])==(a['requestID'],a['requestSHA256'],a['wireScopeSHA256']),'Bilateral request identity differs')
+     measured=target['samples'][1:];decode=45e9/sum(x['decodeNanoseconds'] for x in measured)
+     inputs.recheck();require(verify_source()==source_sha,'Harness source changed')
+-    return dict(schema='gemma4_remote_mtp_dense_physical_execution_v1',status='passed',nativeSHA256=activation['nativeSHA256'],sourcesSHA256=activation['sourcesSHA256'],
++    return dict(schema='gemma4_remote_mtp_packed_head_physical_execution_v1',status='passed',nativeSHA256=activation['nativeSHA256'],sourcesSHA256=activation['sourcesSHA256'],
+         buildReceiptSHA256=activation['buildReceiptSHA256'],scopeSHA256=target['scopeSHA256'],physicalResources=physical,originalProcessesRetired=True,
+         sameEmptyLeaseInodes=True,aliasRestored=True,protocolProcessReleaseACKClaimed=False,encryptedRDMAEstablished=False,
+         gemmaWeightsExecuted=True,modelNumericalCorrectnessQualified=False,targetBatchNumericsQualified=False,matchedSoloComparisonPerformed=False,
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/dense_contract.py
++++ b/package/dense_contract.py
+@@ -1,7 +1,7 @@
+ """Closed target-only dense policy; no broader numerical/serving authority."""
+ from binding_common import require
+ 
+-POLICY='gemma4_verification_packed_m1_dense_serial_head_v1'
++POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+ EMBEDDING_SHA256='45259723b22ef7d5c039213763eb57a0711bdc7e897ca112b58821b3d97827a4'
+ SUMMARY=dict(policy=POLICY,expectedDenseModules=235,expectedTiedHeads=1,
+     serialHeadLogicalBytes=4*1048576,gatheredOverrideEnabled=False,
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -53,7 +53,7 @@
+     same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before gate')
+     remote=path.parent/'remote-mtp.json'
+     same(snapshot(remote,16384)['sha256'],launch['remoteMTPConfigSHA256'],'Remote config changed before gate')
+-    require(launch['nativeOperation']=='execute-remote-mtp-dense' and launch['role'] in ('assistant','target'),'Native operation/role')
++    require(launch['nativeOperation']=='execute-remote-mtp-dense-head' and launch['role'] in ('assistant','target'),'Native operation/role')
+     wrapper=parse(snapshot(remote,16384)['raw'])
+     require(wrapper['role']==launch['role'] and wrapper['localMTPJob']==str(config),'Remote role/config path')
+     fd, record=acquire(device_directory())
+@@ -69,7 +69,7 @@
+         same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before exec')
+         same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
+         same(snapshot(remote,16384)['sha256'],launch['remoteMTPConfigSHA256'],'Remote config changed before exec')
+-        arguments=[str(binary),'--execute-remote-mtp-dense',str(remote)]
++        arguments=[str(binary),'--execute-remote-mtp-dense-head',str(remote)]
+         os.execve(str(binary),arguments,launch['environment'])
+     finally: os.close(fd)
+ 
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -37,7 +37,7 @@
+     require(job['buildIdentitySHA256']==digest(REMOTE/'bundle'/PRODUCT),'Native/job identity')
+     record={'schema':'gemma4_benchmark_terminal_v1','status':'failed','mode':role,
+             'packageSHA256':args.package_sha256,'jobSHA256':args.job_sha256,
+-            'localMTPConfigSHA256':args.local_mtp_config_sha256,'remoteMTPConfigSHA256':args.remote_mtp_config_sha256,'nativeOperation':'execute-remote-mtp-dense',
++            'localMTPConfigSHA256':args.local_mtp_config_sha256,'remoteMTPConfigSHA256':args.remote_mtp_config_sha256,'nativeOperation':'execute-remote-mtp-dense-head',
+             'encryptedRDMAEstablished':False,'externalHTTPTTFTMeasured':False,
+             'primaryFailure':None,'cleanupErrors':[]}
+     pipes=None; before=None
+@@ -70,7 +70,7 @@
+         binary=REMOTE/'bundle'/PRODUCT;s=binary.lstat()
+         launch=dict(binary=str(binary),job=str(args.job),environment=env,
+                     binaryIdentity=[s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns],
+-                    jobSHA256=args.job_sha256,nativeOperation='execute-remote-mtp-dense',localMTPConfigSHA256=args.local_mtp_config_sha256,
++                    jobSHA256=args.job_sha256,nativeOperation='execute-remote-mtp-dense-head',localMTPConfigSHA256=args.local_mtp_config_sha256,
+                     remoteMTPConfigSHA256=args.remote_mtp_config_sha256,role=role)
+         write_json(run/'launch.json',launch)
+         spec=WorkerSpec(('/usr/bin/python3','-B',str(REMOTE/'native_gate.py'),'--launch',str(run/'launch.json'),
+--- a/prerequisites.py
++++ b/prerequisites.py
+@@ -2,7 +2,7 @@
+ import hashlib,json
+ from pathlib import Path
+ ROOT=Path(__file__).resolve().parent
+-POLICY='gemma4_verification_packed_m1_dense_serial_head_v1'
++POLICY='gemma4_verification_packed_m1_dense_packed_head_v1'
+ GROUPS=['seven-roots-queued-fenced-pull-finish','queued-work-cancelled-after-fence',
+         'post-receive-check-failure-retains-roots','stale-sequence-refused','nonzero-padding-refused']
+ 
+@@ -16,8 +16,8 @@
+     expected=json.loads((ROOT/'qualification-inputs.json').read_bytes())
+     dense,pin=read(expected['dense']['path']);assert pin==expected['dense']
+     assert dense['schema']=='gemma4_target_width_physical_numerical_comparison_v1' and dense['status']=='passed'
+-    assert dense['nativeOperation']=='qualify-mtp-target-width-dense' and dense['projectionPolicy']==POLICY
+-    assert dense['nativeSHA256']==expected['nativeSHA256'] and dense['sourceSHA256']==expected['baseSources']['sha256']
++    assert dense['nativeOperation']=='qualify-mtp-target-width-dense-head' and dense['projectionPolicy']==POLICY
++    assert dense['nativeSHA256']==expected['denseNativeSHA256'] and dense['sourceSHA256']==expected['denseBaseSources']['sha256']
+     assert dense['physicalExecutionPassed'] is True and dense['originalProcessRetired'] is True and dense['sameEmptyLeaseInode'] is True
+     numerical=dense['numerical']
+     assert numerical['exactNumericsPassed'] is True and numerical['fullRowsRead']==24 and numerical['nativeStateComponentsRead']==360
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -8,7 +8,7 @@
+ BODY=r'''
+ import hashlib,json,os,pathlib,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,name,role,payload_sha=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1'
+ assert role in ('target','assistant') and name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+ from benchmark_package import verify,digest
+@@ -31,7 +31,7 @@
+ output=run/'metadata';output.mkdir(mode=0o700)
+ receipt=dict(schema='gemma4_remote_mtp_metadata_v1',role=role,packageSHA256=package_sha,jobSHA256=job_sha,localMTPConfigSHA256=local_sha,
+  remoteMTPConfigSHA256=digest(run/'remote-mtp.json'),nativeSHA256=job['buildIdentitySHA256'],metadataOnly=True,gpuExecuted=False)
+-receipt['argv']=[str(root/'bundle/GemmaResidentBenchmark'),'--describe-remote-mtp-dense',str(run/'remote-mtp.json')]
++receipt['argv']=[str(root/'bundle/GemmaResidentBenchmark'),'--describe-remote-mtp-dense-head',str(run/'remote-mtp.json')]
+ started=time.monotonic()
+ try:
+  with (output/'stdout').open('xb') as out,(output/'stderr').open('xb') as err:invoke_controller(receipt['argv'],out,err,receipt,timeout=20)
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,7 +26,7 @@
+ 
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -37,7 +37,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-packed-head-20260920-v1/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}

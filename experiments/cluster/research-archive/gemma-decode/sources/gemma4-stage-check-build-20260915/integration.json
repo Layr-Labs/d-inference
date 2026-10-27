@@ -1,0 +1,124 @@
+{
+  "schema": "gemma4_combined_native_check_integration_v1",
+  "files": [
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerPrefillPolicy.swift",
+      "bytes": 1848,
+      "sha256": "b972803c0dfa5b78ab43bbdaf635372efa3e5c0a76bc3ebbdd47450026852ab2",
+      "originalSHA256": null,
+      "authority": "native"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStage.swift",
+      "bytes": 3473,
+      "sha256": "2f87307622bdd60c653afdd8adaa5c78037b0cf4b617a15f5405050324aeb899",
+      "originalSHA256": null,
+      "authority": "native"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageForward.swift",
+      "bytes": 6082,
+      "sha256": "9ca99fb1163a64de737a92991a9aff7427cb11ba730eb8f8fa0e6188f2458ac7",
+      "originalSHA256": null,
+      "authority": "native"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageLayout.swift",
+      "bytes": 3503,
+      "sha256": "70099dc644d5563e89c5f61d8bc448f78f6a17e408cbc5dac72832830edc358b",
+      "originalSHA256": null,
+      "authority": "native"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift",
+      "bytes": 101660,
+      "sha256": "7cc4868dcf11b367e2305f24ac7255e7385f95bf280603b8900c6ec841da274c",
+      "originalSHA256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+      "authority": "native"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Tests/MLXLMTests/Gemma4LayerStagePolicyTests.swift",
+      "bytes": 8705,
+      "sha256": "b0537c3f06d606968b76eba6c2330acc48d5cd768c795f9f9e9464748b33df47",
+      "originalSHA256": null,
+      "authority": "native"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift",
+      "bytes": 4881,
+      "sha256": "f92a07115f68ff485b28ef66152bd9ec6bf6e5d22de5ad7b6eebc45a3b52072b",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift",
+      "bytes": 4557,
+      "sha256": "feb740be4e851de3ee0abe3a48be7e8428abf06698bfbd03a0e5647d84f0b0ed",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift",
+      "bytes": 4630,
+      "sha256": "58776a1d3c6d184511f1b7f784ff9e64b728ef02a7bad996e64bcc821d8339d3",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift",
+      "bytes": 3392,
+      "sha256": "3fd25dde279bd3933fbff4ad60b44b2925a4c513b8bd996b2541e2f95fff5349",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift",
+      "bytes": 5577,
+      "sha256": "e1ad2f46a3ed88101c1dd5f98295178a1bab7dd8121fc95a1637b173ca78c121",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift",
+      "bytes": 4473,
+      "sha256": "69b4281e8eaa8a60a60bd2eba52edef8359d1f050a2b46910570d9ecf816cb30",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift",
+      "bytes": 6983,
+      "sha256": "b71adce47c85cc145567054833658f05b90a1cfe121189addbbc0631b8a32213",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift",
+      "bytes": 2786,
+      "sha256": "a529f6c6a2689dbafe3f49775f4b7529cb65028353cd0a3cb8415090578390ee",
+      "originalSHA256": null,
+      "authority": "mapper"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "bytes": 3766,
+      "sha256": "8dc77f4330cefa5ea16148c46da1bb37280978e61a27843dafa959a0337ddf53",
+      "originalSHA256": "84216f41bcda9da1eccdece265f39c778c61bb346a818b3ffdc07d1c0b60706f",
+      "authority": "private-build-fixture"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/Gemma4StageConstructorCheck/Check.swift",
+      "bytes": 2726,
+      "sha256": "299af775345777056a8fee836e580a492d7153b6fd89eddacc86d8a71d16671e",
+      "originalSHA256": null,
+      "authority": "private-build-fixture"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/Gemma4StageConstructorCheck/StagePolicyChecks.swift",
+      "bytes": 8588,
+      "sha256": "ac8791d5c9c934463d16ef84e4231b2bba7ad8b8bf76c665f9b811129dcd7d7c",
+      "originalSHA256": null,
+      "authority": "private-build-fixture"
+    }
+  ]
+}

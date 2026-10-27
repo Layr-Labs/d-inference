@@ -1,0 +1,13 @@
+--- a/Gemma4MTPPullTarget.swift
++++ b/Gemma4MTPPullTarget.swift
+@@ -158,7 +158,9 @@
+         guard !stopped else { throw ProbeError("Remote MTP request is already retired") }
+         ledger.cancelRequest()
+         try session.cancel()
+-        // Only actual target retirement/fences permit a failed transfer loan to end.
++        // The session may already be closed. Check both actual stream statuses
++        // again before releasing any failed transfer loan; no early-close inference.
++        try Gemma4MTPPullNativeFence.join(check:check)
+         pendingCapture = nil
+         if let activeWindow {
+             try ledger.targetAborted(activeWindow,evaluationCompleted:true,requestStateRetired:true)

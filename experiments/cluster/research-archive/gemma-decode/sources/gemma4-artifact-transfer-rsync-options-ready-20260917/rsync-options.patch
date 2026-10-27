@@ -1,0 +1,44 @@
+--- before/artifact.py
++++ after/artifact.py
+@@ -10,7 +10,7 @@
+ 
+ BASE=Path(__file__).resolve().parent
+ SOURCE=Path('/Users/developer/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local')
+-PREPARATION=Path('/Users/developer/DarkbloomDev/gemma4-model-preparation-20260917')
++PREPARATION=Path('/Users/developer/DarkbloomDev/gemma4-model-preparation-2-20260917')
+ STAGE=PREPARATION/'model'
+ FINAL=Path('/Users/developer/DarkbloomDev/models/Gemma4-26B')
+ MANIFEST='c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd'
+--- before/copy_host.py
++++ after/copy_host.py
+@@ -66,7 +66,7 @@
+     def interrupted(n,_):raise SystemExit(128+n)
+     for n in original:signal.signal(n,interrupted)
+     try:
+-        probe="import os,json;from pathlib import Path;p=Path('/Users/developer/DarkbloomDev/models');s=os.statvfs(p);print(json.dumps(dict(availableBytes=s.f_bavail*s.f_frsize,finalExists=os.path.lexists(str(p/'Gemma4-26B')),preparationExists=os.path.lexists('/Users/developer/DarkbloomDev/gemma4-model-preparation-20260917'))))"
++        probe="import os,json;from pathlib import Path;p=Path('/Users/developer/DarkbloomDev/models');s=os.statvfs(p);print(json.dumps(dict(availableBytes=s.f_bavail*s.f_frsize,finalExists=os.path.lexists(str(p/'Gemma4-26B')),preparationExists=os.path.lexists('/Users/developer/DarkbloomDev/gemma4-model-preparation-2-20260917'))))"
+         for label,address in [('lan',lan),('tailscale',tail)]:
+             prefix=ssh(address,tail)
+             try:value=remote(prefix,['/usr/bin/python3','-B','-c',probe],a.output,'probe-'+label,10)
+--- before/install_receiver.py
++++ after/install_receiver.py
+@@ -9,7 +9,7 @@
+ import subprocess
+ import sys
+ 
+-ROOT=Path('/Users/developer/DarkbloomDev/gemma4-model-preparation-20260917')
++ROOT=Path('/Users/developer/DarkbloomDev/gemma4-model-preparation-2-20260917')
+ FINAL=Path('/Users/developer/DarkbloomDev/models/Gemma4-26B')
+ NAMES={'artifact.py','artifact-manifest.json','binding_common.py','lease_gate.py','mtp_journal.py','target_processes.py',
+        'owned_process.py','rsync_exec.py','receive_rsync.py','remote_control.py','source_guard.py','source-pins.json'}
+--- before/rsync_exec.py
++++ after/rsync_exec.py
+@@ -35,7 +35,7 @@
+     require(len(args)>=4 and args[0]=='--server' and args[-2]=='.' and args[-1].rstrip('/')==str(STAGE),'Exact receiver destination/role')
+     # Only rsync server switches emitted by the fixed -rt/partial/files-from
+     # client are accepted. No option may introduce another filesystem path.
+-    long={'--server','--stats','--partial','--timeout=60','--files-from=-','--from0','--no-implied-dirs'}
++    long={'--server','--stats','--partial','--timeout=60','--files-from=-','--from0','--no-implied-dirs','--relative','--dirs'}
+     for value in args[:-2]:
+         require(value in long or (value.startswith('-') and not value.startswith('--') and re.fullmatch(r'-[A-Za-z.]+',value)), 'Unexpected rsync server option')
+     require('--sender' not in args and '--daemon' not in args,'Receiver only')

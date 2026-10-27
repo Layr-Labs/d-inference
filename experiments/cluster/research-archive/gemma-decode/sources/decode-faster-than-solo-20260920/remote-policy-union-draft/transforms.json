@@ -1,0 +1,387 @@
+{
+  "files": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AsyncMTPBonusContinuationPolicy.swift",
+      "steps": []
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AsyncMTPProposalLedger.swift",
+      "steps": [
+        {
+          "before": "        var deliveredWhileTargetWindowOutstanding = 0",
+          "after": "        var deliveredWhileTargetWindowOutstanding = 0\n        var bonusEpochsStarted = 0, bonusMismatchesContinued = 0\n        var bonusBoundRetirements = 0, bonusNoReadyRetirements = 0\n        var bonusMaximumWindows = 0, bonusMaximumInputAdvance = 0, bonusMaximumProducedAdvance = 0",
+          "origin": "bonus"
+        },
+        {
+          "before": "        var needsBonusBridge = false",
+          "after": "        var needsBonusBridge = false\n        // Starts only at the FIRST admitted mismatch, never on a matching branch.\n        // Subsequent mismatches cannot reset or extend this bounded epoch.\n        var bonusEpochFrontier: Int?\n        var bonusEpochWindows = 0",
+          "origin": "bonus"
+        },
+        {
+          "before": "    let maximumInputFrontier: Int\n",
+          "after": "    let maximumInputFrontier: Int\n    let bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy\n",
+          "origin": "bonus"
+        },
+        {
+          "before": "        return min(maximumDraftTokens, maximumBufferedProposals - branch.proposals.count,\n                   maximumInputFrontier - branch.highestProducedPosition)",
+          "after": "        let ceiling = branch.bonusEpochFrontier.map {\n            min(maximumInputFrontier, $0 + AsyncMTPBonusContinuationPolicy.maximumPositions)\n        } ?? maximumInputFrontier\n        return min(maximumDraftTokens, maximumBufferedProposals - branch.proposals.count,\n                   ceiling - branch.highestProducedPosition)",
+          "origin": "bonus"
+        },
+        {
+          "before": "         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int) throws {",
+          "after": "         maximumDraftTokens: Int, maximumInputFrontier: Int, vocabularySize: Int,\n         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "origin": "bonus"
+        },
+        {
+          "before": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),",
+          "after": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),\n              !bonusContinuationPolicy.enabled || bonusContinuationPolicy.verificationDepth <= maximumDraftTokens,",
+          "origin": "bonus"
+        },
+        {
+          "before": "        self.maximumInputFrontier = maximumInputFrontier\n",
+          "after": "        self.maximumInputFrontier = maximumInputFrontier\n        self.bonusContinuationPolicy = bonusContinuationPolicy\n",
+          "origin": "bonus"
+        },
+        {
+          "before": "        reconcileBonusBridge(&branch)\n        self.branch = branch\n    }\n\n    /// Returned tokens",
+          "after": "        reconcileBonusBridge(&branch)\n        observeBonusEpoch(branch)\n        self.branch = branch\n    }\n\n    /// Returned tokens",
+          "origin": "bonus"
+        },
+        {
+          "before": "              inputFrontier <= maximumInputFrontier - (draftCount + 1),\n              branch.proposals.count >= draftCount",
+          "after": "              inputFrontier <= maximumInputFrontier - (draftCount + 1),\n              bonusWindowAllowed(branch, draftCount: draftCount),\n              branch.proposals.count >= draftCount",
+          "origin": "bonus"
+        },
+        {
+          "before": "        activeWindow = nil; pendingResolution = nil\n        if value.rejectedDraftTokens > 0 {",
+          "after": "        activeWindow = nil; pendingResolution = nil\n        if branch.bonusEpochFrontier != nil { branch.bonusEpochWindows += 1 }\n        observeBonusEpoch(branch)\n        if value.rejectedDraftTokens > 0 {",
+          "origin": "bonus"
+        },
+        {
+          "before": "        } else {\n            // The next seed is the target BONUS, not necessarily the next",
+          "after": "        } else if bonusEpochNeedsRefresh(branch) {\n            branch.cancelling = true; counters.cancelledBranches += 1\n            counters.bonusBoundRetirements += 1\n        } else {\n            // The next seed is the target BONUS, not necessarily the next",
+          "origin": "bonus"
+        },
+        {
+          "before": "        if bridge.token == seedToken { branch.needsBonusBridge = false }\n        else { branch.cancelling = true; counters.cancelledBranches += 1 }\n        branch.proposals.removeAll { $0.position <= inputFrontier }\n    }\n",
+          "after": "        if bridge.token == seedToken { branch.needsBonusBridge = false }\n        else if bonusContinuationPolicy.enabled && !bonusEpochNeedsRefresh(branch) {\n            // The target's BONUS remains seedToken. Never replace it with the\n            // mismatching assistant bridge; only later proposals may be reused.\n            let ready = branch.proposals.contains { $0.position == inputFrontier + 1 }\n            if ready && maximumInputFrontier - inputFrontier >= 2 {\n                if branch.bonusEpochFrontier == nil {\n                    branch.bonusEpochFrontier = inputFrontier\n                    branch.bonusEpochWindows = 0\n                    counters.bonusEpochsStarted += 1\n                }\n                branch.needsBonusBridge = false\n                counters.bonusMismatchesContinued += 1\n                observeBonusEpoch(branch)\n            } else {\n                branch.cancelling = true; counters.cancelledBranches += 1\n                counters.bonusNoReadyRetirements += 1\n            }\n        } else { branch.cancelling = true; counters.cancelledBranches += 1 }\n        branch.proposals.removeAll { $0.position <= inputFrontier }\n    }\n\n    private func bonusWindowAllowed(_ branch: Branch, draftCount: Int) -> Bool {\n        guard bonusContinuationPolicy.enabled else { return true }\n        guard draftCount <= bonusContinuationPolicy.verificationDepth else { return false }\n        guard let origin = branch.bonusEpochFrontier else { return true }\n        return branch.bonusEpochWindows < AsyncMTPBonusContinuationPolicy.maximumWindows\n            && inputFrontier + draftCount + 1 - origin <= AsyncMTPBonusContinuationPolicy.maximumPositions\n    }\n\n    private func bonusEpochNeedsRefresh(_ branch: Branch) -> Bool {\n        guard let origin = branch.bonusEpochFrontier else { return false }\n        let remaining = maximumInputFrontier - inputFrontier\n        // The final single seed is an ordinary target-only step. Otherwise\n        // preflight the actual next narrowed D1/D2 verification width.\n        let nextWidth = remaining >= 2 ? min(bonusContinuationPolicy.verificationDepth + 1, remaining) : 0\n        return branch.bonusEpochWindows >= AsyncMTPBonusContinuationPolicy.maximumWindows\n            || inputFrontier - origin + nextWidth > AsyncMTPBonusContinuationPolicy.maximumPositions\n    }\n\n    private mutating func observeBonusEpoch(_ branch: Branch) {\n        guard let origin = branch.bonusEpochFrontier else { return }\n        counters.bonusMaximumWindows = max(counters.bonusMaximumWindows, branch.bonusEpochWindows)\n        counters.bonusMaximumInputAdvance = max(counters.bonusMaximumInputAdvance, inputFrontier - origin)\n        counters.bonusMaximumProducedAdvance = max(counters.bonusMaximumProducedAdvance, branch.highestProducedPosition - origin)\n    }\n\n    var bonusContinuationReport: AsyncMTPBonusContinuationReport? {\n        guard bonusContinuationPolicy.enabled else { return nil }\n        return .init(verificationDepth: bonusContinuationPolicy.verificationDepth,\n            epochsStarted: counters.bonusEpochsStarted, bonusMismatchesContinued: counters.bonusMismatchesContinued,\n            boundRetirementDecisions: counters.bonusBoundRetirements, noReadyRetirementDecisions: counters.bonusNoReadyRetirements,\n            maximumObservedWindows: counters.bonusMaximumWindows, maximumObservedInputAdvance: counters.bonusMaximumInputAdvance,\n            maximumObservedProducedAdvance: counters.bonusMaximumProducedAdvance)\n    }\n",
+          "origin": "bonus"
+        },
+        {
+          "before": "    let maximumDraftTokens: Int\n",
+          "after": "    let maximumDraftTokens: Int\n    let maximumProducerGrantTokens: Int\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        return min(maximumDraftTokens, maximumBufferedProposals - branch.proposals.count,\n",
+          "after": "        return min(maximumProducerGrantTokens, maximumBufferedProposals - branch.proposals.count,\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         maximumProducerGrantTokens: Int? = nil) throws {\n        let producerLimit = maximumProducerGrantTokens ?? maximumDraftTokens",
+          "origin": "credit-three-with-bonus-initializer"
+        },
+        {
+          "before": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),\n",
+          "after": "        guard hashes.allSatisfy(Self.isSHA), [2, 4, 8].contains(maximumDraftTokens),\n              producerLimit == maximumDraftTokens || (maximumDraftTokens == 2 && producerLimit == 3),\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        self.maximumDraftTokens = maximumDraftTokens; self.vocabularySize = vocabularySize\n",
+          "after": "        self.maximumDraftTokens = maximumDraftTokens; self.vocabularySize = vocabularySize\n        self.maximumProducerGrantTokens = producerLimit\n",
+          "origin": "credit-three"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPControlOperation.swift",
+      "steps": [
+        {
+          "before": "import Foundation\nimport MLX\n\n/// One synchronous fixed host-control transfer at a time. The original full\n/// resource closure runs independently before allocation and after completion.\n/// Nothing stores either borrowed closure or its native error context.\nfinal class Gemma4MTPControlOperation {\n    let counters = Gemma4MTPControlCounters()\n    private let metrics: Gemma4BenchmarkGuardMetrics\n    init(metrics: Gemma4BenchmarkGuardMetrics) { self.metrics = metrics }\n\n    func send(resourceCheck: () throws -> Void, lifetimeCheck: () throws -> Void,\n              body: (BoundedControlResourceOperation.Checkpoint) throws -> Void) throws {\n        try counters.begin(.send)\n        do {\n            try MLX.withError { native -> Void in\n                func resource() throws {\n                    try native.check(); try resourceCheck(); try native.check()\n                    try counters.resourceChecked()\n                }\n                func fault() throws {\n                    try native.check(); try lifetimeCheck(); try native.check()\n                    try counters.innerChecked()\n                }\n                try BoundedControlResourceOperation().send(resourceCheck:resource,faultCheck:fault) { checkpoint in\n                    try metrics.measure(.wireSendCompleted) { try body(checkpoint) }\n                }\n            }\n            try counters.complete()\n        } catch { counters.poison(); throw error }\n    }\n    func receive(resourceCheck: () throws -> Void, lifetimeCheck: () throws -> Void,\n                 body: (BoundedControlResourceOperation.Checkpoint) throws -> Data) throws -> Data {\n        try counters.begin(.receive)\n        do {\n            let result: Data = try MLX.withError { native -> Data in\n                func resource() throws {\n                    try native.check(); try resourceCheck(); try native.check()\n                    try counters.resourceChecked()\n                }\n                func fault() throws {\n                    try native.check(); try lifetimeCheck(); try native.check()\n                    try counters.innerChecked()\n                }\n                return try BoundedControlResourceOperation().receive(resourceCheck:resource,faultCheck:fault) { checkpoint in\n                    try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }\n                }\n            }\n            try counters.complete()\n            return result\n        } catch { counters.poison(); throw error }\n    }\n}\n",
+          "after": "import Foundation\nimport MLX\n\n/// One synchronous fixed host-control transfer at a time. The original full\n/// resource closure runs independently before allocation and after completion.\n/// Nothing stores either borrowed closure or its native error context.\nfinal class Gemma4MTPControlOperation {\n    let counters = Gemma4MTPControlCounters()\n    private let metrics: Gemma4BenchmarkGuardMetrics\n    init(metrics: Gemma4BenchmarkGuardMetrics) { self.metrics = metrics }\n\n    func send(resourceCheck: () throws -> Void, lifetimeCheck: () throws -> Void,\n              body: (BoundedControlResourceOperation.Checkpoint) throws -> Void) throws {\n        try counters.begin(.send)\n        do {\n            try MLX.withError { native -> Void in\n                func resource() throws {\n                    try native.check(); try resourceCheck(); try native.check()\n                    try counters.resourceChecked()\n                }\n                func fault() throws {\n                    try native.check(); try lifetimeCheck(); try native.check()\n                    try counters.innerChecked()\n                }\n                let operation = BoundedControlResourceOperation()\n                try withExtendedLifetime(operation) {\n                    try operation.send(resourceCheck:resource,faultCheck:fault) { checkpoint in\n                        try metrics.measure(.wireSendCompleted) { try body(checkpoint) }\n                    }\n                }\n            }\n            try counters.complete()\n        } catch { counters.poison(); throw error }\n    }\n    func receive(resourceCheck: () throws -> Void, lifetimeCheck: () throws -> Void,\n                 body: (BoundedControlResourceOperation.Checkpoint) throws -> Data) throws -> Data {\n        try counters.begin(.receive)\n        do {\n            let result: Data = try MLX.withError { native -> Data in\n                func resource() throws {\n                    try native.check(); try resourceCheck(); try native.check()\n                    try counters.resourceChecked()\n                }\n                func fault() throws {\n                    try native.check(); try lifetimeCheck(); try native.check()\n                    try counters.innerChecked()\n                }\n                let operation = BoundedControlResourceOperation()\n                return try withExtendedLifetime(operation) {\n                    try operation.receive(resourceCheck:resource,faultCheck:fault) { checkpoint in\n                        try metrics.measure(.wireReceiveCompleted) { try body(checkpoint) }\n                    }\n                }\n            }\n            try counters.complete()\n            return result\n        } catch { counters.poison(); throw error }\n    }\n}\n",
+          "origin": "explicit-synchronous-owner-lifetime"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPProducerCreditPolicy.swift",
+      "steps": []
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift",
+      "steps": [
+        {
+          "before": "    private let initialFrontier: Int",
+          "after": "    private let initialFrontier: Int\n    private let bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy",
+          "origin": "bonus"
+        },
+        {
+          "before": "         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner) throws {",
+          "after": "         conditioning: Gemma4MTPConditioning, auxiliary: Gemma4MTPAuxiliaryOwner,\n         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "origin": "bonus"
+        },
+        {
+          "before": "        self.channel = channel; self.scope = scope; self.initialFrontier = initialFrontier; self.auxiliary = auxiliary",
+          "after": "        self.channel = channel; self.scope = scope; self.initialFrontier = initialFrontier; self.auxiliary = auxiliary\n        self.bonusContinuationPolicy = bonusContinuationPolicy",
+          "origin": "bonus"
+        },
+        {
+          "before": "                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier)",
+          "after": "                            inputFrontier:initialFrontier,seed:command.seed,maximumInputFrontier:auxiliary.budget.maximumFrontier,\n                            bonusContinuationPolicy:bonusContinuationPolicy)",
+          "origin": "bonus"
+        },
+        {
+          "before": "    private let channel: Gemma4MTPPullChannel\n",
+          "after": "    private let channel: Gemma4MTPPullChannel\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {",
+          "origin": "credit-three-with-bonus-initializer"
+        },
+        {
+          "before": "        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary)\n",
+          "after": "        self.producerCreditPolicy = producerCreditPolicy\n        worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary,producerCreditPolicy:producerCreditPolicy)\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "                            bonusContinuationPolicy:bonusContinuationPolicy)",
+          "after": "                            bonusContinuationPolicy:bonusContinuationPolicy,\n                            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)",
+          "origin": "credit-three-with-bonus-initializer"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullBatchOwner.swift",
+      "steps": [
+        {
+          "before": "import Cmlx\n",
+          "after": "import Cmlx\nimport Foundation\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "    private let auxiliary: Gemma4MTPAuxiliaryOwner\n",
+          "after": "    private let auxiliary: Gemma4MTPAuxiliaryOwner\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n    private var finalBatchCount: Int?\n    private var expectedTokenCount = 0\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "         auxiliary: Gemma4MTPAuxiliaryOwner) throws {\n",
+          "after": "         auxiliary: Gemma4MTPAuxiliaryOwner, producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        self.assistant = assistant; self.conditioning = conditioning; self.auxiliary = auxiliary\n",
+          "after": "        self.assistant = assistant; self.conditioning = conditioning; self.auxiliary = auxiliary\n        self.producerCreditPolicy = producerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        try check(); try auxiliary.requireGrant(count:grant.count,capture:capture)\n        pending = try branch.build(grantedCount:grant.count)\n",
+          "after": "        let batches = try producerCreditPolicy.nativeBatchCounts(for:grant.count)\n        expectedTokenCount = grant.count; finalBatchCount = batches.count == 2 ? batches[1] : nil\n        try check(); try auxiliary.requireGrant(count:batches[0],capture:capture)\n        pending = try branch.build(grantedCount:batches[0])\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "    func execute(check: () throws -> Void) throws -> [Int] {\n",
+          "after": "    func execute(check: () throws -> Void) throws -> [Int] {\n        // All ordinary <=2 credits keep the original execution body unchanged.\n        guard expectedTokenCount == 3 else { return try executeSingle(check:check) }\n        do {\n            guard producerCreditPolicy == .threeForDepthTwo, finalBatchCount == 1,\n                  pending?.count == 2, !failed, !submitted, !completed else {\n                throw ProbeError(\"Remote split credit has no exact first batch\")\n            }\n            // Only CPU IDs leave this autorelease scope. The branch deliberately\n            // retains its now-evaluated last token/hidden as continuation inputs.\n            var tokens = try autoreleasepool { try executeSingle(check:check) }\n            guard completed, tokens.count == 2, let branch, let capture else {\n                throw ProbeError(\"Remote first sub-batch did not complete exactly\")\n            }\n            // executeSingle has joined both streams, checked C status, read back\n            // IDs, and freed its C vector. Drop its owned concat before build(1).\n            pending = nil; submitted = false; completed = false; finalBatchCount = nil\n            try check(); try auxiliary.requireGrant(count:1,capture:capture)\n            pending = try branch.build(grantedCount:1)\n            try check()\n            tokens += try autoreleasepool { try executeSingle(check:check) }\n            guard completed, tokens.count == expectedTokenCount else {\n                throw ProbeError(\"Remote split result differs from exact credit\")\n            }\n            return tokens\n        } catch { failed = true; auxiliary.poison(); throw error }\n    }\n    private func executeSingle(check: () throws -> Void) throws -> [Int] {\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        pending = nil; submitted = false; completed = false\n",
+          "after": "        pending = nil; submitted = false; completed = false\n        finalBatchCount = nil; expectedTokenCount = 0\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        pending = nil; branch = nil; capture = nil; identity = nil\n        submitted = false; completed = false\n",
+          "after": "        pending = nil; branch = nil; capture = nil; identity = nil\n        submitted = false; completed = false\n        finalBatchCount = nil; expectedTokenCount = 0\n",
+          "origin": "credit-three"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullMirror.swift",
+      "steps": [
+        {
+          "before": "         maximumInputFrontier: Int) throws {",
+          "after": "         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "origin": "bonus"
+        },
+        {
+          "before": "            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144)",
+          "after": "            maximumDraftTokens: 2, maximumInputFrontier: maximumInputFrontier, vocabularySize: 262_144,\n            bonusContinuationPolicy: bonusContinuationPolicy)",
+          "origin": "bonus"
+        },
+        {
+          "before": "         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "after": "         maximumInputFrontier: Int, bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         maximumProducerGrantTokens: Int = 2) throws {",
+          "origin": "credit-three-with-bonus-initializer"
+        },
+        {
+          "before": "            bonusContinuationPolicy: bonusContinuationPolicy)",
+          "after": "            bonusContinuationPolicy: bonusContinuationPolicy, maximumProducerGrantTokens:maximumProducerGrantTokens)",
+          "origin": "credit-three-with-bonus-initializer"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+      "steps": [
+        {
+          "before": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int) throws {",
+          "after": "         initialFrontier: Int, initialSeed: Int, maximumInputFrontier: Int,\n         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "origin": "bonus"
+        },
+        {
+          "before": "            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier)",
+          "after": "            inputFrontier:initialFrontier,seed:initialSeed,maximumInputFrontier:maximumInputFrontier,\n            bonusContinuationPolicy:bonusContinuationPolicy)",
+          "origin": "bonus"
+        },
+        {
+          "before": "    private let channel: Gemma4MTPPullChannel\n",
+          "after": "    private let channel: Gemma4MTPPullChannel\n    private let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict) throws {",
+          "after": "         bonusContinuationPolicy: AsyncMTPBonusContinuationPolicy = .strict,\n         producerCreditPolicy: Gemma4MTPProducerCreditPolicy = .legacy) throws {",
+          "origin": "credit-three-with-bonus-initializer"
+        },
+        {
+          "before": "            bonusContinuationPolicy:bonusContinuationPolicy)",
+          "after": "            bonusContinuationPolicy:bonusContinuationPolicy,\n            maximumProducerGrantTokens:producerCreditPolicy.maximumProducerGrantTokens)",
+          "origin": "credit-three-with-bonus-initializer"
+        },
+        {
+          "before": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier\n",
+          "after": "        self.channel = channel; ledger = mirror.ledger; highestProduced = initialFrontier\n        self.producerCreditPolicy = producerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "                if ledger.proposalCredit > 0 { try grant(min(2,ledger.proposalCredit),check:checked) }\n",
+          "after": "                if ledger.proposalCredit > 0 {\n                    try grant(producerCreditPolicy.lookaheadCount(availableCredit:ledger.proposalCredit),check:checked)\n                }\n",
+          "origin": "credit-three"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift",
+      "steps": [
+        {
+          "before": "                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary)",
+          "after": "                        initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary,\n                        bonusContinuationPolicy:input.bonusPolicy)",
+          "origin": "bonus"
+        },
+        {
+          "before": "                        bonusContinuationPolicy:input.bonusPolicy)",
+          "after": "                        bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)",
+          "origin": "credit-three-with-bonus-initializer"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+      "steps": [
+        {
+          "before": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)",
+          "after": "                    initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens,\n                    bonusContinuationPolicy:input.bonusPolicy)",
+          "origin": "bonus"
+        },
+        {
+          "before": "                return try .init(ordinal:ordinal,warmup:ordinal==0,requestID:request.requestID.uuidString.lowercased(),",
+          "after": "                var sample = try Gemma4RemoteMTPSample(ordinal:ordinal,warmup:ordinal==0,requestID:request.requestID.uuidString.lowercased(),",
+          "origin": "bonus"
+        },
+        {
+          "before": "                    phaseTiming:.init(windows:timings,finalFinishNanoseconds:finalFinishNanoseconds,controlDelta:controlDelta))",
+          "after": "                    phaseTiming:.init(windows:timings,finalFinishNanoseconds:finalFinishNanoseconds,controlDelta:controlDelta))\n                sample.bonusContinuation = target.ledger.bonusContinuationReport\n                return sample",
+          "origin": "bonus"
+        },
+        {
+          "before": "                    bonusContinuationPolicy:input.bonusPolicy)",
+          "after": "                    bonusContinuationPolicy:input.bonusPolicy,producerCreditPolicy:input.producerCreditPolicy)",
+          "origin": "credit-three-with-bonus-initializer"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift",
+      "steps": [
+        {
+          "before": "    let targetNativeSHA256: String, assistantNativeSHA256: String, embeddingIdentitySHA256: String",
+          "after": "    let targetNativeSHA256: String, assistantNativeSHA256: String, embeddingIdentitySHA256: String\n    let bonusContinuationPolicy: String?",
+          "origin": "bonus"
+        },
+        {
+          "before": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),",
+          "after": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n              bonusContinuationPolicy == nil || bonusContinuationPolicy == AsyncMTPBonusContinuationPolicy.name,",
+          "origin": "bonus"
+        },
+        {
+          "before": "    let verificationDepth: Gemma4RemoteMTPDepth",
+          "after": "    let verificationDepth: Gemma4RemoteMTPDepth\n    let bonusPolicy: AsyncMTPBonusContinuationPolicy",
+          "origin": "bonus"
+        },
+        {
+          "before": "        let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)",
+          "after": "        let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)\n        let bonusPolicy = try AsyncMTPBonusContinuationPolicy(explicitPolicy:job.bonusContinuationPolicy,\n            verificationDepth:verificationDepth.maximumDraftTokens)",
+          "origin": "bonus"
+        },
+        {
+          "before": "        self.verificationDepth = verificationDepth",
+          "after": "        self.verificationDepth = verificationDepth\n        self.bonusPolicy = bonusPolicy",
+          "origin": "bonus"
+        },
+        {
+          "before": "            + (local.targetProjectionPolicy.map { [\"targetProjection=\"+$0] } ?? [])",
+          "after": "            + bonusPolicy.scopeComponents\n            + (local.targetProjectionPolicy.map { [\"targetProjection=\"+$0] } ?? [])",
+          "origin": "bonus"
+        },
+        {
+          "before": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }",
+          "after": "        if bonusPolicy.enabled {\n            report[\"bonusContinuationPolicy\"] = AsyncMTPBonusContinuationPolicy.name\n            report[\"maximumBonusContinuationWindows\"] = AsyncMTPBonusContinuationPolicy.maximumWindows\n            report[\"maximumBonusContinuationPositions\"] = AsyncMTPBonusContinuationPolicy.maximumPositions\n            report[\"bonusContinuationStartsAtFirstMismatch\"] = true\n        }\n        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }",
+          "origin": "bonus"
+        },
+        {
+          "before": "    let schema: String, role: String\n",
+          "after": "    let schema: String, role: String\n    let producerCreditPolicy: String?\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n",
+          "after": "        guard schema == \"gemma4_remote_mtp_cohort_job_v1\", [\"target\",\"assistant\"].contains(role),\n              producerCreditPolicy == nil || producerCreditPolicy == Gemma4MTPProducerCreditPolicy.threeForDepthTwo.rawValue,\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "    let verificationDepth: Gemma4RemoteMTPDepth\n",
+          "after": "    let verificationDepth: Gemma4RemoteMTPDepth\n    let producerCreditPolicy: Gemma4MTPProducerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        self.verificationDepth = verificationDepth\n",
+          "after": "        self.verificationDepth = verificationDepth\n        let producerCreditPolicy = try Gemma4MTPProducerCreditPolicy(explicit:job.producerCreditPolicy,verificationDepth:verificationDepth.maximumDraftTokens)\n        self.producerCreditPolicy = producerCreditPolicy\n",
+          "origin": "credit-three"
+        },
+        {
+          "before": "            + (local.targetProjectionPolicy.map",
+          "after": "            + producerCreditPolicy.scopeComponents\n            + (local.targetProjectionPolicy.map",
+          "origin": "credit-three"
+        },
+        {
+          "before": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n",
+          "after": "        if let policy = local.targetProjectionPolicy { report[\"targetProjectionPolicy\"] = policy }\n        if producerCreditPolicy == .threeForDepthTwo {\n            report[\"producerCreditPolicy\"] = producerCreditPolicy.rawValue\n            report[\"maximumProducerCredit\"] = 3\n            report[\"maximumNativeProducerBatch\"] = 2\n            report[\"threeCreditBatchSequence\"] = [2,1]\n        }\n",
+          "origin": "credit-three"
+        }
+      ]
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift",
+      "steps": [
+        {
+          "before": "    let phaseTiming: Gemma4RemoteMTPRequestTiming",
+          "after": "    let phaseTiming: Gemma4RemoteMTPRequestTiming\n    var bonusContinuation: AsyncMTPBonusContinuationReport? = nil",
+          "origin": "bonus"
+        }
+      ]
+    }
+  ]
+}

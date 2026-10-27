@@ -1,0 +1,30 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -5,11 +5,11 @@
+ /// Private bounded benchmark only. No Provider registration or serving catalog.
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+-        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute"].contains(arguments[0]) else {
++        guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
+         }
+         let input = try Gemma4BenchmarkInput(job: Gemma4BenchmarkJob.read(URL(fileURLWithPath: arguments[1])))
+-        if arguments[0] != "--execute" { return try input.description() }
++        if ["--describe", "--check-arguments"].contains(arguments[0]) { return try input.description() }
+         let (deadline, overflow) = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(
+             UInt64(input.job.timeoutSeconds) * 1_000_000_000)
+         guard !overflow else { throw ProbeError("Gemma benchmark deadline overflow") }
+@@ -38,6 +38,13 @@
+             do {
+                 try freshCheck()
+                 let bytes: Data = try autoreleasepool {
++                    if arguments[0] == "--qualify-mtp-state" {
++                        #if CBV2_WINDOW_STATE_FIXTURE
++                        return try Gemma4MTPStateQualification.run(input: input, check: freshCheck)
++                        #else
++                        throw ProbeError("This native build excludes MTP state qualification")
++                        #endif
++                    }
+                     let group: Collective? = input.job.rank == nil ? nil : try Collective(transport: .jaccl)
+                     releasedGroup = group
+                     let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)

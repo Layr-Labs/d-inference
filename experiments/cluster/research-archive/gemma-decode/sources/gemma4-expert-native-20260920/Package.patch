@@ -1,0 +1,20 @@
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "GemmaExpertAxisCheck", targets: ["GemmaExpertAxisCheck"]),
+         .executable(name: "GemmaShortCorrectnessCheck", targets: ["GemmaShortCorrectnessCheck"]),
+         .executable(name: "WindowedRequestStateCheck", targets: ["WindowedRequestStateCheck"]),
+         .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+@@ -22,6 +23,9 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "GemmaExpertAxisCheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/GemmaExpertAxisCheck"),
+         .executableTarget(name: "GemmaShortCorrectnessCheck", dependencies: [
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+         ], path: "Tests/GemmaShortCorrectnessCheck"),

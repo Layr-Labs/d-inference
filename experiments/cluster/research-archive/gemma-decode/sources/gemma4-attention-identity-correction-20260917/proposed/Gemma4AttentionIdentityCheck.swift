@@ -1,0 +1,85 @@
+import Foundation
+import MLX
+import MLXLMCommon
+
+/// Model-free CPU qualification of the real probe -> geometry seam. This
+/// constructs no Gemma model, reads no weights, and performs no attention.
+enum Gemma4AttentionIdentityCheck {
+    static func run() throws -> Data {
+        try Device.withDefaultDevice(.cpu) {
+            let derived = CBv2LayerKindDerivation.gemma4LayerKinds(
+                layerTypes: ["sliding_attention", "full_attention"],
+                slidingWindow: 4, numKvSharedLayers: 0, headDim: 64,
+                globalHeadDim: 64, numAttentionHeads: 2,
+                numKeyValueHeads: 1, numGlobalKeyValueHeads: 1)
+            guard derived.count == 2, derived.allSatisfy({ $0.modelLayerIndex == nil }) else {
+                throw ProbeError("Identity fixture lost actual Gemma implicit-index derivation")
+            }
+            func kinds(_ indices: [Int?]) -> [CBv2LayerKind] {
+                zip(derived, indices).map { kind, index in
+                    var value = kind; value.modelLayerIndex = index; return value
+                }
+            }
+            func caches(_ values: [CBv2LayerKind], indices: [Int] = [0, 1]) -> [any CBv2AttendingLayerCache] {
+                zip(values, indices).map { CBv2LayerCache(layerIndex: $0.1, kind: $0.0) }
+            }
+            func observed(_ values: [CBv2LayerKind]) throws -> CBv2NativeKVTypeProbe.Result {
+                let temporary = caches(values)
+                let result = try CBv2NativeKVTypeProbe.run(layerKinds: values, caches: temporary) { _, count, bound in
+                    for cache in bound {
+                        guard cache.rows.count == 1 else { throw ProbeError("Missing actual probe row") }
+                        let value = MLXArray.zeros([1, cache.kind.kvHeads, count, cache.kind.headDim], dtype: .float32)
+                        _ = cache.rows[0].update(keys: value, values: value)
+                    }
+                    return MLXArray(Int32(0))
+                }
+                guard temporary.allSatisfy({ $0.rows.isEmpty }), result.observations.count == 4 else {
+                    throw ProbeError("Identity fixture probe did not retire its two-phase rows")
+                }
+                return result
+            }
+            func geometry(_ values: [CBv2LayerKind], _ rows: [any CBv2AttendingLayerCache],
+                          _ result: CBv2NativeKVTypeProbe.Result) throws -> CBv2RequestGeometry {
+                try .init(attentionKinds: values, caches: rows, observed: result,
+                    globalLayerIndices: [10, 11], maximumTokens: 34, maximumChunkTokens: 2)
+            }
+            var fingerprints: [String] = []
+            let acceptedIndices: [[Int?]] = [[nil, nil], [0, 1], [nil, 1]]
+            for indices in acceptedIndices {
+                let values = kinds(indices), result = try observed(values)
+                let value = try geometry(values, caches(values), result)
+                guard value.kinds == values, value.recurrent.layers.isEmpty,
+                      let layout = value.attentionLayout,
+                      layout.layers.map(\.globalIndex) == [10, 11],
+                      result.observations.allSatisfy({ $0.storageIndex == $0.modelLayerIndex }) else {
+                    throw ProbeError("Implicit/explicit identity changed geometry or native observation")
+                }
+                fingerprints.append(layout.fingerprint)
+            }
+            guard Set(fingerprints).count == 1 else { throw ProbeError("Identity spelling changed state layout") }
+            var refused = 0
+            func reject(_ message: String, _ operation: () throws -> Void) throws {
+                do { try operation() }
+                catch let error as ProbeError where error.description == message { refused += 1; return }
+                throw ProbeError("Malformed explicit identity or cache ownership was accepted")
+            }
+            let ownerError = "Attention geometry needs ordinary independent observed storage owners"
+            let wrongIndices: [[Int?]] = [[2, 1], [0, 0], [-1, 1]]
+            for indices in wrongIndices {
+                let values = kinds(indices), result = try observed(values)
+                try reject(ownerError) { _ = try geometry(values, caches(values), result) }
+            }
+            let result = try observed(derived)
+            try reject(ownerError) { _ = try geometry(derived, caches(derived, indices: [0, 7]), result) }
+            let duplicate = caches(derived)[0]
+            try reject("Attention geometry requires complete distinct caches and native observations") {
+                _ = try geometry(derived, [duplicate, duplicate], result)
+            }
+            Stream.cpu.synchronize()
+            return try JSONSerialization.data(withJSONObject: ["accepted": 3, "refused": refused,
+                "actualTwoPhaseProbe": true, "actualGeometryInitializer": true,
+                "cpuArraysExecuted": true, "gpuExecuted": false,
+                "modelConstructed": false, "payloadRead": false] as [String: Any], options: [.sortedKeys])
+        }
+    }
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "gemma4_o128_harness_v3_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2052,
+      "sha256": "4c3f6a7836d2e35773a7f81d0244183049827bdbaf107223bdea6e7a694ebf6d"
+    },
+    {
+      "path": "Tests/test_description_contract.py",
+      "bytes": 2958,
+      "sha256": "70b1088f51958e4082d50bc51bbd8fc298c8e68ef3c6495f8d940464c34a56ef"
+    },
+    {
+      "path": "bindings.json",
+      "bytes": 3464,
+      "sha256": "1dca2f5febf12573cbff0b1da37d23a1dc9437bd3fd2b82a5322d1796bff54b0"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 11262,
+      "sha256": "f6fb01202e24e69cb9653904ed0c56a56bd96a9c137157a0e655d311e4c8ad6c"
+    },
+    {
+      "path": "proposed/local/package/description_contract.py",
+      "bytes": 1163,
+      "sha256": "b3d6f643b202846b1c4299cdac230d9c50145b2253c096bc884da3b5b5dcf8bc"
+    },
+    {
+      "path": "proposed/local/remote_metadata.py",
+      "bytes": 4394,
+      "sha256": "20f362fa364f19e7622d1d7a925dee933ac8949164c08e26516c82b3b504c6ca"
+    }
+  ]
+}

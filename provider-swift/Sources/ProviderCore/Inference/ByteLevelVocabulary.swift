@@ -86,7 +86,7 @@ extension ByteOrderedPieceVocabulary {
 /// Vocabularies keyed by live tokenizer handle, without retaining a retired
 /// model. A small LRU bounds idle host memory; active requests own their
 /// immutable vocabulary independently of eviction.
-final class TokenizerVocabularyCache<Key: Hashable, Value>: @unchecked Sendable {
+final class TokenizerVocabularyCache<Key: Hashable, Value: Sendable>: @unchecked Sendable {
     private struct Entry {
         weak var owner: TokenizerHandle?
         let key: Key

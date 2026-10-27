@@ -8,14 +8,14 @@ import MLXLMServer
 /// format instruction still steers the model, and every request this policy
 /// declines keeps that prompt-only behavior without a new refusal.
 enum QwenJSONAnswerPolicy {
-    static let modelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+    private static let modelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
 
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")
 
     /// The constraint for an eligible request, or nil. Requests with media,
     /// tools or a `tool_choice` are out of scope; an unsupported schema, an
-    /// unverified tokenizer, an unrecognized prompt boundary or a nonpositive
+    /// unrecognized prompt boundary, an unverified tokenizer or a nonpositive
     /// budget falls back with a content-free log line.
     static func constraint(
         request: OpenAIChatCompletionRequest,
@@ -30,10 +30,8 @@ enum QwenJSONAnswerPolicy {
               request.tools?.isEmpty ?? true, request.toolChoice == nil,
               request.reasoningParser == .qwen3, !MediaIngest.hasMedia(request) else { return nil }
         let profile = JSONAnswerProfile.qwen35
-        let answer: JSONAnswerFormat
-        do {
-            answer = try JSONAnswerFormat(format, forbidding: profile.contentMarkers, family: profile.family)
-        } catch {
+        guard let answer = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers,
+                                                 family: profile.family) else {
             return declined("schema outside the constrained subset")
         }
         guard let promptTokens, !promptTokens.isEmpty,
@@ -42,18 +40,16 @@ enum QwenJSONAnswerPolicy {
                   skipSpecialTokens: false)) else {
             return declined("unrecognized prompt boundary")
         }
-        let vocabulary: JSONAnswerVocabulary
-        do {
-            vocabulary = try JSONAnswerVocabulary.cached(for: tokenizer, profile: profile, stopTokenIDs: stopTokenIDs)
-        } catch {
+        guard let vocabulary = try? JSONAnswerVocabulary.cached(for: tokenizer, profile: profile,
+                                                                 stopTokenIDs: stopTokenIDs) else {
             return declined("tokenizer does not match the pinned vocabulary")
         }
-        do {
-            return try JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
-                initialPhase: phase, maxTokens: request.maxTokens ?? defaultMaxTokens)
-        } catch {
+        guard let constraint = try? JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
+                                                         initialPhase: phase,
+                                                         maxTokens: request.maxTokens ?? defaultMaxTokens) else {
             return declined("no positive output budget")
         }
+        return constraint
     }
 
     /// Fixed reasons only: never schema text, prompt content or token IDs.

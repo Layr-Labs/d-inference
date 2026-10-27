@@ -68,13 +68,13 @@ struct FlintJSONGrammar: Sendable {
     private(set) var root = FlintJSONGrammar.anyObject
     /// Spellings the answer can never contain, and the family that owns them.
     private let forbiddenMarkup: [[UInt8]]
-    private let markupOwner: String
+    private let family: String
 
     /// `nil` is `json_object`: any JSON object. The family's protocol markup
     /// stays impossible in the answer, so enum values containing it are refused.
-    init(schema: ToolValueSchema?, forbidding markup: [[UInt8]], owner: String) throws {
+    init(schema: ToolValueSchema?, forbidding markup: [[UInt8]], family: String) throws {
         forbiddenMarkup = markup
-        markupOwner = owner
+        self.family = family
         if let schema { root = try add(schema) }
     }
 
@@ -130,7 +130,7 @@ struct FlintJSONGrammar: Sendable {
         // never be generated. Refuse it instead of dead-ending the sampler.
         for spelling in set where forbiddenMarkup.contains(where: { Self.contains(spelling, $0) }) {
             throw ToolConstraintSchemaError.unsupported(
-                "response_format enum values cannot contain \(markupOwner) protocol markup")
+                "response_format enum values cannot contain \(family) protocol markup")
         }
         literalSets.append(set)
         return Node(kind: .literal, literals: Int32(literalSets.count - 1))

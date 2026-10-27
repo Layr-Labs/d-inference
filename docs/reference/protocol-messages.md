@@ -819,11 +819,12 @@ A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
 the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
 
 A grammar-constrained JSON `response_format` answer (exact Flint, and tool-free
-`qwen3_5`/`qwen3_5_moe` text requests) whose completed content is not one valid
-JSON value, including one cut short by `max_tokens` or a `stop` string, fails
-after its content streamed with status 422, `failure_code` `generation_failure`
-and `error_reason` `tool_noncompliance`; no wire value is added. Qwen JSON
-requests outside that scope keep prompt-only steering. See
+`qwen3_5`/`qwen3_5_moe` text requests) whose completed content is not one JSON
+value satisfying the requested format, including one cut short by `max_tokens`
+or a `stop` string, fails after its content streamed with status 422,
+`failure_code` `generation_failure` and `error_reason` `tool_noncompliance`; no
+wire value is added. Qwen JSON requests outside that scope keep prompt-only
+steering. See
 [constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers).
 
 ### `attestation_response`

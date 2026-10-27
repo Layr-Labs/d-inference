@@ -31,7 +31,7 @@ struct JSONAnswerProfile: Sendable {
     let contentMarkers: [[UInt8]]
     /// Ids below this are byte-level BPE pieces; added tokens start here.
     let firstAddedTokenID: Int
-    /// Added tokens that are ordinary output pieces: the reasoning markers.
+    /// Added tokens that are ordinary output pieces: the think markers.
     let pieceTokens: [PinnedToken]
     /// Answer terminators; the first is the impossible-state fallback. Each
     /// must also be an engine stop token.

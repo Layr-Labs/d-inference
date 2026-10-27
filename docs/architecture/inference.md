@@ -2014,11 +2014,11 @@ The format instruction alone leaves some Qwen answers outside the requested
 schema: a near-miss key, a string for an integer, or prose. On the Qwen text
 path the answer is therefore sampled under a grammar, as on
 [exact Flint](#native-flint). `ToolConstraintFactory.make` asks
-`QwenJSONAnswerPolicy` first: a text request on `qwen3_5` or `qwen3_5_moe` with
-a JSON `response_format`, no `tools`, no `tool_choice` and the `qwen3` reasoning
-parser gets a `JSONAnswerConstraint`. The prompt is unchanged (the service's
-format instruction and the no-thinking default above), so the coordinator prompt
-sidecar needs no rule.
+`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
+`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
+The prompt is unchanged (the service's format instruction and the no-thinking
+default above), so the coordinator prompt sidecar needs no rule.
 
 The rendered prompt's tail selects the first phase
 (`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
@@ -2675,7 +2675,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
-| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint

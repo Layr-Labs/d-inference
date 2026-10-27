@@ -4,7 +4,7 @@ import Foundation
 import MLXLMCommon
 
 /// Byte-level vocabulary of one JSON-answer profile. Base BPE ids and the
-/// profile's marker tokens carry pieces; every other id (special and added
+/// profile's `pieceTokens` carry pieces; every other id (special and added
 /// tokens, padding up to the model's vocabulary) has none and is never
 /// allowed. Built only when the tokenizer matches the pinned contract.
 final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {

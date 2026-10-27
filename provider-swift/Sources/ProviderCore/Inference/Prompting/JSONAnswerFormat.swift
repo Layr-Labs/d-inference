@@ -19,7 +19,7 @@ struct JSONAnswerFormat: Sendable {
     init(_ format: OpenAIResponseFormat, forbidding markup: [[UInt8]], family: String) throws {
         self.family = family
         guard format.type == .jsonSchema else {
-            grammar = try FlintJSONGrammar(schema: nil, forbidding: markup, owner: family)
+            grammar = try FlintJSONGrammar(schema: nil, forbidding: markup, family: family)
             schema = nil
             return
         }
@@ -27,7 +27,7 @@ struct JSONAnswerFormat: Sendable {
             throw ToolConstraintSchemaError.invalid("json_schema requires a json_schema payload")
         }
         let compiled = try ToolConstraintSchemaCompiler.compileResponseSchema(payload.schema)
-        grammar = try FlintJSONGrammar(schema: compiled, forbidding: markup, owner: family)
+        grammar = try FlintJSONGrammar(schema: compiled, forbidding: markup, family: family)
         schema = compiled
     }
 

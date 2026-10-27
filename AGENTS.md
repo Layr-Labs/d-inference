@@ -1,5 +1,16 @@
 # Darkbloom Provider And Native Runtime
 
+## Copy fidelity and factual accuracy
+
+- NEVER invent or add unrequested user-facing copy. This includes headlines, taglines, section introductions, paragraphs, CTAs, testimonials, statistics, product claims, and SEO metadata. Do not add filler to make a design feel complete.
+- Treat the user's explicit instructions and approved specs, Figma designs, and copy files as the source of truth. Preserve supplied wording, punctuation, capitalization, and numbers exactly unless the user explicitly requests a copy change.
+- A layout, styling, animation, responsive, refactoring, or implementation request is not permission to write, embellish, paraphrase, or expand copy. Empty space or a section without a heading is not a missing-copy assignment.
+- Prior AI-generated text is not evidence of approval. Every added or changed user-facing string must be traceable to an authoritative source or an explicit user request to write it.
+- If source copy is unavailable, ambiguous, or conflicting, identify the specific gap and continue work that does not depend on it. Do not guess, silently resolve editorial conflicts, or ship invented placeholder copy. Keep any proposed wording clearly labeled and separate from the implemented product until authorized.
+- When original copy is explicitly requested, stay within that scope. NEVER fabricate facts, capabilities, customer endorsements, metrics, guarantees, or other unsupported claims.
+- Accessibility labels must describe actual controls and behavior accurately; they are not an opportunity to introduce marketing language or unsupported claims.
+- Before completing a change, compare changed strings and rendered copy against the authoritative source. Remove unauthorized additions and report unresolved source gaps. Do not claim a source was checked unless it was actually inspected.
+
 This repository owns the Swift provider, device-local APIs, MLX/native runtime
 integration, public fixtures, provider release tooling and the landing site.
 The existing `console-ui/` source snapshot, build/test tooling and hosting

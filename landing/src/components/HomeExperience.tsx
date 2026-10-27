@@ -1049,7 +1049,7 @@ export function HomeExperience() {
       <section
         className="story-section"
         id="stories"
-        aria-labelledby="stories-heading"
+        aria-label="Provider stories"
         ref={storySection}
       >
         <article
@@ -1058,7 +1058,6 @@ export function HomeExperience() {
           tabIndex={0}
           aria-label="Provider stories. Swipe or use left and right arrow keys to browse."
         >
-          <h2 className="story-section-heading" id="stories-heading">The people powering what comes next.</h2>
           <div
             className="story-gallery"
             ref={storyCarousel}

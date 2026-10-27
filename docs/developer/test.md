@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-27
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -764,6 +764,30 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Add-On Hold
+
+These suites need no model weights, credentials or live provider state. The
+socket and loop tests bind a real `AF_UNIX` socket and take a real `flock` in a
+private temporary runtime directory.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
+```
+
+| Coverage | Suites |
+|---|---|
+| `hold.v1` parsing, limits, exact response keys; drain-owner precedence | `AddonIPCTests`, `AddonHoldDrainOwnershipTests` |
+| Owner-only record, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
+| Socket permissions, several requests per connection, oversized lines, unauthenticated peers, stale and live sockets | `AddonIPCServerTests` |
+| Unload of every model, kept preload set, idempotency, bounded drain, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| Loopback coordinator: draining heartbeat with busy fields, no `provider_drain`, 503 draining rejection, planned reconnect keeps the hold in `register`, release heartbeat | `AddonHoldServeLoopTests` |
+| Heartbeat and both register encodings | `ProviderBusyWireTests` |
+
+The peer check is exercised only negatively: no signed add-on is available to
+the test runner, and a test authenticator stands in for it in the socket and
+serve-loop flows. Physical add-on interoperation remains a separate check.
 
 ## Watchdog Launch Acknowledgement
 

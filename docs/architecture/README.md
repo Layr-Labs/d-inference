@@ -22,5 +22,6 @@ Provider execution, local security and external contracts. Backend implementatio
 - [Provider Encryption And Privacy](security/encryption.md)
 - [Provider Enrollment](security/enrollment.md)
 - [Identity binding](security/identity-binding.md)
+- [Local control channels: the add-on socket and lifecycle mailbox](security/local-control.md)
 - [Provider trust during MDM and App Attest coexistence](security/provider-trust.md)
 - [Provider telemetry](telemetry.md)

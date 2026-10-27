@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -239,6 +239,8 @@ per-token revenue ([coordinator/payments/pricing.go:39-43](https://github.com/La
 
 There is no `darkbloom earnings` CLI command. View payouts, Stripe Connect
 status, and usage in the console at `https://console.darkbloom.dev`.
+A green `doctor` and live inference rows do not prove a `model=base_reward`
+grant. [Check a missing base reward](base-rewards.md).
 
 Self-route traffic to your own machine is always free; see
 [self-route](./self-route.md).

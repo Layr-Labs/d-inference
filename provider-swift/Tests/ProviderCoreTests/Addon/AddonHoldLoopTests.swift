@@ -35,6 +35,25 @@ extension ProviderLoop {
         addonPeerAuthenticatorOverride = authenticate
     }
     func setAddonHoldDrainTimeoutForTesting(_ timeout: Duration) { addonHoldDrainTimeout = timeout }
+    func setAddonHoldSettleTimeoutForTesting(_ timeout: Duration) { addonHoldSettleTimeout = timeout }
+    func setAddonHoldStragglerHookForTesting(_ hook: (@Sendable () async -> Void)?) {
+        addonHoldBeforeCancellingStragglersForTesting = hook
+    }
+    /// A running coordinator request that only cancellation ends.
+    func startAddonTestRequest(_ id: String) {
+        acceptedLifecycleRequests.insert(id)
+        inflightTasks[id] = Task {
+            try? await Task.sleep(for: .seconds(3_600))
+            self.acceptedLifecycleRequests.remove(id)
+        }
+    }
+    func addonTestRequestIsRunning(_ id: String) -> Bool {
+        inflightTasks[id] != nil && acceptedLifecycleRequests.contains(id)
+    }
+    func cancelAddonTestRequests() {
+        for task in inflightTasks.values { task.cancel() }
+        inflightTasks.removeAll()
+    }
     func restartAddonHoldServiceForTesting() {
         stopAddonHoldService()
         addonHoldPaths = nil
@@ -203,6 +222,55 @@ struct AddonHoldLoopTests {
         await h.loop.acceptAddonTestRequest("stalled")
         let bounded = try Self.holdID(await h.hold())
         try await h.awaitState(bounded, .held)
+    }
+
+    @Test func theDrainBoundCancelsItsStragglersButNeverWorkAcceptedAfterARelease() async throws {
+        let h = try await harness()
+        defer { h.remove() }
+        await h.loop.setAddonHoldDrainTimeoutForTesting(.milliseconds(100))
+        // A coordinator request that outlives the bound is cancelled.
+        await h.loop.startAddonTestRequest("stalled")
+        let first = try Self.holdID(await h.hold())
+        try await h.awaitState(first, .held)
+        #expect(await !h.loop.addonTestRequestIsRunning("stalled"))
+        #expect(await h.loop.handleAddonIPC(.release(holdID: first), peer: Self.peer) == .released)
+
+        // The hold is released while its cancellation pass is suspended, and
+        // admission reopens. Work accepted after the release, and work the
+        // released hold no longer needs to stop, keeps running and tracked.
+        let pass = UpgradeBarrier()
+        await h.loop.setAddonHoldStragglerHookForTesting { await pass.wait() }
+        await h.loop.startAddonTestRequest("before-hold")
+        let second = try Self.holdID(await h.hold())
+        await pass.observeEntry()
+        #expect(await h.loop.handleAddonIPC(.release(holdID: second), peer: Self.peer) == .released)
+        #expect(await !h.loop.state.refusingNewWork)
+        await h.loop.startAddonTestRequest("after-release")
+        await pass.release()
+        let disturbed = try await addonEventually(timeout: .seconds(1)) {
+            await !h.loop.addonTestRequestIsRunning("after-release")
+        }
+        #expect(!disturbed, "the released hold's cancellation pass cancelled work accepted after the release")
+        #expect(await h.loop.addonTestRequestIsRunning("before-hold"))
+        await h.loop.cancelAddonTestRequests()
+    }
+
+    @Test func noRetirementPathRewritesThePreloadPlanWhileHeld() async throws {
+        let h = try await harness()
+        defer { h.remove() }
+        await h.loop.setLoadedModelsFileForTesting(h.sandbox.loadedModelsFile)
+        let stub = makeInertStubBridge(modelId: "test/plan")
+        await h.loop.modelLoadingInstallSlot("test/plan", bridge: stub.bridge)
+        await h.loop.persistLoadedModelSetForTesting()
+        let id = try Self.holdID(await h.hold())
+        try await h.awaitState(id, .held)
+        // Native MiMo and Nemotron Super retirements write the set through
+        // the same call; while held it keeps the plan a restart preloads.
+        await h.loop.persistLoadedModelSetForTesting()
+        #expect(LoadedModelsStore.read(from: h.sandbox.loadedModelsFile) == ["test/plan"])
+        #expect(await h.loop.handleAddonIPC(.release(holdID: id), peer: Self.peer) == .released)
+        await h.loop.persistLoadedModelSetForTesting()
+        #expect(LoadedModelsStore.read(from: h.sandbox.loadedModelsFile).isEmpty)
     }
 
     @Test func updateDrainAndReconnectCannotReopenAHold() async throws {

@@ -295,10 +295,18 @@ struct InboundDecodeTests {
         }
         #expect(budget(#"{"max_tokens":2048}"#) == 2048)
         #expect(budget(#"{"effort":"high","max_tokens":1}"#) == 1)
+        // JSONDecoder reads Int from integral floats; the prompt sidecar mirrors this.
+        #expect(budget(#"{"max_tokens":2048.0}"#) == 2048)
+        #expect(budget(#"{"max_tokens":1e3}"#) == 1000)
         for ignored in [#"{"max_tokens":0}"#, #"{"max_tokens":-5}"#, #"{"max_tokens":"2048"}"#,
-                        #"{"max_tokens":2.5}"#, #"{"enabled":true}"#, #""high""#, "null"] {
+                        #"{"max_tokens":2.5}"#, #"{"max_tokens":true}"#, #"{"max_tokens":1.0e19}"#,
+                        #"{"enabled":true}"#, #""high""#, "null"] {
             #expect(budget(ignored) == nil, "\(ignored)")
         }
+        // Rendering first resolves an unpinned prompt date; the budget must survive it.
+        let body = Data(#"{"model":"m","messages":[],"reasoning":{"max_tokens":2048}}"#.utf8)
+        let resolved = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        #expect(resolved.reasoningBudgetTokens == 2048)
     }
 
     @Test("one malformed template control does not discard the others")

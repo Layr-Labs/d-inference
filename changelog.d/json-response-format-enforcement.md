@@ -5,9 +5,9 @@
   prompt unless the caller supplies a thinking control (`reasoning.enabled`,
   `enable_thinking`, `chat_template_kwargs.enable_thinking`, any reasoning
   effort or a positive `reasoning.max_tokens` budget). The templates think by
-  default, and the reasoning block regularly
-  spent the caller's `max_tokens` before the JSON answer began: on Qwen3.5-9B,
-  47-79% of JSON requests with a 2,048-token budget returned empty content.
+  default, and the reasoning block regularly spent the caller's `max_tokens`
+  before the JSON answer began: on Qwen3.5-9B, 47-79% of JSON requests with a
+  2,048-token budget returned empty content.
 - The coordinator prompt sidecar must mirror this rule for cache planning; the
   regenerated public prompt vectors change only the Qwen-family JSON cases.
 - On `qwen3_5` and `qwen3_5_moe` text requests without tools or `tool_choice`,

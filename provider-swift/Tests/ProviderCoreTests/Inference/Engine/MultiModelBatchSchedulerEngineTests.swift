@@ -360,6 +360,7 @@ func templateContextDisablesQwenThinkingForJSONResponseFormats() {
         // Catalog ids and model types both identify the Qwen template family;
         // Qwen3.8 Flash-Next matches by id like the other Qwen template fixes.
         for (model, modelType) in [("qwen3.5-35b-a3b", nil), ("Qwen3.5-9B", "qwen3_5"),
+                                   ("opaque-alias", "qwen3_5_moe"),
                                    ("EigenLabs/Qwen3.8-27B-4bit-mtp", nil),
                                    ("qwen3.8-flash-next", "qwen4_exp")] as [(String, String?)] {
             let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
@@ -380,12 +381,16 @@ func templateContextKeepsCallerThinkingControlsForJSONResponseFormats() {
             for: jsonRequest(format: format), controls: .init(enableThinking: true))
         #expect(raw?["enable_thinking"] as? Bool == true)
 
-        // A reasoning effort or budget expresses intent to think: keep the
-        // template default.
+        // A reasoning effort (raw or typed) or budget expresses intent to
+        // think: keep the template default.
         let effort = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: jsonRequest(format: format), controls: .init(reasoningEffort: "high"))
         #expect(effort?["enable_thinking"] == nil)
         #expect(effort?["reasoning_effort"] as? String == "high")
+
+        let typedEffort = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format, reasoning: .init(effort: "high")), controls: .init())
+        #expect(typedEffort?["enable_thinking"] == nil)
 
         let budget = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: jsonRequest(format: format), controls: .init(reasoningBudgetTokens: 2048))
@@ -407,7 +412,6 @@ func templateContextLeavesOtherFormatsAndFamiliesUnchanged() {
         }
     }
 }
-
 
 @Test("none off and zero disable; minimal remains an explicit effort")
 func templateContextNormalizesOnlyReviewedDisableSpellings() {

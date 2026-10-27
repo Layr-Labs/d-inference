@@ -918,6 +918,13 @@ runs its implementation at explicit revisions and records native/full-model evid
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
 
+`fixtures/prompt-contract/v1/production_vectors.json` is regenerated only in
+darkbloom-platform, by its prompt sidecar at an explicit revision. This
+repository copies the file byte-for-byte and records the source revision and
+SHA-256 in the commit. A provider change to the rendered prompt, such as the
+Qwen JSON `response_format` thinking default, lands with the regenerated
+vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
 The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
 `coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,

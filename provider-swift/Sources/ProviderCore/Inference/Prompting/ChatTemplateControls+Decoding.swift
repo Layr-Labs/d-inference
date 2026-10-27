@@ -28,6 +28,9 @@ extension ChatTemplateControls: Decodable {
         let alias = try? kwargs?.decode(Bool.self, forKey: .enableThinking)
         let clearThinking = (try? values.decode(Bool.self, forKey: .clearThinking))
             ?? (try? kwargs?.decode(Bool.self, forKey: .clearThinking))
+        // What counts as a budget follows JSONDecoder's Int semantics: 2048.0
+        // and 1e3 do; 2.5, "2048" and out-of-range numbers do not. The
+        // coordinator prompt sidecar mirrors these semantics exactly.
         let reasoning = try? values.nestedContainer(keyedBy: ReasoningKeys.self, forKey: .reasoning)
         let budget = (try? reasoning?.decode(Int.self, forKey: .maxTokens)).flatMap { $0 > 0 ? $0 : nil }
         self.init(

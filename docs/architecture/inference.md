@@ -1965,8 +1965,9 @@ spends the caller's `max_tokens` before any JSON is written. A nested
 switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
 keeps the caller's choice. The family predicate also matches Qwen3.8
 Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
-the closed block. GLM5-Next, MiMo and Nemotron Super build their own template
-context, and Flint's template ignores the switch, so none of them changes.
+the closed block. Other families keep their thinking defaults because the
+predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
+own template context, and Flint's template ignores the switch.
 The coordinator prompt sidecar mirrors the rule so cache planning renders the
 same prompt; the public prompt vectors pin it for the Qwen-family JSON cases.
 On `qwen3_5` and `qwen3_5_moe` text requests the answer itself is then

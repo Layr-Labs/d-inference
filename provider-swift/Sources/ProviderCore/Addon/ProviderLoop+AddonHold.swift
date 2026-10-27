@@ -248,7 +248,7 @@ extension ProviderLoop {
             let remaining = lifecycleRemaining
             logger.warning("Add-on hold: \(remaining) accepted request(s) still running after \(addonHoldDrainTimeout.components.seconds)s; cancelling them so the models can unload")
             AddonHoldTelemetry.emit(.drainTimedOut, hold: addonHolds.oldest, inFlight: remaining)
-            await cancelAllInflight()
+            await cancelRequestsOutlivingAddonHoldDrain(generation: generation)
         }
         let retained = await unloadAllModelsForAddonHold(generation: generation)
         guard ownsAddonHold(generation) else { return }
@@ -272,6 +272,23 @@ extension ProviderLoop {
 
     private func ownsAddonHold(_ generation: UInt64) -> Bool {
         generation == addonHoldGeneration && servingDrain.owner == .addonHold && !isShuttingDown && !Task.isCancelled
+    }
+
+    /// Cancels the coordinator requests still running at the drain bound,
+    /// and only those, while this hold lasts. Each cancellation suspends, and
+    /// a release meanwhile reopens admission: the pass then stops, and work
+    /// accepted after the release keeps its task and tracking.
+    /// (`cancelAllInflight` clears every tracking map, as a lost connection needs.)
+    private func cancelRequestsOutlivingAddonHoldDrain(generation: UInt64) async {
+        let stragglers = Set(inflightTasks.keys)
+            .union(requestToModel.keys.filter { !$0.hasPrefix(Self.engineV2RecoveryPinPrefix) })
+        await addonHoldBeforeCancellingStragglersForTesting?()
+        for requestID in stragglers.sorted() {
+            guard ownsAddonHold(generation) else { return }
+            // One that finished meanwhile needs nothing.
+            guard inflightTasks[requestID] != nil || requestToModel[requestID] != nil else { continue }
+            await handleCancellation(requestId: requestID, receivedFromCoordinator: false)
+        }
     }
 
     /// Unloads every resident model once load transitions settle. A load

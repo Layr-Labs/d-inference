@@ -497,6 +497,9 @@ public actor ProviderLoop {
     internal var addonHoldNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
     internal var addonHoldDrainTimeout: Duration = ProviderLoop.addonHoldDrainTimeoutDefault
     internal var addonHoldSettleTimeout: Duration = ProviderLoop.addonHoldSettleTimeoutDefault
+    /// Internal, nil in production: suspends the drain bound's cancellation
+    /// pass where a release can interleave with it.
+    internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

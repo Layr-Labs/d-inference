@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-27
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -917,6 +917,13 @@ parity, prove live routing or certify all models. Platform qualification indepen
 runs its implementation at explicit revisions and records native/full-model evidence.
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
+
+`fixtures/prompt-contract/v1/production_vectors.json` is regenerated only in
+darkbloom-platform, by its prompt sidecar at an explicit revision. This
+repository copies the file byte-for-byte and records the source revision and
+SHA-256 in the commit. A provider change to the rendered prompt, such as the
+Qwen JSON `response_format` thinking default, lands with the regenerated
+vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
 The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and

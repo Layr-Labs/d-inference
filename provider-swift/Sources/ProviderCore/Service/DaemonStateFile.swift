@@ -96,6 +96,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The live coordinator connection: whether it is up and since when.
+    /// Lets `status`/`doctor` tell "connected but not authorized" from
+    /// "disconnected". Nil for older daemons.
+    public var coordinatorConnection: CoordinatorConnection?
     /// The daemon's last local App Attest observation (launch session, boot
     /// time, key state, stalled Apple call). Diagnostic only; optional so
     /// older daemons' files keep decoding.
@@ -335,6 +339,20 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
 
+    public struct CoordinatorConnection: Codable, Sendable, Equatable {
+        public var connected: Bool
+        /// Epoch seconds when the connection last came up or went down;
+        /// failed reconnect attempts while it is down keep it.
+        public var since: Double
+        /// Registrations this process has completed, including the first.
+        public var connections: Int
+        public init(connected: Bool, since: Double, connections: Int) {
+            self.connected = connected
+            self.since = since
+            self.connections = connections
+        }
+    }
+
     public init(
         schema: Int = DaemonState.currentSchema,
         pid: Int32,
@@ -367,6 +385,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
         connectivity: Connectivity? = nil,
+        coordinatorConnection: CoordinatorConnection? = nil,
         appAttest: AppAttestLocalStatus? = nil,
         autopilot: ModelAutopilotSnapshot? = nil,
         autopilotPhase: String? = nil,
@@ -405,6 +424,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.coordinatorConnection = coordinatorConnection
         self.autopilot = autopilot
         self.autopilotPhase = autopilotPhase
         self.autopilotOperation = autopilotOperation

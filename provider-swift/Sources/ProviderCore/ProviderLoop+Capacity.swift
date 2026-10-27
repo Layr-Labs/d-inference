@@ -80,6 +80,7 @@ extension ProviderLoop {
         await refreshModelCalibration()
         await refreshAutopilotInventoryRegistration()
         await checkSelectedModelRecoveryIfDue()
+        superviseServingAuthorization()
         writeDaemonState()
     }
 

@@ -16,7 +16,7 @@ extension DaemonState {
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
-        case autopilotState, addonHold
+        case autopilotState, coordinatorConnection, addonHold
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,6 +52,7 @@ extension DaemonState {
         lastModelLoadError = try c.decodeIfPresent(ModelLoadError.self, forKey: .lastModelLoadError)
         slots = try c.decodeIfPresent([SlotPosture].self, forKey: .slots)
         connectivity = try c.decodeIfPresent(Connectivity.self, forKey: .connectivity)
+        coordinatorConnection = try c.decodeIfPresent(CoordinatorConnection.self, forKey: .coordinatorConnection)
         autopilot = try c.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .autopilotState)
             ?? c.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .autopilot)
         autopilotPhase = try c.decodeIfPresent(String.self, forKey: .autopilotPhase)
@@ -93,6 +94,7 @@ extension DaemonState {
         try c.encodeIfPresent(lastModelLoadError, forKey: .lastModelLoadError)
         try c.encodeIfPresent(slots, forKey: .slots)
         try c.encodeIfPresent(connectivity, forKey: .connectivity)
+        try c.encodeIfPresent(coordinatorConnection, forKey: .coordinatorConnection)
         try c.encodeIfPresent(autopilot, forKey: .autopilotState)
         try c.encodeIfPresent(autopilotPhase, forKey: .autopilotPhase)
         try c.encodeIfPresent(autopilotOperation, forKey: .autopilotOperation)

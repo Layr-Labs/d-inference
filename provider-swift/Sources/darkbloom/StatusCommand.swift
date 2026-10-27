@@ -145,6 +145,10 @@ struct Status: AsyncParsableCommand {
         } else {
             print("Trust: awaiting coordinator status")
         }
+        if Self.lifecycleDrainLine(state.lifecycle) == nil, !state.isStale(now: now),
+           let verdict = ServingReadiness.verdict(state, now: now) {
+            for line in Self.trafficLines(verdict) { print(line) }
+        }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)

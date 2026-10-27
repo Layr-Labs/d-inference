@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-27
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -311,8 +311,9 @@ Names and effects only; defaults and parsing rules are in
 [`configuration.md`](configuration.md). Installed launchd daemons receive only
 the allowlisted variables in `passthroughEnvKeys`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). The cache
-switches `DARKBLOOM_PREFIX_CACHE` and `DARKBLOOM_PREFIX_CACHE_MEMORY` are on that
-list; the test-root and persistent-key benchmark controls are not.
+switches `DARKBLOOM_PREFIX_CACHE` and `DARKBLOOM_PREFIX_CACHE_MEMORY`, and the
+delta-checkpoint rollback `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`, are
+on that list; the test-root and persistent-key benchmark controls are not.
 
 | Variable | Effect | Code |
 |---|---|---|

@@ -39,6 +39,8 @@ final class ScriptedPairBuilder: @unchecked Sendable {
     private let lock = NSLock()
     private var owners: [ScriptedPairOwner] = []
     var hold: DispatchSemaphore?
+    /// Set on each built owner: its requests wait for one signal each.
+    var ownerHold: DispatchSemaphore?
     var failure: Error?
     var built: [ScriptedPairOwner] { lock.withLock { owners } }
 
@@ -49,6 +51,7 @@ final class ScriptedPairBuilder: @unchecked Sendable {
         let owner = ScriptedPairOwner(identity: .init(membershipEpoch: start.membershipEpoch, modelID: wire.modelID,
             artifactSHA256: wire.artifactSHA256, configurationSHA256: wire.configurationSHA256,
             peers: wire.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) }))
+        owner.hold = ownerHold
         lock.withLock { owners.append(owner) }
         return owner
     }
@@ -178,6 +181,42 @@ struct ClusterPairServingTests {
         let snapshot = await fixture.loop.clusterPairServingSnapshot
         #expect(snapshot.epoch == nil && snapshot.slotEpoch == nil && snapshot.refusing)
         #expect(fixture.builder.built.first?.shutdownCount == 1)
+    }
+
+    /// The session ends after the slot was published, while the serve still
+    /// runs its warmup canary. The stop retires the slot before it returns:
+    /// the session sends `native_pair_owner_released` next, and nothing this
+    /// start published may outlive that receipt.
+    @Test func aStopDuringTheWarmupCanaryRetiresTheSlotBeforeItReturns() async throws {
+        let fixture = try await ServingFixture.make()
+        try await fixture.loop.installClusterPairServing(fixture.context())
+        await fixture.loop.setClusterPairWarmupForTesting(timeoutSeconds: 30)
+        let hold = DispatchSemaphore(value: 0)
+        fixture.builder.ownerHold = hold
+        let start = try fixture.start()
+        let serve = Task { try await fixture.loop.serveCommittedStart(start) }
+        // Published, and the canary's request is held: the serve still forms.
+        #expect(await clusterPairWait { await fixture.loop.clusterPairServingSnapshot.slotEpoch == start.membershipEpoch })
+        #expect(await clusterPairWait { fixture.builder.built.first?.reserveCount == 1 })
+        // The retirement drains the held canary request; let it end later.
+        let release = Task { try? await Task.sleep(for: .milliseconds(200)); hold.signal() }
+        await fixture.loop.stopServingCommittedStart(epoch: start.membershipEpoch)
+        let stopped = await fixture.loop.clusterPairSlotSnapshot
+        #expect(stopped.id == nil && stopped.slots.isEmpty && stopped.refusing)
+        #expect(fixture.builder.built.first?.shutdownCount == 1)
+        await release.value
+        // The serve sees the stop, publishes nothing more and ends the start.
+        try await serve.value
+        #expect(await fixture.loop.clusterPairServingSnapshot.epoch == nil)
+        #expect(await fixture.loop.clusterPairCapacityTask == nil)
+        #expect(await fixture.loop.clusterPairSlotSnapshot.slots.isEmpty)
+
+        // The next committed start publishes a fresh slot.
+        fixture.builder.ownerHold = nil
+        let next = try fixture.start(epoch: UUID())
+        try await fixture.loop.serveCommittedStart(next)
+        #expect(await fixture.loop.clusterPairServingSnapshot.slotEpoch == next.membershipEpoch)
+        await fixture.loop.stopServingCommittedStart(epoch: next.membershipEpoch)
     }
 
     @Test func onlyTheLeaderWithAContextServesAndAFailedPairLeavesNothing() async throws {

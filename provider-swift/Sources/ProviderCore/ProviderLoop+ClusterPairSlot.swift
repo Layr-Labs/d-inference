@@ -205,8 +205,8 @@ extension ProviderLoop {
         }
         await engineV2Runtime.register(modelId: specification.publicModelID, bridge: bridge)
         // A loss or stop during the registration hop retires this slot; do
-        // not reopen admission over it.
-        guard clusterPairSlot === handle else { return id }
+        // not reopen admission over it, even while its retirement runs.
+        guard clusterPairSlotIsLive(handle) else { return id }
         // Warmup canary (S18): one throwaway generation before admission
         // opens; a pair that cannot generate is retired, not served.
         if let timeout = clusterPairWarmupTimeoutSeconds {
@@ -214,7 +214,7 @@ extension ProviderLoop {
                                                          timeoutSeconds: timeout)
             clusterPairWarmup = warmup
             logger.info("Cluster pair warmup canary \(warmup.description)")
-            guard clusterPairSlot === handle else { return id }
+            guard clusterPairSlotIsLive(handle) else { return id }
             guard warmup.succeeded else {
                 await retireClusterPairSlot(id, reason: "warmup canary failed: \(warmup.detail ?? "no detail")")
                 return id
@@ -230,6 +230,12 @@ extension ProviderLoop {
     }
 
     static let readinessLostReason = "pair readiness lost"
+
+    /// Whether `handle` is still the published slot and no retirement of it
+    /// has begun. A retirement can start during any publication hop.
+    private func clusterPairSlotIsLive(_ handle: ClusterPairSlotHandle) -> Bool {
+        clusterPairSlot === handle && !modelsUnloading.contains(handle.modelID)
+    }
 
     private func requireClusterPairPublication(_ modelID: String) throws {
         guard isClusterMember else { throw ClusterPairSlotError.notServing("solo provider") }

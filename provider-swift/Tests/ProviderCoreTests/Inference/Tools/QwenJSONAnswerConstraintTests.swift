@@ -60,9 +60,9 @@ enum QwenAnswerFixture {
     }
 
     static func constraint(_ format: String, phase: JSONAnswerPhase = .answer, extra: [String] = [],
-                           extraBytes: [[UInt8]] = []) throws -> JSONAnswerConstraint {
+                           extraBytes: [[UInt8]] = [], maxTokens: Int = 100_000) throws -> JSONAnswerConstraint {
         try JSONAnswerConstraint(format: answerFormat(format), profile: profile,
-            vocabulary: vocabulary(extra: extra, extraBytes: extraBytes), initialPhase: phase, maxTokens: 100_000)
+            vocabulary: vocabulary(extra: extra, extraBytes: extraBytes), initialPhase: phase, maxTokens: maxTokens)
     }
 
     static func walk(_ text: String, _ constraint: JSONAnswerConstraint, from initial: Int = 0) -> Int? {
@@ -315,6 +315,149 @@ struct QwenJSONAnswerConstraintTests {
         let nested = try #require(F.walk(deepest, constraint))
         #expect(F.walk("[", constraint, from: nested) == nil)
         #expect(F.walk("1", constraint, from: nested) != nil)
+    }
+
+    @Test func statePoolExhaustionFailsClosedWithoutAnAnswerEOS() throws {
+        let constraint = try F.constraint(F.jsonObject)
+        let inString = try #require(F.walk(#"{"a":""#, constraint))
+        let complete = try #require(F.walk(#"{"a":1}"#, constraint))
+        #expect(constraint.allowedTokenIDs(state: complete, remainingTokens: 100).contains(F.imEnd))
+        #expect(constraint.maskCacheKey(state: complete, remainingTokens: 100) != nil)
+        #expect(constraint.nextState(state: complete, tokenID: F.imEnd) == -1)
+        // Each object/array nesting path interns its own boundaries: the
+        // prefixes of all 13-level paths far exceed the 8,192-state pool.
+        #expect(JSONAnswerConstraint.maximumStates == 8_192)
+        var exhausted = false
+        for path in 0..<(1 << 13) {
+            let text = #"{"a":"# + (0..<13).map { (path >> $0) & 1 == 0 ? "[" : #"{"k":"# }.joined()
+            guard F.walk(text, constraint) != nil else { exhausted = true; break }
+        }
+        #expect(exhausted)
+        #expect(constraint.cachedStateCount == JSONAnswerConstraint.maximumStates)
+        // Every state, even a complete answer with a cached mask, is now
+        // impossible: no mask, no reusable device mask, no answer EOS and no
+        // known transition, so the sampler ends with the typed failure.
+        for state in [0, inString, complete] {
+            #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 100).isEmpty)
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: 100) == nil)
+            for stop in [F.imEnd, F.endOfText] { #expect(constraint.nextState(state: state, tokenID: stop) == nil) }
+        }
+        #expect(constraint.nextState(state: inString, tokenID: 120) == nil)
+        #expect(F.walk(#"{"a":1}"#, constraint) == nil)
+        #expect(constraint.cachedStateCount == JSONAnswerConstraint.maximumStates)
+    }
+
+    @Test func maskCacheKeysIdentifyBoundariesAcrossPhases() throws {
+        let constraint = try F.constraint(F.schemaFormat(F.schema), phase: .reasoning)
+        for (state, remaining) in [(0, 0), (-1, 10), (constraint.cachedStateCount, 10)] {
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: remaining) == nil)
+        }
+        // Each group spells one boundary several ways; the groups differ in
+        // phase, marker window or JSON position.
+        let items = "</think>{\"count\":1,\"tables_used\":["
+        let groups: [[String]] = [
+            ["", "plan", "{\"count\":1,"],
+            ["plan <|im_end|", "<|im_end|"],
+            ["plan</think>", "</think>\n "],
+            ["plan</think>{\"count\":7", "</think>{ \"count\" : 3"],
+            [items + "\"a", items + "\"abc def"],
+            [items + "\"<|im_end|", items + "\"x<|im_end|"],
+            [items + "]}", items + "] } \n"],
+        ]
+        var masksByKey: [Int: [Int]] = [:]
+        var groupKeys: [Int] = []
+        for group in groups {
+            var keys = Set<Int>()
+            for path in group {
+                let state = try #require(F.walk(path, constraint), "\(path)")
+                #expect(constraint.maskCacheKey(state: state, remainingTokens: 0) == nil)
+                for remaining in [1, 2, 100] {
+                    let key = try #require(constraint.maskCacheKey(state: state, remainingTokens: remaining), "\(path)")
+                    let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: remaining)
+                    let known = masksByKey[key, default: allowed]
+                    #expect(known == allowed, "\(path)")
+                    masksByKey[key] = known
+                    keys.insert(key)
+                }
+            }
+            #expect(keys.count == 1, "\(group)")
+            groupKeys.append(try #require(keys.first))
+        }
+        // Distinct boundaries never share a key, as the same marker prefix in
+        // reasoning and in an answer string must not share a mask.
+        #expect(Set(groupKeys).count == groups.count)
+        #expect(masksByKey[groupKeys[1]] != masksByKey[groupKeys[5]])
+        // In reverse, the recent masks are LRU hits and the rest are rebuilt;
+        // both stay exact transitions.
+        let candidates = Array(0...255) + [F.endOfText, F.imStart, F.imEnd, F.toolCall, F.think, F.thinkClose,
+                                           256, 248_100, 248_319]
+        for (group, key) in zip(groups, groupKeys).reversed() {
+            let state = try #require(F.walk(group[0], constraint))
+            #expect(constraint.maskCacheKey(state: state, remainingTokens: 10) == key)
+            let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
+            #expect(allowed == masksByKey[key], "\(group[0])")
+            for token in candidates {
+                #expect(allowed.contains(token) == (constraint.nextState(state: state, tokenID: token) != nil),
+                        "\(group[0]) token \(token)")
+            }
+        }
+    }
+
+    @Test func chainedSpeculationReproducesTheUnchainedStream() throws {
+        let text = "plan {\"x\": </thi <|im_end| </think>\n"
+            + #"{"count": 12, "tables_used": ["a b", "<|im_end|"], "note": null}"#
+        let tokens = Array(text.utf8).map(Int.init) + [F.imEnd]
+        let format = F.schemaFormat(F.schema)
+        // Unchained: each step is masked with the state confirmed through the
+        // previous token.
+        let reference = try F.constraint(format, phase: .reasoning, maxTokens: tokens.count)
+        var states = [reference.initialState]
+        var masks: [[Int]] = []
+        for (step, token) in tokens.enumerated() {
+            masks.append(reference.allowedTokenIDs(state: states[step], remainingTokens: reference.maxTokens - step))
+            #expect(masks[step].contains(token), "\(step)")
+            states.append(try #require(reference.nextState(state: states[step], tokenID: token), "\(step)"))
+        }
+        #expect(states.last == -1)
+        // Chained, as CBv2 drives it: while token n is pending, step n + 1 is
+        // masked with the state confirmed through n - 1 and its own budget,
+        // then kept if token n left that state unchanged and redrawn if not.
+        let chained = try F.constraint(format, phase: .reasoning, maxTokens: tokens.count)
+        #expect(chained.allowsChainedDecode)
+        var state = chained.initialState
+        var mask = chained.allowedTokenIDs(state: state, remainingTokens: chained.maxTokens)
+        var kept = 0, redrawn = 0
+        for (step, token) in tokens.enumerated() {
+            #expect(mask == masks[step], "\(step)")
+            let remaining = chained.maxTokens - step - 1
+            let speculative = chained.allowedTokenIDs(state: state, remainingTokens: remaining)
+            let confirmed = try #require(chained.nextState(state: state, tokenID: token), "\(step)")
+            #expect(confirmed == states[step + 1], "\(step)")
+            if remaining == 0 {
+                // The successor launched past the budget is discarded: its
+                // mask is empty and has no cache key.
+                #expect(speculative.isEmpty && chained.maskCacheKey(state: state, remainingTokens: 0) == nil)
+            } else if confirmed == state {
+                kept += 1
+                mask = speculative
+            } else {
+                redrawn += 1
+                mask = chained.allowedTokenIDs(state: confirmed, remainingTokens: remaining)
+            }
+            state = confirmed
+        }
+        #expect(kept > 0 && redrawn > 0)
+        // Speculation interned nothing and the zero-budget call latched nothing.
+        #expect(chained.cachedStateCount == reference.cachedStateCount)
+        #expect(chained.allowedTokenIDs(state: states[tokens.count - 1], remainingTokens: 1) == masks[tokens.count - 1])
+        // A rebuilt row replays its confirmed tokens to the same ids, so masks
+        // cached under those keys stay valid.
+        var replay = chained.initialState
+        for (step, token) in tokens.enumerated() {
+            replay = try #require(chained.nextState(state: replay, tokenID: token), "\(step)")
+            #expect(replay == states[step + 1], "\(step)")
+        }
+        #expect(chained.cachedStateCount == reference.cachedStateCount)
     }
 
     @Test func idsWithoutAPieceAreNeverAllowed() throws {

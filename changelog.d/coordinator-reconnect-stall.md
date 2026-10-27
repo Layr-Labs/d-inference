@@ -1,0 +1,4 @@
+### Providers recover from a stalled coordinator reconnect
+
+- A coordinator connection whose TLS handshake or WebSocket upgrade never completes now fails after 30 seconds and retries with the usual backoff. Before, a reconnect that stalled this way (for example while the coordinator restarted) waited indefinitely: the provider kept showing `Trust: awaiting coordinator status`, received no requests and recovered only after its process restarted.
+- `darkbloom stop`, `restart` and `start` now drain gracefully when the provider has no registered coordinator session and no unfinished requests, and report the coordinator acknowledgement as not needed. Before, they failed with `coordinator acknowledgement false`, left the provider draining (refusing work, with automatic restart disabled) and required `--force`.

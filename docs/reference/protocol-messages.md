@@ -167,7 +167,11 @@ defers the reconnect/update rather than cancelling accepted inference. If a
 barrier may have permanently fenced the old session, admission remains closed
 until a confirmed drain and reconnect. Unexpected transport loss and explicit
 force/fault recovery retain their cancellation paths; a dead connection cannot
-deliver a graceful-drain acknowledgement.
+deliver a graceful-drain acknowledgement. A lifecycle drain on a provider with
+no registered session therefore completes without one once its accepted work
+and local response writes finish
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
+`performLifecycleDrain`).
 
 ## Add-on hold busy fields
 

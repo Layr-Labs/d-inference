@@ -20,14 +20,14 @@ public enum ClusterModelStoreLocation {
 enum ClusterProductModelStore {
     struct Installed: Sendable { var artifact: ClusterCatalogArtifact; var directory: URL }
 
-    /// Every model the product store has an active, receipted revision of.
-    static func installed(cache: URL = ModelScanner.cacheDirectory()) -> [Installed] {
+    /// Every model the product store has an active, receipted revision of. A dev or staging install records its
+    /// downloads under its own ref and also reads production's, as the single-Mac scanner does.
+    static func installed(cache: URL = ModelScanner.cacheDirectory(),
+                          refNames: [String] = ModelScanner.revisionRefNames()) -> [Installed] {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: cache.path)) ?? []).sorted().filter { $0.hasPrefix("models--") }
         return names.prefix(256).compactMap { name in
             let model = cache.appendingPathComponent(name)
-            guard let ref = ClusterModelStore.readSmall(model.appendingPathComponent("refs/main")),
-                  let revision = String(data: ref, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !revision.isEmpty, !revision.contains("/") else { return nil }
+            guard let revision = ClusterModelStore.activeRevision(model: model, refNames: refNames) else { return nil }
             let directory = model.appendingPathComponent("snapshots").appendingPathComponent(revision)
             guard let receipt = ClusterModelStore.readSmall(directory.appendingPathComponent(".darkbloom-manifest.json")),
                   let artifact = try? ClusterCatalogArtifact.parse(manifest: receipt) else { return nil }

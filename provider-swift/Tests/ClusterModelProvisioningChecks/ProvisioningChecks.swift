@@ -43,9 +43,34 @@ import CryptoKit
         shortCopiesAreNotAskedFor()
         // Finish review 2026-10-13 night: failing first on 754286da9.
         stagingHoldsOnlyTheManifestFiles()
+        // DevNet 2026-10-27: a dev install's downloads are under refs/darkbloom-dev.
+        activeRevisionReadsThisInstallsRefThenProductions()
         print("provisioning checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
+    }
+
+    static func activeRevisionReadsThisInstallsRefThenProductions() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("active-revision-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        func model(_ refs: [String: String]) -> URL {
+            let folder = root.appendingPathComponent("models--Example--M-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: folder.appendingPathComponent("refs"), withIntermediateDirectories: true)
+            for (name, value) in refs { try? Data(value.utf8).write(to: folder.appendingPathComponent("refs").appendingPathComponent(name)) }
+            return folder
+        }
+        let dev = ["darkbloom-dev", "main"], prod = ["main"]
+        expect(ClusterModelStore.activeRevision(model: model(["darkbloom-dev": "rev-dev\n"]), refNames: dev) == "rev-dev",
+               "a dev install reads the revision its own download recorded")
+        expect(ClusterModelStore.activeRevision(model: model(["darkbloom-dev": "rev-dev", "main": "rev-main"]), refNames: dev) == "rev-dev",
+               "a dev install prefers its own ref over production's")
+        expect(ClusterModelStore.activeRevision(model: model(["main": "rev-main"]), refNames: dev) == "rev-main",
+               "a dev install falls back to production's selection")
+        expect(ClusterModelStore.activeRevision(model: model(["darkbloom-dev": "rev-dev"]), refNames: prod) == nil,
+               "a production install never reads a dev install's ref")
+        expect(ClusterModelStore.activeRevision(model: model(["darkbloom-dev": "a/b", "main": "rev-main"]), refNames: dev) == nil,
+               "a present ref naming no plain folder selects none")
+        expect(ClusterModelStore.activeRevision(model: model([:]), refNames: dev) == nil, "no ref selects none")
     }
 
     // MARK: - Fixtures

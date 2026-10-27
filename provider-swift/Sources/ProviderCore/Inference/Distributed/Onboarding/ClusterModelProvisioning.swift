@@ -286,6 +286,18 @@ public enum ClusterModelStore {
     }
     private static let prefetching = ClusterModelPrefetchFolders()
 
+    /// The snapshot a model folder's refs select, read in `refNames` order (this install's ref, then production's:
+    /// `ModelScanner.revisionRefNames`). The first ref that exists decides; one that names no plain folder selects none.
+    static func activeRevision(model: URL, refNames: [String]) -> String? {
+        for name in refNames {
+            guard let ref = readSmall(model.appendingPathComponent("refs").appendingPathComponent(name)) else { continue }
+            guard let revision = String(data: ref, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !revision.isEmpty, !revision.contains("/") else { return nil }
+            return revision
+        }
+        return nil
+    }
+
     /// A small regular file (no symbolic link) of at most 1 MiB.
     static func readSmall(_ url: URL) -> Data? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

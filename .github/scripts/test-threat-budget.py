@@ -925,7 +925,7 @@ class LifecycleTests(unittest.TestCase):
         (self.root / "docs").mkdir()
         (self.root / "docs/threat-model.yaml").write_text(fixtures.THREAT)
         self.env = {"GH_TOKEN": "synthetic", "OPENROUTER_API_KEY": "synthetic",
-                    "GITHUB_RUN_ID": "123", "THREAT_REVIEW_ENABLED": "true"}
+                    "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "THREAT_REVIEW_ENABLED": "true"}
         self.github = fixtures.FakeGitHub()
         original_call = self.github.call
         def canonical_call(path, *args):

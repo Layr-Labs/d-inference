@@ -165,6 +165,41 @@ the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
 
+## CI Runner Routing
+
+`.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
+Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
+fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+
+| Workflow | Routed jobs | Fallback |
+|---|---|---|
+| `ci.yml` | `release-integrity`, `docs`, `lint-console` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
+| `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
+| `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+
+Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
+`on`. While it is off, and for pull requests from forks, every job keeps its
+fallback and the plane is not contacted. When it is on, the route job sends one
+`POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
+`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
+most once after a transient failure. It uses a grant only when the grant
+repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+malformed replies keep the fallback; the plane never fails the route job.
+Release, signing, publication, model registration, review automation,
+`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
+labels. The component classifier and the `Provider Tests` gate run on
+`ubuntu-24.04`.
+
+Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
+colocated cache, so their first runs start without cached build products.
+Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
+decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
+off and use **Re-run all jobs** to move a run back to Blacksmith. See the
+[routing checks](test.md#focused-tooling-checks).
+
 ## Dev Build Identity
 
 A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install

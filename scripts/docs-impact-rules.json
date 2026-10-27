@@ -75,7 +75,7 @@
     },
     {
       "name": "build and test tooling",
-      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
+      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/workflows/darkbloom-route.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
       "docs_any_of": ["docs/developer/build.md", "docs/developer/test.md"]
     },
     {

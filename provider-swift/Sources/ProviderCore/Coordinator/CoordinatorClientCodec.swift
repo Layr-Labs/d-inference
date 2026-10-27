@@ -21,7 +21,8 @@ public enum CoordinatorClientCodec {
         autopilotInventory: [ModelInfo]? = nil,
         memberRegistrationNonce: String? = nil,
         clusterResume: ClusterMembership.Resume? = nil,
-        appAttestResumeNonce: String? = nil
+        appAttestResumeNonce: String? = nil,
+        busy: ProviderBusy? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -99,7 +100,8 @@ public enum CoordinatorClientCodec {
             memberRegistrationNonce: memberMode ? memberRegistrationNonce : nil,
             clusterModels: memberMode ? servingModels : nil,
             // A member away in its session's disconnect grace claims it here.
-            clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil
+            clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
+            busy: busy
         ))
     }
 
@@ -120,7 +122,8 @@ public enum CoordinatorClientCodec {
         autopilotInventory: [ModelInfo]? = nil,
         memberRegistrationNonce: String? = nil,
         clusterResume: ClusterMembership.Resume? = nil,
-        appAttestResumeNonce: String? = nil
+        appAttestResumeNonce: String? = nil,
+        busy: ProviderBusy? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -140,7 +143,8 @@ public enum CoordinatorClientCodec {
                 autopilotInventory: autopilotInventory,
                 memberRegistrationNonce: memberRegistrationNonce,
                 clusterResume: clusterResume,
-                appAttestResumeNonce: appAttestResumeNonce
+                appAttestResumeNonce: appAttestResumeNonce,
+                busy: busy
             )
         )
     }
@@ -161,7 +165,8 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         idleUnloadMins: UInt64? = nil,
         modelAutopilot: ModelAutopilotSnapshot? = nil,
-        clusterSession: ClusterSessionStatus? = nil
+        clusterSession: ClusterSessionStatus? = nil,
+        busy: ProviderBusy? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -179,7 +184,8 @@ public enum CoordinatorClientCodec {
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             idleUnloadMins: idleUnloadMins,
             modelAutopilot: modelAutopilot,
-            clusterSession: clusterSession
+            clusterSession: clusterSession,
+            busy: busy
         ))
     }
 

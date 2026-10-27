@@ -74,7 +74,7 @@ struct DoctorOperatorDiagnosisTests {
             #expect(runtime.level == .pass)
             #expect(runtime.message.hasPrefix("up 1h"))
             #expect(runtime.message.contains("acme/Warm-4bit"))
-            #expect(runtime.message.hasSuffix("7 requests served."))
+            #expect(runtime.message.hasSuffix("7 requests served since the daemon started."))
 
             let load = try #require(diagnosis.first { $0.name == "recent model load" })
             #expect(load.level == .warn)
@@ -83,7 +83,8 @@ struct DoctorOperatorDiagnosisTests {
             let billing = try #require(diagnosis.first { $0.name == "usage reporting" })
             #expect(billing.section == .billing)
             #expect(billing.level == .pass)
-            #expect(billing.message == "7 requests / 900 tokens reported this session.")
+            #expect(billing.message == "7 requests / 900 output tokens completed since the daemon started, "
+                + "all with usage; the console's Earnings page lists the paid ones.")
 
             let version = try #require(diagnosis.first { $0.section == .version })
             #expect(version.level == .warn)
@@ -178,7 +179,8 @@ struct DoctorOperatorDiagnosisTests {
             #expect(diagnosis.first { $0.name == "daemon connected" }?.level == .pass)
             #expect(!diagnosis.contains { $0.name == "recent model load" })
             #expect(diagnosis.first { $0.name == "usage reporting" }?.message
-                == "2 requests / 40 tokens reported this session.")
+                == "2 requests / 40 output tokens completed since the daemon started, "
+                + "all with usage; the console's Earnings page lists the paid ones.")
 
             let version = try #require(diagnosis.first { $0.section == .version })
             #expect(version.level == .pass)

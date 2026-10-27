@@ -324,7 +324,8 @@ With neither selection flag, this command reuses the `start` catalog picker and
 downloader. It checks fresh daemon identity and switch capability before opening
 the picker, and uses the running daemon's runtime capabilities rather than
 initializing a second inference runtime. There is no `--force` or `--config`:
-the daemon's own resolved config path, including a custom path, is authoritative.
+the daemon's own resolved config path, including a custom path, is authoritative,
+and the command scans local models in that config's `model_cache_directory`.
 
 The provider validates local artifacts before fencing new coordinator and
 unified-local admissions, finishes accepted requests and terminal usage, and
@@ -441,7 +442,11 @@ With no accepted work left, a graceful drain retries native MiMo owner
 retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
-`performLifecycleDrain`).
+`performLifecycleDrain`). A drain completes without the coordinator
+acknowledgement only when no work is left and the provider has no registered
+coordinator session, for example while it is reconnecting; the command then
+reports the acknowledgement as `not needed (no coordinator connection)`. A
+registered session must acknowledge before the deadline.
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -1017,6 +1022,18 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Requests served since the daemon started (… ago)`: coordinator requests
+  this daemon finished since it started, with output tokens only. The count
+  restarts at zero when the daemon restarts or a scheduled availability window
+  opens. It includes requests that ended early on a coordinator cancel or a
+  dropped connection after output had been delivered (the next line counts
+  them when there are any; the coordinator may not pay for them) and free
+  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
+  the console's Earnings page; the console's machine card adds these counters
+  up across restarts
+  ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
+  `cumulativeDelta`)
+  (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Serving outside the enabled
   model filter` names each warm or advertised model the filter omits and why it
@@ -1980,6 +1997,7 @@ automatic updates with `darkbloom autoupdate disable`.
 |---|---|---|
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
 | WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
+| Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |

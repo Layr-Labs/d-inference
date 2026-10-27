@@ -134,13 +134,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var promptTokensProcessed: UInt64?
         public var cachedInputTokens: UInt64?
         public var reasoningTokens: UInt64?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil) {
+        /// Served requests that ended early on a coordinator cancel or a
+        /// dropped connection after output had been delivered; included in
+        /// `requestsServed`, and the coordinator may not pay for them. Nil on
+        /// older runtimes.
+        public var cancellationsPartialComplete: UInt64?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
             self.promptTokensProcessed = promptTokensProcessed
             self.cachedInputTokens = cachedInputTokens
             self.reasoningTokens = reasoningTokens
+            self.cancellationsPartialComplete = cancellationsPartialComplete
         }
     }
 

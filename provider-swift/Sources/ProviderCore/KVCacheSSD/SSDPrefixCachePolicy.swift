@@ -219,6 +219,12 @@ enum SSDPrefixCachePolicy {
     /// reader deletes bad files — and skipping the flush saves ~2–15 ms
     /// per block write plus real flash wear.
     static let strictFsyncFlag = "DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC"
+    /// Delta checkpoints (`SSDCheckpointDeltaLayout`); a negative value disables them.
+    static let incrementalCheckpointsFlag = "DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS"
+
+    static func incrementalCheckpoints(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+    }
 
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment

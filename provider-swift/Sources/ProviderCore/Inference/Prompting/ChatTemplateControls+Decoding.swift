@@ -9,6 +9,11 @@ extension ChatTemplateControls: Decodable {
         case clearThinking = "clear_thinking"
         case kwargs = "chat_template_kwargs"
         case promptDate = "_darkbloom_prompt_date"
+        case reasoning
+    }
+
+    private enum ReasoningKeys: String, CodingKey {
+        case maxTokens = "max_tokens"
     }
 
     /// Decode each optional extension independently: malformed values are
@@ -23,12 +28,18 @@ extension ChatTemplateControls: Decodable {
         let alias = try? kwargs?.decode(Bool.self, forKey: .enableThinking)
         let clearThinking = (try? values.decode(Bool.self, forKey: .clearThinking))
             ?? (try? kwargs?.decode(Bool.self, forKey: .clearThinking))
+        // What counts as a budget follows JSONDecoder's Int semantics: 2048.0
+        // and 1e3 do; 2.5, "2048" and out-of-range numbers do not. The
+        // coordinator prompt sidecar mirrors these semantics exactly.
+        let reasoning = try? values.nestedContainer(keyedBy: ReasoningKeys.self, forKey: .reasoning)
+        let budget = (try? reasoning?.decode(Int.self, forKey: .maxTokens)).flatMap { $0 > 0 ? $0 : nil }
         self.init(
             reasoningEffort: effort?.isEmpty == false ? effort : nil,
             enableThinking: topLevel ?? alias,
             preserveThinking: try? values.decode(Bool.self, forKey: .preserveThinking),
             clearThinking: clearThinking,
-            promptDate: (try? values.decode(String.self, forKey: .promptDate)).flatMap(PromptRenderDate.init))
+            promptDate: (try? values.decode(String.self, forKey: .promptDate)).flatMap(PromptRenderDate.init),
+            reasoningBudgetTokens: budget)
         rawMiMoControls = MiMoV26RawControlEvidence.capture(from: decoder, surface: .chat)
         rawMiMoTools = MiMoV26ToolEvidence(from: decoder)
         rawGLM5Controls = GLM5NextPromptPolicy.RawControls.capture(from: decoder)

@@ -1957,6 +1957,20 @@ probe before forwarding model output. This matters for media because
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker.
 
+The same default applies to a JSON `response_format` (`json_object` or
+`json_schema`) on the Qwen template family (`Qwen35TemplateFix.applies`).
+The answer follows the reasoning block, and Qwen's default thinking regularly
+spends the caller's `max_tokens` before any JSON is written. A nested
+`reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
+switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
+keeps the caller's choice. The family predicate also matches Qwen3.8
+Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
+the closed block. Other families keep their thinking defaults because the
+predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
+own template context, and Flint's template ignores the switch.
+The coordinator prompt sidecar mirrors the rule so cache planning renders the
+same prompt; the public prompt vectors pin it for the Qwen-family JSON cases.
+
 A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
 no think marker also receives the empty closed block
 (`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct

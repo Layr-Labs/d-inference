@@ -2042,6 +2042,12 @@ id decodes as a byte-level piece, and that both terminators are engine stop
 tokens. It is built on the first such request per loaded tokenizer and stop set
 and cached like Flint's (`TokenizerVocabularyCache`, four entries).
 
+A constraint's budget must equal the engine request's `maxTokens`, or the engine
+refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
+resolves an omitted `max_tokens` with its own default (`EngineV2Bridge`
+`defaultMaxTokens`, from the model's sizing), so the text path builds every token
+constraint, Qwen's and Flint's, from that same default.
+
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the

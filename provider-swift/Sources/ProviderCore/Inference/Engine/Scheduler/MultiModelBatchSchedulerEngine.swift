@@ -905,7 +905,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 tokenizer: tokenizer,
                 modelContext: ChatTemplateFixContext(
                     modelId: request.model, modelType: modelType),
-                defaultMaxTokens: defaultMaxTokens,
+                // The bridge resolves an omitted max_tokens with its own
+                // default, and the engine refuses a constraint whose budget
+                // differs from the request's (tokenConstraintBudgetMismatch).
+                defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens)
             // Grammar compile (Gemma) can take the tool-constraint lock on the

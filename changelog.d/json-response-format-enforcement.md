@@ -25,3 +25,8 @@
   prompt-only behavior; none of them is newly refused. While a constrained row
   decodes, other rows in the same decode step do not speculate with MTP, as
   with a `stop`, logprob or penalty row today.
+- A constrained request that omits `max_tokens` no longer fails with "Response
+  generation failed". Token constraints were sized with the scheduler's default
+  while the engine used the bridge's model-derived default, and the engine
+  refuses a mismatched budget. This also fixes Flint requests without
+  `max_tokens` on the local endpoint; coordinator traffic always carries one.

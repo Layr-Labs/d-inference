@@ -201,6 +201,11 @@ private final class QwenScriptedEngine: CBv2Engine, @unchecked Sendable {
     var submitted: [CBv2Request] { lock.withLock { requests } }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        // Mirror EngineV2's admission check: a constraint shares the request's budget.
+        if let constraint = request.tokenConstraint, constraint.maxTokens != request.maxTokens {
+            throw CBv2SchedulerError.tokenConstraintBudgetMismatch(
+                request: request.maxTokens, constraint: constraint.maxTokens)
+        }
         lock.withLock { requests.append(request) }
         var deltas: [(text: String, token: Int)] = []
         var finish = CBv2FinishReason.length
@@ -279,6 +284,19 @@ struct QwenJSONAnswerServingTests {
         #expect(outcome.content == #"{"tables_used":["orders"],"count":12}"#)
         #expect(outcome.contentDeltas.count > 1, "content streams as generated")
         #expect(outcome.info?.stopReason == "stop")
+    }
+
+    @Test func anOmittedMaxTokensUsesTheBridgeDefaultBudget() async throws {
+        // The scheduler's default (4096) differs from the bridge's (64). The
+        // engine resolves an omitted max_tokens with the bridge default, so the
+        // constraint must use the same budget or the engine refuses it.
+        let engine = QwenScriptedEngine(script: #"{"tables_used":["orders"],"count":12}"#)
+        let outcome = try await serve(engine, fields: schemaFormat)
+        let request = try #require(engine.submitted.first)
+        let constraint = try #require(request.tokenConstraint as? JSONAnswerConstraint)
+        #expect(request.maxTokens == 64 && constraint.maxTokens == 64)
+        #expect(outcome.error == nil)
+        #expect(outcome.content == #"{"tables_used":["orders"],"count":12}"#)
     }
 
     @Test func aTruncatedAnswerStreamsThenFailsWithATyped422() async throws {

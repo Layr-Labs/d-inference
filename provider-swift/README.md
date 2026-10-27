@@ -51,3 +51,5 @@ and [inference architecture](../docs/architecture/inference.md) explain the
 request lifecycle, continuous batching, model admission and cache behavior.
 Release packaging and rollback are covered by the
 [provider release runbook](../docs/operations/provider-release.md).
+
+<!-- Darkbloom Sandboxes CI routing smoke test (draft PR, do not merge). -->

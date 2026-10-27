@@ -68,6 +68,8 @@ jobs:
         lane: [release, qualification]
     env:
       MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+      # As in ci.yml: test and warm the production identity on the dev branch too.
+      DARKBLOOM_RELEASE_ENVIRONMENT: prod
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

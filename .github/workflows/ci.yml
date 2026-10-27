@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A plain build of the dev branch is a DevNet build (provider-swift/Package.swift).
+# CI builds the production identity, which the provider suites pin, as on
+# master; BuildEnvironmentTests checks that the build is the one requested.
+env:
+  DARKBLOOM_RELEASE_ENVIRONMENT: prod
+
 # Only revisions of the same PR supersede each other; pushes stay independent.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}

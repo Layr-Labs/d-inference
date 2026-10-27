@@ -5,20 +5,24 @@ import Testing
 
 @Suite("Build environment defaults")
 struct BuildEnvironmentTests {
-    private let devCoordinator = "wss://api.dev.darkbloom.dev/ws/provider"
-
-    @Test func devBranchBuildsDefaultToDevNet() {
+    /// A plain build of the dev branch is a dev build. DARKBLOOM_RELEASE_ENVIRONMENT, read by Package.swift when
+    /// the tests are built, selects another: CI builds prod, the identity the provider suites pin.
+    @Test func devBranchBuildsDefaultToDevNet() throws {
+        let requested = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
+            .flatMap { $0.isEmpty ? nil : $0 } ?? "dev"
+        let built = try #require(BuildEnvironment(rawValue: requested))
+        let coordinator = built.coordinatorWebSocketURL
         let hardware = HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 64, memoryAvailableGb: 64,
             cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546)
-        #expect(BuildEnvironment.current == .dev)
-        #expect(CoordinatorSettings().url == devCoordinator)
-        #expect(ConfigManager.parse("").coordinator.url == devCoordinator)
+        #expect(BuildEnvironment.current == built)
+        #expect(CoordinatorSettings().url == coordinator)
+        #expect(ConfigManager.parse("").coordinator.url == coordinator)
         #expect(ConfigManager.parse("[coordinator]\nheartbeat_interval_secs = 5\n").coordinator.url
-            == devCoordinator)
-        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == devCoordinator)
+            == coordinator)
+        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == coordinator)
         #expect(ModelDownloader.defaultR2CDNURL == "https://models.darkbloom.ai")
     }
 

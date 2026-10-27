@@ -24,9 +24,11 @@ import Testing
     }
 
     private func trust(path: String, reason: String, expiresAt: Double? = nil,
-                       level: String = "self_signed", status: String = "online") -> DaemonState.Trust {
+                       level: String = "self_signed", status: String = "online",
+                       receivedAt: Double? = nil) -> DaemonState.Trust {
         DaemonState.Trust(
-            trustLevel: level, status: status, reason: "Provider authorization updated", receivedAt: now - 30,
+            trustLevel: level, status: status, reason: "Provider authorization updated",
+            receivedAt: receivedAt ?? now - 30,
             authorization: ProviderAuthorizationStatus(
                 appAttestAvailable: true, path: path, expiresAt: expiresAt, reason: reason,
                 sessionID: "session", machineID: path == "none" ? "" : "machine"))
@@ -115,6 +117,68 @@ import Testing
         let advice = try #require(blocked(ServingReadiness.verdict(
             state(trust: trust(path: "app_attest", reason: "app_attest_verified", expiresAt: now - 60)), now: now)))
         #expect(advice.message.contains("App Attest authorization expired at"))
+        // The lease names its own expiry, so an old status still proves it lapsed.
+        #expect(blocked(ServingReadiness.verdict(state(since: now - 10_000, trust: trust(
+            path: "app_attest", reason: "app_attest_verified", expiresAt: now - 3_600, receivedAt: now - 7_200)),
+            now: now)) != nil)
+    }
+
+    /// The coordinator computes the registration status before it records
+    /// the first verified challenge that legacy verification needs, so a
+    /// refusal right after connecting is not a verdict yet.
+    @Test func aRefusalRightAfterConnectingIsPending() {
+        let verdict = ServingReadiness.verdict(state(since: now - 20, trust: trust(
+            path: "none", reason: "app_attest_qualification_required", receivedAt: now - 19)), now: now)
+        #expect(verdict == .pending("connected 20s ago; not authorized so far: app_attest_qualification_required"))
+    }
+
+    /// A legacy (MDM-cohort) Mac on the current coordinator: one refusal at
+    /// registration, then no status when legacy verification authorizes the
+    /// connection. Once that refusal is older than `refusalMaxAge` the verdict
+    /// is unconfirmed, labelled as the last one, with no fix and no macOS 27.
+    @Test func aRefusalTheCoordinatorStoppedRepeatingIsUnconfirmed() throws {
+        let osTooOld = AppAttestLocalStatus(observedAt: now, launchSession: .unknown, availabilityReason: .osBelow27)
+        func verdict(receivedAt: Double) -> ServingReadiness.Verdict? {
+            ServingReadiness.verdict(state(trust: trust(
+                path: "none", reason: "app_attest_qualification_required", receivedAt: receivedAt),
+                appAttest: osTooOld), now: now, macOSMajorVersion: 26)
+        }
+        // A refusal the coordinator keeps repeating is current.
+        let current = try #require(blocked(verdict(receivedAt: now - ServingReadiness.refusalMaxAge)))
+        #expect(current.fix?.contains("upgrade to macOS 27") == true)
+
+        let lastAtRegistration = verdict(receivedAt: now - 1_199)
+        #expect(lastAtRegistration == .unconfirmed("no current coordinator verdict; the last one, 19m ago, "
+            + "did not authorize this connection: app_attest_qualification_required"))
+        guard case .unconfirmed(let detail)? = verdict(receivedAt: now - ServingReadiness.refusalMaxAge - 1) else {
+            Issue.record("a refusal older than refusalMaxAge still blocks")
+            return
+        }
+        #expect(!detail.contains("macOS 27"))
+        #expect(ServingReadiness.refusalMaxAge < ServingReadiness.statusGraceSeconds)
+    }
+
+    /// A request the coordinator routed after its latest status is newer
+    /// evidence than a refusal or a missing status, but not than an explicit
+    /// `untrusted` status or an expired lease.
+    @Test func aRequestAfterTheLatestStatusIsEligible() {
+        func verdict(_ trust: DaemonState.Trust?, requestAt: Double) -> ServingReadiness.Verdict? {
+            var routed = state(trust: trust)
+            routed.coordinatorConnection?.lastRequestAt = requestAt
+            return ServingReadiness.verdict(routed, now: now)
+        }
+        let refusal = trust(path: "none", reason: "app_attest_keychain_error", receivedAt: now - 30)
+        #expect(verdict(refusal, requestAt: now - 10) == .authorized("received a coordinator request 10s ago"))
+        #expect(blocked(verdict(refusal, requestAt: now - 31)) != nil)
+        #expect(verdict(nil, requestAt: now - 300) == .authorized("received a coordinator request 5m ago"))
+        let atRegistration = trust(path: "none", reason: "app_attest_qualification_required", receivedAt: now - 1_199)
+        #expect(verdict(atRegistration, requestAt: now - 600) == .authorized("received a coordinator request 10m ago"))
+
+        let untrusted = DaemonState.Trust(
+            trustLevel: "self_signed", status: "untrusted", reason: "SIP disabled", receivedAt: now - 30)
+        #expect(blocked(verdict(untrusted, requestAt: now - 10)) != nil)
+        let lapsed = trust(path: "app_attest", reason: "app_attest_verified", expiresAt: now - 60, receivedAt: now - 120)
+        #expect(blocked(verdict(lapsed, requestAt: now - 10)) != nil)
     }
 
     @Test func coordinatorReasonsMapToOperatorCauses() throws {
@@ -157,16 +221,22 @@ import Testing
         let advice = try #require(blocked(ServingReadiness.verdict(state(trust: DaemonState.Trust(
             trustLevel: "self_signed", status: "untrusted", reason: "SIP disabled", receivedAt: now)), now: now)))
         #expect(advice.message.contains("System Integrity Protection"))
+        // The coordinator sends a status when it trusts the connection again.
+        #expect(blocked(ServingReadiness.verdict(state(since: now - 10_000, trust: DaemonState.Trust(
+            trustLevel: "self_signed", status: "untrusted", reason: "SIP disabled", receivedAt: now - 7_200)),
+            now: now)) != nil)
     }
 
     @Test func connectionStateRoundTripsThroughTheStateFile() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
-        let written = state(trust: trust(path: "none", reason: "app_attest_keychain_error"))
+        var written = state(trust: trust(path: "none", reason: "app_attest_keychain_error"))
+        written.coordinatorConnection?.lastRequestAt = now - 5
         DaemonStateFile.write(written, to: url)
         let read = try #require(DaemonStateFile.read(from: url))
         #expect(read.coordinatorConnection == written.coordinatorConnection)
         #expect(read.trust?.authorization?.reason == "app_attest_keychain_error")
+        #expect(try String(contentsOf: url, encoding: .utf8).contains("\"last_request_at\""))
     }
 }
 
@@ -196,23 +266,41 @@ import Testing
         #expect(Policy.retryInterval(afterAttempts: 10) == Policy.maximumRetryInterval)
     }
 
+    /// Re-registration counts only the blocked `ServingReadiness` verdict
+    /// that `status` and `doctor` show.
     @Test func judgesOnlyCoordinatorVerdictsItCanRead() {
         let now = 100_000.0
-        func trust(_ path: String?, expiresAt: Double? = nil, status: String = "online") -> DaemonState.Trust {
-            DaemonState.Trust(trustLevel: "self_signed", status: status, reason: "", receivedAt: now,
+        func trust(_ path: String?, expiresAt: Double? = nil, status: String = "online",
+                   receivedAt: Double = 100_000) -> DaemonState.Trust {
+            DaemonState.Trust(trustLevel: "self_signed", status: status, reason: "", receivedAt: receivedAt,
                               authorization: path.map {
                                   ProviderAuthorizationStatus(appAttestAvailable: true, path: $0, expiresAt: expiresAt,
                                                               sessionID: "s", machineID: "m") })
         }
+        func refuses(connectedAt: Double, _ trust: DaemonState.Trust?, requestAt: Double? = nil) -> Bool {
+            let connection = DaemonState.CoordinatorConnection(
+                connected: true, since: connectedAt, connections: 1, lastRequestAt: requestAt)
+            if case .blocked? = ServingReadiness.verdict(connection: connection, trust: trust, now: now) { return true }
+            return false
+        }
         // No status long after connecting: never confirmed.
-        #expect(Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: nil, now: now))
-        #expect(!Policy.connectionLacksAuthorization(connectedAt: now - 10, trust: nil, now: now))
-        #expect(Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust("none"), now: now))
-        #expect(Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust("app_attest", expiresAt: now - 1), now: now))
-        #expect(!Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust("app_attest", expiresAt: now + 60), now: now))
-        #expect(!Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust("legacy"), now: now))
+        #expect(refuses(connectedAt: now - 600, nil))
+        #expect(!refuses(connectedAt: now - 10, nil))
+        #expect(refuses(connectedAt: now - 600, trust("none")))
+        #expect(refuses(connectedAt: now - 600, trust("app_attest", expiresAt: now - 1)))
+        #expect(!refuses(connectedAt: now - 600, trust("app_attest", expiresAt: now + 60)))
+        #expect(!refuses(connectedAt: now - 600, trust("legacy")))
         // Without an authorization object (no App Attest serving) nothing is judged.
-        #expect(!Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust(nil), now: now))
-        #expect(Policy.connectionLacksAuthorization(connectedAt: now - 600, trust: trust(nil, status: "untrusted"), now: now))
+        #expect(!refuses(connectedAt: now - 600, trust(nil)))
+        #expect(refuses(connectedAt: now - 600, trust(nil, status: "untrusted")))
+        // A refusal counts only while current: not right after connecting, not
+        // once the coordinator stopped repeating it, not before routed work.
+        #expect(!refuses(connectedAt: now - 30, trust("none")))
+        #expect(!refuses(connectedAt: now - 600, trust("none", receivedAt: now - ServingReadiness.refusalMaxAge - 1)))
+        #expect(!refuses(connectedAt: now - 600, trust("none", receivedAt: now - 5), requestAt: now - 1))
+        #expect(!refuses(connectedAt: now - 600, nil, requestAt: now - 1))
+        // An expired lease and an explicit untrusted status do not go out of date.
+        #expect(refuses(connectedAt: now - 9_000, trust("app_attest", expiresAt: now - 3_600, receivedAt: now - 7_200)))
+        #expect(refuses(connectedAt: now - 9_000, trust(nil, status: "untrusted", receivedAt: now - 7_200)))
     }
 }

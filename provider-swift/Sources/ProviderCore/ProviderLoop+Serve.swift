@@ -426,6 +426,8 @@ extension ProviderLoop {
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
+                case .inferenceRequest:
+                    noteCoordinatorRequest()
                 default:
                     break
                 }

@@ -163,11 +163,15 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         self.assertTrue(self.pr(base, head)["provider"], "rename destination must be considered")
         self.git("rm", "provider-swift/new.swift")
-        base = self.commit()
-        self.assertTrue(self.pr(head, base)["provider"], "deletions must be considered")
-        # A newline inside one docs name must not be split off into a provider path.
+        deleted = self.commit()
+        self.assertTrue(self.pr(head, deleted)["provider"], "deletions must be considered")
+        # Names are read verbatim: a newline must neither split a docs name into
+        # a provider path nor hide a provider name behind Git's path quoting.
         self.write("docs/notes\nprovider-swift/new.swift")
-        self.assertFalse(self.pr(base, self.commit())["provider"], "names must stay NUL-delimited")
+        head = self.commit()
+        self.assertFalse(self.pr(deleted, head)["provider"], "names must stay NUL-delimited")
+        self.write("provider-swift/file with\nnewline.swift")
+        self.assertTrue(self.pr(head, self.commit())["provider"], "names must stay unquoted")
 
     def test_submodule_pointer_change_selects_provider(self):
         self.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},libs/mlx-swift-lm")

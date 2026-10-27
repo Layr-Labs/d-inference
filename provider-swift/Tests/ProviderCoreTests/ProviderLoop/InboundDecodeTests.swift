@@ -303,6 +303,10 @@ struct InboundDecodeTests {
                         #"{"enabled":true}"#, #""high""#, "null"] {
             #expect(budget(ignored) == nil, "\(ignored)")
         }
+        // Rendering first resolves an unpinned prompt date; the budget must survive it.
+        let body = Data(#"{"model":"m","messages":[],"reasoning":{"max_tokens":2048}}"#.utf8)
+        let resolved = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+        #expect(resolved.reasoningBudgetTokens == 2048)
     }
 
     @Test("one malformed template control does not discard the others")

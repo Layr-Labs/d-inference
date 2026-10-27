@@ -25,7 +25,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
     public let enableThinking: Bool?
     public let preserveThinking: Bool?
     public let clearThinking: Bool?
-    public let promptDate: PromptRenderDate?
+    public private(set) var promptDate: PromptRenderDate?
     /// A positive OpenRouter `reasoning.max_tokens` budget. The typed request
     /// drops it, so it is recovered from the raw body: a budget asks for
     /// reasoning even without an explicit thinking switch.
@@ -54,13 +54,8 @@ public struct ChatTemplateControls: Sendable, Equatable {
     }
 
     func withPromptDate(_ date: PromptRenderDate) -> Self {
-        var copy = Self(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
-              preserveThinking: preserveThinking, clearThinking: clearThinking, promptDate: date,
-              reasoningBudgetTokens: reasoningBudgetTokens)
-        copy.rawMiMoControls = rawMiMoControls
-        copy.rawMiMoTools = rawMiMoTools
-        copy.rawGLM5Controls = rawGLM5Controls
-        copy.rawFlintControls = rawFlintControls
+        var copy = self
+        copy.promptDate = date
         return copy
     }
 

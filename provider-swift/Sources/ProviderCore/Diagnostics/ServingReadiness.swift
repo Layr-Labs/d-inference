@@ -6,7 +6,9 @@ import ProviderAppAttest
 /// can still receive nothing when the coordinator has not authorized the
 /// connection; without this verdict it looks healthy in `status`.
 ///
-/// Diagnostics only: the coordinator owns routing and authorization.
+/// Diagnostics and the re-registration trigger
+/// (`ProviderLoop.superviseServingAuthorization`) only: the coordinator owns
+/// routing and authorization.
 public enum ServingReadiness {
     public enum Verdict: Equatable, Sendable {
         /// The coordinator currently authorizes this connection, or routed it

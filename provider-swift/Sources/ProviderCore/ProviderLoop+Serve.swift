@@ -427,6 +427,8 @@ extension ProviderLoop {
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
                 case .inferenceRequest:
+                    // Here, not in the work reader: on arrival, in order with
+                    // the trust statuses `ServingReadiness` compares it to.
                     noteCoordinatorRequest()
                 default:
                     break

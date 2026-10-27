@@ -57,17 +57,19 @@ Before tagging `v0.10.4`:
 
 Roll out in this order; each step is a separate approval:
 
-1. Before the tag, deploy a `darkbloom-platform` coordinator that includes
-   [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
+1. Shortly before the tag, deploy a `darkbloom-platform` coordinator that
+   includes [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
    [#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and
    [#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541). #516's
    prompt sidecar plans a Qwen JSON `response_format` without thinking, as
    0.10.4 renders it. While a provider and the coordinator disagree, that
-   provider's Qwen JSON requests without a thinking control get cache receipts
-   that fail with `prompt_anchor_mismatch` and lose cache affinity; serving is
-   unaffected. #491 repeats each refusal every 5 seconds and #541 tells a
-   legacy Mac when its first passing challenge authorizes it; 0.10.4's
-   `Traffic:` line and re-registration act only on that current evidence.
+   provider's Qwen JSON requests without a thinking control fail their cache
+   receipts with `prompt_anchor_mismatch`, and each failure quarantines its
+   cache affinity for the whole model for up to 10 minutes; serving is
+   unaffected. #491 repeats a refusal every 5 seconds while App Attest serving
+   is on, and #541 tells a legacy Mac when its first passing challenge
+   authorizes it; 0.10.4's `Traffic:` line and re-registration act only on
+   that current evidence.
 2. Tag `v0.10.4` ([step 4](#4-tag-and-push-production-source)).
 3. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets
@@ -75,17 +77,16 @@ Roll out in this order; each step is a separate approval:
    [`server.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/coordinator/api/server.go)
    in the same change and adds the revision row to its
    [provider-contract reference](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/docs/reference/provider-contracts.md).
-   Only `contracts/provider/ProviderCore.swift` should change: the prompt
-   vectors are unchanged since `a8556957`, the revision the platform already
-   pins. That fallback constant does not gate publication.
+   Of the snapshotted inputs, only `contracts/provider/ProviderCore.swift`
+   should change: the prompt vectors are unchanged since `a8556957`, the
+   revision the platform already pins. `LatestProviderVersion` is a fallback
+   and does not gate publication.
 
 No provider-version floor is needed. Coordinators send forced `tool_choice` only
 to providers that advertise it, and only 0.10.4 providers advertise it for those
 four models. The add-on hold's coordinator side,
 [darkbloom-platform#514](https://github.com/Layr-Labs/darkbloom-platform/pull/514),
-is already in production. A platform change that pushes `trust_status` when
-legacy (MDM) authorization starts is in progress; recheck its state before
-tagging.
+is already in production.
 
 0.10.2's remaining enablement steps do not wait for this tag and still apply;
 each is a separate approval:
@@ -106,8 +107,10 @@ Platform evidence, inspected on 2026-10-27 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `2acffb5c`, which includes darkbloom-platform#514 and #464's `0.10.2` logprobs floors but not #516 | `/health` `build_commit`; [`modelarch/logprobs.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`); #514 merged as `6259c9dc`, #516 as `5a779a11` |
+| Production runs platform `master` `2acffb5c`, which includes darkbloom-platform#514 and #464's `0.10.2` logprobs floors but not #516, #491 or #541 | `/health` `build_commit`; [`modelarch/logprobs.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`); #514 merged as `6259c9dc`, #516 as `5a779a11`, #491 as `809d2366` and #541 as `6beb8514` |
 | #516 plans a Qwen JSON `response_format` without thinking | [`normalize.rs` at `5a779a11`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/normalize.rs) (`template_additional_context`) and [`response_format.rs`](https://github.com/Layr-Labs/darkbloom-platform/blob/5a779a113b3874bf06f597f6c4107a4d08103a6f/coordinator/promptsidecar/src/response_format.rs) (`requires_json_output`) |
+| A `prompt_anchor_mismatch` quarantines the provider's cache capability for that model: 60 s, doubling on repeats up to 10 min | [`registry/cache_quarantine.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/cache_quarantine.go) (`CacheQuarantineCommit.Apply`) and [`cachetracker/proofs.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/internal/registry/cachetracker/proofs.go) (`ProofFenceBase`, `ProofFenceMax`) |
+| #491 repeats an unauthorized connection's `trust_status` every 5 s while App Attest serving is on; #541 sends one when a verdict changes its `authorization.path` | [`serving_diagnostic.go` at `6beb8514`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/appattest/service/serving_diagnostic.go) (`startUnauthorizedStatusRefresh`) and [`trust/status.go`](https://github.com/Layr-Labs/darkbloom-platform/blob/6beb851488e08b3fc950b46f5002a502c4fcc9d4/coordinator/api/provider/trust/status.go) (`notifyServingAuthorizationChange`) |
 | The provider-contract snapshot pins d-inference `a8556957`, and its 34 inputs equal those of this preparation except `ProviderCore.swift` | [`contracts/provider/manifest.json` at `5ba280d8`](https://github.com/Layr-Labs/darkbloom-platform/blob/5ba280d89aa5e9bd4fbf05e0dfa848059cd3b585/contracts/provider/manifest.json) (`source_revision`) |
 | Forced tool choice goes only to advertising providers | [`registry/tool_constraints.go` at `2acffb5c`](https://github.com/Layr-Labs/darkbloom-platform/blob/2acffb5c301547b085b846adbc2a3fed95fafb2c/coordinator/registry/tool_constraints.go) (`providerSupportsToolConstraintLocked`) |
 | A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |

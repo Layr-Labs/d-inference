@@ -1156,8 +1156,8 @@ drift correction for the coordinator's ledger, not reservations.
 ## Coordinator → provider
 
 The Go side of the member fields above and of `cluster_member_accepted` is in
-`Layr-Labs/darkbloom-platform`; a `coordinator/` path named for them on this
-page is a file in that repository.
+`Layr-Labs/darkbloom-platform`; a `darkbloom-platform:coordinator/…` path named
+for them on this page is a file in that repository.
 
 ### `cluster_member_accepted`
 

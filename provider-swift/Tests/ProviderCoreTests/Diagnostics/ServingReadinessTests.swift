@@ -61,6 +61,33 @@ import Testing
             trustLevel: "self_signed", status: "online", reason: "SE attestation verified", receivedAt: now)), now: now) == nil)
     }
 
+    /// An add-on hold keeps the connection but leaves routing on purpose, and
+    /// `status` prints the hold on its own line. Its authorization is not why
+    /// no work arrives, so there is no verdict; a disconnect still is one.
+    @Test func aConnectionAnAddonHoldsHasNoVerdict() throws {
+        let holds = AddonHoldSnapshot(holds: [AddonHoldView(
+            holdId: "hold", addon: "io.darkbloom.sandbox", state: "held", sinceMs: 0,
+            leaseExpiresAtMs: 60_000, vmBytes: 8 << 30)])
+        var authorized = state(trust: trust(path: "app_attest", reason: "app_attest_verified", expiresAt: now + 600))
+        authorized.addonHold = holds
+        #expect(ServingReadiness.verdict(authorized, now: now) == nil)
+        var expired = state(trust: trust(path: "app_attest", reason: "app_attest_verified", expiresAt: now - 60))
+        expired.addonHold = holds
+        #expect(ServingReadiness.verdict(expired, now: now) == nil)
+        var unconfirmed = state(since: now - 600)
+        unconfirmed.addonHold = holds
+        #expect(ServingReadiness.verdict(unconfirmed, now: now) == nil)
+
+        var disconnected = state(connected: false, since: now - 120)
+        disconnected.addonHold = holds
+        #expect(blocked(ServingReadiness.verdict(disconnected, now: now))?.message
+            .hasPrefix("not connected to the coordinator") == true)
+        // A provider serving the add-on socket reports an empty snapshot when nothing holds it.
+        var free = state(trust: trust(path: "legacy", reason: "legacy_verification_active"))
+        free.addonHold = AddonHoldSnapshot(holds: [])
+        #expect(ServingReadiness.verdict(free, now: now) == .authorized("legacy (MDM) verification active"))
+    }
+
     @Test func disconnectedIsNotReceiving() throws {
         let advice = try #require(blocked(ServingReadiness.verdict(state(connected: false, since: now - 120), now: now)))
         #expect(advice.message.hasPrefix("not connected to the coordinator (disconnected 2m ago); "))

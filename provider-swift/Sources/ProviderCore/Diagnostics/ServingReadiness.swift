@@ -22,8 +22,9 @@ public enum ServingReadiness {
     public static let statusGraceSeconds: Double = 90
 
     /// Nil when the daemon predates connection reporting (a reader cannot
-    /// tell disconnected from connected) or the coordinator sends no
-    /// authorization verdict for a connection below hardware trust.
+    /// tell disconnected from connected), an add-on holds the connected Mac,
+    /// or the coordinator sends no authorization verdict for a connection
+    /// below hardware trust.
     public static func verdict(
         _ state: DaemonState, now: Double,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
@@ -38,6 +39,9 @@ public enum ServingReadiness {
                 message: "not connected to the coordinator (disconnected \(age(since: connection.since, now: now)) ago\(registrations)); the provider reconnects on its own",
                 fix: "check this Mac's network; if it stays disconnected, run `\(cli) restart`"))
         }
+        // A hold keeps the connection but leaves routing on purpose; its own
+        // status line explains the missing work, and authorization does not.
+        if state.addonHold?.holds.isEmpty == false { return nil }
         guard let trust = state.trust else {
             if now - connection.since < statusGraceSeconds {
                 return .pending("connected \(age(since: connection.since, now: now)) ago\(registrations); waiting for the coordinator's verdict")

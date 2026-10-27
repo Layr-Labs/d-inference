@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -80,7 +80,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
-| `coordinator traffic` | Whether the coordinator can route work to this connection: connected, a coordinator verdict received, and an App Attest lease or legacy authorization current. ✗ names the cause: disconnected, no verdict minutes after connecting, an expired lease, or the coordinator's reason for not authorizing it (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`) | Follow the printed fix. A locked login keychain, a stalled Apple call or a provider started outside the logged-in GUI session clears after logging in at the console or `darkbloom restart`; `app_attest_identity_required` needs `darkbloom login`; macOS 26 needs macOS 27 unless the Mac is in the legacy MDM cohort. See [connected but no traffic](#coordinator-connection) |
+| `coordinator traffic` | Whether the coordinator can route work to this connection: connected, a coordinator verdict received, and an App Attest lease or legacy authorization current. ✗ names the cause: disconnected, no verdict minutes after connecting, an expired lease, or the coordinator's reason for not authorizing it. Skipped while an add-on holds the connected Mac on purpose: `darkbloom status` prints `Not serving: held by add-on …` and `darkbloom addon` shows the hold (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`) | Follow the printed fix. A locked login keychain, a stalled Apple call or a provider started outside the logged-in GUI session clears after logging in at the console or `darkbloom restart`; `app_attest_identity_required` needs `darkbloom login`; macOS 26 needs macOS 27 unless the Mac is in the legacy MDM cohort. See [connected but no traffic](#coordinator-connection) |
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |

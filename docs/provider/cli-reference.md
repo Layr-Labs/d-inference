@@ -1033,8 +1033,9 @@ Output includes:
   lease, or the coordinator's reason, such as a locked login keychain, a stalled
   Apple call, App Attest unavailable on macOS 26 or outside a logged-in GUI
   session, or a connection without a linked account). Omitted while a drain line
-  is shown, for a stale snapshot, and for daemons that predate the
-  `coordinator_connection` state field
+  is shown, while an add-on holds a connected Mac (its
+  `Not serving: held by add-on` line says why no work arrives), for a stale
+  snapshot, and for daemons that predate the `coordinator_connection` state field
   (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`,
   `provider-swift/Sources/darkbloom/StatusCommand+Traffic.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed

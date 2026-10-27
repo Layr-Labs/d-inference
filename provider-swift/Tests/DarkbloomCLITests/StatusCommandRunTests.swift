@@ -177,4 +177,32 @@ struct StatusCommandRunTests {
         #expect(authorized.contains("\nTraffic: eligible for coordinator work (App Attest authorized until "))
         #expect(!authorized.contains("NOT receiving"))
     }
+
+    /// An add-on hold keeps the connection, still authorized, but takes the
+    /// Mac out of routing on purpose. Its `Not serving:` line says so; no
+    /// Traffic line contradicts it.
+    @Test("status shows a held provider's hold line and no traffic verdict")
+    func heldProviderHasNoTrafficVerdict() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            var state = try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(
+                    trustLevel: "self_signed", status: "online", reason: "app attest", receivedAt: now,
+                    authorization: CLICommandSandbox.appAttestAuthorization(now: now)))
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+            state.addonHold = AddonHoldSnapshot(holds: [AddonHoldView(
+                holdId: "hold", addon: "io.darkbloom.sandbox", state: "held",
+                sinceMs: Int64((now - 300) * 1_000), leaseExpiresAtMs: Int64((now + 60) * 1_000), vmBytes: 8 << 30)])
+            sandbox.writeState(state)
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.contains("\nNot serving: held by add-on io.darkbloom.sandbox: held since "))
+        #expect(!output.contains("Traffic:"))
+    }
 }

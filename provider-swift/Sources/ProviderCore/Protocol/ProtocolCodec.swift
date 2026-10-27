@@ -223,6 +223,11 @@ public enum ProviderProtocolCodec {
         if let models = register.toolConstraintModels, !models.isEmpty {
             try fields.append(("tool_constraint_models", encodeValue(models)))
         }
+        if let busy = register.busy {
+            try fields.append(("busy_reason", encodeValue(busy.reason)))
+            try fields.append(("busy_since_ms", encodeValue(busy.sinceMs)))
+            try appendIfPresent(busy.addon, key: "busy_addon", to: &fields)
+        }
 
         return makeObject(fields)
     }

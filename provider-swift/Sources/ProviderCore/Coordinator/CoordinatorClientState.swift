@@ -211,6 +211,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _busy: ProviderBusy? = nil
     private var _modelAdmissionDrains: Set<String> = []
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
@@ -303,6 +304,14 @@ public final class ProviderState: @unchecked Sendable {
     public var refusingNewWork: Bool {
         get { lock.withLock { _refusingNewWork } }
         set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// Why the provider refuses work while connected (an add-on hold). Every
+    /// heartbeat and registration copies it; the loop sets it before the
+    /// event heartbeat that announces the hold and clears it on release.
+    public var busy: ProviderBusy? {
+        get { lock.withLock { _busy } }
+        set { lock.withLock { _busy = newValue } }
     }
 
     /// Model admission mirrors are separate from whole-provider draining:

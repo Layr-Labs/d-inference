@@ -79,7 +79,9 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nTrust: hardware / online\n  → "))
         #expect(trusted.contains("\nWarm models: "))
         #expect(trusted.contains("\nNot loaded (loads on request): acme/Alpha-4bit\n"))
-        #expect(trusted.contains("\nRequests served: 12  |  tokens: 3400\n"))
+        #expect(trusted.contains("\nRequests served since the daemon started (1h1m ago): 12  |  output tokens: 3400\n"
+            + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
+        #expect(!trusted.contains("ended early"))
         #expect(trusted.contains("\nLast model-load error: acme/Alpha-4bit: weights unreadable\n"))
         #expect(trusted.contains("\nKV-backend guard: ACTIVE — packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) "))
         #expect(trusted.contains("requires paged and is refused while guarded"))
@@ -93,6 +95,49 @@ struct StatusCommandRunTests {
         #expect(!authorized.contains("\nTrust: "))
         #expect(!authorized.contains("KV-backend guard"))
         #expect(!authorized.contains("\nNot serving: "))
+    }
+
+    /// `Requests served` is this daemon session's own count, not the
+    /// coordinator's paid jobs: it resets with the daemon, counts output
+    /// tokens only, and includes requests that ended early on a cancel, which
+    /// the coordinator may not pay for. The early-end count is patched into
+    /// the state file under the key the daemon writes.
+    @Test("status scopes requests served to the daemon session and separates those that ended early")
+    func servedRequestsAreScopedToTheSession() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let arguments = ["status", "--config", sandbox.config.path]
+
+            sandbox.writeState(try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970))
+            print("== IDLE")
+            try await runCLICommand(Status.self, arguments)
+
+            sandbox.writeState(try CLICommandSandbox.runningState(
+                now: Date().timeIntervalSince1970,
+                stats: .init(requestsServed: 78, tokensGenerated: 84_000, usageGaps: 0)))
+            var state = try #require(
+                try JSONSerialization.jsonObject(with: Data(contentsOf: sandbox.stateFile)) as? [String: Any])
+            var stats = try #require(state["stats"] as? [String: Any])
+            stats["cancellations_partial_complete"] = 5
+            state["stats"] = stats
+            try JSONSerialization.data(withJSONObject: state).write(to: sandbox.stateFile)
+            print("== SERVED")
+            try await runCLICommand(Status.self, arguments)
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        let idle = try #require(outputSection(output, from: "== IDLE", to: "== SERVED"))
+        #expect(idle.contains("\nRequests served since the daemon started (1h1m ago): 0  |  output tokens: 0\n"))
+        #expect(!idle.contains("Earnings"))
+
+        let served = try #require(outputSection(output, from: "== SERVED", to: "== END"))
+        #expect(served.contains("\nRequests served since the daemon started (1h1m ago): 78  |  output tokens: 84000\n"
+            + "  5 of them ended early on a coordinator cancel or a dropped connection and may be unpaid.\n"
+            + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
     }
 
     /// An interrupted or timed-out `darkbloom restart` leaves the old process

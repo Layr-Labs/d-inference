@@ -2,7 +2,7 @@
 
 > Last updated: 2026-10-27
 
-Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
+Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
 Never point tests at production or overwrite a running provider's state.
 
@@ -967,11 +967,10 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
-The retained console tests still read
-`coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
-`coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,
-not a retained coordinator implementation/test suite. Preserve agreement with the
-provider resource copies and run each implementation's checks in its owner repo.
+darkbloom-platform keeps byte-identical copies of the provider's
+`paged_footprint_wire.json` and `process_memory_wire.json` for its own
+coordinator and console tests. Coordinate fixture changes with the platform and
+run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
 
@@ -1080,8 +1079,8 @@ read-only permissions, and keeps release workflows on literal Blacksmith
 runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
-release/model publication, console packaging and fixture mappings. Historical
-links need exact provenance. Final full-tree lint needs intended additions/removals
+release/model publication and fixture mappings. Historical links need exact
+provenance. Final full-tree lint needs intended additions/removals
 staged because it enumerates tracked files; explicit paths can be checked earlier
 without the orphan pass. Neither replaces final staged full-tree validation.
 
@@ -1093,20 +1092,6 @@ checks. `SSDCheckpointMaintenanceEpochTests`, `SSDTrackedNativeRetryTests` and
 `SSDCacheEpochStoreRecoveryTests` cover encrypted accounting/reconciliation,
 real-completion fences and refusal/recovery. Permission cases require a non-root
 test user and only change temporary fixture directories.
-
-## Retained Console
-
-```bash
-make ui-install ui-lint ui-test ui-build
-```
-
-Vitest covers route handlers, validation, state and protocol fixtures. ESLint
-checks `src/`; the console lane and console-only pre-commit hook remain.
-The retained `next build` ignores TypeScript errors, so it does not replace
-lint, Vitest or the separate `npm run typecheck` diagnostic in `console-ui/`.
-Use isolated fixtures/services, never real accounts or billing credentials.
-See [console architecture](../architecture/components/console-ui.md);
-new console development remains platform-owned.
 
 ## Landing
 

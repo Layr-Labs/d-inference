@@ -1,8 +1,7 @@
 # Darkbloom Provider
 
 Darkbloom's Apple Silicon provider, native inference runtime integrations, and
-marketing site live here, alongside the retained console source snapshot and
-its existing build/test/hosting configuration. The provider runs models locally with MLX and can
+marketing site live here. The provider runs models locally with MLX and can
 connect to the Darkbloom network or serve a local OpenAI-compatible API.
 
 ## Repository Ownership
@@ -18,9 +17,8 @@ Darkbloom/
 Centralized backend, console and admin code belongs exclusively in
 [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d).
 Never implement, commit, push or upload new backend, console or admin code here.
-The existing `console-ui/` snapshot remains locally available; retaining it does
-not transfer new development ownership back from the platform. Device-local Swift APIs
-remain provider code. Check `git remote -v` and the intended diff before pushing.
+Device-local Swift APIs remain provider code. Check `git remote -v` and the
+intended diff before pushing.
 
 Source ownership does not grant deployment authority. Infrastructure, hosting
 and traffic changes require specific human approval. Release/model registration
@@ -48,7 +46,6 @@ Tool versions are in `mise.toml`; supported commands are in `Makefile`:
 mise install
 make provider-build
 make provider-test
-make ui-install ui-lint ui-test ui-build
 make landing
 make docs-check
 ```
@@ -67,15 +64,12 @@ evidence.
 | `provider-swift/` | CLI, on-device services, inference, security and tests |
 | `libs/` | Pinned native MLX dependencies |
 | `landing/` | Independent Next.js marketing site and its API routes |
-| `console-ui/` | Retained console source and build/test/hosting configuration; new development belongs to the platform |
-| `coordinator/tests/protocol/testdata/` | Retained console-test JSON fixtures only |
 | `fixtures/` | Public, revision-bound test inputs |
 | `scripts/` | Provider builds, native qualification, install and publication helpers |
 | `docs/` | Provider/native explanations, references, operations and historical evidence |
 
-See the [documentation index](docs/README.md) and retained
-[console architecture](docs/architecture/components/console-ui.md). Platform API and consumer guides
-are maintained in the [platform documentation](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
+See the [documentation index](docs/README.md). Console architecture, platform API
+and consumer guides are maintained in the [platform documentation](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
 Existing [changelog history](CHANGELOG.md) remains a record of work before and
 after the ownership split, not evidence of a new release or deployment.
 

@@ -16,11 +16,10 @@ git clone https://github.com/Layr-Labs/darkbloom-platform.git Darkbloom/darkbloo
 
 The coordinator/backend, Rust prompt sidecar, consumer console and internal admin
 development belongs exclusively in the platform repository. Never implement,
-commit, push or upload new backend, console or admin code here. The retained
-`console-ui/` snapshot and its existing build/test/hosting configuration do not
-change that ownership. Device-local Swift HTTP APIs are provider code, not
-the centralized backend. Check your remote, branch and intended diff before
-editing or pushing. See the [owner map](docs/developer/navigation.md).
+commit, push or upload new backend, console or admin code here. Device-local
+Swift HTTP APIs are provider code, not the centralized backend. Check your
+remote, branch and intended diff before editing or pushing. See the
+[owner map](docs/developer/navigation.md).
 
 The latest coordinator source is the default branch of
 https://github.com/Layr-Labs/darkbloom-platform. For coordinator diagnosis, agents
@@ -36,7 +35,6 @@ Install tools with `mise install`, initialize recursive submodules, and follow
 ```bash
 make provider-build
 make provider-test
-make ui-install ui-lint ui-test ui-build
 make landing
 make docs-impact-check BASE=origin/master
 make docs-check
@@ -54,8 +52,7 @@ are separate checks.
 Follow the clean-code, modularity, native safety and independent refactor-pass
 requirements in [AGENTS.md](AGENTS.md). Keep public contracts stable, helpers
 cohesive, errors actionable and resource ownership explicit. Swift has no
-repository-enforced formatter. Landing and the retained console use their own
-ESLint configurations; the existing pre-commit hook checks console TypeScript.
+repository-enforced formatter. Landing uses its own ESLint configuration.
 Do not include generated binaries, secrets or unrelated changes.
 
 Protocol, telemetry, model-manifest, memory-quotation and installer changes

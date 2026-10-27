@@ -670,7 +670,9 @@ turn is served with the prompt it shares with the previous turn as the
 repeated-prefix hint, as an agent loop's next turn would be. Per turn the
 report records TTFT, restored tokens, the gap from the last token to the
 terminal (which waits for checkpoint publication) and the files and bytes the
-complete-checkpoint store wrote. It fails only when a turn after the first
+complete-checkpoint store wrote, the delta files and the greedy output tokens;
+`DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` gives the complete-file
+baseline to compare against. It fails only when a turn after the first
 restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
 compare against the large-memory complete-checkpoint default. The timings need

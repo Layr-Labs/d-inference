@@ -682,6 +682,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000`; complete checkpoints on Macs with ≥ 48 GiB: `7168`, `15000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints apply the byte value as a payload cap and the time value as an estimated-read cap when capturing and reading (both defaults raised on large-memory Macs; an explicit value overrides both families); native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. Not forwarded to LaunchAgents, so installed daemons use the defaults. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | negative (`0`, `false`, `no`, `off`) disables | on | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) | Writes eligible native recurrent complete checkpoints as [deltas](ssd-kv-cache.md#delta-complete-checkpoints) of the restored file. Not forwarded to LaunchAgents. |
 
 ### Resident recurrent prefix cache
 

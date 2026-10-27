@@ -254,6 +254,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        /// Present while an add-on hold refuses work, so a fresh connection
+        /// is excluded from routing before its first heartbeat. Omitted
+        /// otherwise; older coordinators ignore it.
+        public var busy: ProviderBusy?
 
         public init(
             hardware: HardwareInfo,
@@ -287,7 +291,8 @@ public enum ProviderMessage: Sendable, Equatable {
             executionRole: ProviderExecutionRole = .solo,
             memberRegistrationNonce: String? = nil,
             clusterModels: [ModelInfo]? = nil,
-            clusterMembership: ClusterMembership? = nil
+            clusterMembership: ClusterMembership? = nil,
+            busy: ProviderBusy? = nil
         ) {
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
@@ -295,6 +300,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.clusterMembership = clusterMembership
             self.modelAutopilot = modelAutopilot
             self.autopilotInventory = autopilotInventory
+            self.busy = busy
             self.hardware = hardware
             self.models = models
             self.backend = backend
@@ -356,6 +362,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// how its data plane is protected (`cluster_session`); nil while the
         /// member runs no owner, and for every provider that is not a member.
         public var clusterSession: ClusterSessionStatus?
+        /// Why `status` is `draining` while an add-on holds the Mac
+        /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
+        public var busy: ProviderBusy?
 
         public init(
             status: ProviderStatus,
@@ -373,9 +382,11 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             idleUnloadMins: UInt64? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
-            clusterSession: ClusterSessionStatus? = nil
+            clusterSession: ClusterSessionStatus? = nil,
+            busy: ProviderBusy? = nil
         ) {
             self.clusterSession = clusterSession
+            self.busy = busy
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -962,6 +973,10 @@ extension ProviderMessage: Codable {
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
         case clusterSession = "cluster_session"
+        // Register + Heartbeat (add-on hold)
+        case busyReason = "busy_reason"
+        case busySinceMs = "busy_since_ms"
+        case busyAddon = "busy_addon"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -1086,6 +1101,7 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -1113,6 +1129,7 @@ extension ProviderMessage: Codable {
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
             try container.encodeIfPresent(h.clusterSession, forKey: .clusterSession)
+            try Self.encodeBusy(h.busy, into: &container)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1364,7 +1381,8 @@ extension ProviderMessage: Codable {
                 executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
                 memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
-                clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership)
+                clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .heartbeat:
@@ -1390,7 +1408,8 @@ extension ProviderMessage: Codable {
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
-                clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession)
+                clusterSession: try container.decodeIfPresent(ClusterSessionStatus.self, forKey: .clusterSession),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .serviceReservationReleased:

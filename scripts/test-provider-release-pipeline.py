@@ -285,7 +285,12 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
-        self.assertIn('runs-on: blacksmith-12vcpu-macos-27', WARM)
+        # Only PR warming may use a Darkbloom Sandbox; master and dispatched
+        # warming feed release builds and keep the literal Blacksmith runner.
+        self.assertIn("    runs-on: ${{ github.event_name == 'pull_request' && "
+                      "fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}\n", WARM)
+        self.assertIn("        warm macos_arm64 blacksmith-12vcpu-macos-27 "
+                      "${{ github.event_name == 'pull_request' && 2 || 0 }}\n", WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:

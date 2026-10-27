@@ -121,6 +121,7 @@ struct Status: AsyncParsableCommand {
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
+        if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
         if state.autopilotPhase != nil {
             let fresh = Autopilot.Status.snapshotIsFresh(state,
                 heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)

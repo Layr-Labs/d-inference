@@ -238,8 +238,10 @@ class WorkflowRoutingTests(unittest.TestCase):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
             self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
             self.assertIn("contents: read", jobs["changes"])
+            # Runner routing follows the classifier, so only selected lanes are requested.
+            self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
-                self.assertIn("    needs: changes\n", jobs[lane])
+                self.assertIn("    needs: [changes, route]\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())

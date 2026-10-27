@@ -2943,8 +2943,9 @@ struct EngineV2SeededSamplingTests {
     }
 }
 
-// Bounded metadata holdback now lives in MLXLMServer's canonical encoder;
-// EventBoundLogprobsTests covers overflow and request-local release there.
+// Bounded metadata holdback lives in MLXLMServer's canonical encoder
+// (EventBoundLogprobsTests). The relay channel cap that the GLM and Nemotron
+// paths still use is covered by EngineV2LogprobsChannelCapTests.
 
 // MARK: - Paged KV backend: capacity mapping, heartbeat bind, shared-gate skip
 

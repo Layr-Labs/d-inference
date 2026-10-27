@@ -6,9 +6,16 @@ extension SSDHybridCheckpointStore {
     // engine's import scratch and active destination are charged separately.
     static let ioScratchBytes = CBv2CompleteCheckpointManifest.maximumProviderScratchBytes
 
+    /// A chain restore also holds one decrypted chunk per additional file.
+    static func ioScratchBytes(files: Int) -> Int {
+        ioScratchBytes + (files - 1) * CBv2CompleteCheckpointManifest.maximumSegmentBytes
+    }
+
     struct ReadCandidate {
         let position: Int
         let tag: Data
+        /// Files read, root first, and their total bytes.
+        let chain: [Data]
         let fileBytes: Int
     }
 
@@ -24,12 +31,11 @@ extension SSDHybridCheckpointStore {
             if let beforePosition, position >= beforePosition { continue }
             guard position >= config.minEffectiveTokens else { break }
             let tag = lookupKeys.checkpointTag(chainHash: hash, cacheSalt: scope)
-            guard let size = index.freshFileBytes(
-                tag16: Data(tag.prefix(16)), now: now, ttlSeconds: config.ttlSeconds),
-                size <= fileCap,
-                SSDPrefixCachePolicy.estimatedStageMillis(bytes: size) <= config.maxStageMillis
+            guard let chain = index.chain(tag16: Data(tag.prefix(16)), now: now, ttlSeconds: config.ttlSeconds),
+                chain.bytes <= fileCap,
+                SSDPrefixCachePolicy.estimatedStageMillis(bytes: chain.bytes) <= config.maxStageMillis
             else { continue }
-            return ReadCandidate(position: position, tag: tag, fileBytes: size)
+            return ReadCandidate(position: position, tag: tag, chain: chain.tags, fileBytes: chain.bytes)
         }
         return nil
     }
@@ -144,10 +150,11 @@ extension SSDHybridCheckpointStore {
                 do { try budget.checkTime() } catch { return result(.skippedCapacity) }
             }
             let reservationKey = "ssd-complete:\(namespace):\(UUID().uuidString)"
-            if let kvBudget, !(await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(Self.ioScratchBytes))) {
+            let ioScratch = Self.ioScratchBytes(files: selected.chain.count)
+            if let kvBudget, !(await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(ioScratch))) {
                 return result(.skippedCapacity)
             }
-            let lease = SSDCheckpointStageReservation(key: reservationKey, bytes: Self.ioScratchBytes,
+            let lease = SSDCheckpointStageReservation(key: reservationKey, bytes: ioScratch,
                 budget: kvBudget, activity: activity, stats: statsBox, holdsIO: true)
             var transferred = false
             defer {

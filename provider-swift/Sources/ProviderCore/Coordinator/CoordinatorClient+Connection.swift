@@ -55,11 +55,9 @@ extension CoordinatorClient {
 
     // MARK: - Single Connection Session
 
-    private func connectAndRun() async throws {
-        guard let url = URL(string: config.url) else {
-            throw CoordinatorError.invalidURL(config.url)
-        }
-
+    /// Transport stack for one coordinator connection: TCP, TLS for a
+    /// `wss`/`https` URL, and the WebSocket protocol on top.
+    static func connectionParameters(for url: URL) -> NWParameters {
         // ws:// (integration tests) vs wss:// (production). The transport security
         // MUST match the URL scheme: pairing `.tcp` params with a wss URL makes the
         // WebSocket server-response validation fail.
@@ -97,12 +95,19 @@ extension CoordinatorClient {
         // headers), so there are none to forward via
         // `wsOptions.setAdditionalHeaders(...)` here.
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        return params
+    }
+
+    private func connectAndRun() async throws {
+        guard let url = URL(string: config.url) else {
+            throw CoordinatorError.invalidURL(config.url)
+        }
 
         // WebSocket REQUIRES a URL endpoint: Network.framework derives host, port,
         // AND the request path (e.g. /v1/providers/ws) from it. A `.hostPort`
         // endpoint drops the path, so the handshake would issue `GET / HTTP/1.1`
         // and the coordinator's WS route would reject it.
-        let connection = NWConnection(to: .url(url), using: params)
+        let connection = NWConnection(to: .url(url), using: Self.connectionParameters(for: url))
         self.nwConnection = connection
         self.appAttestResumeNonce = appAttestResumeResponder == nil ? nil
             : Data(Sodium().randomBytes.buf(length: 32)!).base64EncodedString()
@@ -148,56 +153,23 @@ extension CoordinatorClient {
 
         let logger = self.logger
 
-        // Wait for the handshake to complete (.ready). The one-shot handler set
-        // here is swapped for a persistent failure-forwarding handler the instant
-        // the connection is ready — done inside the `.ready` branch (serial on
-        // connectionQueue) so no post-ready state change slips through the gap
-        // between resuming the continuation and installing the persistent handler.
-        // Network.framework may deliver more than one state before the handler
-        // is replaced (a connection that goes `.waiting`, `.preparing`, then
-        // `.waiting` again): only the first terminal state resumes the wait.
-        let handshake = HandshakeResumption()
+        // Wait for the handshake to complete (.ready), bounded by the
+        // handshake deadline. The persistent failure-forwarding handler is
+        // installed inside the `.ready` callback (serial on connectionQueue) so
+        // no post-ready state change slips through the gap between resuming
+        // and installing it.
         noteMemberAttemptStarted()
-        do { try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready, .failed, .waiting, .cancelled:
-                    guard handshake.claim() else { return }
-                default: break
-                }
-                switch state {
-                case .ready:
-                    connection.stateUpdateHandler = { laterState in
-                        switch laterState {
-                        case .failed(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .waiting(let error):
-                            failureCont.yield(CoordinatorError.connectionClosed(error))
-                        case .cancelled:
-                            failureCont.yield(CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                        default:
-                            break
-                        }
+        do {
+            try await CoordinatorConnectionHandshake.start(
+                connection, on: connectionQueue, timeout: config.handshakeTimeout
+            ) {
+                connection.stateUpdateHandler = { laterState in
+                    if let error = CoordinatorError(terminalState: laterState) {
+                        failureCont.yield(error)
                     }
-                    cont.resume()
-                case .failed(let error):
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .waiting(let error):
-                    // Can't establish yet (DNS failure, connection refused, no
-                    // route). Don't sit in NWConnection's internal wait/retry —
-                    // surface it so the client's own backoff loop owns reconnect.
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(error))
-                case .cancelled:
-                    connection.stateUpdateHandler = nil
-                    cont.resume(throwing: CoordinatorError.connectionClosed(NWError.posix(.ECANCELED)))
-                default:
-                    break
                 }
             }
-            connection.start(queue: self.connectionQueue)
-        } } catch {
+        } catch {
             // Not reached at all: a waiting member says so instead of
             // reporting a role refusal (F11).
             noteMemberAttemptUnreachable(error)
@@ -517,11 +489,4 @@ extension CoordinatorClient {
         )
         logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
     }
-}
-
-/// The first terminal state of a connection's handshake, once.
-private final class HandshakeResumption: @unchecked Sendable {
-    private let lock = NSLock()
-    private var claimed = false
-    func claim() -> Bool { lock.withLock { if claimed { return false }; claimed = true; return true } }
 }

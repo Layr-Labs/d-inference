@@ -1,9 +1,11 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Byte-level JSON automaton for Flint `response_format` content. It plugs into
+// Byte-level JSON automaton for `response_format` content. It plugs into
 // FlintNativeProtocolBoundary's content phase: reasoning stays unconstrained,
 // and once `</think>` closes (or the model answers directly) the visible
-// content must be one JSON value of the compiled grammar.
+// content must be one JSON value of the compiled grammar. The grammar and
+// lexer are family-neutral: constrained Qwen answers reuse them through
+// JSONAnswerConstraint with their own forbidden markup.
 
 import Foundation
 
@@ -64,9 +66,15 @@ struct FlintJSONGrammar: Sendable {
         ["false", "null", "true"].map { Array($0.utf8) }, [Array("null".utf8)],
     ]
     private(set) var root = FlintJSONGrammar.anyObject
+    /// Spellings the answer can never contain, and the family that owns them.
+    private let forbiddenMarkup: [[UInt8]]
+    private let family: String
 
-    /// `nil` is `json_object`: any JSON object.
-    init(schema: ToolValueSchema?) throws {
+    /// `nil` is `json_object`: any JSON object. The family's protocol markup
+    /// stays impossible in the answer, so enum values containing it are refused.
+    init(schema: ToolValueSchema?, forbidding markup: [[UInt8]], family: String) throws {
+        forbiddenMarkup = markup
+        self.family = family
         if let schema { root = try add(schema) }
     }
 
@@ -120,10 +128,9 @@ struct FlintJSONGrammar: Sendable {
         guard !set.isEmpty else { throw ToolConstraintSchemaError.invalid("response_format enum admits no value") }
         // Protocol markup stays impossible in content, so such a value could
         // never be generated. Refuse it instead of dead-ending the sampler.
-        for spelling in set where FlintNativeProtocolBoundary.protocolMarkers.contains(where: {
-            Self.contains(spelling, $0)
-        }) {
-            throw ToolConstraintSchemaError.unsupported("response_format enum values cannot contain Flint protocol markup")
+        for spelling in set where forbiddenMarkup.contains(where: { Self.contains(spelling, $0) }) {
+            throw ToolConstraintSchemaError.unsupported(
+                "response_format enum values cannot contain \(family) protocol markup")
         }
         literalSets.append(set)
         return Node(kind: .literal, literals: Int32(literalSets.count - 1))
@@ -478,41 +485,5 @@ extension FlintNativeProtocolBoundary {
     /// vocabulary prunes whole token ranges at their first rejected byte.
     func searchesByteOrderedVocabulary(_ rules: Rules) -> Bool {
         rules.json != nil && (phase == .initial || phase == .content)
-    }
-}
-
-extension FlintNativeVocabulary {
-    /// Every non-stop token whose complete piece `consume` accepts from
-    /// `state`, in ascending token order.
-    func acceptedTokens<State>(from state: State, consume: (inout State, UInt8) -> Bool) -> [Int] {
-        var accepted: [Int] = []
-        collect(0, byteOrderedTokenIDs.count, depth: 0, state: state, consume: consume, into: &accepted)
-        return accepted.sorted()
-    }
-
-    /// Pieces in `lower..<upper` share their first `depth` bytes and are all
-    /// longer than `depth`, so their next bytes are sorted.
-    private func collect<State>(_ lower: Int, _ upper: Int, depth: Int, state: State,
-                                consume: (inout State, UInt8) -> Bool, into accepted: inout [Int]) {
-        var index = lower
-        while index < upper {
-            let byte = pieces[Int(byteOrderedTokenIDs[index])][depth]
-            var low = index + 1, high = upper
-            while low < high {
-                let middle = (low + high) / 2
-                if pieces[Int(byteOrderedTokenIDs[middle])][depth] == byte { low = middle + 1 } else { high = middle }
-            }
-            let end = low
-            var next = state
-            if consume(&next, byte) {
-                var rest = index
-                while rest < end, pieces[Int(byteOrderedTokenIDs[rest])].count == depth + 1 {
-                    accepted.append(Int(byteOrderedTokenIDs[rest]))
-                    rest += 1
-                }
-                if rest < end { collect(rest, end, depth: depth + 1, state: next, consume: consume, into: &accepted) }
-            }
-            index = end
-        }
     }
 }

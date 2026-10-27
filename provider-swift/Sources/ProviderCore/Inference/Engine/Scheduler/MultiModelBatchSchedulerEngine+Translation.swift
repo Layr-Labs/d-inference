@@ -26,6 +26,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     public let preserveThinking: Bool?
     public let clearThinking: Bool?
     public let promptDate: PromptRenderDate?
+    /// A positive OpenRouter `reasoning.max_tokens` budget. The typed request
+    /// drops it, so it is recovered from the raw body: a budget asks for
+    /// reasoning even without an explicit thinking switch.
+    public let reasoningBudgetTokens: Int?
     // Included in synthesized equality: refusal evidence cannot be erased by
     // comparing only the permissively decoded legacy control fields.
     var rawMiMoControls = MiMoV26RawControlEvidence()
@@ -38,18 +42,21 @@ public struct ChatTemplateControls: Sendable, Equatable {
         enableThinking: Bool? = nil,
         preserveThinking: Bool? = nil,
         clearThinking: Bool? = nil,
-        promptDate: PromptRenderDate? = nil
+        promptDate: PromptRenderDate? = nil,
+        reasoningBudgetTokens: Int? = nil
     ) {
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
         self.preserveThinking = preserveThinking
         self.clearThinking = clearThinking
         self.promptDate = promptDate
+        self.reasoningBudgetTokens = reasoningBudgetTokens
     }
 
     func withPromptDate(_ date: PromptRenderDate) -> Self {
         var copy = Self(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
-              preserveThinking: preserveThinking, clearThinking: clearThinking, promptDate: date)
+              preserveThinking: preserveThinking, clearThinking: clearThinking, promptDate: date,
+              reasoningBudgetTokens: reasoningBudgetTokens)
         copy.rawMiMoControls = rawMiMoControls
         copy.rawMiMoTools = rawMiMoTools
         copy.rawGLM5Controls = rawGLM5Controls
@@ -146,6 +153,18 @@ extension MultiModelBatchSchedulerEngine {
         } else if hasMedia && controls.enableThinking == nil && effort == nil {
             // Qwen templates default thinking on. Grounded media defaults off
             // only when the caller supplied no thinking control at all.
+            context["enable_thinking"] = false
+        } else if request.responseFormat?.requiresJSONOutput == true
+            && Qwen35TemplateFix.applies(to: fixContext)
+            && controls.enableThinking == nil && effort == nil
+            && controls.reasoningBudgetTokens == nil
+        {
+            // A JSON answer follows the reasoning block, and Qwen's default
+            // thinking routinely spends the caller's max_tokens before any
+            // JSON is written. JSON response formats therefore use the
+            // no-thinking prompt unless the caller supplied a thinking
+            // control or a reasoning budget. The coordinator prompt sidecar
+            // mirrors this rule.
             context["enable_thinking"] = false
         }
         if let preserveThinking = controls.preserveThinking {

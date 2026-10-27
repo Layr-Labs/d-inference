@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1956,6 +1956,19 @@ probe before forwarding model output. This matters for media because
 `templateAdditionalContext` defaults `enable_thinking` to false unless the
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker.
+
+The same default applies to a JSON `response_format` (`json_object` or
+`json_schema`) on the Qwen template family (`Qwen35TemplateFix.applies`).
+The answer follows the reasoning block, and Qwen's default thinking regularly
+spends the caller's `max_tokens` before any JSON is written. A nested
+`reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
+switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
+keeps the caller's choice. The family predicate also matches Qwen3.8
+Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
+the closed block. GLM5-Next, MiMo and Nemotron Super build their own template
+context, and Flint's template ignores the switch, so none of them changes.
+The coordinator prompt sidecar mirrors the rule so cache planning renders the
+same prompt; the public prompt vectors pin it for the Qwen-family JSON cases.
 
 A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
 no think marker also receives the empty closed block

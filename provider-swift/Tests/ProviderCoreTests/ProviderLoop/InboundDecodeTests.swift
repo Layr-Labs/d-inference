@@ -285,6 +285,22 @@ struct InboundDecodeTests {
         #expect(controls.preserveThinking == true)
     }
 
+    @Test("a positive reasoning.max_tokens budget is recovered from the raw body")
+    func reasoningBudgetExtracted() {
+        func budget(_ reasoning: String) -> Int? {
+            let json = #"{"model":"m","messages":[],"enable_thinking":true,"reasoning":"# + reasoning + "}"
+            let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
+            #expect(controls.enableThinking == true, "a malformed budget must not discard siblings")
+            return controls.reasoningBudgetTokens
+        }
+        #expect(budget(#"{"max_tokens":2048}"#) == 2048)
+        #expect(budget(#"{"effort":"high","max_tokens":1}"#) == 1)
+        for ignored in [#"{"max_tokens":0}"#, #"{"max_tokens":-5}"#, #"{"max_tokens":"2048"}"#,
+                        #"{"max_tokens":2.5}"#, #"{"enabled":true}"#, #""high""#, "null"] {
+            #expect(budget(ignored) == nil, "\(ignored)")
+        }
+    }
+
     @Test("one malformed template control does not discard the others")
     func malformedQwenTemplateControlIsIsolated() {
         let json = #"{"model":"m","messages":[],"reasoning_effort":3,"enable_thinking":true,"preserve_thinking":false}"#

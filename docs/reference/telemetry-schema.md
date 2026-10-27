@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -11,10 +11,10 @@ plain 404. What each live datum is and where it goes:
 [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md); design and failure modes:
 [`../architecture/telemetry.md`](../architecture/telemetry.md).
 
-The Swift implementation, retained TypeScript mirror and their fixture checks are
-local to this repository. Go references below identify external contracts;
-local checks do not execute the external Go implementation or certify its
-current live compatibility. Coordinate changes and record private qualification
+The Swift implementation and its fixture checks are local to this repository.
+Go and TypeScript references below identify external platform contracts; local
+checks do not execute those implementations or certify their current live
+compatibility. Coordinate changes and record private qualification
 separately, without introducing a backend build into the public provider suite.
 
 The terminal-profile [prediction decision fields](prediction-decision-telemetry.md)
@@ -105,7 +105,7 @@ Go/Swift profiler fixture. They do not add an event kind or a TS event field.
 | Go (canon) | [coordinator/protocol/telemetry.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/telemetry.go) | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
 | Go emitter | [coordinator/telemetry/emitter.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/telemetry/emitter.go) | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator`; Datadog is the sole durable sink |
 | Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | inert: `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
-| TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the no-op `console-ui/src/lib/telemetry.ts` facade |
+| TypeScript | [console-ui/src/lib/telemetry-types.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/telemetry-types.ts) | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the platform console's no-op [console-ui/src/lib/telemetry.ts](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/console-ui/src/lib/telemetry.ts) facade |
 
 ## Event fields
 

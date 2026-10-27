@@ -53,3 +53,4 @@ Release packaging and rollback are covered by the
 [provider release runbook](../docs/operations/provider-release.md).
 
 <!-- Darkbloom Sandboxes CI routing smoke test (draft PR, do not merge). -->
+<!-- run 2: verify the Linux runner image with python3 -->

@@ -2,9 +2,9 @@
 
 > Last updated: 2026-10-27
 
-Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
+Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
-Coordinator and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+Coordinator, console and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
 Pinned platform links on this page are immutable evidence snapshots, not claims
 about current platform behavior. For current settings and behavior, consult the
 latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
@@ -86,25 +86,6 @@ budget, the retained charge leaves none, so other loads are refused. A
 published GLM slot whose unload, eviction or shutdown cannot prove retirement
 stays in place: its KV claim is charged, its grant is frozen, eviction skips
 it and shutdown stays draining.
-
-## Console UI
-
-The retained console uses build-time public variables. Rebuild after changing
-them; never place private credentials in `NEXT_PUBLIC_*` values.
-
-| Variable | Default / behavior | Consumer |
-|---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | `https://api.darkbloom.dev` when missing or empty; server-side upstream for same-origin API routes | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`), `console-ui/src/lib/coordinator-url.ts` |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Missing or `placeholder` selects mock authentication; configure a real app for a hosted deployment | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`IS_PRIVY_CONFIGURED`) |
-| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | Built-in measurement ID when missing; empty string disables analytics | `console-ui/src/lib/google-analytics.ts` (`getGoogleAnalyticsMeasurementId`) |
-| `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Both required to enable Datadog RUM | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_DD_SITE` | `datadoghq.com` | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_DD_ENV` | `production` | `console-ui/src/components/DatadogRUM.tsx` |
-| `NEXT_PUBLIC_APP_VERSION` | `dev` | `console-ui/src/components/DatadogRUM.tsx` |
-
-The Settings API-example URL is a display preference, not an upstream routing
-override. Request headers, cookies and browser storage cannot choose the
-server's coordinator origin. See [console architecture](../architecture/components/console-ui.md#coordinator-url-resolution).
 
 ## Desktop app
 
@@ -691,7 +672,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000`; complete checkpoints on Macs with ≥ 48 GiB: `7168`, `15000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints apply the byte value as a payload cap and the time value as an estimated-read cap when capturing and reading (both defaults raised on large-memory Macs; an explicit value overrides both families); native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. Not forwarded to LaunchAgents, so installed daemons use the defaults. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | negative (`0`, `false`, `no`, `off`) disables | on | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) | Writes eligible native recurrent complete checkpoints as [deltas](ssd-kv-cache.md#delta-complete-checkpoints) of the restored file. Not forwarded to LaunchAgents. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | negative (`0`, `false`, `no`, `off`) disables | on | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) | Writes eligible native recurrent complete checkpoints as [deltas](ssd-kv-cache.md#delta-complete-checkpoints) of the restored file. Forwarded to the launchd provider job. |
 
 ### Resident recurrent prefix cache
 

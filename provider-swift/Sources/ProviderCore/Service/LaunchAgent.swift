@@ -345,6 +345,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_MIMO_COMPLETE_PREFIX`: model-scoped SSD prefix caching is
     /// on by default for the supported MiMo identities; preserve its opt-out
     /// in the provider job independently of the global cache kill switch.
+    /// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`: eligible complete
+    /// checkpoints are written as deltas by default; the rollback to complete
+    /// files must reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
@@ -385,6 +388,7 @@ public enum LaunchAgent: Sendable {
         MiMoV26WiredResidency.environmentFlag,
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
+        SSDPrefixCachePolicy.incrementalCheckpointsFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         PromptTokenCachePolicy.environmentKey,

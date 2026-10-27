@@ -1,11 +1,10 @@
-# Build The Provider, Retained Console And Landing
+# Build The Provider And Landing
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 Build the provider, its source-matched native resources, and the independent
-landing site from this repository. The existing console snapshot and its build,
-lint, test and hosting configuration remain here; new console development belongs
-to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+landing site from this repository. Backend, sidecar, console and admin builds
+belong to the sibling platform repository.
 
 
 For the Bonsai 9B request-generation regression, build the control-only
@@ -60,7 +59,6 @@ focused suites and their scope are listed in [the test guide](test.md#prerequisi
 
 ```bash
 make provider-build
-make ui-install ui-build
 make landing-install landing-build
 ```
 
@@ -231,7 +229,7 @@ checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>'
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `ci.yml` | `release-integrity`, `docs`, `lint-console` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -351,21 +349,6 @@ to match the release environment, plus all four markers:
 installer/updater launches. Callback completion and expiry use no Apple service
 or Keychain item; this linked-binary smoke is not physical Apple qualification.
 
-## Retained Console
-
-`make ui-install` installs the console dependencies and `make ui-build` runs its
-Next.js production build. For local preview, run `npm run dev` in `console-ui/`.
-The existing `ui-lint`, `ui-test` and aggregate `ui` targets remain available,
-along with the console CI lane and console-only pre-commit lint hook.
-
-The console uses `console-ui/` as its hosting project root and requires a Next.js
-server for same-origin `/api/*` routes, not static export. Existing
-`console-ui/vercel.json` hosting configuration remains in place. Configure the
-build-time public variables in the [configuration reference](../reference/configuration.md#console-ui)
-and use a real Privy app for a hosted deployment; missing/placeholder Privy
-configuration selects mock authentication. See [console architecture](../architecture/components/console-ui.md).
-Retaining source or running a build does not authorize hosting or traffic changes.
-
 ## Verify
 
 For changes to the trusted PR reviewer, no provider build is required. Run the
@@ -413,7 +396,7 @@ That pinned reference is historical context, not current backend source authorit
 
 Use source-matched submodules, the documented Xcode SDK and fresh resources when
 diagnosing native failures. Preserve cache identity checks; do not bypass them
-to reuse incompatible artifacts. Run `make clean` only when its provider/console/landing
+to reuse incompatible artifacts. Run `make clean` only when its provider/landing
 artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.

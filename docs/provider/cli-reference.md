@@ -1113,14 +1113,24 @@ Output includes:
   holds with each hold's UTC expiry and time left. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
-- `Traffic:` whether the coordinator can route work to this connection. `eligible
-  for coordinator work` names the App Attest lease or legacy verification;
-  `NOT receiving coordinator work:` names the cause with a `→ fix:` line
-  (disconnected, with how long the connection has been down across failed
-  reconnect attempts, no coordinator verdict 90 seconds after connecting, an expired
-  lease, or the coordinator's reason, such as a locked login keychain, a stalled
-  Apple call, App Attest unavailable on macOS 26 or outside a logged-in GUI
-  session, or a connection without a linked account). Omitted while a drain line
+- `Traffic:` whether the coordinator can route work to this connection, judged
+  from current evidence only; the provider re-registers on the same verdict.
+  `eligible for coordinator work` names the App Attest lease or legacy
+  verification, or a request the coordinator routed after its latest status
+  (`received a coordinator request … ago`; state field
+  `coordinator_connection.last_request_at`). `not yet eligible` covers the first
+  90 seconds after connecting (`statusGraceSeconds`) while the coordinator has
+  sent no status or one that does not authorize the connection yet.
+  `NOT receiving coordinator work:` names the cause with a `→ fix:` line:
+  disconnected, with how long the connection has been down across failed
+  reconnect attempts; no coordinator status 90 seconds after connecting; an
+  `untrusted` or `offline` status; an expired lease; or a refusal received in the
+  last 60 seconds (`refusalMaxAge`) with the coordinator's reason, such as a
+  locked login keychain, a stalled Apple call, App Attest unavailable on macOS 26
+  or outside a logged-in GUI session, or a connection without a linked account.
+  An older refusal reads `unconfirmed`, with its age and reason and no fix: the
+  current coordinator sends no status when legacy verification authorizes a
+  connection after the refusal it sends at registration. Omitted while a drain line
   is shown, while an add-on holds a connected Mac (its
   `Not serving: held by add-on` line says why no work arrives), for a stale
   snapshot, and for daemons that predate the `coordinator_connection` state field
@@ -2044,6 +2054,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |

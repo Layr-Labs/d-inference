@@ -46,10 +46,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Only pull-request warming may use Darkbloom Sandboxes. Master and dispatched
+  # runs warm the caches that release builds restore, so they keep Blacksmith.
+  route:
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        warm macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: blacksmith-12vcpu-macos-27
+    needs: route
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON(needs.route.outputs.routes)['warm'] || 'blacksmith-12vcpu-macos-27' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false

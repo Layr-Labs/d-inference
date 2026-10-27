@@ -202,7 +202,9 @@ After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
-not seed `master`.
+not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
+[CI runner routing](../developer/build.md#ci-runner-routing); `master` and
+dispatched runs always use these Blacksmith runners.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a

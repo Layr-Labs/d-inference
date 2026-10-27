@@ -5,7 +5,7 @@ import MLXLMCommon
 
 /// Byte-level pieces, never independently UTF-8 decoded payload tokens. A
 /// multi-byte character may span tokens; ASCII framing still remains exact.
-final class FlintNativeVocabulary: Sendable {
+final class FlintNativeVocabulary: ByteOrderedPieceVocabulary, Sendable {
     static let markers: [(String, Int)] = [
         ("<|begin_of_text|>", 150000), ("<|end_of_text|>", 150001),
         ("<|system|>", 150002), ("<|user|>", 150003), ("<|assistant|>", 150004),
@@ -30,10 +30,12 @@ final class FlintNativeVocabulary: Sendable {
     let byFirstByte: [[Int]]
     private let longestFirst: [Int]
 
-    private static let cache = Cache()
+    private static let cache = TokenizerVocabularyCache<Set<Int>, FlintNativeVocabulary>(capacity: 4)
 
     static func cached(for handle: TokenizerHandle, stopTokenIDs: Set<Int>) throws -> FlintNativeVocabulary {
-        try cache.get(handle, stops: stopTokenIDs)
+        try cache.value(for: handle, key: stopTokenIDs) {
+            try FlintNativeVocabulary(tokenizer: handle.inner, stopTokenIDs: stopTokenIDs)
+        }
     }
 
     convenience init(tokenizer: any MLXLMCommon.Tokenizer, stopTokenIDs: Set<Int>) throws {
@@ -98,51 +100,5 @@ final class FlintNativeVocabulary: Sendable {
         return oversized.isEmpty ? keyDelimiters : Array(Set(keyDelimiters).union(oversized))
     }
 
-    private static let byteDecoder: [Unicode.Scalar: UInt8] = {
-        var bytes = Array(33...126) + Array(161...172) + Array(174...255)
-        var scalars = bytes
-        var extra = 0
-        for byte in 0...255 where !bytes.contains(byte) {
-            bytes.append(byte); scalars.append(256 + extra); extra += 1
-        }
-        return Dictionary(uniqueKeysWithValues: zip(scalars, bytes).map {
-            (Unicode.Scalar($0.0)!, UInt8($0.1))
-        })
-    }()
-
-    static func bytes(_ raw: String) -> [UInt8]? {
-        var result = [UInt8]()
-        for scalar in raw.unicodeScalars {
-            guard let byte = byteDecoder[scalar] else { return nil }
-            result.append(byte)
-        }
-        return result
-    }
-
-    /// Cache ownership follows existing tokenizer handles, without retaining a
-    /// retired model. Four entries bound idle host memory; active requests own
-    /// their immutable vocabulary independently of eviction.
-    private final class Cache: @unchecked Sendable {
-        private struct Entry {
-            weak var owner: TokenizerHandle?
-            let stops: Set<Int>
-            let vocabulary: FlintNativeVocabulary
-        }
-        private let lock = NSLock()
-        private var entries: [Entry] = []
-
-        func get(_ handle: TokenizerHandle, stops: Set<Int>) throws -> FlintNativeVocabulary {
-            lock.lock(); defer { lock.unlock() }
-            entries.removeAll { $0.owner == nil }
-            if let index = entries.firstIndex(where: { $0.owner === handle && $0.stops == stops }) {
-                let entry = entries.remove(at: index)
-                entries.append(entry)
-                return entry.vocabulary
-            }
-            let vocabulary = try FlintNativeVocabulary(tokenizer: handle.inner, stopTokenIDs: stops)
-            if entries.count == 4 { entries.removeFirst() }
-            entries.append(.init(owner: handle, stops: stops, vocabulary: vocabulary))
-            return vocabulary
-        }
-    }
+    static func bytes(_ raw: String) -> [UInt8]? { ByteLevelBPE.bytes(raw) }
 }

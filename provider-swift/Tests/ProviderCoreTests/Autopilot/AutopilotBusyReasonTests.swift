@@ -14,7 +14,7 @@ struct AutopilotBusyReasonTests {
 
     @Test func wireVocabulariesAreStable() {
         #expect(ModelAutopilotBusyReason.allCases.map(\.rawValue) == [
-            "autopilot_operation", "shutting_down", "draining", "reconnect_after_retirement",
+            "autopilot_operation", "shutting_down", "addon_hold", "draining", "reconnect_after_retirement",
             "model_switch", "revision_activation", "revision_update", "startup_preload", "preload",
             "engine_recovery", "mtp_upgrade", "mtp_staging", "model_advertisement",
             "pending_advertisement", "load_gate", "model_loading", "reslice", "model_unloading",
@@ -215,6 +215,9 @@ extension ProviderLoop {
         switch reason {
         case .autopilotOperation: installAutopilotCommandForBusyTesting()
         case .shuttingDown: isShuttingDown = true
+        case .addonHold:
+            addonHolds.insert(AddonHold(addon: "busy-addon", vmBytes: 0, state: .held, sinceMs: 0, leaseSeconds: 30))
+            servingDrain.begin(.addonHold)
         case .draining: servingDrain.begin(.update)
         case .reconnectAfterRetirement: isReconnectingAfterRetirement = true
         case .modelSwitch: modelSwitchTask = Task { ProviderModelSwitchStatus() }
@@ -241,6 +244,9 @@ extension ProviderLoop {
         switch reason {
         case .autopilotOperation: autopilotCommand = nil
         case .shuttingDown: isShuttingDown = false
+        case .addonHold:
+            for hold in addonHolds.sorted { addonHolds.end(holdID: hold.holdID, as: .released) }
+            servingDrain.resumeAddonHold()
         case .draining: servingDrain.resumeUpdate()
         case .reconnectAfterRetirement: isReconnectingAfterRetirement = false
         case .modelSwitch: modelSwitchTask = nil

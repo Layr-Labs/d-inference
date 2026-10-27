@@ -481,6 +481,25 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
     internal var servingDrain = ProviderDrain()
+    /// Add-on holds (`ProviderLoop+AddonHold`): active holds and recent
+    /// outcomes, the drain-and-unload driver, the lease monitor and the local
+    /// socket. `addonHoldPaths` stays nil when no add-on service runs.
+    internal var addonHolds = AddonHoldBook()
+    internal var addonHoldTask: Task<Void, Never>?
+    internal var addonHoldGeneration: UInt64 = 0
+    internal var addonHoldMonitorTask: Task<Void, Never>?
+    internal var addonIPCServer: AddonIPCServer?
+    internal var addonHoldPaths: AddonHoldPaths?
+    /// Test seams: isolated paths, a peer check, a wall clock and the drain
+    /// and settle bounds.
+    internal var addonHoldPathsOverride: AddonHoldPaths?
+    internal var addonPeerAuthenticatorOverride: AddonIPCServer.Authenticate?
+    internal var addonHoldNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    internal var addonHoldDrainTimeout: Duration = ProviderLoop.addonHoldDrainTimeoutDefault
+    internal var addonHoldSettleTimeout: Duration = ProviderLoop.addonHoldSettleTimeoutDefault
+    /// Internal, nil in production: suspends the drain bound's cancellation
+    /// pass where a release can interleave with it.
+    internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?

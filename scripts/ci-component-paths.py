@@ -13,6 +13,7 @@ import subprocess
 COMPONENTS = ("provider", "console")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
+    ".github/workflows/darkbloom-route.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (

@@ -12,7 +12,8 @@ extension ProviderLoop {
         switch reason {
         case .autopilotOperation: return false
         case .shuttingDown: return isShuttingDown
-        case .draining: return isDraining
+        case .addonHold: return addonHoldActive
+        case .draining: return isDraining && servingDrain.owner != .addonHold
         case .reconnectAfterRetirement: return isReconnectingAfterRetirement
         case .modelSwitch: return modelSwitchTask != nil
         case .revisionActivation: return modelRevisionActivationID != nil

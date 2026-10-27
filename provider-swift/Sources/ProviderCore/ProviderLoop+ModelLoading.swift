@@ -1190,8 +1190,9 @@ extension ProviderLoop {
         // A NON-shutdown unload (idle timeout, eviction, retirement) drops the
         // model from the persisted serving set. Shutdown teardown skips this on
         // purpose: a stop/update/restart must remember what was being served so
-        // the next boot's startup preload can re-warm it.
-        if !isShuttingDown {
+        // the next boot's startup preload can re-warm it. An add-on hold's
+        // temporary unload keeps the set for the same reason.
+        if !isShuttingDown && servingDrain.owner != .addonHold {
             persistLoadedModelSet()
         }
         await updateAggregateCapacity()

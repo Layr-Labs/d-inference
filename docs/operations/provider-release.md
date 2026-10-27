@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-25
+> Last updated: 2026-10-26
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,44 +23,36 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.2`, a patch release over `v0.10.1`.
-Nemotron 3.5 Super gains prefix caching through the coordinator: it advertises
-its prefix cache, sends cache receipts and reports cached prompt tokens, and it
-keeps its prefix reuse as encrypted SSD checkpoints by default. GLM-5.3-Flash
-captures checkpoints beside decoding requests on a 256-token grid and prices
-its measured restore time in ready receipts. Both models' SSD checkpoints are
-4-bit `balanced` snapshots by default; `native` keeps exact checkpoints, which
-for GLM-5.3-Flash use a half-size BF16 layout. Both SSD prefix-cache writers
-queue up to six writes on every model, and a replaced Secure Enclave key no
-longer disables the SSD cache. Nemotron 3.5 Super and GLM-5.3-Flash serve
-logprobs under one contract once each model's catalog row lists them.
-GLM-5.3-Flash accepts OpenRouter's `reasoning.context`, `reasoning.mode` and
-hidden reasoning and Anthropic's `thinking` object. It also serves
-structured-output schemas outside its grammar subset, a JSON `response_format`
-beside tools, tool results whose `name` differs from the call and legacy
-`function_call` histories, and MiMo-V2.6-Flash serves tool results whose `name`
-differs; 0.10.1 refuses each with 400. `darkbloom logs` names the reason for
-each refusal before inference and for client errors found while a
-GLM-5.3-Flash prompt is prepared, and load refusals and `darkbloom status`
-explain the memory a load cannot reclaim: Autopilot placement holds, work in
-flight and models served outside the enabled model filter. Decoding is
-faster: Super's first token no longer stalls near the FP8 eager bound, Super
-speculates for sampled requests and tapers its draft depth on an M5, both
-models keep decoding while another request prefills, and GLM-5.3-Flash decodes
-faster at long context and speculates for two concurrent requests. The MLX
-stack moves to the 2026-10-22 upstream sync, so the release metallib changes.
-See the [`v0.10.2` changelog entry](../../CHANGELOG.md) for the full scope.
+`ProviderCore.version` is prepared as `0.10.3`, a patch release over `v0.10.2`
+that fixes one crash. On Macs with an M5 or newer GPU, 0.10.2 exits with
+`Trace/BPT trap: 5` when one attention call covers at least 1,024 prompt tokens
+on a model with 256- or 512-wide attention heads: Gemma 4 26B, Qwen3.5-9B,
+Qwen3.5-35B, Qwen3.6-35B and Qwen3.8-27B. MLX compiles the
+`attention_nax_dsplit` kernel at runtime on these GPUs, and the upstream MLX
+merge in 0.10.2 passed it a value head-dim argument it does not take, so the
+compile fails and MLX's error stops the provider. `libs/mlx-swift` moves from
+`eedca444` to `4926d3d9`, and `libs/mlx` and the nested `mlx` move from
+`ff4bb35b` to `31f550af`, which corrects the kernel's arguments;
+`libs/mlx-swift-lm` stays at `aee6ebb6`. Nothing else changes: 0.10.2's scope
+and the enablement steps below still apply. See the
+[`v0.10.3` changelog entry](../../CHANGELOG.md).
 
-Before tagging `v0.10.2`:
+Before tagging `v0.10.3`:
 
-- Confirm that the tagged commit pins `libs/mlx-swift-lm` to a commit on SDK
-  `main`. d-inference#1592 pins `aee6ebb6`, the head of the SDK set
-  `release/sdk-0.10.2-final`: SDK `main` with
+- Confirm that the tagged commit pins `libs/mlx-swift` to `4926d3d9`
+  (mlx-swift branch `hotfix/0.10.2-jit-nax-dsplit`) and `libs/mlx` and the
+  nested `mlx` to `31f550af` (mlx branch `hotfix/0.10.2-jit-nax-dsplit`), with
+  `libs/mlx-swift-lm` still at `aee6ebb6`. Keep both hotfix branches:
+  Layr-Labs/mlx#48 brought the fix to mlx `main` as a squash commit, so the mlx
+  branch is the only ref that holds `31f550af`.
+- Confirm that the tagged commit still pins `libs/mlx-swift-lm` to a commit on
+  SDK `main`; the SDK pin is unchanged from 0.10.2. d-inference#1592 pins
+  `aee6ebb6`, the head of the SDK set `release/sdk-0.10.2-final`: SDK `main` with
   [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
   plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
   head, and #1592 and then #1603 were squash-merged with no re-pin.
-- Confirm that the changelog's SDK note matches that pin, including every change
-  that SDK `main` gained after `6148b6da`.
+- Confirm that the `v0.10.2` changelog's SDK note matches that unchanged pin,
+  including every change that SDK `main` gained after `6148b6da`.
 
 Enable the new behaviour in this order; each step is a separate approval, and
 only the last waits for the tag:
@@ -69,32 +61,35 @@ only the last waits for the tag:
    [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464)
    before any catalog row lists `logprobs` for GLM-5.3-Flash or Nemotron 3.5
    Super. Its floors send a logprob request on either model only to providers
-   on `0.10.2` or later.
+   on `0.10.2` or later. Done: production has run platform `499842dd` since
+   2026-10-26.
 2. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. This
    step does not depend on this release: GLM's SSD reuse was qualified on a
    signed `0.10.1` provider, and the coordinator must include request
    normalization v9.
-3. After the fleet converges on `0.10.2`, list `logprobs` in GLM-5.3-Flash's
-   catalog row. Once a signed `0.10.2` build also restores Nemotron 3.5 Super's
-   SSD checkpoints after a restart, add Super's tuple to the allowlist and list
-   `logprobs` in Super's catalog row.
+3. After the fleet converges on `0.10.3` (0.10.2 crashes on M5 Macs), list
+   `logprobs` in GLM-5.3-Flash's catalog row. Once a signed `0.10.3` build also
+   restores Nemotron 3.5 Super's SSD checkpoints after a restart, add Super's
+   tuple to the allowlist and list `logprobs` in Super's catalog row.
 
 After the tag, the platform refreshes its provider-contract snapshot from the
-tagged commit and sets `LatestProviderVersion` to `0.10.2` in the same change;
+tagged commit and sets `LatestProviderVersion` to `0.10.3` in the same change;
 that fallback constant does not gate publication. Catalog changes, allowlist
 changes and model registration are separate approvals. This preparation does
 not tag, register, upload, deploy or enable anything.
 
-Platform evidence, inspected on 2026-10-25 (recheck before tagging):
+Platform evidence, inspected on 2026-10-26 (recheck before tagging):
 
 | Claim | Source |
 |---|---|
-| Production runs platform `master` `7bf80fdd`, which has darkbloom-platform#411's catalog logprobs gate and request normalization v9 but no per-version logprobs floor | `/health` `build_commit`; [`modelarch/logprobs.go` at `7bf80fdd`](https://github.com/Layr-Labs/darkbloom-platform/blob/7bf80fdd3fd679df0a686773221be8fdf69edc1e/coordinator/internal/modelarch/logprobs.go) (`LogprobsNeedCatalogCapability` only) |
-| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super (provisional until this release) | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| Production runs platform `master` `499842dd`, which includes darkbloom-platform#464's per-version logprobs floors | `/health` `build_commit`; [`modelarch/logprobs.go` at `499842dd`](https://github.com/Layr-Labs/darkbloom-platform/blob/499842ddea2506de3a60f69c6658b2619745c4a4/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
 | A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
 | `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
 
-`v0.10.1` was [published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
+`v0.10.2` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
+from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
+[published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
 from `9034a5a0f3526dec83ab6384e5264db595cb7549`, `v0.10.0` was
 [published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
 from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, and `v0.9.22` was
@@ -198,7 +193,9 @@ After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
-not seed `master`.
+not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
+[CI runner routing](../developer/build.md#ci-runner-routing); `master` and
+dispatched runs always use these Blacksmith runners.
 
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,

@@ -84,7 +84,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
 | `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
-| `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
+| `usage reporting` | Requests completed since the daemon started whose usage chunk was missing (`usageGaps > 0`); the pass line counts this daemon's completions, not paid jobs | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
@@ -131,7 +131,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
 | Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
-| `stop`, `restart` or `start` says `Drain did not complete: 0 unfinished request(s), coordinator acknowledgement false`, or `The drained provider is still shutting down` | On a provider without the bounded drain: the coordinator connection was down (nothing could acknowledge the drain), or a model's native retirement never finished at shutdown. Current providers finish both: a drain without a session waits 10 seconds for it, and shutdown waits 15 seconds per unload (`ProviderLoop.performLifecycleDrain`, `ProviderLoop.unloadAllModelsForShutdown`) | On such a provider, `--force`; it interrupts only unfinished work, of which there is none in the first case |
+| `stop`, `restart` or `start` says `Drain did not complete: 0 unfinished request(s), coordinator acknowledgement false`, or `The drained provider is still shutting down` | On a provider without the bounded drain: the coordinator connection was down (nothing could acknowledge the drain), or a model's native retirement never finished at shutdown. Current providers finish both: a drain without a session needs no acknowledgement, and shutdown waits 15 seconds per unload (`ProviderLoop.performLifecycleDrain`, `ProviderLoop.unloadAllModelsForShutdown`) | On such a provider, `--force`; it interrupts only unfinished work, of which there is none in the first case |
 | Console shows the provider offline while `darkbloom status` prints `Daemon: running` and a `Not serving:` line | A `stop`, `restart`, `start` or `update` drain timed out, was interrupted (Ctrl+C), or drained without a relaunch. The old process stays alive and refuses new work (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`, `Status.lifecycleDrainLine`); the command also turned automatic restart off (`provider-swift/Sources/darkbloom/ServiceDrain.swift`, `ServiceDrain.prepare`) | `darkbloom restart` to serve again or `darkbloom stop` to stay stopped, each with a new drain deadline; add `--force` to interrupt unfinished work |
 
 ## Coordinator connection
@@ -142,6 +142,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
 | Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
+| `Requests served` in `status` is higher than the jobs in the console's Earnings | The status count covers only the time since the daemon started (the `… ago` on the line) and includes requests that ended early on a coordinator cancel or a dropped connection, which the coordinator may not pay for, and free [self-route](./self-route.md) requests to your own machine. Earnings lists only paid jobs (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`) | Compare Earnings over the same period; the machine card's Tokens/reqs add the status counters up across restarts |
 
 ## Updates
 
@@ -240,6 +241,13 @@ SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
 
+## Missing base reward
+
+`doctor` billing is local usage reporting, not a coordinator
+`model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
+(or amounts that match a smaller RAM class) while `doctor` is green, follow
+[Check a missing base reward](base-rewards.md).
+
 ## Collect a report
 
 ```bash
@@ -265,4 +273,5 @@ provider logs or `devicecheckd` evidence.
 - [CLI reference](./cli-reference.md) — flags, paths, runtime constants.
 - [Installation](./installation.md) · [Quickstart](./quickstart.md).
 - [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
+- [Check a missing base reward](./base-rewards.md) — green `doctor` vs missing `model=base_reward`.
 - [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

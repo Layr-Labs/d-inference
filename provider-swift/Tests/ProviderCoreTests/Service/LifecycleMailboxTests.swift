@@ -67,6 +67,19 @@ struct LifecycleMailboxTests {
         #expect(try JSONDecoder().decode(ProviderModelSwitchRequest.self, from: Data(contentsOf: target)) == request)
     }
 
+    @Test func aFIFOInPlaceOfARequestIsIgnoredWithoutBlocking() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let identity = try #require(ProcessIdentity.current())
+        let mailbox = LifecycleMailbox(identity: identity, directory: root)
+        let path = root.appendingPathComponent("\(identity.pid)-\(identity.startTimeMicros).request.json")
+        let read = try readFIFOWithoutWriter(at: path) { mailbox.readRequest() }
+        #expect(read.finished, "reading a FIFO mailbox request blocked until a writer appeared")
+        #expect(read.value.flatMap { $0 } == nil)
+    }
+
     @Test func rejectsSharedDirectoryAndInvalidDeadlines() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

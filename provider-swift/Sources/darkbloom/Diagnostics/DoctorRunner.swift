@@ -220,7 +220,7 @@ enum DoctorRunner {
                 let warm = WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel)
                 let mru = WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel)
                 out.append(Diagnostic(section: .runtime, name: "daemon connected", level: .pass,
-                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served.",
+                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served since the daemon started.",
                                       fix: nil))
             }
             if let err = state.lastModelLoadError {
@@ -238,7 +238,7 @@ enum DoctorRunner {
                                       fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them."))
             } else {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
-                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) tokens reported this session.",
+                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) output tokens completed since the daemon started, all with usage; the console's Earnings page lists the paid ones.",
                                       fix: nil))
             }
         }

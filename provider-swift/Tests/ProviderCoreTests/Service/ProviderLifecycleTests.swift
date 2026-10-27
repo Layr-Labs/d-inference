@@ -3,16 +3,26 @@ import Testing
 import ProviderAppAttest
 @testable import ProviderCore
 
+private func lifecycleHardware() -> HardwareInfo {
+    HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+        chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
+        cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
+}
+
 private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
-        chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
-        cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
     let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
-        hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), attestationSigner: nil)
+        hardware: lifecycleHardware(), models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), attestationSigner: nil)
     await loop.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     return (loop, root)
+}
+
+private func lifecycleClient(url: String, state: ProviderState) -> CoordinatorClient {
+    CoordinatorClient(
+        config: CoordinatorClientConfig(url: url, hardware: lifecycleHardware(), models: [],
+            backendName: "mlx-swift", heartbeatInterval: 60),
+        stats: AtomicProviderStats(), state: state, liveAPNsToken: { nil })
 }
 
 private extension ProviderLoop {
@@ -207,28 +217,6 @@ struct ProviderLifecycleTests {
         #expect(await !loop.appAttestStallRestartOwnsDrain)
     }
 
-    /// With the coordinator connection down, a disconnect has already
-    /// cancelled the accepted work and the outbound path buffers nothing, so
-    /// there is nothing left to acknowledge: a graceful stop or restart
-    /// finishes instead of leaving the service draining until `--force`.
-    @Test func aDrainWithTheCoordinatorConnectionDownFinishes() async throws {
-        let (loop, root) = try await lifecycleLoop()
-        defer { try? FileManager.default.removeItem(at: root) }
-        await loop.setCoordinatorClientForTesting(CoordinatorClient(config: .init(
-            url: "ws://unused.invalid/ws/provider",
-            hardware: HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
-                chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
-                cpuCores: .init(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546),
-            models: [], backendName: "mlx-swift", publicKey: "unused"),
-            stats: AtomicProviderStats(), state: ProviderState(), liveAPNsToken: { nil }))
-        let identity = try #require(ProcessIdentity.current())
-        let result = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 1))
-        #expect(result.outcome == .drained)
-        #expect(result.remaining == 0)
-        #expect(!result.coordinatorAcknowledged)
-        #expect(await loop.servingDrain.phase == .drained)
-    }
-
     /// A slot whose native retirement is unproven stays resident and
     /// unloading for the rest of the process (`GLM5NextRetirement`); nothing
     /// resumes a wait for it. Shutdown must still finish: process exit
@@ -264,5 +252,61 @@ struct ProviderLifecycleTests {
         #expect(await !loop.servingDrain.refusing)
         #expect(await loop.updatePhase == .idle)
         #expect(await loop.appAttestStallRetryDeferred)
+    }
+
+    /// A provider whose reconnect keeps failing (for example after a
+    /// coordinator restart) has a client but no registered session, so no
+    /// coordinator can ever acknowledge. `stop` must not require `--force`.
+    @Test func drainWithoutARegisteredCoordinatorSessionCompletes() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setCoordinatorClientForTesting(
+            lifecycleClient(url: "ws://127.0.0.1:0/unused", state: await loop.state))
+        let identity = try #require(ProcessIdentity.current())
+        let result = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 1))
+        #expect(result.outcome == .drained)
+        #expect(result.remaining == 0)
+        #expect(!result.coordinatorAcknowledged)
+        #expect(await loop.servingDrain.phase == .drained)
+    }
+
+    /// Losing the session waives only the acknowledgement: accepted work still
+    /// keeps the drain open, and a timeout leaves it in place.
+    @Test func drainWithoutARegisteredSessionStillWaitsForAcceptedWork() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.setCoordinatorClientForTesting(
+            lifecycleClient(url: "ws://127.0.0.1:0/unused", state: await loop.state))
+        await loop.holdLifecycleRequests(["accepted"])
+        let identity = try #require(ProcessIdentity.current())
+        let result = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 0))
+        #expect(result.outcome == .timedOut)
+        #expect(result.remaining == 1)
+        #expect(await loop.servingDrain.refusing)
+        await loop.completeLifecycleRequest("accepted")
+        let retried = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 1))
+        #expect(retried.outcome == .drained)
+        #expect(!retried.coordinatorAcknowledged)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func drainWithARegisteredSessionStillRequiresTheAcknowledgement() async throws {
+        let mock = MockCoordinator(acknowledgeDrains: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = lifecycleClient(url: url.mockProviderWebSocketURL(), state: await loop.state)
+        let (events, _) = await client.start()
+        defer { Task { await client.shutdown() } }
+        for await event in events { if case .connected = event { break } }
+        await loop.setCoordinatorClientForTesting(client)
+
+        let identity = try #require(ProcessIdentity.current())
+        let result = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 1))
+        #expect(result.outcome == .timedOut)
+        #expect(!result.coordinatorAcknowledged)
+        let barrier = try await mock.waitForSnapshot(timeout: .seconds(5)) { !$0.drainBarriers.isEmpty }
+        #expect(barrier != nil)
     }
 }

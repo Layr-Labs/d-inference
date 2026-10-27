@@ -333,6 +333,85 @@ func templateContextDisablesThinkingForForcedQwenTools() {
     #expect(context?["preserve_thinking"] as? Bool == true)
 }
 
+private let jsonResponseFormats: [OpenAIResponseFormat] = [
+    .jsonObject(),
+    .jsonSchema(.init(name: "answer", strict: true, schema: .object([
+        "type": .string("object"),
+        "properties": .object(["answer": .object(["type": .string("string")])]),
+        "required": .array([.string("answer")]),
+    ]))),
+]
+
+private func jsonRequest(
+    model: String = "qwen3.5-35b-a3b",
+    format: OpenAIResponseFormat,
+    reasoning: OpenAIReasoningConfig? = nil
+) -> OpenAIChatCompletionRequest {
+    OpenAIChatCompletionRequest(
+        model: model,
+        messages: [.init(role: .user, content: .text("Extract the name."))],
+        reasoning: reasoning,
+        responseFormat: format)
+}
+
+@Test("JSON response formats use the no-thinking Qwen prompt unless the caller asks")
+func templateContextDisablesQwenThinkingForJSONResponseFormats() {
+    for format in jsonResponseFormats {
+        // Catalog ids and model types both identify the Qwen template family;
+        // Qwen3.8 Flash-Next matches by id like the other Qwen template fixes.
+        for (model, modelType) in [("qwen3.5-35b-a3b", nil), ("Qwen3.5-9B", "qwen3_5"),
+                                   ("opaque-alias", "qwen3_5_moe"),
+                                   ("EigenLabs/Qwen3.8-27B-4bit-mtp", nil),
+                                   ("qwen3.8-flash-next", "qwen4_exp")] as [(String, String?)] {
+            let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+                for: jsonRequest(model: model, format: format), controls: .init(), modelType: modelType)
+            #expect(context?["enable_thinking"] as? Bool == false, "\(model) \(format.type)")
+        }
+    }
+}
+
+@Test("explicit thinking controls and efforts still win for JSON response formats")
+func templateContextKeepsCallerThinkingControlsForJSONResponseFormats() {
+    for format in jsonResponseFormats {
+        let nested = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format, reasoning: .init(enabled: true)), controls: .init())
+        #expect(nested?["enable_thinking"] as? Bool == true)
+
+        let raw = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format), controls: .init(enableThinking: true))
+        #expect(raw?["enable_thinking"] as? Bool == true)
+
+        // A reasoning effort (raw or typed) or budget expresses intent to
+        // think: keep the template default.
+        let effort = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format), controls: .init(reasoningEffort: "high"))
+        #expect(effort?["enable_thinking"] == nil)
+        #expect(effort?["reasoning_effort"] as? String == "high")
+
+        let typedEffort = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format, reasoning: .init(effort: "high")), controls: .init())
+        #expect(typedEffort?["enable_thinking"] == nil)
+
+        let budget = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: jsonRequest(format: format), controls: .init(reasoningBudgetTokens: 2048))
+        #expect(budget?["enable_thinking"] == nil)
+    }
+}
+
+@Test("text formats and non-Qwen families keep their thinking defaults")
+func templateContextLeavesOtherFormatsAndFamiliesUnchanged() {
+    let text = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: jsonRequest(format: .text()), controls: .init(), modelType: "qwen3_5")
+    #expect(text?["enable_thinking"] == nil)
+
+    for format in jsonResponseFormats {
+        for (model, modelType) in [("gemma-4-26b", "gemma4"), ("gpt-oss-20b", "gpt_oss"), ("flint", "flint")] {
+            let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+                for: jsonRequest(model: model, format: format), controls: .init(), modelType: modelType)
+            #expect(context?["enable_thinking"] == nil, "\(model) \(format.type)")
+        }
+    }
+}
 
 @Test("none off and zero disable; minimal remains an explicit effort")
 func templateContextNormalizesOnlyReviewedDisableSpellings() {

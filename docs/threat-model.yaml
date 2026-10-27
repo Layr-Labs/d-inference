@@ -43,6 +43,10 @@ methodology: STRIDE
 # Provider add-on hold reviewed 2026-10-26: TB-012, A-018 and T-059 describe the
 # local hold socket, its signature check, leases and the machine-lock fallback.
 # Coordinator handling of the busy fields is separate platform work.
+# Add-on hold hardening reviewed 2026-10-27: TB-012 now also records the operator
+# mailbox, accept-time peer checks, the socket override, self-reported busy fields
+# and the fail-open hold record; T-059 adds the model-load fence; T-060 covers
+# starving the add-on socket and stalling control-file reads.
 description: >
   Provider and native-runtime threat model, including the external trust
   contracts the provider consumes. The provider and coordinator remain plaintext
@@ -813,27 +817,49 @@ trust_boundaries:
     name: provider_to_local_addon_hold_socket
     description: >
       A separately signed add-on (io.darkbloom.sandbox) asks the provider over an
-      owner-only AF_UNIX socket to leave inference while its VMs use the Mac. Both
-      run as the same user; the socket and the add-on's machine lock coordinate them
-      and are not a boundary against that user.
+      owner-only AF_UNIX socket to leave inference while its VMs use the Mac; the
+      operator does the same through the lifecycle mailbox (darkbloom addon). All
+      run as the same user; the socket, the mailbox and the add-on's machine lock
+      coordinate them and are not a boundary against that user.
     how_it_works: >
       The provider binds ~/.darkbloom/runtime/addon.sock 0600 in a 0700 directory and
-      never replaces a live socket. For every request it reads the LOCAL_PEERTOKEN
-      audit token, requires the provider's effective UID, selects the running code by
-      that token and requires the Developer ID requirement for io.darkbloom.sandbox
-      under team SLDQ2GJ6TL plus the hardened runtime; the requested add-on must equal
-      the verified identifier. DEBUG builds may add one explicitly configured identity.
-      A hold closes admission, reports status draining with busy fields, finishes
-      accepted work within 120 seconds, unloads every model and never sends the
-      provider_drain barrier or stops the App Attest worker. Leases are 30 to 600
-      seconds; an expired lease ends the hold only when no add-on holds
+      never replaces a live socket. It verifies a connection when accepting it, before
+      the connection takes one of eight slots, and again for every request: it reads
+      the LOCAL_PEERTOKEN audit token, requires the provider's effective UID, selects
+      the running code by that token and requires the Developer ID requirement for
+      io.darkbloom.sandbox under team SLDQ2GJ6TL plus the hardened runtime; the
+      requested add-on must equal the verified identifier. An unverified connection is
+      answered unauthorized and closed at once. A request line must finish within 10
+      seconds and 8 KiB, and an idle connection closes after 300 seconds. DEBUG builds
+      alone add one identity from DARKBLOOM_ADDON_DEV_IDENTITY. Every build honors
+      DARKBLOOM_ADDON_SOCKET, which moves the socket, record and lock together; the
+      LaunchAgent does not pass it, so the installed provider serves the default path.
+      darkbloom addon status, hold and release write owner-only mailbox requests bound
+      to the provider's process identity and valid for 60 seconds; an unforced release
+      is refused while the machine lock is held. A hold closes admission, reports
+      status draining with busy fields, finishes accepted work within 120 seconds,
+      refuses model loads, waits for a running load to unwind, unloads every model and
+      never sends the provider_drain barrier or stops the App Attest worker. Leases are
+      30 to 600 seconds; an expired lease ends the hold only when no add-on holds
       ownership.lock exclusively. Active holds persist 0600 so a restart comes back
-      held. Code: provider-swift/Sources/ProviderCore/Addon/.
+      held. The hold record and mailbox files are opened without following links or
+      blocking and are read only as owner-only regular files within a size bound.
+      Code: provider-swift/Sources/ProviderCore/Addon/ and
+      provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift.
     current_limitations:
       - "Same-UID code can tamper with the add-on's files, the hold record or the
         machine lock, or keep the lock open to extend a hold; it can equally stop the
         provider. The check only keeps other same-UID programs from holding the Mac
         through the socket."
+      - "No bound limits how long a held machine lock keeps an expired hold; only the
+        lock's release or darkbloom addon release --force ends it."
+      - "An unreadable or replaced hold record fails open: the provider logs it and
+        starts unheld, so models may load beside VMs that still run."
+      - "A same-UID program can keep opening connections. Each costs a signature check
+        on the accept thread and is closed at once; the listen backlog bounds how many
+        wait, so a flood can delay the add-on's connection but not hold a slot."
+      - "The busy fields are the provider's own report; the coordinator cannot verify
+        why a provider stopped taking work."
       - "Entitlements of the add-on are not inspected beyond the hardened runtime; a
         debuggable or library-validation-exempt add-on build would widen what can
         drive it."
@@ -2320,11 +2346,13 @@ threats:
       - provider-swift/Sources/ProviderCore/Service/ProviderDrain.swift
     mitigations:
       - description: >
-          Per-request audit-token code-signature check with exact identifier, team,
-          Developer ID requirement and hardened runtime; bounded framing, connection
-          count and idle time; leases with a machine-lock fallback; persisted holds;
-          drain ownership no update or reconnect can reopen; and operator release
-          through darkbloom addon release.
+          Accept-time and per-request audit-token code-signature check with exact
+          identifier, team, Developer ID requirement and hardened runtime; bounded
+          framing, connection count, request and idle time; leases with a machine-lock
+          fallback; persisted holds; drain ownership no update or reconnect can reopen;
+          no model load starts or publishes its slot while held, and the hold reports
+          held only after a running load unwinds; and operator release through
+          darkbloom addon release.
         status: implemented
       - description: >
           Same-UID tampering with the add-on, the record or the lock is outside this
@@ -2334,4 +2362,37 @@ threats:
     severity: medium
     detection_hint: >
       Test unsigned peers, oversized and malformed lines, lease expiry with and
-      without the lock, restart restore, and update or reconnect during a hold.
+      without the lock, restart restore, update or reconnect during a hold, and a
+      model load already running when a hold begins.
+
+  - id: T-060
+    trust_boundary: TB-012
+    stride: Denial_of_Service
+    title: A local process starves the add-on socket or stalls control-file reads
+    description: >
+      An unsigned same-UID program could open every add-on socket slot and send
+      nothing, or trickle bytes without finishing a line, so the signed add-on cannot
+      hold, renew or release. It could also put a FIFO at the hold record or a mailbox
+      path so that the provider's read waits for a writer forever.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-018]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Addon/AddonIPCServer.swift
+      - provider-swift/Sources/ProviderCore/Addon/AddonHoldStore.swift
+      - provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift
+    mitigations:
+      - description: >
+          A connection is verified when accepted, so an unverified peer never holds a
+          slot; a request line must finish within 10 seconds however its bytes trickle
+          in; control files are opened with O_NONBLOCK and O_NOFOLLOW and read only as
+          owner-only regular files within a size bound.
+        status: implemented
+      - description: >
+          A same-UID program that floods connection attempts can still delay the
+          add-on, and one that tampers with the runtime files can stop either side.
+        status: accepted
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Test silent and trickling peers against a full connection table, and FIFOs at
+      the hold record and mailbox paths.

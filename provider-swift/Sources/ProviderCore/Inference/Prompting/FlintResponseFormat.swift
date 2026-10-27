@@ -12,28 +12,18 @@ import MLXLMServer
 
 /// Exact-Flint JSON output contract: compiled once per request, enforced by
 /// the native constraint and checked again on the completed content.
-struct FlintResponseFormat: Sendable {
-    let grammar: FlintJSONGrammar
-    /// `nil` for `json_object`, whose root must be an object.
-    let schema: ToolValueSchema?
-
+enum FlintResponseFormat {
     /// `nil` for other families and non-JSON formats. A schema outside the
     /// shared compiled subset fails closed as an invalid request.
     static func resolve(
         _ request: OpenAIChatCompletionRequest, modelType: String?
-    ) throws -> FlintResponseFormat? {
+    ) throws -> JSONAnswerFormat? {
         guard modelType == "flint", let format = request.responseFormat, format.requiresJSONOutput else {
             return nil
         }
         do {
-            guard format.type == .jsonSchema else {
-                return FlintResponseFormat(grammar: try FlintJSONGrammar(schema: nil), schema: nil)
-            }
-            guard let payload = format.jsonSchema else {
-                throw ToolConstraintSchemaError.invalid("json_schema requires a json_schema payload")
-            }
-            let schema = try ToolConstraintSchemaCompiler.compileResponseSchema(payload.schema)
-            return FlintResponseFormat(grammar: try FlintJSONGrammar(schema: schema), schema: schema)
+            return try JSONAnswerFormat(format, forbidding: FlintNativeProtocolBoundary.protocolMarkers,
+                family: "Flint")
         } catch let error as ToolConstraintSchemaError {
             let detail: String
             switch error {
@@ -42,60 +32,5 @@ struct FlintResponseFormat: Sendable {
             }
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload("Flint response_format is \(detail)")
         }
-    }
-
-    /// Defense in depth after constrained decoding. A failure, including a
-    /// budget that ended before the value completed, is a typed 422 and never
-    /// a successful completion. Messages never quote generated content.
-    func validate(content: String, finishReason: String) throws {
-        let truncated = finishReason == "length"
-        guard let value = try? JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(content.utf8)) else {
-            throw Self.failure(truncated
-                ? "Flint output budget ended before the JSON value was complete"
-                : "Flint content is not a single JSON value")
-        }
-        if truncated {
-            // A root number is not self-delimiting: a truncated one still parses.
-            switch value {
-            case .int, .double:
-                throw Self.failure("Flint output budget ended before the JSON value was complete")
-            default:
-                break
-            }
-        }
-        if let schema {
-            guard ToolConstraintValidation.satisfies(value, schema: schema) else {
-                throw Self.failure("Flint content does not satisfy the json_schema")
-            }
-            return
-        }
-        guard case .object = value else {
-            throw Self.failure("Flint json_object content must be a JSON object")
-        }
-    }
-
-    private static func failure(_ message: String) -> MLXOpenAIServiceError {
-        .invalidResponseFormatOutput(message)
-    }
-}
-
-/// Visible content of one formatted Flint response, retained only until the
-/// engine finishes so it can be validated. Never logged or sent to telemetry.
-struct FlintResponseFormatOutput {
-    private let format: FlintResponseFormat
-    private var content = ""
-
-    init(_ format: FlintResponseFormat) { self.format = format }
-
-    mutating func observe(_ event: MLXServerGenerationEvent) {
-        switch event {
-        case .content(let text): content += text
-        case .parsed(let parsed): content += parsed.content
-        case .toolCall, .toolCallDelta, .info: break
-        }
-    }
-
-    func validate(finishReason: String) throws {
-        try format.validate(content: content, finishReason: finishReason)
     }
 }

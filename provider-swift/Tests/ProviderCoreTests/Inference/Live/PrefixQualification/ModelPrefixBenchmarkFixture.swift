@@ -55,11 +55,12 @@ final class ModelPrefixBenchmarkFixture {
     init(_ specification: ModelPrefixBenchmarkSpecification,
          persistentRoot: URL? = nil,
          persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-         maximumStageMegabytes: Int? = nil) async throws {
+         maximumStageMegabytes: Int? = nil, incrementalCheckpoints: String? = nil) async throws {
         self.specification = specification
         self.persistentTestNamespace = persistentTestNamespace
         let owned = try await Self.prepare(specification, persistentRoot: persistentRoot,
-            persistentTestNamespace: persistentTestNamespace, maximumStageMegabytes: maximumStageMegabytes)
+            persistentTestNamespace: persistentTestNamespace, maximumStageMegabytes: maximumStageMegabytes,
+            incrementalCheckpoints: incrementalCheckpoints)
         container = owned.container
         tokenizer = owned.tokenizer
         session = owned.session
@@ -78,7 +79,7 @@ final class ModelPrefixBenchmarkFixture {
     private static func prepare(_ specification: ModelPrefixBenchmarkSpecification,
                                 persistentRoot: URL?,
                                 persistentTestNamespace: SSDPersistentTestKeyNamespace?,
-                                maximumStageMegabytes: Int?) async throws -> Owned {
+                                maximumStageMegabytes: Int?, incrementalCheckpoints: String?) async throws -> Owned {
         try specification.validate()
         guard (persistentRoot == nil) == (persistentTestNamespace == nil) else {
             throw SSDPersistentTestKeyNamespace.Failure.isolatedRootRequired
@@ -94,6 +95,7 @@ final class ModelPrefixBenchmarkFixture {
         if let maximumStageMegabytes {
             environment["DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB"] = String(maximumStageMegabytes)
         }
+        environment[SSDPrefixCachePolicy.incrementalCheckpointsFlag] = incrementalCheckpoints
         let directory = URL(fileURLWithPath: specification.directory, isDirectory: true)
         struct Declaration: Decodable {
             let modelType: String

@@ -184,6 +184,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// The saved cluster claim a member registers. Read only in member mode;
     /// nil registers none, which the coordinator accepts but never pairs.
     public let clusterMembership: ClusterMembership?
+    /// Deadline for one connection to reach `.ready`
+    /// (`CoordinatorConnectionHandshake`).
+    public let handshakeTimeout: TimeInterval
 
     public init(
         url: String,
@@ -205,7 +208,8 @@ public struct CoordinatorClientConfig: Sendable {
         idleUnloadMins: UInt64? = nil,
         autopilotInventory: [ModelInfo] = [],
         executionRole: ProviderExecutionRole = .solo,
-        clusterMembership: ClusterMembership? = nil
+        clusterMembership: ClusterMembership? = nil,
+        handshakeTimeout: TimeInterval? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -227,6 +231,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.idleUnloadMins = idleUnloadMins
         self.executionRole = executionRole
         self.clusterMembership = clusterMembership
+        self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
     }
 }
 
@@ -370,6 +375,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
     case pongTimeout
     case connectionClosed(Error)
     case suspensionDetected
+    case handshakeTimeout(seconds: TimeInterval)
 
     public var description: String {
         switch self {
@@ -378,6 +384,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
+        case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
     }
 }

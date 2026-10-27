@@ -686,7 +686,9 @@ turn is served with the prompt it shares with the previous turn as the
 repeated-prefix hint, as an agent loop's next turn would be. Per turn the
 report records TTFT, restored tokens, the gap from the last token to the
 terminal (which waits for checkpoint publication) and the files and bytes the
-complete-checkpoint store wrote. It fails only when a turn after the first
+complete-checkpoint store wrote, the delta files and the greedy output tokens;
+`DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` gives the complete-file
+baseline to compare against. It fails only when a turn after the first
 restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
 `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
 compare against the large-memory complete-checkpoint default. The timings need
@@ -783,21 +785,25 @@ qualification or end-to-end platform authorization.
 
 ## Add-On Hold
 
-These suites need no model weights, credentials or live provider state. The
-socket and loop tests bind a real `AF_UNIX` socket and take a real `flock` in a
-private temporary runtime directory.
+These suites need no downloaded model weights, credentials or live provider
+state. The socket and loop tests bind a real `AF_UNIX` socket and take a real
+`flock` in a private temporary runtime directory. The load-fence and managed
+Super cases load synthetic tiny weights through MLX, so they need the staged
+test metallib.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
+  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|AddonHoldLoadFence|anAddonHoldRetiresTheSuperSlotButKeepsItsPreloadPlan|aFIFOInPlaceOfARequestIsIgnoredWithoutBlocking|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
 ```
 
 | Coverage | Suites |
 |---|---|
 | `hold.v1` parsing, limits, exact response keys; drain-owner precedence | `AddonIPCTests`, `AddonHoldDrainOwnershipTests` |
-| Owner-only record, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
-| Socket permissions, several requests per connection, oversized lines, unauthenticated peers, stale and live sockets | `AddonIPCServerTests` |
-| Unload of every model, kept preload set, idempotency, bounded drain, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| Owner-only record, a FIFO record refused without blocking, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
+| Socket permissions, several requests per connection, oversized and unfinished lines, peers refused when accepted so silent ones cannot fill the slots, stale and live sockets | `AddonIPCServerTests` |
+| Unload of every model, kept preload set, idempotency, bounded drain that cancels only its own stragglers, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| A real tiny-model load running when the hold begins never installs, the hold waits for it, and loads resume after release | `TinyModelLoadTests/AddonHoldLoadFence` |
+| The managed Super slot's own retirement keeps the preload plan; a FIFO mailbox file is refused without blocking | `NemotronSuperManagedSlotTests`, `LifecycleMailboxTests` (filtered cases above) |
 | Loopback coordinator: draining heartbeat with busy fields, no `provider_drain`, 503 draining rejection, planned reconnect keeps the hold in `register`, release heartbeat | `AddonHoldServeLoopTests` |
 | Heartbeat and both register encodings | `ProviderBusyWireTests` |
 
@@ -957,6 +963,13 @@ parity, prove live routing or certify all models. Platform qualification indepen
 runs its implementation at explicit revisions and records native/full-model evidence.
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
+
+`fixtures/prompt-contract/v1/production_vectors.json` is regenerated only in
+darkbloom-platform, by its prompt sidecar at an explicit revision. This
+repository copies the file byte-for-byte and records the source revision and
+SHA-256 in the commit. A provider change to the rendered prompt, such as the
+Qwen JSON `response_format` thinking default, lands with the regenerated
+vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
 The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
@@ -1171,6 +1184,39 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Constrained JSON answers
+
+After rebuilding the provider test product and staging its metallib, run the
+CPU-only JSON-answer suites from `provider-swift/` together with the Flint suites
+whose automaton they share:
+
+```bash
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+```
+
+`QwenJSONAnswerConstraintTests` drives the production constraint over a
+synthetic Qwen-shaped vocabulary: single bytes, the pinned terminators and think
+markers at 248044, 248046, 248068 and 248069, and no piece for any other id up to
+248,320. It covers both prompt phases, masked EOS, schema violations, forbidden
+spellings, mask/transition agreement, token splits, bounded states and the
+pinned tokenizer checks. `QwenJSONAnswerPolicyTests` checks eligibility and
+every prompt-only fallback through `ToolConstraintFactory.make`, and
+`QwenJSONAnswerOutputTests` the completed-output validation.
+`QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
+and scheduler: streamed content, a typed 422 on truncation, requested reasoning
+split before validation, and unchanged tool and other-family paths.
+
+`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
+`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
+directory and select that suite alone; it reads only tokenizer and template
+files, checks the pinned contract and both rendered JSON prompt tails, and walks
+a real tokenization of an answer. Without the variable the suite is skipped,
+which the nested runner reports as an error. None of these suites loads weights
+or establishes answer quality or throughput. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
 
 ## Flint native validation
 

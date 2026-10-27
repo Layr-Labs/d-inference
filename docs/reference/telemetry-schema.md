@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-26
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -89,8 +89,8 @@ remaining-work count changes. It contains only `operation = provider_drain`,
 `reason` (`serving`, `draining`, `drained`, `timedOut`, `forced`, `busy`),
 `in_flight`, and `coordinator_acknowledged`. It has no inference/control IDs,
 models, credentials, prompts or responses. These local records are not uploaded;
-the privacy-disabled `TelemetryClient` and the wire enums remain unchanged. A startup/scheduled-idle process with no coordinator connection can
-be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
+the privacy-disabled `TelemetryClient` and the wire enums remain unchanged. A process with no registered coordinator session (during
+startup, while idle outside its schedule, or while reconnecting) can be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
 
 
 ## Mirrors

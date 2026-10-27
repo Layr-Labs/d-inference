@@ -976,12 +976,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 tokenizer: tokenizer,
                 modelContext: ChatTemplateFixContext(
                     modelId: request.model, modelType: modelType),
-                defaultMaxTokens: defaultMaxTokens,
+                // The bridge resolves an omitted max_tokens with its own
+                // default, and the engine refuses a constraint whose budget
+                // differs from the request's (tokenConstraintBudgetMismatch).
+                defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
-            // first build per stop-set; only worth a lock when tools exist.
-            if prepared.tools?.isEmpty == false {
+            // first build per stop-set, and a JSON answer builds its vocabulary
+            // on the first request per tokenizer; only those are worth a lock.
+            if prepared.tools?.isEmpty == false || tokenConstraint is JSONAnswerConstraint {
                 profile?.markDuration(.toolConstraint, start: toolConstraintStart)
             }
             try checkFirstContentDeadline()
@@ -990,6 +994,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw error
         }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
+        // A constrained JSON answer is validated when generation ends, so its
+        // reasoning must already be a separate channel: validation sees only
+        // the answer.
+        let jsonAnswer = tokenConstraint as? JSONAnswerConstraint
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
@@ -1078,12 +1086,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // span. Empty initial content state keeps native splitting active
             // without fabricating prompt/seed bytes. Output permission is the
             // independently validated Boolean, never this generic probe.
-            nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
+            nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (jsonAnswer?.channelPrefix
+                ?? (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
                 ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMOutput
                 || glmWithholdsReasoning
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
-                                           skipSpecialTokens: false)) ?? "<think></think>") : nil),
+                                           skipSpecialTokens: false)) ?? "<think></think>") : nil)),
             recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                 .init(modelId: modelId, modelType: modelType)),
@@ -1095,6 +1104,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
                 .init(modelId: modelId, modelType: modelType)),
             answerStopFilter: answerStopFilter,
+            answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning
         )
     }
@@ -1397,6 +1407,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeMiMoThinkingEnabled: Bool = true,
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
+        answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
@@ -1424,6 +1435,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                 absorbStrayThinkClose: absorbStrayThinkClose,
                 answerStopFilter: answerStopFilter,
+                answerFormat: answerFormat,
                 withholdReasoning: withholdReasoning)
             try checkFirstContentDeadline()
             return stream
@@ -1459,6 +1471,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeMediaTerminalDrain: Bool = false,
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
+        answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
@@ -1493,7 +1506,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
-                var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
+                // Exact Flint's prepared format, or the format a constrained
+                // Qwen answer was compiled with.
+                var formatOutput = (answerFormat ?? prepared.responseFormat).map(JSONAnswerOutput.init)
                 var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
                 /// A GLM JSON answer leaves only after it validates; its
                 /// reasoning and every other event stream unchanged.
@@ -1754,8 +1769,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 do {
-                    // Exact-Flint response_format: the completed content, not
-                    // a truncated or schema-invalid prefix, reaches success.
+                    // Constrained response_format (exact Flint, Qwen): the
+                    // completed content, not a truncated or schema-invalid
+                    // prefix, reaches success.
                     try formatOutput?.validate(finishReason: stopReason)
                     // GLM's withheld JSON answer leaves only once it validates.
                     if let answer = try glmAnswer?.finalAnswer(
@@ -1861,13 +1877,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeReasoningPrefix: String? = nil,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
-        answerStopFilter: FlintAnswerStopFilter? = nil
+        answerStopFilter: FlintAnswerStopFilter? = nil,
+        answerFormat: JSONAnswerFormat? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            answerStopFilter: answerStopFilter)
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat)
     }
     #endif
 

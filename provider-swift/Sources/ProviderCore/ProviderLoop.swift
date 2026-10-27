@@ -490,11 +490,16 @@ public actor ProviderLoop {
     internal var addonHoldMonitorTask: Task<Void, Never>?
     internal var addonIPCServer: AddonIPCServer?
     internal var addonHoldPaths: AddonHoldPaths?
-    /// Test seams: isolated paths, a peer check, a wall clock and the drain bound.
+    /// Test seams: isolated paths, a peer check, a wall clock and the drain
+    /// and settle bounds.
     internal var addonHoldPathsOverride: AddonHoldPaths?
     internal var addonPeerAuthenticatorOverride: AddonIPCServer.Authenticate?
     internal var addonHoldNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
     internal var addonHoldDrainTimeout: Duration = ProviderLoop.addonHoldDrainTimeoutDefault
+    internal var addonHoldSettleTimeout: Duration = ProviderLoop.addonHoldSettleTimeoutDefault
+    /// Internal, nil in production: suspends the drain bound's cancellation
+    /// pass where a release can interleave with it.
+    internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -852,6 +857,16 @@ public actor ProviderLoop {
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
+    /// The live coordinator connection as reported to `status`/`doctor`;
+    /// nil until the coordinator client starts.
+    internal var coordinatorConnection: DaemonState.CoordinatorConnection?
+    /// When the coordinator's verdict for this connection last became "not
+    /// routable" (`ProviderLoop+ServingAuthorizationRecovery`).
+    internal var unauthorizedSince: Double?
+    internal var lastUnauthorizedReconnectAt: Double?
+    internal var unauthorizedReconnectAttempts = 0
+    internal var unauthorizedReconnectJitter = Double.random(
+        in: 0..<UnauthorizedConnectionRecovery.thresholdJitter)
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is

@@ -2,7 +2,7 @@ import Foundation
 import MLXLMCommon
 
 extension SSDHybridCheckpointStore {
-    private enum ReadControl: Error { case manifestRead, retryableCapacity, capacity, policy }
+    private enum ReadControl: Error { case retryableCapacity, capacity, policy }
 
     struct ReadAttemptResult {
         let disposition: SSDPrefixCacheStageDisposition
@@ -25,7 +25,6 @@ extension SSDHybridCheckpointStore {
         budget: SSDCheckpointReadBudget,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> ReadAttemptResult {
-        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(candidate.tag.prefix(16)).hexString)
         let check: () throws -> Void = {
             guard self.readIsCurrent(requestID: requestID, access: access, epoch: epoch) else {
                 throw CancellationError()
@@ -35,27 +34,20 @@ extension SSDHybridCheckpointStore {
         let countRead: (Int) -> Void = { count in
             self.statsBox.update { $0.bytesRead += count; $0.stageReadBytes += count }
         }
-        let validate: (SSDBlockMetadata) throws -> Void = { metadata in
-            guard metadata.lookupTag == candidate.tag.hexString,
-                metadata.weightHash == self.identity.modelAggregateHash,
-                metadata.layoutEpoch == SSDHybridCheckpointEnvelope.layoutEpoch(
-                    identity: self.identity, backendLayout: self.config.backendLayout),
-                metadata.blockSize == PrefixCachePolicy.blockSize,
-                (metadata.chunkPlaintextSizes.first ?? Int.max) <= CBv2CompleteCheckpointManifest.maximumEncodedBytes
-            else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        }
+        // A failure retires the file in use; files built on it never stage again and age out.
+        var failing = Data(candidate.tag.prefix(16))
         do {
             try await access.acquire()
             try check()
-            guard index.freshFileBytes(tag16: Data(candidate.tag.prefix(16)), now: config.nowSeconds(),
-                                       ttlSeconds: config.ttlSeconds) != nil else {
+            guard index.chain(tag16: failing, now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)?.tags
+                == candidate.chain else {
                 statsBox.update { $0.misses += 1 }
                 return .init(.missAbsent)
             }
             let loaded = try await readCheckpoint(
-                candidate: candidate, request: request, url: url, lease: lease,
+                candidate: candidate, request: request, lease: lease,
                 readScratch: readScratch, budget: budget, check: check, countRead: countRead,
-                validate: validate, makeImportPlan: makeImportPlan)
+                blame: { failing = $0 }, makeImportPlan: makeImportPlan)
             let staged = loaded.staged
             lease.finishIO()
             if loaded.usesProcessMemoryOwner {
@@ -73,10 +65,11 @@ extension SSDHybridCheckpointStore {
                 stages[requestID] = staged
                 if !loaded.usesProcessMemoryOwner { stageReservations[requestID] = lease }
                 authenticatedReceipts[requestID] = (epoch, [Data(candidate.tag.prefix(16)): loaded.file])
+                restoredCheckpoints[requestID] = (loaded.restored, false)
                 return true
             }
             guard installed else { staged.close(); return .init(.skippedPolicy) }
-            index.touch(tags16: [Data(candidate.tag.prefix(16))], now: config.nowSeconds())
+            index.touch(tags16: candidate.chain, now: config.nowSeconds())
             statsBox.update { $0.stages += 1 }
             return .init(.staged(matchedTokens: candidate.position, expectedPrefillTokensSaved: candidate.position,
                                 shortenedByCorruption: false), deviceBytes: loaded.destinationBytes)
@@ -95,13 +88,12 @@ extension SSDHybridCheckpointStore {
         } catch CBv2CompleteCheckpointError.allocationFailed {
             return .init(.skippedCapacity)
         } catch {
-            let short = Data(candidate.tag.prefix(16))
-            if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
-                forgetMissing(short)
+            if SSDBlockStore.isAbsentBlockFailure(error, at: fileURL(failing), under: config.root) {
+                forgetMissing(failing)
                 statsBox.update { $0.misses += 1 }
                 return .init(.missAbsent)
             }
-            removeCorrupt(short)
+            removeCorrupt(failing)
             return .init(.missCorrupt)
         }
     }
@@ -111,37 +103,25 @@ extension SSDHybridCheckpointStore {
         let file: SSDAuthenticatedFileIdentity
         let destinationBytes: Int
         let usesProcessMemoryOwner: Bool
+        let restored: [SSDHybridCheckpointEnvelope.Parent]
     }
 
     private func readCheckpoint(
-        candidate: ReadCandidate, request: CBv2Request, url: URL,
+        candidate: ReadCandidate, request: CBv2Request,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
-        budget: SSDCheckpointReadBudget, check: () throws -> Void, countRead: (Int) -> Void,
-        validate: (SSDBlockMetadata) throws -> Void,
+        budget: SSDCheckpointReadBudget, check: () throws -> Void, countRead: @escaping (Int) -> Void,
+        blame: (Data) -> Void,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async throws -> LoadedCheckpoint {
         var importer: SSDCheckpointImport?
         defer { importer?.close() }
-        var manifest: CBv2CompleteCheckpointManifest?
-        statsBox.update { $0.filesRead += 1 }
-        do {
-            try SSDBlockStore.readStreaming(
-                from: url, kekKey: kekKey,
-                maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                maximumPlaintextBytes: config.maxReadBytes,
-                maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60,
-                checkCancellation: check, beforeRead: budget.beforeRead, onBytesRead: countRead,
-                validateMetadata: validate, consumeChunk: { index, data in
-                    guard index == 0 else { throw CBv2CompleteCheckpointError.invalidManifest }
-                    manifest = try SSDHybridCheckpointEnvelope.decodeManifest(data)
-                    throw ReadControl.manifestRead
-                })
-        } catch ReadControl.manifestRead { }
-        guard let manifest, manifest.position == candidate.position, manifest.identity == identity,
+        statsBox.update { $0.filesRead += candidate.chain.count }
+        let manifest = try openChain(candidate, tracksIdentity: false, check: check, beforeRead: budget.beforeRead,
+                                     countRead: countRead, blame: blame).last!.link.manifest
+        guard manifest.position == candidate.position, manifest.identity == identity,
             manifest.backendLayout == config.backendLayout,
             manifest.cacheSalt == request.checkpointCacheSalt, request.promptTokens.starts(with: manifest.prefixTokens)
         else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-        let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
         let plan: SSDCheckpointImportPlan
         do { plan = try makeImportPlan(manifest) }
         catch CBv2KVError.capacityExhausted { throw ReadControl.retryableCapacity }
@@ -151,7 +131,8 @@ extension SSDHybridCheckpointStore {
         guard !usesProcessMemoryOwner || kvBudget != nil else { throw ReadControl.capacity }
         if !usesProcessMemoryOwner {
             let (destinationAndScratch, overflow1) = plan.nativeDestinationBytes.addingReportingOverflow(plan.scratchBytes)
-            let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(Self.ioScratchBytes)
+            let (peak, overflow2) = destinationAndScratch.addingReportingOverflow(
+                Self.ioScratchBytes(files: candidate.chain.count))
             guard !overflow1, !overflow2 else { throw ReadControl.capacity }
             guard await lease.resize(to: peak) else {
                 try check()
@@ -173,39 +154,30 @@ extension SSDHybridCheckpointStore {
         } catch { throw ReadControl.capacity }
         readScratch.close()
         guard let filling = importer else { throw CBv2CompleteCheckpointError.allocationFailed }
-        SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(config.nowSeconds()))],
-                                        at: url, under: config.root)
-        var authenticatedFile: SSDAuthenticatedFileIdentity?
-        statsBox.update { $0.filesRead += 1 }
-        try SSDBlockStore.readStreaming(
-            from: url, kekKey: kekKey,
-            maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-            maximumPlaintextBytes: config.maxReadBytes,
-            maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60, requireEOF: true,
-            checkCancellation: check, beforeRead: budget.beforeRead, onBytesRead: countRead,
-            onAuthenticatedFile: { authenticatedFile = $0 },
-            validateMetadata: { metadata in
-                try validate(metadata)
-                guard envelope.matches(metadata, tag: candidate.tag, identity: self.identity,
-                                      backendLayout: self.config.backendLayout) else {
-                    throw CBv2CompleteCheckpointError.incompatibleCheckpoint
-                }
-            }, consumeChunk: { index, data in
-                if index == 0 {
-                    guard data == envelope.manifestBytes else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
-                } else {
-                    let segment = envelope.segments[index - 1]
-                    self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, data.count) }
-                    try filling.appendSegment(tensorIndex: segment.tensor, byteOffset: segment.offset, data: data)
-                }
-            })
+        // Recency survives a restart. Only the leaf is held; an ancestor busy
+        // elsewhere keeps its mtime, so no other reader's file identity moves.
+        for tag in candidate.chain {
+            let held = tag == candidate.chain.last ? nil : fileCoordinator.tryAcquire(to: fileURL(tag))
+            guard held != nil || tag == candidate.chain.last else { continue }
+            SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(config.nowSeconds()))],
+                                            at: fileURL(tag), under: config.root)
+            held?.release()
+        }
+        statsBox.update { $0.filesRead += candidate.chain.count }
+        var files = try openChain(candidate, tracksIdentity: true, check: check, beforeRead: budget.beforeRead,
+                                  countRead: countRead, blame: blame)
+        guard files.last?.link.manifest == manifest else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+        let authenticatedFile = try streamChain(&files, check: check, blame: blame) {
+            try filling.appendSegment(tensorIndex: $0, byteOffset: $1, data: $2)
+        }
         try check()
-        guard let authenticatedFile, authenticatedFile.matches(url: url) else {
+        guard let authenticatedFile, authenticatedFile.matches(url: fileURL(Data(candidate.tag.prefix(16)))) else {
             throw SSDAuthenticatedFileChange.changedDuringRead
         }
         let staged = try filling.finish()
         importer = nil
         return LoadedCheckpoint(staged: staged, file: authenticatedFile,
-            destinationBytes: staged.nativeDestinationBytes, usesProcessMemoryOwner: plan.usesProcessMemoryOwner)
+            destinationBytes: staged.nativeDestinationBytes, usesProcessMemoryOwner: plan.usesProcessMemoryOwner,
+            restored: [files.last!.link, files[0].link])
     }
 }

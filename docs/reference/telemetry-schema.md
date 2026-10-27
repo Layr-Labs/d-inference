@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-26
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -62,6 +62,15 @@ The Swift producer, Go consumer and TypeScript mirror share the canonical
 [process_memory_wire.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/process_memory_wire.json) fixture. These scalar
 observations add no event fields.
 
+Autopilot busy and stall diagnostics use the optional
+[`model_autopilot` state](protocol-messages.md#model_autopilot-state) on
+registration, every heartbeat and each `model_autopilot_status`:
+`busy_reasons`, `busy_reason`, `busy_since_ms` and `transition_stalls`. The
+provider (`ProviderLoop.publishModelAutopilotSnapshot`) reports them only with
+saved Autopilot consent, rebuilt for every heartbeat and on each capacity tick
+(`superviseTransitions`). Their closed vocabularies are listed with the state.
+They add no event fields or kinds.
+
 ## Autopilot tick diagnostics
 
 [coordinator/registry/autopilot_control.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_control.go) (`newAutopilotControl`) writes the
@@ -80,8 +89,8 @@ remaining-work count changes. It contains only `operation = provider_drain`,
 `reason` (`serving`, `draining`, `drained`, `timedOut`, `forced`, `busy`),
 `in_flight`, and `coordinator_acknowledged`. It has no inference/control IDs,
 models, credentials, prompts or responses. These local records are not uploaded;
-the privacy-disabled `TelemetryClient` and the wire enums remain unchanged. A startup/scheduled-idle process with no coordinator connection can
-be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
+the privacy-disabled `TelemetryClient` and the wire enums remain unchanged. A process with no registered coordinator session (during
+startup, while idle outside its schedule, or while reconnecting) can be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
 
 
 ## Mirrors

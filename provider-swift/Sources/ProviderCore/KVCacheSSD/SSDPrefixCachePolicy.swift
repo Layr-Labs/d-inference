@@ -219,6 +219,12 @@ enum SSDPrefixCachePolicy {
     /// reader deletes bad files — and skipping the flush saves ~2–15 ms
     /// per block write plus real flash wear.
     static let strictFsyncFlag = "DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC"
+    /// Delta checkpoints (`SSDCheckpointDeltaLayout`); a negative value disables them.
+    static let incrementalCheckpointsFlag = "DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS"
+
+    static func incrementalCheckpoints(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
+    }
 
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -232,8 +238,17 @@ enum SSDPrefixCachePolicy {
 
     /// Max donation jobs buffered behind the serial write-behind consumer
     /// (the CheckpointCapturePipeline in-flight cap pattern). Overflow
-    /// DROPS the donation — the engine is never back-pressured.
-    static let writeQueueMaxJobs = 2
+    /// DROPS the donation — the engine is never back-pressured. The
+    /// complete-checkpoint store applies the same bound to its unsettled
+    /// jobs, the one being written included. The count is not the memory
+    /// bound: attention jobs must also fit the queued-byte cap below, and a
+    /// queued complete checkpoint holds only donor state and I/O scratch
+    /// that stay charged to the admission or process memory ledger. The
+    /// engine ends a complete-checkpoint donor's stream and releases its
+    /// state only after all its checkpoints settle, so under write backlog a
+    /// deeper queue trades stream-end latency and longer-held donor memory
+    /// for fewer dropped checkpoints.
+    static let writeQueueMaxJobs = 6
     /// Floor on host bytes queued across buffered donation jobs. The
     /// effective cap is `max(this, maxStageBytes + writeQueueSlackBytes)`
     /// (SSDPrefixCache init) so ONE full max-size donation — a ~600 MB

@@ -155,7 +155,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
 /// Never forward-passed: the slot-build tests run with hooks installed
 /// (container snapshot skipped) and the routing tests never touch it.
 private final class WiringStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
@@ -309,7 +310,7 @@ private func recordServerStream(
             events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
-        case .toolCall:
+        case .toolCall, .toolCallDelta:
             continue
         }
     }
@@ -558,6 +559,41 @@ struct EngineV2SlotBuildTests {
 
 @Suite("EngineV2 production wiring: KV re-slicing", .serialized)
 struct EngineV2ReslicingWiringTests {
+    /// Run alone: a failed native fence intentionally remains process-retained.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM5_RETAINED_RESLICE"] == "1"))
+    func glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor() async throws {
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let (bridge, survivor, _) = try await buildAndInstallSlotA(loop, runtime: runtime,
+            recorder: recorder, engines: { _, grant in WiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        let oldGrant = await bridge.engineKVBytesCapacity()
+        await loop.setEngineV2SlotHooksForTesting(.init(eosTokenIds: [2], physicalMemoryBytes: wiringPhysicalBytes,
+            makeEngine: { _, _ in throw GLM5NextManagedLoadError.retirementUnproven }))
+        let newcomer = EngineV2NewcomerBox(makeStubContainer())
+        await loop.acquireResliceGate()
+        await #expect(throws: GLM5NextManagedLoadError.retirementUnproven) {
+            try await loop.resliceAndBuildEngineV2Bundle(modelId: "failed-native-glm", modelType: "glm5_next",
+                isVLM: false, modelDirectory: nil, newcomer: newcomer, tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                targetSizing: makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072),
+                specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)))
+        }
+        await loop.releaseResliceGate()
+        #expect(newcomer.container != nil)
+        let shrunkGrant = await bridge.engineKVBytesCapacity()
+        #expect(shrunkGrant < oldGrant)
+        #expect(survivor.shutdownCalls == 0)
+        #expect(GLM5NextLoadFaultState.isRetained)
+        // The GLM fence no longer blocks other families' reclamation; the
+        // retained newcomer's weights + grant are charged to the fleet budget.
+        #expect(ProviderLoop.nativeProcessAllowsReclamation())
+        #expect(GLM5NextLoadFaultState.retainedResidentBytes >= 12 * wiringGiB)
+        // A survivor regrow cannot reclaim memory the retained owner holds.
+        await loop.resliceGrowSurvivorsForTesting()
+        let regrown = await bridge.engineKVBytesCapacity()
+        #expect(regrown < oldGrant && regrown - shrunkGrant < 1 << 20)
+        GLM5NextLoadFaultState.retain([loop, survivor])
+    }
 
     init() {
         // unloadModel / updateAggregateCapacity read MLX GPU counters.
@@ -1270,7 +1306,7 @@ struct EngineV2RequestRoutingTests {
     /// prompt tail, backed by a scripted close-only (Qwen3.6-style)
     /// thinking stream.
     private func makeThinkProbeEngine(
-        decodedTail: String
+        decodedTail: String, modelType: String = "qwen3_next"
     ) -> (WiringScriptedEngine, MultiModelBatchSchedulerEngine) {
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "step one ", tokens: [10], logprobs: nil),
@@ -1284,7 +1320,7 @@ struct EngineV2RequestRoutingTests {
                     "qwen3.6-test": .init(
                         tokenizer: TokenizerHandle(
                             WiringStubTokenizer(decodeOverride: decodedTail)),
-                        modelType: "qwen3_next",
+                        modelType: modelType,
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1325,6 +1361,33 @@ struct EngineV2RequestRoutingTests {
         let stream = try await providerEngine.streamChatCompletion(request: request)
         let events = try await recordServerStream(stream)
         #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain tail keeps close-only Qwen output undecided", arguments: ["qwen3_5", "qwen3_5_moe"])
+    func plainPromptTailKeepsCloseOnlyQwenUndecided(modelType: String) async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: modelType)
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("step one "))
+    }
+
+    @Test("a plain Qwen3-VL Instruct tail seeds content state ahead of output")
+    func plainQwen3VLPromptTailSeedsContent() async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n", modelType: "qwen3_vl_moe")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("<think></think>"))
+        #expect(events.dropFirst().first == .content("step one "))
     }
 
     @Test("no injection for a non-think reasoning parser even with a pre-opened tail")
@@ -1477,6 +1540,97 @@ struct EngineV2RequestRoutingTests {
                 "inference-enforced structured tool_choice requires the native model's framed or XML tool parser"))
         }
         #expect(engine.submitted.isEmpty)
+    }
+
+    @Test("required Qwen tool choice drops framing newlines around validated parallel calls")
+    func requiredQwenToolChoiceDropsFramingWhitespace() async throws {
+        for (model, modelType) in [("qwen35-dense", "qwen3_5"), ("qwen35-moe", "qwen3_5_moe")] {
+            let engine = WiringScriptedEngine(script: .stream([
+                .delta(text: "\n" + Self.qwenWeatherCall("Paris"), tokens: [10], logprobs: nil),
+                .delta(text: "\n", tokens: [11], logprobs: nil),
+                .delta(text: Self.qwenWeatherCall("Rome") + "\n", tokens: [12], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 3)),
+            ]))
+            let stream = try await Self.qwenForcedEngine(engine, model: model, modelType: modelType)
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: model))
+            var cities: [MLXLMCommon.JSONValue?] = []
+            var content = ""
+            for try await event in stream {
+                switch event {
+                case .toolCall(let call): cities.append(call.function.arguments["city"])
+                case .content(let text): content += text
+                case .parsed(let parsed): content += parsed.content
+                default: continue
+                }
+            }
+            #expect(cities == [.string("Paris"), .string("Rome")], "\(modelType)")
+            #expect(content.isEmpty, "\(modelType)")
+        }
+    }
+
+    @Test("required Qwen tool choice still refuses prose that follows framing newlines")
+    func requiredQwenToolChoiceRefusesProseAfterWhitespace() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "\n\nSure, checking.\n" + Self.qwenWeatherCall("Paris"), tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await Self.qwenForcedEngine(engine, model: "qwen35-dense", modelType: "qwen3_5")
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: "qwen35-dense"))
+            for try await event in stream { emitted.append(event) }
+            Issue.record("expected forced tool_choice prose rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call"))
+        }
+        #expect(emitted.isEmpty)
+    }
+
+    @Test("required Qwen tool choice refuses output that is only framing whitespace")
+    func requiredQwenToolChoiceRefusesWhitespaceOnlyOutput() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "\n", tokens: [10], logprobs: nil),
+            .delta(text: " \r", tokens: [11], logprobs: nil),
+            .delta(text: "\n", tokens: [12], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 3)),
+        ]))
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await Self.qwenForcedEngine(engine, model: "qwen35-moe", modelType: "qwen3_5_moe")
+                .streamChatCompletion(request: Self.qwenForcedRequest(model: "qwen35-moe"))
+            for try await event in stream { emitted.append(event) }
+            Issue.record("expected a missing forced call to fail")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
+        }
+        #expect(emitted.isEmpty)
+    }
+
+    private static func qwenWeatherCall(_ city: String) -> String {
+        "<tool_call>\n<function=get_weather>\n<parameter=city>\n\(city)\n</parameter>\n</function>\n</tool_call>"
+    }
+
+    private static func qwenForcedEngine(
+        _ engine: WiringScriptedEngine, model: String, modelType: String
+    ) -> MultiModelBatchSchedulerEngine {
+        let bridge = makeBridge(engine: engine, modelId: model)
+        return MultiModelBatchSchedulerEngine(registryProvider: { @Sendable in
+            [model: .init(tokenizer: TokenizerHandle(WiringStubTokenizer()), modelType: modelType,
+                engineV2Bridge: bridge)]
+        })
+    }
+
+    private static func qwenForcedRequest(model: String) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: model,
+            messages: [.init(role: .user, content: .text("weather in Paris and Rome"))],
+            tools: [.init(function: .init(name: "get_weather", parameters: .object([
+                "type": .string("object"),
+                "properties": .object(["city": .object(["type": .string("string")])]),
+                "required": .array([.string("city")]),
+            ])))],
+            toolChoice: .mode(.required))
     }
 
     @Test("auto mode returns malformed tagged output as visible text")

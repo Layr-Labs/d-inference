@@ -14,6 +14,7 @@ from .context import SONNET, OPUS, SOL
 from .paid import PaidCalls
 from .state import BudgetStopped
 from .diagnostics import ReviewFailure, request_id
+from .structured_output import bedrock_schema
 
 MODELS = {SONNET: "sonnet", OPUS: "opus", SOL: "sol"}
 PROFILE = re.compile(r"arn:aws:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile/[A-Za-z0-9]+")
@@ -42,18 +43,49 @@ class BedrockCalls:
         if (not isinstance(self.profiles, dict) or set(self.profiles) != set(MODELS.values())
                 or any(not isinstance(p, str) or not PROFILE.fullmatch(p) for p in self.profiles.values())):
             raise ReviewUnavailable("Configure one application inference profile per review model")
-        self.limit = bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100)
-        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS", 4096, 256, 16384)
+        self.call_policy = env.get("BEDROCK_SCAN_CALL_POLICY") or "fixed"
+        if self.call_policy not in ("fixed", "workload"):
+            raise ReviewUnavailable("Invalid BEDROCK_SCAN_CALL_POLICY")
+        # CI plans the actual source/depth/integration work. Standalone probes
+        # retain their explicitly bounded fixed allowance.
+        self.ceiling = (bounded(env, "BEDROCK_SCAN_MAX_WORKLOAD_CALLS", 500, 1, 500)
+                        if self.call_policy == "workload" else
+                        bounded(env, "BEDROCK_SCAN_MAX_CALLS", 12, 1, 100))
+        self.limit = self.ceiling if self.call_policy == "fixed" else 0
+        self.planned_calls = 0
+        self.output_tokens = bounded(env, "BEDROCK_SCAN_MAX_OUTPUT_TOKENS",
+                                     16384 if self.call_policy == "workload" else 4096, 256, 16384)
         self.calls = self.fallbacks = self.input_tokens = self.output_used = 0
+        self.cache_read_input_tokens = self.cache_write_input_tokens = 0
         self.unknown = 0
         self.ledger = Path(env["BEDROCK_SCAN_USAGE_FILE"])
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
         self.client = client
         self.last_request = {}
+        self.accounting_stopped = None
+        self.workload_stopped = None
+        self.stop_diagnostic = None
+
+    def plan_calls(self, count):
+        """Admit a scheduled stage, including one shared response-repair slot."""
+        if self.call_policy != "workload":
+            return
+        if type(count) is not int or count < 0:
+            raise ReviewUnavailable("Invalid Bedrock workload plan")
+        self.planned_calls += count
+        requested = self.planned_calls + 1
+        self.limit = min(requested, self.ceiling)
+        if requested > self.ceiling:
+            self.workload_stopped = "Scheduled review exceeds the Bedrock emergency ceiling; human review required"
+            self.stop_diagnostic = {"code": "BEDROCK_WORKLOAD_LIMIT", "call_limit": self.ceiling,
+                                    "planned_calls": self.planned_calls}
+            error = BudgetStopped(self.workload_stopped)
+            error.diagnostic = self.stop_diagnostic
+            raise error
 
     @property
     def stopped(self):
-        return self.fallback.stopped
+        return self.accounting_stopped or self.workload_stopped or self.fallback.stopped
 
     def record(self, **fields):
         entry = {"run": self.env["GITHUB_RUN_ID"], "attempt": self.env.get("GITHUB_RUN_ATTEMPT", "1"),
@@ -79,6 +111,13 @@ class BedrockCalls:
 
     def __call__(self, endpoint, key, payload):
         self.last_request = {}
+        if self.stopped:
+            # Failed native or backup accounting halts the whole attempt, even
+            # if a provider has recovered before the next batch.
+            error = BudgetStopped(self.stopped)
+            if self.stop_diagnostic:
+                error.diagnostic = self.stop_diagnostic
+            raise error
         self.alive()
         if self.calls >= self.limit:
             error = BudgetStopped("Bedrock request allowance reached; no fallback around the limit")
@@ -91,7 +130,8 @@ class BedrockCalls:
             import boto3
             from botocore.config import Config
             self.client = boto3.client("bedrock-runtime", region_name=self.env.get("BEDROCK_SCAN_AWS_REGION", "us-east-1"),
-                                       config=Config(connect_timeout=10, read_timeout=240,
+                                       config=Config(connect_timeout=10,
+                                                     read_timeout=600 if self.call_policy == "workload" else 240,
                                                      retries={"total_max_attempts": 1, "mode": "standard"}))
         system = payload["messages"][0]["content"] + "\n" + self.prefix
         schema = payload["response_format"]["json_schema"]["schema"]
@@ -99,14 +139,20 @@ class BedrockCalls:
                    "system": [{"text": system + "\nReturn only JSON matching this schema:\n" + json.dumps(schema)}],
                    "messages": [{"role": "user", "content": [{"text": payload["messages"][1]["content"]}]}],
                    "inferenceConfig": {"maxTokens": self.output_tokens},
+                   "outputConfig": {"textFormat": {"type": "json_schema", "structure": {
+                       "jsonSchema": {"name": "threat_review", "schema": json.dumps(bedrock_schema(schema))}}}},
                    "requestMetadata": {"repository": self.env["GITHUB_REPOSITORY"],
                                        "run": self.env["GITHUB_RUN_ID"], "model": alias}}
+        if payload["model"] == SOL:
+            # Sol's Converse contract requires strict mode separately from
+            # outputConfig; Claude does not accept OpenAI-specific fields.
+            request["additionalModelRequestFields"] = {"text": {"format": {"strict": True}}}
         if len(json.dumps(request, ensure_ascii=False).encode()) > 180_000:
             raise BudgetStopped("Bedrock request exceeds conservative context bound")
-        # Prompt schema plus the scanner's strict validator works uniformly;
-        # native structured output is not assumed to work for every model.
+        # Constrain JSON generation; the original local validator still checks
+        # omitted bounds, exact coverage, citations and the review decision.
         self.calls += 1
-        self.last_request = {"provider": "bedrock", "call": self.calls}
+        self.last_request = {"provider": "bedrock", "call": self.calls, "response_format": "json_schema"}
         self.record(event="attempt", model=alias, profile=self.profiles[alias])
         self.unknown += 1
         started = time.monotonic()
@@ -140,15 +186,37 @@ class BedrockCalls:
         if not isinstance(usage, dict):
             usage = {}
         incoming, outgoing = usage.get("inputTokens"), usage.get("outputTokens")
-        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing))
-        self.record(event="response", model=alias, usage_unknown=not known,
-                    input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
-                    **{key: value for key, value in self.last_request.items() if key != "call"})
-        if not known:
-            raise ReviewFailure("Bedrock usage missing; no complete result", "BEDROCK_USAGE_MISSING")
-        self.unknown -= 1
-        self.input_tokens += incoming
-        self.output_used += outgoing
+        # Cache tokens are separate input categories in Converse usage. Sol can
+        # report nearly all input as cache writes, even on its first request.
+        cache_read = usage.get("cacheReadInputTokens", 0)
+        cache_write = usage.get("cacheWriteInputTokens", 0)
+        known = all(type(v) is int and v >= 0 for v in (incoming, outgoing, cache_read, cache_write))
+        accounting_failure = None
+        try:
+            self.record(event="response", model=alias, usage_unknown=not known,
+                        input_tokens=incoming if known else None, output_tokens=outgoing if known else None,
+                        cache_read_input_tokens=cache_read if known else None,
+                        cache_write_input_tokens=cache_write if known else None,
+                        **{key: value for key, value in self.last_request.items() if key != "call"})
+        except OSError:
+            accounting_failure = ("BEDROCK_USAGE_RECORD_FAILED",
+                                  "Bedrock usage record could not be saved; further requests stopped")
+        if accounting_failure is None and not known:
+            accounting_failure = ("BEDROCK_USAGE_MISSING",
+                                  "Bedrock usage missing; further requests stopped")
+        if accounting_failure:
+            code, self.accounting_stopped = accounting_failure
+            self.stop_diagnostic = {**self.last_request, "code": code, "service": "bedrock",
+                                    "operation": "usage", "usage_unknown": True}
+            # The paid response may contain useful advice. Return only a complete
+            # text envelope to the ordinary strict validator; stopped accounting
+            # blocks repair, fallback, later calls and final merge clearance.
+        else:
+            self.unknown -= 1
+            self.input_tokens += incoming
+            self.output_used += outgoing
+            self.cache_read_input_tokens += cache_read
+            self.cache_write_input_tokens += cache_write
         if response.get("stopReason") != "end_turn":
             raise ReviewFailure("Bedrock response incomplete or refused; no automatic fallback",
                                 "BEDROCK_RESPONSE_INCOMPLETE")
@@ -163,5 +231,9 @@ class BedrockCalls:
 
     def metrics(self):
         return {**self.fallback.metrics(), "bedrock_requests": self.calls,
+                "bedrock_call_policy": self.call_policy, "bedrock_call_limit": self.limit,
+                "bedrock_call_ceiling": self.ceiling, "bedrock_planned_calls": self.planned_calls,
                 "bedrock_unknown_usage": self.unknown, "bedrock_input_tokens": self.input_tokens,
+                "bedrock_cache_read_input_tokens": self.cache_read_input_tokens,
+                "bedrock_cache_write_input_tokens": self.cache_write_input_tokens,
                 "bedrock_output_tokens": self.output_used, "openrouter_fallbacks": self.fallbacks}

@@ -1,0 +1,10 @@
+{
+  "sourceRevision": "76add2a341a1cd90ad0e86bb69839ea9c35827c6",
+  "headerAuditSHA256": "365e26b35ecb02dd28ba6846100dfc968b4f799553fd216f93ef21008025a18a",
+  "provenance": "43 retained safetensors headers, 114160 tensors; metadata arithmetic only, not payload authentication or model qualification",
+  "storedBytes": 181709451790,
+  "nonWeightBytes": 32290242,
+  "largestTensorBytes": 317194240,
+  "largestExpertBankBytes": 1207959552,
+  "visionBytes": 1127254016
+}

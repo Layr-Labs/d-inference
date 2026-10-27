@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-26
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -23,28 +23,78 @@ reusable `.github/workflows/release-provider.yml` runs the resolve, build,
 qualification, signing, R2 staging and publication chain for one environment. To
 find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.22` for native Bonsai 9B request,
-vision and explicit MTP sidecar support. The previous `v0.9.21` was
-[published on 2026-10-14](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.21).
-The release candidate uses exact acceptance and drafter-required rectangular verification
-when its validated sidecar and runtime eligibility permit it. Serial verification
-is an explicit comparison override; target-only generation remains available
-without a sidecar or when speculation is ineligible.
-See the [native Bonsai contract](../architecture/inference.md) for the exact model
-identity, checkpoint constraints and defaults.
+`ProviderCore.version` is prepared as `0.10.3`, a patch release over `v0.10.2`
+that fixes one crash. On Macs with an M5 or newer GPU, 0.10.2 exits with
+`Trace/BPT trap: 5` when one attention call covers at least 1,024 prompt tokens
+on a model with 256- or 512-wide attention heads: Gemma 4 26B, Qwen3.5-9B,
+Qwen3.5-35B, Qwen3.6-35B and Qwen3.8-27B. MLX compiles the
+`attention_nax_dsplit` kernel at runtime on these GPUs, and the upstream MLX
+merge in 0.10.2 passed it a value head-dim argument it does not take, so the
+compile fails and MLX's error stops the provider. `libs/mlx-swift` moves from
+`eedca444` to `4926d3d9`, and `libs/mlx` and the nested `mlx` move from
+`ff4bb35b` to `31f550af`, which corrects the kernel's arguments;
+`libs/mlx-swift-lm` stays at `aee6ebb6`. Nothing else changes: 0.10.2's scope
+and the enablement steps below still apply. See the
+[`v0.10.3` changelog entry](../../CHANGELOG.md).
 
-This source preparation does not establish release qualification. Confirm final
-publisher artifacts and their explicit sidecar metadata, final distribution IDs,
-sampled-MTP correctness, model quality, physical-memory/media admission and hosted
-platform compatibility before promotion. Bounded local greedy parity and speed
-results do not close those gates. No tag, registration, upload or deployment is
-performed by this change.
+Before tagging `v0.10.3`:
 
-`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
-Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
-from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
-[published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
-from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
+- Confirm that the tagged commit pins `libs/mlx-swift` to `4926d3d9`
+  (mlx-swift branch `hotfix/0.10.2-jit-nax-dsplit`) and `libs/mlx` and the
+  nested `mlx` to `31f550af` (mlx branch `hotfix/0.10.2-jit-nax-dsplit`), with
+  `libs/mlx-swift-lm` still at `aee6ebb6`. Keep both hotfix branches:
+  Layr-Labs/mlx#48 brought the fix to mlx `main` as a squash commit, so the mlx
+  branch is the only ref that holds `31f550af`.
+- Confirm that the tagged commit still pins `libs/mlx-swift-lm` to a commit on
+  SDK `main`; the SDK pin is unchanged from 0.10.2. d-inference#1592 pins
+  `aee6ebb6`, the head of the SDK set `release/sdk-0.10.2-final`: SDK `main` with
+  [mlx-swift-lm#356](https://github.com/Layr-Labs/mlx-swift-lm/pull/356) merged,
+  plus #357, #359, #360, #362 and #363. SDK `main` was fast-forwarded to that
+  head, and #1592 and then #1603 were squash-merged with no re-pin.
+- Confirm that the `v0.10.2` changelog's SDK note matches that unchanged pin,
+  including every change that SDK `main` gained after `6148b6da`.
+
+Enable the new behaviour in this order; each step is a separate approval, and
+only the last waits for the tag:
+
+1. Deploy a `darkbloom-platform` coordinator that includes
+   [darkbloom-platform#464](https://github.com/Layr-Labs/darkbloom-platform/pull/464)
+   before any catalog row lists `logprobs` for GLM-5.3-Flash or Nemotron 3.5
+   Super. Its floors send a logprob request on either model only to providers
+   on `0.10.2` or later. Done: production has run platform `499842dd` since
+   2026-10-26.
+2. Add GLM-5.3-Flash's tuple to the coordinator's cache-routing allowlist. This
+   step does not depend on this release: GLM's SSD reuse was qualified on a
+   signed `0.10.1` provider, and the coordinator must include request
+   normalization v9.
+3. After the fleet converges on `0.10.3` (0.10.2 crashes on M5 Macs), list
+   `logprobs` in GLM-5.3-Flash's catalog row. Once a signed `0.10.3` build also
+   restores Nemotron 3.5 Super's SSD checkpoints after a restart, add Super's
+   tuple to the allowlist and list `logprobs` in Super's catalog row.
+
+After the tag, the platform refreshes its provider-contract snapshot from the
+tagged commit and sets `LatestProviderVersion` to `0.10.3` in the same change;
+that fallback constant does not gate publication. Catalog changes, allowlist
+changes and model registration are separate approvals. This preparation does
+not tag, register, upload, deploy or enable anything.
+
+Platform evidence, inspected on 2026-10-26 (recheck before tagging):
+
+| Claim | Source |
+|---|---|
+| Production runs platform `master` `499842dd`, which includes darkbloom-platform#464's per-version logprobs floors | `/health` `build_commit`; [`modelarch/logprobs.go` at `499842dd`](https://github.com/Layr-Labs/darkbloom-platform/blob/499842ddea2506de3a60f69c6658b2619745c4a4/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| #464 adds the floor `0.10.2` for both GLM-5.3-Flash and Super | [`modelarch/logprobs.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/internal/modelarch/logprobs.go) (`LogprobsMinimumProviderVersion`) |
+| A model without an allowlisted tuple gets no cache routing | [`cache-routing-rollout.md` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/docs/operations/cache-routing-rollout.md) ("Add GLM-5.3-Flash", "Add Nemotron 3.5 Super") |
+| `LatestProviderVersion` must equal the snapshotted `ProviderCore.version` | [`provider_version_sync_test.go` at `9d44e01e`](https://github.com/Layr-Labs/darkbloom-platform/blob/9d44e01eb0d4f6052f2be471b8107b94754c5c3e/coordinator/tests/api/provider_version_sync_test.go) (`TestLatestProviderVersionMatchesProviderCore`) |
+
+`v0.10.2` was [published on 2026-10-26](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.2)
+from `f9d1af3d0d3e1838974a5cfdff0a08142977b45e`, `v0.10.1` was
+[published on 2026-10-24](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.1)
+from `9034a5a0f3526dec83ab6384e5264db595cb7549`, `v0.10.0` was
+[published on 2026-10-23](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.0)
+from `1ef9c89f465ba1299b4938c2b0359e9ae33ed454`, and `v0.9.22` was
+[published on 2026-10-15](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.22)
+from `7925ba4c0f1f82c8d3e4ef04758a77865b5ee510`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites
@@ -129,7 +179,12 @@ release-preparation commit. Rendering itself neither edits history nor consumes
 notes. Ordinary PRs never regenerate the root history; see
 [contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 The pipeline takes its registered `changelog` from the annotated tag message,
-not `CHANGELOG.md`; derive that message from the reviewed release entry.
+not `CHANGELOG.md`; derive that message from the reviewed release entry. Keep
+it to a short summary: the release API refuses registration bodies above
+64 KiB, and that refusal comes only after signing and notarization.
+`release_changelog` in `scripts/provider-release-publication.py` removes only
+Git's identified signature suffix and trims outer whitespace. Internal line
+breaks and paragraph spacing remain unchanged.
 
 ### 3. Merge And Verify Release Preparation
 
@@ -138,7 +193,9 @@ After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
 `.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
 compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
-not seed `master`.
+not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
+[CI runner routing](../developer/build.md#ci-runner-routing); `master` and
+dispatched runs always use these Blacksmith runners.
 
 Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
@@ -276,6 +333,11 @@ selects the same names from the version that `/v1/releases/latest` returns
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON.
 
+Right after selecting the identity, the installer refuses a **new** install on
+macOS 26 or earlier (`require_supported_macos`) before downloading the bundle, so a
+release never reaches a Mac that can't become a new provider. An existing install
+of the same identity can still be updated or repaired.
+
 These values are the same for both builds:
 
 - The bundle identifier and code-signing identifier `io.darkbloom.provider`,
@@ -408,7 +470,10 @@ relaxed designated requirement that keeps the bundle identifier
 `io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
 (`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
 the full Apple-team requirement unchanged, and a prod coordinator is never
-served a pre-release version. The dev coordinator also hashes the bundle rather
+served a pre-release version. The installer extracts the release archive with
+`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
+installed app owner-only; private state it creates elsewhere keeps its own modes
+(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
 than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
 device-attestation tier, not a code-signature tier.
 
@@ -438,7 +503,7 @@ run is a tooling failure, not a model or notarization failure.
 | 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
 | 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
 | 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
-| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, annotated-tag notes and source/run provenance |
+| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, original annotated-tag notes without the signature suffix, and source/run provenance |
 | 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
 All hashes describe final signed bytes. `scripts/install.sh` and self-update

@@ -10,6 +10,11 @@ enum ToolChoicePromptPolicy {
         let compiledTools: [CompiledToolSchema]?
         let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
+        /// Exact-Flint JSON content contract (`FlintResponseFormat`). When
+        /// present, no call is allowed.
+        var responseFormat: JSONAnswerFormat? = nil
+        /// GLM JSON content contract: the answer is withheld and validated.
+        var glmResponseFormat: GLM5NextResponseFormat? = nil
 
         var requiresToolCall: Bool {
             switch mode {
@@ -24,15 +29,43 @@ enum ToolChoicePromptPolicy {
         modelType: String? = nil,
         allowInternalSchemaMetadata: Bool = true
     ) throws -> Prepared {
+        let responseFormat = try FlintResponseFormat.resolve(request, modelType: modelType)
+        var choice = try prepareToolChoice(
+            request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+        choice.glmResponseFormat = try GLM5NextResponseFormat.resolve(request, modelType: modelType)
+        guard let responseFormat else { return choice }
+        // Recursive's Flint contract: tools plus a response format get only the
+        // response format, whatever tool_choice asked for. The prompt renders
+        // exactly as it would without the format (Flint keeps the original
+        // messages and the declared tools), so the coordinator sidecar's mirror
+        // needs no format rule; only generation changes: no call is allowed.
+        var prepared = choice.tools?.isEmpty == false
+            ? Prepared(
+                messages: choice.messages, tools: choice.tools, mode: .none, compiledTools: nil,
+                allowsParallelCalls: false, allowedToolNames: [])
+            : choice
+        prepared.responseFormat = responseFormat
+        return prepared
+    }
+
+    private static func prepareToolChoice(
+        _ request: OpenAIChatCompletionRequest,
+        modelType: String?,
+        allowInternalSchemaMetadata: Bool
+    ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true
-        // This exact native text path enforces required/named framing in the
+        // These exact native text paths enforce required/named framing in the
         // sampler. Keep the trained template and original messages instead of
         // injecting a second tool-only instruction into system and user text.
-        // Schema/name/cardinality checks remain mandatory. Keep this predicate
-        // synchronized with the coordinator prompt sidecar and contract version.
-        let nativeFramingHandlesChoice = Qwen4SupportPolicy.isOwnedModelID(request.model)
-            && modelType == "qwen4_exp" && !MediaIngest.hasMedia(request)
+        // Schema/name/cardinality checks remain mandatory. Flint is selected by
+        // its verified artifact type alone: ToolConstraintFactory installs its
+        // native constraint for every exact-Flint request or refuses it, and
+        // FlintRequestPolicy refuses media. Keep this predicate synchronized
+        // with the coordinator prompt sidecar and contract version.
+        let nativeFramingHandlesChoice = modelType == "flint"
+            || (Qwen4SupportPolicy.isOwnedModelID(request.model)
+                && modelType == "qwen4_exp" && !MediaIngest.hasMedia(request))
         switch request.toolChoice {
         case nil, .mode(.auto):
             try ToolConstraintValidation.rejectReservedSchemaMetadata(
@@ -61,7 +94,7 @@ enum ToolChoicePromptPolicy {
         case .mode(.required):
             guard let tools = request.tools, !tools.isEmpty else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice 'required' needs at least one declared tool")
+                    "tool_choice 'required' needs at least one declared tool", refusal: .invalidToolChoice)
             }
             let instruction: String
             if tools.count == 1, let name = tools.first?.function.name {
@@ -106,7 +139,7 @@ enum ToolChoicePromptPolicy {
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool_choice names an undeclared function")
+                    "tool_choice names an undeclared function", refusal: .invalidToolChoice)
             }
             let instruction: String
             if allowsParallelCalls {
@@ -150,11 +183,11 @@ enum ToolChoicePromptPolicy {
         for tool in tools ?? [] {
             guard isValidFunctionName(tool.function.name) else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$", refusal: .invalidToolDeclaration)
             }
             guard names.insert(tool.function.name).inserted else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool function names must be unique")
+                    "tool function names must be unique", refusal: .invalidToolDeclaration)
             }
         }
     }
@@ -179,7 +212,7 @@ enum ToolChoicePromptPolicy {
             return try ToolConstraintSchemaCompiler.compile(tools: tools, mode: mode)
         } catch let error as ToolConstraintSchemaError {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                error.localizedDescription)
+                error.localizedDescription, refusal: .unsupportedForcedToolChoice)
         }
     }
 

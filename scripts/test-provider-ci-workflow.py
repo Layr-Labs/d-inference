@@ -176,8 +176,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27", job)
-                self.assertIn("    needs: changes\n", job)
+                # A Darkbloom macOS sandbox when granted, otherwise the same
+                # dedicated Blacksmith runner; requested only when the lane runs.
+                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
+                self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                              "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n" % job_id,
+                              self.jobs["route"])
+                self.assertIn("    timeout-minutes: 60\n", job)
+                self.assertIn("    needs: [changes, route]\n", job)
                 self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
                 self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)
@@ -267,6 +273,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             MIMO_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,
+            "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             *MIMO_NATIVE_COMMANDS.values(),
             'python3 scripts/prepare-mimo-audio-fixtures.py --cache "$RUNNER_TEMP/mimo-audio-source" --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"',
             "../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel",
@@ -282,6 +289,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
+        desktop = next(step for step in steps if "scripts/test-desktop-api.py" in (run_command(step) or ""))
+        self.assertEqual(field(desktop, "if"), "${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}")
+        self.assertEqual(field(desktop, "timeout-minutes"), "3")
         installer = next(step for step in steps if run_command(step) == "./scripts/test-install-atomic.sh")
         self.assertEqual(field(installer, "if"), "${{ !cancelled() }}")
         self.assertEqual(field(installer, "timeout-minutes"), "2")

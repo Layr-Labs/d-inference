@@ -2066,7 +2066,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("native rate is reserved on cache miss, disabled cache, and staged hit exactly once")
     func nativeRateCoversEveryCacheStateWithoutDoubleReservation() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-native-states-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2135,7 +2135,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("bridge records terminal saved-prefill truth exactly once")
     func terminalSavedPrefillUpdatesSSDStats() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-terminal-saved-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2186,7 +2186,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("prompt plus max-token overflow rejects before cache staging")
     func tokenCountOverflowRejectsBeforeStaging() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-token-overflow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2214,7 +2214,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("SSD staging never false-rejects a request that fits cold at the exact boundary")
     func stagingFallsBackToColdReservation() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-stage-boundary-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2275,7 +2275,7 @@ struct EngineV2SharedBudgetTests {
 
     @Test("native-width rate rejects staged-to-cold fallback before over-admission")
     func nativeWidthRefusalRejectsRequest() async throws {
-        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let parent = try SSDTestDirectory.parent()
             .appendingPathComponent("bridge-native-width-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2752,7 +2752,7 @@ struct EngineV2SeededSamplingTests {
     @Test("sequential identical seeded requests keep receipt callbacks and cleanup isolated")
     func seededReceiptIdentityIsIndependent() async throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+        let parent = try SSDTestDirectory.parent().appendingPathComponent(
             "bridge-receipt-\(UUID().uuidString)", isDirectory: true)
         let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

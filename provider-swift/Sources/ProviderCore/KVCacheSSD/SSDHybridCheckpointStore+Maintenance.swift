@@ -126,6 +126,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             at: config.root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
         else { return }
         let now = config.nowSeconds()
+        // Pair each delta's commitment with its parent once every header is seen.
+        var commitments: [String: Data] = [:], parents: [Data: String] = [:]
         for fanout in fanouts where SSDBlockStore.isLowerHex(fanout.lastPathComponent, count: 2) {
             guard SSDBlockStore.isRealDirectory(fanout), SSDBlockStore.pathResolvesToItself(fanout),
                 let files = try? manager.contentsOfDirectory(
@@ -140,8 +142,9 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 guard SSDBlockStore.isSafeBlockURL(file, modelRoot: config.root),
                     let tag = SSDPrefixCache.hexDecode(file.deletingPathExtension().lastPathComponent)
                 else { index.removeAll(); return }
-                guard let metadata = try? SSDBlockStore.readMetadataOnly(
+                guard let header = try? SSDBlockStore.readHeaderOnly(
                     from: file, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60),
+                    case let metadata = header.metadata, let fullTag = SSDPrefixCache.hexDecode(metadata.lookupTag),
                     metadata.weightHash == identity.modelAggregateHash,
                     metadata.layoutEpoch == SSDHybridCheckpointEnvelope.layoutEpoch(
                         identity: identity, backendLayout: config.backendLayout),
@@ -151,9 +154,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                     let size = attributes.fileSize, let date = attributes.contentModificationDate,
                     now - Int64(date.timeIntervalSince1970) < config.ttlSeconds
                 else { removeCorrupt(tag); continue }
-                index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970))
+                index.insert(tag16: tag, fileBytes: size, lastAccess: Int64(date.timeIntervalSince1970),
+                             parent: metadata.parentCommitment.map { _ in Data() })
+                commitments[lookupKeys.checkpointParentCommitmentHex(parentTag: fullTag, parentFileIV: header.fileIV)] = tag
+                parents[tag] = metadata.parentCommitment
             }
         }
+        // An unpaired delta stays unusable and ages out like any untouched file.
+        for (tag, commitment) in parents { commitments[commitment].map { index.setParent(tag16: tag, parent: $0) } }
         lock.withLock { if !closed { scanReady = true } }
     }
 
@@ -178,7 +186,8 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return (capabilityLocked(), PrefixCacheModelStatus(
                 modelId: base.modelId, backend: base.backend, replayStrategy: base.replayStrategy,
                 state: closed ? .error : (ready ? .ready : .pending),
-                reason: closed ? .cacheInitFailed : (ready ? .ready : .scanPending)))
+                reason: closed ? .cacheInitFailed : (ready ? .ready : .scanPending),
+                detail: closed ? .cacheClosed : nil))
         }
     }
 
@@ -203,6 +212,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         lock.withLock {
             readyReceipts.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
+            restoredCheckpoints.removeValue(forKey: requestID)
         }
     }
 
@@ -224,7 +234,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
                 let tag = Data(proof.tags[offset].prefix(16))
                 let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
                 guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular,
-                    let size = index.fileBytes(tags16: [tag][...])?.first
+                    let size = index.chain(tag16: tag)?.bytes
                 else { continue }
                 maximumFileBytes = max(maximumFileBytes, size)
                 let anchor = PrefixCacheAnchor(chainHash: proof.hashes[offset].hexString, tokenCount: UInt64(position))
@@ -235,7 +245,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return (proof, PrefixCacheReadyResult(
                 readyTokens: Int(latest.tokenCount), requiredRecomputeTokens: 0,
                 expectedPrefillTokensSaved: Int(latest.tokenCount), tier: .ssd,
-                stageMs: SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: maximumFileBytes),
+                stageMs: stageCost.estimatedMilliseconds(bytes: maximumFileBytes),
                 finalAnchor: latest, readyAnchors: proof.anchors))
         }
         if let delivery { delivery.0.callback(delivery.1) }

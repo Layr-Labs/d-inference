@@ -93,6 +93,13 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
             || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
     }
 
+    /// GLM serves only through its embedded-MTP native owner, and its managed
+    /// loader validates the trained head, so automatic intent needs no config
+    /// declaration probe. `off` and the process kill switch still disable it.
+    private static func isAutomaticGLM5NextTarget(modelType: String?) -> Bool {
+        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "glm5_next"
+    }
+
     func enablesMTP(
         forModelType modelType: String?,
         embeddedArtifactDeclared: Bool,
@@ -104,7 +111,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
         case .off:
             return false
         case .auto:
-            if Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID) {
+            if Self.isAutomaticExternalTarget(modelType: modelType, modelID: modelID)
+                || Self.isAutomaticGLM5NextTarget(modelType: modelType) {
                 return true
             }
             guard embeddedArtifactDeclared,
@@ -150,6 +158,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Explicit network residency control; advertising all cached models is not consent.
     public var modelAutopilot: ModelAutopilotSettings
+    /// Downloads Autopilot may make on the operator's behalf
+    /// (`[backend.autopilot_downloads]`). nil (table absent) means the
+    /// defaults: on, no caps, the built-in reserve; optional so a written
+    /// default never shadows a later built-in change.
+    /// Provider configuration, not consent: changing it never bumps the
+    /// Autopilot revision.
+    public var autopilotDownloads: AutopilotDownloadSettings?
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 4, the knee of the measured
@@ -325,7 +340,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtpDrafterPath: String? = nil,
         mtpAcceptance: String? = nil,
         mtpAcceptanceByModel: [String: String] = [:],
-        modelAutopilot: ModelAutopilotSettings = .init()
+        modelAutopilot: ModelAutopilotSettings = .init(),
+        autopilotDownloads: AutopilotDownloadSettings? = nil
     ) {
         self.port = port
         self.model = model
@@ -353,6 +369,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpAcceptance = mtpAcceptance
         self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.modelAutopilot = modelAutopilot
+        self.autopilotDownloads = autopilotDownloads
     }
 
     enum CodingKeys: String, CodingKey {
@@ -363,6 +380,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
         case modelAutopilot = "model_autopilot"
+        case autopilotDownloads = "autopilot_downloads"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -406,6 +424,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
+        self.autopilotDownloads = try container.decodeIfPresent(AutopilotDownloadSettings.self, forKey: .autopilotDownloads)
         self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
@@ -460,6 +479,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
         try container.encode(modelAutopilot, forKey: .modelAutopilot)
+        try container.encodeIfPresent(autopilotDownloads, forKey: .autopilotDownloads)
         if engineV2MaxConcurrentIsExplicit {
             try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
         }

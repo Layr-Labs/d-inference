@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-26
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -51,6 +51,33 @@ resources, not provider product resources. MiMo provider fixture preparation
 uses bounded synthetic weights; the genuine audio codec is a separately
 hash-verified input. See [provider and SDK tests](test.md#provider-and-sdk).
 
+Building the GLM5Next target, media, MTP and loader candidates does not
+register the architecture with the model factories or provider. Follow the
+[prerequisite test procedure](test.md#glm5next-prerequisite-tests); do not use a
+successful SDK build as proof of the [complete integration](../design/glm53-flash-native.md).
+
+The GLM official template uses numeric attribute access such as
+`content.0.type`, which the pinned Swift-Jinja 2.3.6 does not parse. Builds use
+the ordinary locked Swift-Jinja pin with no SwiftPM edit mode or dependency
+patch. Our `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` artifact instead ships a
+separately identified template that writes those accesses as `[0]` subscripts.
+Its derivation and equivalence evidence are in
+`fixtures/prompt-contract/glm53-flash/`. Do not modify ignored build checkouts or
+rewrite another artifact's template to hide the parser limitation.
+
+The SSD test working-volume selector is runtime-only fixture configuration;
+it does not change the provider cache or Swift/native build inputs. Rebuild
+provider test products after fixture-source changes before using `--skip-build`,
+then apply the optional directory override at execution time as documented in
+[SSD test working volume](test.md#ssd-test-working-volume).
+
+MiMo tool-schema regression checks require a rebuilt provider test product after
+source changes. Reuse only an inactive, owned scratch directory with the selected
+public gitlinks and locked package graph; record the resulting test executable
+identity before any `--skip-build` selection. The [focused fixture recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+uses metadata and scripted generation, not a substitute native runtime or a
+binary copied from a different dependency composition.
+
 Native checkpoint and live-attention precision changes require the matching
 provider and SDK pins. Build both test products before the
 [checkpoint-storage gates](test.md#native-inference-checkpoint-storage-qualification);
@@ -59,6 +86,22 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 `landing/` has its own npm lockfile, configuration and API routes. It needs a
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
+
+## Electron Desktop App
+
+`make desktop-install`, `make desktop-build`, and `make desktop-package` build
+and package the app without publishing. The frontend uses the Swift CLI's local
+API. See [desktop development](desktop-app.md) for the isolated preview,
+component boundary, and signed release qualification.
+
+For a Developer ID signed desktop DMG with a bundled review API, follow the
+[signed local preview procedure](desktop-app.md#signed-local-preview).
+`desktop-app/scripts/package-preview.mjs` keeps this build separate from the
+regular release app and verifies the bundled API's signing team.
+
+`make desktop-api-test` exercises the real Swift control API against isolated
+local fixtures (`scripts/test-desktop-api.py`). The fixture never starts a
+serving provider or changes its credentials.
 
 ## SDK 27 Release Builds And Caches
 
@@ -110,6 +153,41 @@ build and whole-job time rather than promising a fixed release duration.
 the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
+
+## CI Runner Routing
+
+`.github/workflows/darkbloom-route.yml` chooses where read-only CI jobs run: a
+Darkbloom Sandbox when its plane grants one, otherwise the job's Blacksmith
+fallback. It runs on GitHub-hosted `ubuntu-24.04` with no token permissions or
+checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>']`.
+
+| Workflow | Routed jobs | Fallback |
+|---|---|---|
+| `ci.yml` | `release-integrity`, `docs`, `lint-console` | `blacksmith-4vcpu-ubuntu-2404` |
+| `ci.yml` | `test-provider`, `test-provider-sdk`, `test-provider-parity` | `blacksmith-12vcpu-macos-27` |
+| `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
+| `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+
+Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
+`on`. While it is off, and for pull requests from forks, every job keeps its
+fallback and the plane is not contacted. When it is on, the route job sends one
+`POST /v1/ci/routes` to `DARKBLOOM_SANDBOX_URL` (default
+`https://api-sandbox.darkbloom.dev`) for the jobs that will run, retrying at
+most once after a transient failure. It uses a grant only when the grant
+repeats the exact Darkbloom labels for the job's profile. Errors, timeouts and
+malformed replies keep the fallback; the plane never fails the route job.
+Release, signing, publication, model registration, review automation,
+`cache-swift` and `master` or dispatched cache warming keep literal Blacksmith
+labels. The component classifier and the `Provider Tests` gate run on
+`ubuntu-24.04`.
+
+Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
+colocated cache, so their first runs start without cached build products.
+Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
+decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
+off and use **Re-run all jobs** to move a run back to Blacksmith. See the
+[routing checks](test.md#focused-tooling-checks).
 
 ## Dev Build Identity
 
@@ -225,8 +303,25 @@ Retaining source or running a build does not authorize hosting or traffic change
 For changes to the trusted PR reviewer, no provider build is required. Run the
 offline Python suites in [threat-review verification](threat-model-review.md#verify)
 and validate changed workflow YAML. The review workflow uploads content-free
-failure diagnostics and last-request progress; deploying a new reviewer still requires the trusted-base
-workflow change to merge.
+failure diagnostics and last-request progress, including scanner and canonical
+context revisions. After merge, new runs use current default-branch scanner code
+and separately read the PR base threat model. Integration replays bounded exact
+source from each model's own reviewed scope. Native Bedrock response-format
+compatibility requires the bounded live smoke check in addition to offline tests.
+The local lifecycle checks inject invalid analysis/acknowledgment, native usage
+failures, concurrent state writes and failed final-result delivery. They verify
+bounded recovery, retained findings and denial of incomplete/stale clearance;
+a successful normal response alone does not test recovery.
+CI admits source, selected depth and integration work from the actual batch plan,
+with an emergency ceiling and a bounded deadline that leaves time for reporting.
+Native workload defaults allow larger reviews and output; maintainers can lower
+the dedicated call ceiling and output settings without a code change.
+Normal depth routing sends critical batches directly to Sol and other risky or
+uncertain batches to Opus. Full Sonnet coverage and integration remain; clean
+support files avoid filename-only extra passes, and integration findings target
+their cited batches. Global uncertainty retains the human-review handoff.
+Paid manual dispatches and job reruns are disabled; incomplete final reviews
+explicitly hand off to a human. See the verification guide for the exact limits.
 
 Follow [test](test.md) for provider, SDK and public fixture checks. Build success
 does not prove runtime parity, real Apple attestation, model quality or a release.
@@ -255,6 +350,37 @@ artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.
 Backend build and deployment configuration belongs in the platform repository.
+
+## Flint native dependency build
+
+1. Use `libs/mlx-swift-lm` at `65eaceb8b90bc65d01c2d2fb4a8801584f4ead7a`
+   ([SDK #322](https://github.com/Layr-Labs/mlx-swift-lm/pull/322)) and
+   `libs/mlx-swift` at `67dc752856ca3904e5de85b28e2f46ee3b182f62`.
+2. Run `make provider-build`. It builds the metallib from the nested MLX source
+   actually compiled by Cmlx. Preserve binary and metallib hashes with physical
+   evidence; rebuilding tests alone does not refresh a release benchmark binary.
+3. For Flint serving, select native live KV and native checkpoint precision,
+   including when general configuration supplies `balanced` checkpoint storage:
+
+   ```bash
+   export DARKBLOOM_CBV2_KV_QUANTIZATION=native
+   export DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native
+   ```
+
+   See [native Flint](../architecture/inference.md#native-flint) for the enforced
+   precision contract. The official artifact remains unchanged; the provider
+   executes in Swift/MLX without a Python inference process.
+
+Verify with [Flint tests](test.md#flint-native-validation); see the
+[SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) for provenance.
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 

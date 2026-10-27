@@ -154,9 +154,8 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         {
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
-            return Self.openAIErrorResponse(
-                status: HTTPResponse.Status(code: Int(failure.statusCode)),
-                message: failure.message)
+            let status = HTTPResponse.Status(code: Int(failure.statusCode))
+            return Self.openAIErrorResponse(status: status, message: failure.message)
         }
     }
 
@@ -175,13 +174,15 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// OpenAI-shaped error envelope (matches the body the upstream
     /// `/v1/embeddings` route emits when the engine is missing). Sets
     /// the CORS allow-origin header so browser clients can read the
-    /// body even on a cross-origin request.
+    /// body even on a cross-origin request. `code` is the optional OpenAI
+    /// error code; it is omitted from the body when nil.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
-        message: String
+        message: String,
+        code: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error")
+            error: .init(message: message, type: "invalid_request_error", code: code)
         )
         let data: Data
         do {
@@ -208,6 +209,7 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
+        let code: String?
     }
     let error: ErrorObject
 }

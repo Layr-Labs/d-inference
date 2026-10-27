@@ -1,7 +1,7 @@
 """Reserve conservative cold-cache cost before transport; never retry paid calls."""
 import json
 from decimal import Decimal, ROUND_CEILING
-from .client import request_json
+from .client import APIError, request_json
 from .context import SONNET, OPUS, SOL
 from .state import BudgetStopped, USD
 
@@ -32,7 +32,7 @@ class PaidCalls:
         self.last_request = {}
 
     def __call__(self, url, key, payload):
-        self.last_request = {"provider": "openrouter"}
+        self.last_request = {"provider": "openrouter", "response_format": "json_schema"}
         if self.stopped:
             raise BudgetStopped(self.stopped)
         self.alive()
@@ -61,7 +61,12 @@ class PaidCalls:
         self.last_request["call"] = self.calls
         # An exception or cancellation after admission keeps the reservation.
         # Never blindly retry or assume an HTTP error means no provider charge.
-        response = self.transport(url, self.key, payload)
+        try:
+            response = self.transport(url, self.key, payload)
+        except APIError as error:
+            error.diagnostic = {"code": "OPENROUTER_API_ERROR", "service": "openrouter",
+                                "operation": "completion", "http_status": error.status}
+            raise
         usage = response.get("usage", {})
         try:
             actual = microdollars(usage["cost"])

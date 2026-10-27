@@ -42,19 +42,25 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
     public let replayStrategy: PrefixCacheReplayStrategy
     public let state: PrefixCacheStatusState
     public let reason: PrefixCacheStatusReason
+    /// The typed store refusal behind an `error` state, for example
+    /// `key_unavailable` behind `cache_init_failed`; nil otherwise. Optional
+    /// and omitted when nil, so coordinators that predate it ignore it.
+    public let detail: SSDPrefixCacheConstructionFailure?
 
     public init(
         modelId: String,
         backend: PrefixCacheStatusBackend,
         replayStrategy: PrefixCacheReplayStrategy,
         state: PrefixCacheStatusState,
-        reason: PrefixCacheStatusReason
+        reason: PrefixCacheStatusReason,
+        detail: SSDPrefixCacheConstructionFailure? = nil
     ) {
         self.modelId = modelId
         self.backend = backend
         self.replayStrategy = replayStrategy
         self.state = state
         self.reason = reason
+        self.detail = state == .error ? detail : nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +69,7 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case replayStrategy = "replay_strategy"
         case state
         case reason
+        case detail
     }
 }
 
@@ -238,6 +245,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        /// Present while an add-on hold refuses work, so a fresh connection
+        /// is excluded from routing before its first heartbeat. Omitted
+        /// otherwise; older coordinators ignore it.
+        public var busy: ProviderBusy?
 
         public init(
             hardware: HardwareInfo,
@@ -267,10 +278,12 @@ public enum ProviderMessage: Sendable, Equatable {
             appAttestResumeProtocol: Int? = nil,
             appAttestResumeNonce: String? = nil,
             modelAutopilot: ModelAutopilotSnapshot? = nil,
-            autopilotInventory: [ModelInfo]? = nil
+            autopilotInventory: [ModelInfo]? = nil,
+            busy: ProviderBusy? = nil
         ) {
             self.modelAutopilot = modelAutopilot
             self.autopilotInventory = autopilotInventory
+            self.busy = busy
             self.hardware = hardware
             self.models = models
             self.backend = backend
@@ -328,6 +341,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// dashboard) tell "unloaded on purpose, wakes on demand" apart from
         /// "should be loaded and isn't". nil/omitted from older providers.
         public var idleUnloadMins: UInt64?
+        /// Why `status` is `draining` while an add-on holds the Mac
+        /// (`busy_reason`, `busy_since_ms`, `busy_addon`). Omitted otherwise.
+        public var busy: ProviderBusy?
 
         public init(
             status: ProviderStatus,
@@ -344,8 +360,10 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             idleUnloadMins: UInt64? = nil,
-            modelAutopilot: ModelAutopilotSnapshot? = nil
+            modelAutopilot: ModelAutopilotSnapshot? = nil,
+            busy: ProviderBusy? = nil
         ) {
+            self.busy = busy
             self.status = status
             self.activeModel = activeModel
             self.warmModels = warmModels
@@ -927,6 +945,10 @@ extension ProviderMessage: Codable {
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
         case idleUnloadMins = "idle_unload_mins"
+        // Register + Heartbeat (add-on hold)
+        case busyReason = "busy_reason"
+        case busySinceMs = "busy_since_ms"
+        case busyAddon = "busy_addon"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -1045,6 +1067,7 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -1071,6 +1094,7 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+            try Self.encodeBusy(h.busy, into: &container)
 
         case .serviceReservationReleased(let id):
             try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
@@ -1318,7 +1342,8 @@ extension ProviderMessage: Codable {
                 appAttestResumeProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestResumeProtocol),
                 appAttestResumeNonce: try container.decodeIfPresent(String.self, forKey: .appAttestResumeNonce),
                 modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
-                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory)
+                autopilotInventory: try container.decodeIfPresent([ModelInfo].self, forKey: .autopilotInventory),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .heartbeat:
@@ -1343,7 +1368,8 @@ extension ProviderMessage: Codable {
                     [PrefixCacheDonationOutcomeCount].self,
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins),
-                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot)
+                modelAutopilot: try container.decodeIfPresent(ModelAutopilotSnapshot.self, forKey: .modelAutopilot),
+                busy: try Self.decodeBusy(from: container)
             ))
 
         case .serviceReservationReleased:

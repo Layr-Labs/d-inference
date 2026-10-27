@@ -79,7 +79,9 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nTrust: hardware / online\n  → "))
         #expect(trusted.contains("\nWarm models: "))
         #expect(trusted.contains("\nNot loaded (loads on request): acme/Alpha-4bit\n"))
-        #expect(trusted.contains("\nRequests served: 12  |  tokens: 3400\n"))
+        #expect(trusted.contains("\nRequests served since the daemon started (1h1m ago): 12  |  output tokens: 3400\n"
+            + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
+        #expect(!trusted.contains("ended early"))
         #expect(trusted.contains("\nLast model-load error: acme/Alpha-4bit: weights unreadable\n"))
         #expect(trusted.contains("\nKV-backend guard: ACTIVE — packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) "))
         #expect(trusted.contains("requires paged and is refused while guarded"))
@@ -93,6 +95,49 @@ struct StatusCommandRunTests {
         #expect(!authorized.contains("\nTrust: "))
         #expect(!authorized.contains("KV-backend guard"))
         #expect(!authorized.contains("\nNot serving: "))
+    }
+
+    /// `Requests served` is this daemon session's own count, not the
+    /// coordinator's paid jobs: it resets with the daemon, counts output
+    /// tokens only, and includes requests that ended early on a cancel, which
+    /// the coordinator may not pay for. The early-end count is patched into
+    /// the state file under the key the daemon writes.
+    @Test("status scopes requests served to the daemon session and separates those that ended early")
+    func servedRequestsAreScopedToTheSession() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let arguments = ["status", "--config", sandbox.config.path]
+
+            sandbox.writeState(try CLICommandSandbox.runningState(now: Date().timeIntervalSince1970))
+            print("== IDLE")
+            try await runCLICommand(Status.self, arguments)
+
+            sandbox.writeState(try CLICommandSandbox.runningState(
+                now: Date().timeIntervalSince1970,
+                stats: .init(requestsServed: 78, tokensGenerated: 84_000, usageGaps: 0)))
+            var state = try #require(
+                try JSONSerialization.jsonObject(with: Data(contentsOf: sandbox.stateFile)) as? [String: Any])
+            var stats = try #require(state["stats"] as? [String: Any])
+            stats["cancellations_partial_complete"] = 5
+            state["stats"] = stats
+            try JSONSerialization.data(withJSONObject: state).write(to: sandbox.stateFile)
+            print("== SERVED")
+            try await runCLICommand(Status.self, arguments)
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        let idle = try #require(outputSection(output, from: "== IDLE", to: "== SERVED"))
+        #expect(idle.contains("\nRequests served since the daemon started (1h1m ago): 0  |  output tokens: 0\n"))
+        #expect(!idle.contains("Earnings"))
+
+        let served = try #require(outputSection(output, from: "== SERVED", to: "== END"))
+        #expect(served.contains("\nRequests served since the daemon started (1h1m ago): 78  |  output tokens: 84000\n"
+            + "  5 of them ended early on a coordinator cancel or a dropped connection and may be unpaid.\n"
+            + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
     }
 
     /// An interrupted or timed-out `darkbloom restart` leaves the old process
@@ -116,6 +161,94 @@ struct StatusCommandRunTests {
         let daemon = try #require(lines.firstIndex { $0.hasPrefix("Daemon: running (pid ") })
         #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
             ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
+    }
+
+    /// A connected provider the coordinator does not route to looked healthy
+    /// in `status` ("Trust: awaiting coordinator status", or a stale trust
+    /// line) while earning nothing. The Traffic line says why.
+    @Test("status says why a connected provider receives no coordinator work")
+    func trafficVerdict() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let arguments = ["status", "--config", sandbox.config.path]
+            var now = Date().timeIntervalSince1970
+            var state = try CLICommandSandbox.runningState(now: now)
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 2)
+            sandbox.writeState(state)
+            print("== NO STATUS")
+            try await runCLICommand(Status.self, arguments)
+
+            now = Date().timeIntervalSince1970
+            state = try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(
+                    trustLevel: "self_signed", status: "online", reason: "Provider authorization updated",
+                    receivedAt: now - 30,
+                    authorization: ProviderAuthorizationStatus(
+                        appAttestAvailable: true, path: "none", reason: "app_attest_keychain_error",
+                        sessionID: "session", machineID: "")))
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+            sandbox.writeState(state)
+            print("== KEYCHAIN")
+            try await runCLICommand(Status.self, arguments)
+
+            now = Date().timeIntervalSince1970
+            state = try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(
+                    trustLevel: "self_signed", status: "online", reason: "app attest", receivedAt: now,
+                    authorization: CLICommandSandbox.appAttestAuthorization(now: now)))
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+            sandbox.writeState(state)
+            print("== AUTHORIZED")
+            try await runCLICommand(Status.self, arguments)
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        let missing = try #require(outputSection(output, from: "== NO STATUS", to: "== KEYCHAIN"))
+        #expect(missing.contains("\nTrust: awaiting coordinator status\nTraffic: NOT receiving coordinator work: "
+            + "connected for 20m, but the coordinator has not confirmed this connection\n  → fix: run `darkbloom restart`"))
+
+        let keychain = try #require(outputSection(output, from: "== KEYCHAIN", to: "== AUTHORIZED"))
+        #expect(keychain.contains("\nTraffic: NOT receiving coordinator work: the coordinator is not routing work here: "
+            + "the login keychain refused this Mac's App Attest key record (it is usually locked)\n"
+            + "  → fix: log in at this Mac's console to unlock the login keychain"))
+
+        let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
+        #expect(authorized.contains("\nTraffic: eligible for coordinator work (App Attest authorized until "))
+        #expect(!authorized.contains("NOT receiving"))
+    }
+
+    /// An add-on hold keeps the connection, still authorized, but takes the
+    /// Mac out of routing on purpose. Its `Not serving:` line says so; no
+    /// Traffic line contradicts it.
+    @Test("status shows a held provider's hold line and no traffic verdict")
+    func heldProviderHasNoTrafficVerdict() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            var state = try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(
+                    trustLevel: "self_signed", status: "online", reason: "app attest", receivedAt: now,
+                    authorization: CLICommandSandbox.appAttestAuthorization(now: now)))
+            state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+            state.addonHold = AddonHoldSnapshot(holds: [AddonHoldView(
+                holdId: "hold", addon: "io.darkbloom.sandbox", state: "held",
+                sinceMs: Int64((now - 300) * 1_000), leaseExpiresAtMs: Int64((now + 60) * 1_000), vmBytes: 8 << 30)])
+            sandbox.writeState(state)
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let output = decodedText(result.standardOutputContent)
+        #expect(output.contains("\nNot serving: held by add-on io.darkbloom.sandbox: held since "))
+        #expect(!output.contains("Traffic:"))
     }
 
     /// A renewal received 15 s ago with an unexpired lease must not turn

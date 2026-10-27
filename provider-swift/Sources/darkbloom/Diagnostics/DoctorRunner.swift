@@ -6,6 +6,20 @@ import ProviderCore
 /// the daemon state file (trust reason, live runtime), and a coordinator
 /// version check. Returns sectioned `Diagnostic`s for the renderer.
 enum DoctorRunner {
+    static func trafficDiagnostic(_ verdict: ServingReadiness.Verdict) -> Diagnostic {
+        switch verdict {
+        case .authorized(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .pass,
+                              message: "eligible for coordinator work (\(detail))", fix: nil)
+        case .pending(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
+                              message: "not yet eligible (\(detail))", fix: nil)
+        case .blocked(let advice):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .fail,
+                              message: "NOT receiving coordinator work: \(advice.message)", fix: advice.fix)
+        }
+    }
+
     static func buildOperatorDiagnosis(
         snapshot: RuntimeSnapshot,
         coordinatorURL: String
@@ -97,6 +111,11 @@ enum DoctorRunner {
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }
+        }
+
+        // ---- Coordinator traffic: is this connection routable, and if not, why? ----
+        if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
+            out.append(trafficDiagnostic(verdict))
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
@@ -222,13 +241,16 @@ enum DoctorRunner {
                 let warm = WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel)
                 let mru = WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel)
                 out.append(Diagnostic(section: .runtime, name: "daemon connected", level: .pass,
-                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served.",
+                                      message: "up \(formatDuration(state.uptimeSeconds(now: now))), warm models: \(warm) (\(WarmModelsFormat.mostRecentlyUsedLabel.lowercased()): \(mru)), \(state.stats.requestsServed) requests served since the daemon started.",
                                       fix: nil))
             }
             if let err = state.lastModelLoadError {
                 out.append(Diagnostic(section: .runtime, name: "recent model load", level: .warn,
                                       message: "FAILED for \(err.model): \(err.message)",
                                       fix: "see the model-fit check above; serve a model that fits this box's RAM."))
+            }
+            if !state.isStale(now: now) {
+                out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
             }
             // ---- Billing ----
             if state.stats.usageGaps > 0 {
@@ -237,7 +259,7 @@ enum DoctorRunner {
                                       fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them."))
             } else {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
-                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) tokens reported this session.",
+                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) output tokens completed since the daemon started, all with usage; the console's Earnings page lists the paid ones.",
                                       fix: nil))
             }
         }

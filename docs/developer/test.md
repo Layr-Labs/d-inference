@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-21
+> Last updated: 2026-10-27
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -39,9 +39,8 @@ No model weights or live provider state are needed.
 
 ## Provider And SDK
 
-```bash
-make provider-test
-```
+From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
+to prepare the inputs and run `make provider-test`.
 
 The Make target builds test products, stages source-matched metallibs and uses
 `scripts/run-provider-tests.sh`. The runner isolates daemon-state and loaded-model
@@ -54,23 +53,429 @@ native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
-MiMo preparation uses `scripts/prepare-mimo-prompt-fixtures.py` for metadata,
-`scripts/prepare-mimo-provider-fixtures.py` for bounded synthetic target/vision
-weights, and `scripts/prepare-mimo-audio-fixtures.py` for hash-pinned public inputs
-including the genuine audio codec. Keep output directories isolated. Routine
-fixtures use symmetric 128-context geometry; the separate complete-prefix
-process uses `--asymmetric` for K64/V128 and 1,024-context geometry. Audio gates
-exercise PCM8 and AAC-video with a small target, not full-model quality or peak
-memory. Release-only builds do not provision test fixtures or opt into native
-qualification.
+### Local Responses and reasoning regressions
+
+After building the exact provider/SDK test products, run these focused suites
+from `provider-swift/`. Keep the test state isolated as in
+`scripts/run-provider-tests.sh`; the helper/router fixtures use synthetic
+credentials and no live provider endpoint.
+
+```bash
+../scripts/run-nested-suite.sh 'LocalResponseConversationTests|ReasoningPromptProbeTests|LocalOpenAIObjectCompatibilityTests' --no-parallel
+```
+
+`LocalResponseConversationTests` executes the real helper and authenticated
+Hummingbird `.router` responder. Its acquisition counter must remain zero for
+non-null invalid ID types and unknown/empty strings, on both URL aliases and
+both response modes. Null and omitted IDs must reach acquisition. Retain the
+known-ID, tool-history, storage opt-out and bounded-LRU controls.
+`ReasoningPromptProbeTests` composes the actual prompt probe, service and
+continued history for a prompt-open length stop; it must retain reasoning and
+leave answer text empty. These sources are in
+`provider-swift/Tests/ProviderCoreTests/Server/LocalResponseConversationTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ReasoningPromptProbeTests.swift`.
+
+Use an SDK revision whose `ReasoningParser.parseThinkTags` handles unclosed
+blocks. Run `CollectedReasoningTests` through the same suite runner from
+`libs/mlx-swift-lm/` after rebuilding its test product. Provider-only prompt
+seeding cannot close this regression against the older parser.
+`LocalOpenAIObjectCompatibilityTests` additionally requires stable fallback
+model creation values in `MLXOpenAIService` and flat tool configuration in
+`OpenAIResponsesProtocol` and `ResponsesStreamWriter`. A provider test host
+does not provide those SDK changes; select the corresponding immutable SDK
+revision before treating these assertions as a gate.
+
+Record actual discovered/executed counts and failures separately. Syntax
+parsing and extracted CPU probes do not execute the package router or scheduler.
+Keep full HTTP create/retrieve/continue, disconnect, cross-request/model
+isolation and retrieval-after-history-eviction checks in product qualification;
+the history LRU and object store have
+[different lifetimes](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### SSD test working volume
+
+Fixtures that call `SSDTestDirectory.parent()` use Foundation's resolved temporary
+directory unless `DARKBLOOM_SSD_TEST_TMPDIR` selects another test working volume.
+The shared SSD-prefix fixtures and bridge fixtures that require successful
+cache donations honor this selector. It does not configure the provider cache
+or change the process-wide `TMPDIR`.
+
+When the default volume lacks the free space required for real cache writes,
+create a task-owned directory on a suitable volume and pass its canonical,
+absolute path to the test runner. The parent directory must already exist and
+be writable. Empty, relative, missing, file and symlink paths are rejected;
+selection or directory-creation errors fail fixture setup instead of falling
+back silently.
+
+```bash
+mkdir -p "/Volumes/Test Scratch/darkbloom-tests"
+DARKBLOOM_SSD_TEST_TMPDIR="/Volumes/Test Scratch/darkbloom-tests" make provider-test
+```
+
+Leave the variable unset for the normal temporary directory. The production
+free-space checks, write limits, assertions and cleanup still apply. Raw-codec
+fixtures that do not call the selector keep their existing temporary paths.
+Rebuild changed test products before using `--skip-build`; see the
+[build guide](build.md#build).
+
+### GLM5Next prerequisite tests
+
+Provider ownership regressions are in `GLM5NextManagedKernelTests`. In a fresh,
+isolated test process, set `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1` and select
+that suite to exercise actual bridge MTP submission, checked partial-load
+cleanup, expert-source retirement, and the resolved-tokenizer preallocation
+probe. These use tiny local fixtures, not the full downloaded model. With the
+same flag, `GLM5NextStandaloneLoadPolicyTests` checks that the standalone local
+opt-in refuses target-only GLM before any load state exists, and
+`GLM5NextLogprobsTests` submits logprobs to the protected native bridge built
+from the same fixture: the relay channel must receive one entry per generated
+token with the requested alternatives, the row must not draft, and a later
+plain request must still speculate. Beside a concurrent plain row, a ten-step
+logprob row must carry the entries it carries alone and leave the plain row's
+text unchanged. Without a flag, `GLM5NextRelayLogprobsTests` replays scripted
+GLM tokens through the production coordinator handler and frames loop
+(`ScriptedCoordinatorRelay`): a mixed reply and a reply that ends while
+reasoning, requested streamed and not, must carry one entry per generated token
+in generation order (none for the mixed reply's stop token), reasoning tokens on
+the reasoning chunks and the marker and answer tokens on the content chunks; a
+request without logprobs carries none, and another model type keeps
+content-chunk attachment. In the SDK,
+`GLM5NextMTPTests/protectedPagedEngineCapturesLogprobRowsOffSpeculation` and
+`protectedPagedEngineServesALogprobRowBesideAPlainRow` compare the captured
+values with the target's own log-softmax for serial and rectangular
+verification. `NativeOutputControlRefusalTests` keeps the typed 400 for
+native engines that do not capture logprobs (MiMo). The pure
+`GLM5NextLocalQualificationTests` cover selection, retained-byte charges and
+the KV rate derived from the pinned architecture evidence.
+
+The same flag runs `verifiedDigestExistsOnlyAfterEveryManifestFileVerified`:
+the load reports the manifest aggregate only after every file verified, equal to
+a `WeightHasher` pass, and a same-size corrupted shard leaves it unset. With
+`DARKBLOOM_TEST_GLM5_PROTECTED_FACTORY=1`, `GLM5NextProviderLoopTests` loads
+through `ProviderLoop.ensureModelLoaded` and checks that no load-time
+`WeightHasher` pass runs, the live hash is the aggregate, and the
+`VerifiedWeightHashStore` record matches the files. `VerifiedWeightHashStoreTests`
+and `RegistrationWeightHashTests` need no flag. `scripts/run-provider-tests.sh`
+points `DARKBLOOM_VERIFIED_WEIGHTS_FILE` at its isolated state directory.
+
+`scripts/benchmarks/glm_load_timeline.py` turns a provider log into a phase
+timeline (weight-hash passes, the GLM load's verification and tensor phases,
+shape warmup, listener); `python3 -m unittest discover -s scripts/benchmarks -p
+test_glm_load_timeline.py` checks it against a recorded M5 Ultra start.
+
+The retained-fault tests deliberately poison their process and must run **one
+selector per fresh process**, never as flags on the full suite:
+
+| Selector | Required flag | Evidence |
+|---|---|---|
+| `failedCleanupFenceRetainsPartialNativeRootsAndPermit` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | Partial tensor roots and the real pending permit survive failed cleanup |
+| `glmNativeFenceFailureKeepsNewcomerAndShrunkSurvivor` | `DARKBLOOM_TEST_GLM5_RETAINED_RESLICE=1` | Inner load failure keeps the newcomer and charges it, so survivors cannot regrow into it |
+| `unprovenPostBuildUnwindKeepsLeaseOwnershipAndCharge` | `DARKBLOOM_TEST_GLM5_RETAINED_FAULT=1` | A refused post-build unwind keeps the pending lease, loading marker, ownership and activity; fleet budgets exclude the charge; other families still build |
+| `ordinaryFactoryRunsTextHTTPImageAndProtectedEmbeddedMTP` | `DARKBLOOM_TEST_GLM5_MANAGED_SYNTHETIC=1`, `DARKBLOOM_TEST_GLM5_RETAINED_SHUTDOWN=1` | A refused bridge retirement retains its actual native owner |
+
+The last flag is omitted for the ordinary successful bridge/retirement test.
+No test manufactures a positive native completion receipt. See
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextManagedLoadTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextLocalLoadPolicyTests.swift`
+and `provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2ProductionWiringTests.swift`.
+
+`GLM5NextResidencyIntegrationTests` exercises the actual factory, bridge and
+native owner with tiny model fixtures. Reserve the exclusive GPU lane, set
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1`, and run its selector in a fresh process
+for each `DARKBLOOM_TEST_GLM_RESIDENCY_INTEGRATION` value: `start-fault`,
+`complete-success` and `end-fault`. The fault cases intentionally retain native
+roots until exit. They verify that pending or failed residency settlement keeps
+the bridge's KV claim and activity guards; successful concurrent completion
+releases ownership once. Do not enable these flags on the full test suite.
+
+After building the SDK test product and staging its source-matched Metal
+library, run the initial configuration and mathematical-reference suites from
+`libs/mlx-swift-lm/` under the exclusive native test lease:
+
+```bash
+MLX_ENABLE_TF32=0 ../../scripts/run-nested-suite.sh 'GLM5NextConfigurationTests|GLM5NextHyperConnectionTests|GLM5NextLinearAttentionTests|GLM5NextSparseAttentionTests|GLM5NextMoETests|GLM5NextGPUParityTests|GLM5ToolCallParserTests|GLM5ToolStreamingTests|GLM5ServerToolParserTests' --no-parallel
+```
+
+These suites exercise fixed synthetic tensors, configuration validation,
+state continuation, tiny CPU/Metal comparisons and low-level tool parsing. They
+do not load the real checkpoint or qualify a provider, MTP, sparse paging, prefix persistence,
+multimodal behavior or throughput. Keep the
+[GLM integration gates](../design/glm53-flash-native.md) incomplete until their
+actual execution evidence exists.
+
+The continuation suites (`GLM5NextTextModelTests`, `GLM5NextMTPTests`,
+`GLM5NextArtifactLoaderTests`, `GLM5NextVisionTests`,
+`GLM5NextMultimodalTests`, `GLM5NextSparseStateTests` and
+`GLM5NextPagedSparseStateTests`) cover tiny assembled components and ownership.
+They are not full-checkpoint or provider acceptance tests. Keep their receipts
+separate from the earlier prerequisite suites; a previous passing binary does
+not validate newly added source. The provider's `GLM5NextPromptPolicyTests`
+renders the shipped `EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp` template with the
+unpatched pinned Swift-Jinja. It must match every official-template golden byte
+for byte, including list-shaped tool results that reach each rewritten `[0]`
+access. `onlyTheShippedArtifactTemplateIsRecognizedAndRenders` confirms that
+only the shipped template is recognized and passes the load-time render check.
+`returnedAssistantReasoningRendersLikeReasoningContent` and
+`openRouterReasoningContentReturnRequestIsServed` push OpenRouter's
+returned-reasoning tool turn through the coordinator and local HTTP paths to the
+rendered prompt, with each of its reasoning spellings and controls.
+`reasoningContextRendersEveryGoldenLikeItsClearThinkingSpelling` replaces each
+golden's `clear_thinking` with OpenRouter's equivalent `reasoning.context` and
+must still match it byte for byte; `currentTurnReasoningContextRendersLikeClearThinking`
+and `reasoningContextContradictingClearThinkingIsRefused` cover the current
+turn and the refused contradictions.
+`capturedOpenRouterToolRequestIsServed` and
+`capturedOpenRouterToolServesAFiveStepConversation` replay OpenRouter's captured
+`strict` weather-tool requests, held byte for byte and hash-checked, with tool
+choice omitted, `auto` and `none`, and a five-step tool conversation built from
+them.
+
+`GLM5NextOpenRouterCapabilityTests` serves OpenRouter's capability request
+shapes through `MultiModelBatchSchedulerEngine` and `MLXOpenAIService`, with
+the shipped template rendered by Swift-Jinja, the serving
+`GLM5NextThinkingTokenizer` and a scripted CBv2 engine standing in for the
+model. JSON `response_format` requests must render the service instruction,
+stream reasoning, expose one validated answer, and fail with a content-free 422
+for prose, schema violations or truncation. OpenRouter's captured `strict`
+weather tool with `tool_choice` `required` or named must render the forcing
+instruction, expose exactly one validated call, and fail with a 422 and nothing
+exposed for prose, a wrong function, a schema violation or a truncated frame;
+the models update must list the GLM serving identity under tool-constraint
+protocol v1. Each served JSON or forced submission must carry no token
+constraint and no logprobs, so `EngineV2Bridge.nativeOutputControlRefusal`
+evaluated as GLM's native-tracked engine admits it. In the control, GLM admits
+a logprobs row that the same check refuses for a native engine without logprobs
+capture. `openRouterSecretWordReasoningReturnIsServed` serves OpenRouter's
+secret-word `reasoning-content-return` turn (a `get_time` call whose returned
+reasoning holds the word) with each reasoning carrier, the strict declaration,
+empty-string arguments and `reasoning.context`/`reasoning.mode`; the reasoning
+must render in the call's thinking block. The scripted completions prove the
+provider's withholding and validation, not the model's compliance; that needs
+the real-model run in `GLM5NextRealArtifactQualificationTests`.
+
+`GLM5NextRealLogprobsQualificationTests` qualifies logprobs on the real GLM
+checkpoint through the production bundle and the `EngineV2Bridge` relay channel
+(the standalone `--local` HTTP server never emits logprobs). It needs the
+`GLM5NextRealModelHarness` variables (`DARKBLOOM_TEST_GLM5_REAL_MODEL_DIR`,
+`DARKBLOOM_TEST_GLM5_REAL_RESULTS_DIR`, `DARKBLOOM_TEST_GLM5_REAL_SOURCE_REPO`,
+`DARKBLOOM_TEST_GLM5_REAL_SOURCE_REVISION`,
+`DARKBLOOM_TEST_GLM5_REAL_AGGREGATE_SHA256`, `DARKBLOOM_EXPERIMENTAL_GLM5_NEXT`,
+`DARKBLOOM_CBV2_MTP=1`) plus `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS=1`. A greedy
+32-token `top_logprobs: 5` request at the template-default effort, which opens
+with reasoning tokens (`reasoningPositions`; at low effort GLM closes the thought
+at once), must return one entry per token, never draft, equal the same row submitted to the raw engine, and match a
+teacher-forced dense-cache log-softmax along its own tokens within the larger
+of `DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_TOLERANCE` nats (default `5e-2`) and two
+bf16 spacings of the step's largest logit. A logprob row decodes one-token
+target steps, so the MTP greedy stream may leave it only at a reference
+near-tie. Batched with a plain row on another prompt, the logprob row keeps
+its chosen values within the same bound and its alternatives within
+`DARKBLOOM_TEST_GLM5_REAL_LOGPROBS_BATCHED_TOLERANCE` nats (default `1.0`),
+every alternative is a reference top-8 token, and every plain token is the
+reference argmax up to a near-tie; the plain row drafts again after the
+logprobs row finishes. Batch width alone moves GLM's non-top logits: the run
+also scores the reference as two identical rows and records its drift from
+the one-row reference (`pairedReferenceMaxDrift`, 0.56 nats on an M3 Ultra).
+The engine must end without a native fault or retained load. Results go to
+`logprobs-qualification.json` in the results directory. The model directory
+must hold regular files; a Hugging Face snapshot of symlinks fails with
+`regular file required`.
+
+`fixtures/prompt-contract/glm53-flash/additional-goldens.json` adds the
+`minimal`, `medium` and `xhigh` effort aliases and an image-marker render.
+`GLM5NextPromptPolicyTests` checks those fixed bytes through the shipped
+renderer. No image is fetched or processed, so these vectors do not qualify
+native vision. The fixture metadata's `media: false` is an evidence limit, not
+a runtime prohibition. `GLM5ToolFailureTests` separately exercises streaming
+suffix rejection, including a valid call followed by malformed output, before
+fallback text or partial calls can escape.
+
+The provider test host also carries the SDK's `GLM5NextAlignedPayloadReaderTests`
+(eight filesystem/resource tests), `GLM5NextArtifactCachePolicyTests` (three
+filesystem policy/cleanup tests), their inventory fixture and suite namespaces,
+and `GLM5NextArtifactLoaderTests` (eight native tiny-artifact tests). The first
+two suites exercise real files without creating MLX arrays. The loader suite
+creates arrays and belongs in an authorized native test window. Sources live in
+`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/`.
+Use an immutable SDK revision containing `GLM5NextAlignedPayloadReader`,
+`verificationHostBytes`, `payloadReadScratchAllowanceBytes` and the internal
+descriptor-policy test initializer. An older SDK pin cannot compile this host;
+resolve the dependency in the SDK rather than weakening the tests or importing
+cluster-stage APIs. These tests retain full-artifact verification, aligned
+windows, mutation/truncation refusal, cancellation and resource charges.
+
+The metadata-only `GLM5NextDiscoveryLoadFootprintTests`,
+`GLM5NextDiscoveryTests` and `rawDiscoveryQuotationMatchesManagedTinyFixture`
+compare the raw same-directory LOAD formula and wire values without evaluating
+native arrays. Run them from `provider-swift/` only in an authorized build/test
+window:
+
+```bash
+GLM53_RAW_HEADER_FIXTURE_DIR=/path/to/retained-raw-header-bundle \
+  xcrun swift test --jobs 2 --force-resolved-versions --no-parallel \
+  --filter 'GLM5NextDiscoveryLoadFootprintTests|GLM5NextDiscoveryTests|rawDiscoveryQuotationMatchesManagedTinyFixture'
+```
+
+The optional bundle contains `config.json`, `model.safetensors.index.json`,
+`metadata.json`, `header-audit.json` and `headers/*.safetensors.json` at the
+recorded raw revision. Header hashes are checked; no tensor payload is read.
+Without the variable, that full-header test is explicitly disabled; the compact
+projection and tiny-fixture tests remain enabled. Neither proves managed
+serving integration or a hardware tier. See the [raw quotation contract](../reference/model-registry-format.md#raw-glm-discovery-quotation).
+
+`scripts/prepare-glm53-fixtures.py` prepares synthetic numerical oracles using
+the pinned official Transformers CPU implementation, never real BF16 weights.
+Its environment and generated manifest record source hashes, fixture transforms
+and precision. `scripts/test-prepare-glm53-fixtures.py` checks fixture tooling;
+passing it alone is not a native numerical comparison. MTP requires a separate
+oracle because that Transformers revision has no trained NextN implementation.
+
+For the official synthetic-oracle comparisons, supply the complete prepared
+canonical bundle, including its original and mapped weights, expected tensors,
+configuration and provenance receipts. After rebuilding the SDK test product:
+
+```bash
+GLM53_REFERENCE_FIXTURE_DIR=/path/to/canonical-oracle MLX_ENABLE_TF32=0 \
+  ../../scripts/run-nested-suite.sh 'GLM5NextOfficial(Reference|VisionReference)Tests' --no-parallel
+```
+
+An absent bundle skips this optional lane; an explicitly supplied invalid bundle
+fails. Keep image/video preprocessing, fixed-patch tower checks and root-model
+outputs separate when diagnosing differences. The programmatic
+`GLM5NextProcessorConfiguration.videoSamplingPolicy` defaults to `.official`;
+use `.disabled` only when the reference supplies already-selected frames.
+Both modes retain frame, token and byte limits. This is not a provider request
+option or a serving-capability declaration
+(`libs/mlx-swift-lm/Libraries/MLXVLM/Models/GLM5NextProcessor.swift`).
+
+Real-checkpoint image correctness is a separate, explicit lane
+(`libs/mlx-swift-lm/Tests/MLXLMTests/Kernel/LLM/GLM5NextRealVisionTests.swift`).
+It generates shapes, counting, rendered-text, bar-chart, two-image and
+8000-token images in process and checks the greedy answers through the direct
+multimodal forward and the paged CBv2 engine with the `.serving` policy, next to
+a concurrent text request:
+
+```bash
+GLM53_REAL_VISION=1 GLM53_REAL_MODEL_DIR=/path/to/artifact \
+GLM53_REAL_PROFILE_DIR=/path/with/identity.json \
+  ../../scripts/run-nested-suite.sh 'GLM5NextRealVisionTests' --no-parallel
+```
+
+`GLM53_VISION_REFERENCE_DIR` adds the official Transformers processor/tower
+comparison for the same artifact's vision weights; `GLM53_REAL_STORAGE=q4`
+selects the affine layout, `GLM53_REAL_VISION_TOKENS` the answer budget and
+`GLM53_REAL_VISION_LARGE=0` skips the 8000-token image.
+
+The SDK's reference-math policy disables TF32 on M5 for float32 comparisons
+(`libs/mlx-swift-lm/CONTRIBUTING.md`). This test precision setting is not proof
+of an ordinary serving default or of full-model performance.
+
+### MiMo regression fixtures
+
+Before the full provider test gate, provision its ordinary MiMo regression
+inputs from the repository root in fresh directories:
+
+- `scripts/prepare-mimo-provider-fixtures.py` creates bounded synthetic weights
+  offline.
+- `scripts/prepare-mimo-prompt-fixtures.py` downloads four hash-pinned public
+  metadata files, not trained model weights or the genuine audio codec. These
+  inputs require no private model or credentials.
+
+```bash
+FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-test-fixtures.XXXXXX")"
+python3 -B scripts/prepare-mimo-provider-fixtures.py --output "$FIXTURE_ROOT/provider"
+python3 -B scripts/prepare-mimo-prompt-fixtures.py --output "$FIXTURE_ROOT/prompt"
+export MIMO_V26_SERIAL_LOAD_FIXTURES="$FIXTURE_ROOT/provider"
+export MIMO_V26_WIRED_METADATA_FIXTURE="$FIXTURE_ROOT/provider/tiny-bf16"
+export MIMO_PROMPT_ARTIFACT_DIRECTORY="$FIXTURE_ROOT/prompt"
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/fixtures/prompt-contract/mimo-v26-additional20.json"
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 DARKBLOOM_NO_UPDATE_CHECK=1 MLX_ENABLE_TF32=0 make provider-test
+```
+
+These inputs do not enable the separately opted-in native/audio qualification
+suites and do not establish full-model quality. An unset fixture path can fail
+ordinary regression tests before model construction; do not turn those failures
+into skips or substitute a live provider's cache.
 
 The MiMo FP32 preflight-refusal fixtures convert both ordinary and router
 weights, so they update `dtype` and `moe_router_dtype` together. This keeps the
 inventory valid until the strict BF16-only load-profile gate rejects it;
 an earlier inventory error does not exercise that gate. The four `testFP32`
-cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` require
-`MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to
-the symmetric synthetic fixture directory.
+cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` use
+`MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to the symmetric synthetic fixture
+directory and require `MIMO_V26_SERIAL_NATIVE_TESTS=1` through their fixture
+rewrite helper. The fixture-path check occurs before that opt-in check, so an
+unprovisioned general run can fail rather than skip. Run these separately in the
+native lane; they verify refusal before native ownership, not successful FP32
+serving.
+
+#### MiMo tool-schema parity
+
+After building the current provider test product, use the
+[tool-schema ingress regression recipe](mimo-prompt-fixtures.md#tool-schema-ingress-regressions)
+for the five schema regressions, adjacent prompt/decode suites and nine current
+consumer cases. Required focused selections reject zero tests and any skip.
+The optional historical two-case corpus runs separately and cannot supply a
+passing result when absent. These metadata-only, scripted-generation checks
+exercise real provider preparation but do not load a model or prove live
+platform parity.
+
+#### Separate native and audio qualification
+
+Ordinary fixtures use symmetric 128-context geometry; the separate complete-prefix
+process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
+`scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
+including the genuine audio codec. Keep these output directories isolated from
+the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
+small target, not full-model quality or peak memory. Release-only builds do not
+provision test fixtures or opt into native qualification.
+
+## Prompt Preparation And Admission
+
+```bash
+swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewritesTests|InboundChatRequestDecodeTests|ServeLoopColdLoadTests'
+```
+
+`PromptTokenCacheTests` loads synthetic tokenizers through the production
+`LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
+pre-tokenizer families, with no download, and requires piecewise, cached and
+cross-turn token IDs to equal the unchanged path. A marker template that only
+the served loop renders, or raises for, checks that a background comparison
+disables reuse. `ChatTemplateLoopRewritesTests`
+renders random agent histories through skeleton templates built from each loop
+rewrite's matched blocks and requires the rewritten render to equal the
+original. Set `PROMPT_TOKEN_CACHE_MODEL_DIRS` to colon-separated local model
+directories to repeat both comparisons on real chat templates. `InboundChatRequestDecodeTests`
+checks the merged admission body decode against the separate decoders, and
+`ServeLoopColdLoadTests` drives the serve loop with a request parked on a model
+load, including a request for a second cold model that fits only without the
+first, and a request for the loading model when a second copy would not fit.
+`darkbloom benchmark --prompt-prep --model <id>` times prompt preparation
+and the body decode on the CPU with only the tokenizer loaded and the background
+comparisons off; it exits 2 if any token ID or decoded field differs.
+
+## Desktop Control And Frontend
+
+`make desktop-test` exercises the frontend journeys and bridge validation.
+Run `npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency
+while compiling Swift. `desktop-app/tests/previewRuntime.test.ts` exercises
+local-preview process startup, duplicate-start suppression, shutdown, persistent
+state, startup failure, and signature rejection using isolated executable
+fixtures; `desktop-app/tests/previewSigning.test.ts` covers propagation of the
+exact certificate fingerprint when electron-builder supplies its display name.
+Check the signed packaged app separately using the
+[desktop preview procedure](desktop-app.md#signed-local-preview).
+
+`make desktop-api-test` runs the compiled Swift CLI API with a temporary config,
+model cache, credentials, daemon state, discovery directory, and local catalog
+(`scripts/test-desktop-api.py`). It checks that release reads share the existing
+latest-release API, earnings use the existing ledger window parameter, a
+credential change rejects an in-flight private response, authenticated insights
+are relayed, decimal strings are preserved, and account-session revisions change.
+The fixture never starts a serving provider or changes its credentials.
+`DesktopControlTests` and the `DeviceCodeLogin` suite cover native authentication
+and account separation. Activity and earnings checks are described in the
+[desktop verification guide](desktop-app.md#verify).
 
 ## Startup Performance Recovery
 
@@ -121,6 +526,35 @@ early watchdog terminal, waiter cancellation, zero work and closed admission.
 startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
 and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic
 timings prove state transitions, not real GPU throughput or fleet recovery.
+
+## Deadline Admission Estimators
+
+`EngineMeasurementOrderingTests` drives the measurement owner with synthetic
+timestamps across the 120-second expiry boundary, and the real `EngineV2Bridge`
+event pump with two scripted requests whose terminals arrive in reverse
+observation order. `AdmissionRateEstimatorTests` covers the kill switch, the
+anchored isolated-prefill policy (floor, idle expiry, posture, stale-evidence
+expiry with or without an anchor), poisoned-sample and slow-calibration
+lockouts through the bridge and the real submission path, another model's
+lease or device activity on a shared whole-Mac service budget, a fresh
+long-prompt bucket below the floor, decode step-shape measurement and plumbing
+(including the first-token step's rows), rate and shape kept coupled across
+batch widths, the per-row charge kept for reviewed calibrations, and a late
+older cold sample. In the SDK, the unit suite
+`CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
+shape conversion, the mirrored MTP depth gates (batch gate and automatic
+envelope, with a driver check that the ceiling bounds every live plan depth)
+and the full-slot stretch; the integration suite
+`CBv2PerBatchDecodeConversionTests` pins the engine conversion.
+
+```bash
+swift test --skip-build --no-parallel --filter 'EngineMeasurementOrderingTests|AdmissionRateEstimatorTests'
+```
+
+Run both SDK suites from `libs/mlx-swift-lm/` with `--filter CBv2PerBatchDecode`;
+they need no Metal library. These use scripted engines and synthetic numeric
+usage: no model or GPU runs, and they do not qualify live refusal rates,
+hardware performance or routing.
 
 ## Native Inference Checkpoint Storage Qualification
 
@@ -196,12 +630,115 @@ TTFT, TPS or memory. The existing `ModelPrefixBenchmarkLiveTests` exact replay
 suite requires native live and native checkpoint precision and rejects nonnative
 specifications before loading; keep those output-hash assertions unchanged.
 
+`ModelCheckpointRestoreContentionLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointRestoreContentionLiveTests.swift`)
+is the opt-in real-model regression for complete-checkpoint SSD restore TTFT on
+a shared engine. It reads the first case of the same standalone
+`ModelPrefixBenchmarkSpecification` and an isolated ephemeral cache, and
+requires native live and checkpoint precision: a lossy checkpoint can restore
+slower than recompute, which belongs in `ModelCheckpointStorageLiveTests`. For each
+pair it serves the fork prompt restored and cold under three conditions: idle,
+while another tenant's long prefill is running, and right after another
+tenant's donor completes. Each condition gets its own donor and cache scope,
+so a deeper checkpoint donated by one measured fork never serves another. It
+fails when a restore does not reach `demandedTokens`, restores a different
+depth than the idle restore of its pair, produces its first token later than
+the cold run under the same condition, or stages more than 1 s slower than the
+idle restore, the signature of waiting on another prefill's `evalLock`. A
+contended run also fails if the foreign prefill finished before its stage did.
+Other timings are observations. The timing gates need exclusive GPU use. Run
+it from `provider-swift/` after building tests and staging the metallib, with
+only the listed variables:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_RESTORE_CONTENTION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_RESTORE_CONTENTION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointRestoreContentionLiveTests
+```
+
+Pick `demandedTokens` at or below the deepest checkpoint that fits
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`; a deeper demand fails the boundary
+check rather than measuring restore latency. The contended fork is submitted
+two seconds after the foreign prefill starts, so pick a `donorTokens` long
+enough to still be prefilling then. The report records the session's runtime
+identity (`runtime`, from `makeReport`) and keeps every sample, including the
+foreign requests that create each condition. It is rewritten atomically after
+each measured run, so an interrupted run keeps every completed run's samples,
+and its `failure` records contract violations, thrown errors and teardown
+errors alike. The test qualifies provider-staged imports only, so it refuses
+MiMo specifications, which load through the native engine.
+
+`ModelCheckpointConversationLiveTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Live/PrefixQualification/ModelCheckpointConversationLiveTests.swift`)
+is the opt-in real-model observation of one growing conversation. It reads the
+same standalone specification (only its model, precision and `outputTokens`)
+and an isolated ephemeral cache, requires native live and checkpoint precision,
+and refuses MiMo. Six turns grow from 30,000 tokens by 5,000 tokens each. Each
+turn is served with the prompt it shares with the previous turn as the
+repeated-prefix hint, as an agent loop's next turn would be. Per turn the
+report records TTFT, restored tokens, the gap from the last token to the
+terminal (which waits for checkpoint publication) and the files and bytes the
+complete-checkpoint store wrote, the delta files and the greedy output tokens;
+`DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` gives the complete-file
+baseline to compare against. It fails only when a turn after the first
+restores nothing. `DARKBLOOM_CHECKPOINT_CONVERSATION_STAGE_MB` sets
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` for the run, for example `1024` to
+compare against the large-memory complete-checkpoint default. The timings need
+exclusive GPU use:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" TMPDIR="$TMPDIR" \
+  DARKBLOOM_PREFIX_EXCLUSIVE_GPU=1 \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_BENCHMARK=1 \
+  DARKBLOOM_PREFIX_MODEL_SPEC=/absolute/model-spec.json \
+  DARKBLOOM_CHECKPOINT_CONVERSATION_OUTPUT=/absolute/new-report.json \
+  swift test --skip-build --disable-automatic-resolution \
+  --filter ModelCheckpointConversationLiveTests
+```
+
+GLM-5.3-Flash and Nemotron 3.5 Super always serve with MTP and load through
+their own managed paths, so `ModelCheckpointStorageLiveTests` cannot select
+them. Their checkpoint profiles have dedicated opt-in qualifications:
+`GLM5NextRealCheckpointProfileTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Models/GLM5Next/GLM5NextRealCheckpointProfileTests.swift`)
+and `NemotronSuperManagedSlotTests/pinnedCheckpointCheckpointProfileQualification`
+(`provider-swift/Tests/ProviderCoreTests/ProviderLoop/NemotronSuperManagedSlotLiveTests+CheckpointProfile.swift`).
+Each process runs one storage arm. Run `native`, then `balanced`, from the same
+optimized test build (`swift build -c release --build-tests -Xswiftc
+-enable-testing -Xswiftc -DDEBUG`, then the staged metallib) with exclusive GPU
+use and a fresh isolated store per arm:
+
+| Model | Selection | Prompt lengths | Report |
+|---|---|---|---|
+| GLM | the `GLM5NextRealModelHarness` variables plus `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_PROFILE=native` or `balanced` | `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_LENGTHS`, default `2048,8192,32768`; the dense reference runs up to `DARKBLOOM_TEST_GLM5_REAL_CHECKPOINT_REFERENCE_MAX` tokens (default 40,000) | `checkpoint-profile-<arm>.json` in the harness results directory |
+| Super | `DARKBLOOM_SUPER_MANAGED_LIVE=1`, `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_LIVE=1`, `NEMOTRON_SUPER_CHECKPOINT_DIR`, `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, a fresh `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` and `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native` or `balanced` | `DARKBLOOM_SUPER_CHECKPOINT_LENGTHS`, default `2400,8400,32000` (checkpoints sit at whole 2,048-token chunks) | `DARKBLOOM_SUPER_CHECKPOINT_PROFILE_OUT` |
+
+Each prompt asks for a fact placed a fifth of the way into a generated fact
+document, inside the profile's coded rows. Per length the report records cold,
+donor, restored, repeated, another tenant's, cancelled-after-first-output and
+after-cancel runs (answer, finish, TTFT, restored tokens, stage), the donor's
+bytes and file sizes, the restore's stage time, and restored and cold logprob
+rows against teacher forcing along their own tokens: GLM against the dense
+reference under `GLM5NextRealLogprobsQualificationTests`'s bounds, Super against
+`EngineV2.teacherForcedScores` under its 0.35-nat bound. GLM also records the
+profile's reconstruction error on the reference prefill's latent rows. A run
+fails when a restore reads nothing, a repeat or after-cancel restore covers a
+different depth, another tenant hits, or a cold, donor, restored, repeated or
+after-cancel answer is wrong or truncated. Super's speculation is deterministic,
+so it also fails when the donating export changes the donor's output or a restore
+of the same file differs. Compare the two arms' reports for equal restored
+coverage, bytes, TTFT and logprob deltas; one process cannot.
+
 ## Runtime Generation Comparisons
 
 Run focused policy and CLI checks from `provider-swift/`:
 
 ```bash
-swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark'
+swift test --skip-build --filter 'EngineV2KVQuantizationPolicy|EngineV2DiffusionPrefixPrecision|BenchmarkRuntimeGeneration|RuntimeGenerationBenchmark|RuntimeConcurrencyBenchmark'
 ```
 
 With an owned GPU and verified model, compare production-session live precision:
@@ -241,6 +778,34 @@ swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|L
 Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
+
+## Add-On Hold
+
+These suites need no downloaded model weights, credentials or live provider
+state. The socket and loop tests bind a real `AF_UNIX` socket and take a real
+`flock` in a private temporary runtime directory. The load-fence and managed
+Super cases load synthetic tiny weights through MLX, so they need the staged
+test metallib.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|AddonHoldLoadFence|anAddonHoldRetiresTheSuperSlotButKeepsItsPreloadPlan|aFIFOInPlaceOfARequestIsIgnoredWithoutBlocking|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
+```
+
+| Coverage | Suites |
+|---|---|
+| `hold.v1` parsing, limits, exact response keys; drain-owner precedence | `AddonIPCTests`, `AddonHoldDrainOwnershipTests` |
+| Owner-only record, a FIFO record refused without blocking, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
+| Socket permissions, several requests per connection, oversized and unfinished lines, peers refused when accepted so silent ones cannot fill the slots, stale and live sockets | `AddonIPCServerTests` |
+| Unload of every model, kept preload set, idempotency, bounded drain that cancels only its own stragglers, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| A real tiny-model load running when the hold begins never installs, the hold waits for it, and loads resume after release | `TinyModelLoadTests/AddonHoldLoadFence` |
+| The managed Super slot's own retirement keeps the preload plan; a FIFO mailbox file is refused without blocking | `NemotronSuperManagedSlotTests`, `LifecycleMailboxTests` (filtered cases above) |
+| Loopback coordinator: draining heartbeat with busy fields, no `provider_drain`, 503 draining rejection, planned reconnect keeps the hold in `register`, release heartbeat | `AddonHoldServeLoopTests` |
+| Heartbeat and both register encodings | `ProviderBusyWireTests` |
+
+The peer check is exercised only negatively: no signed add-on is available to
+the test runner, and a test authenticator stands in for it in the socket and
+serve-loop flows. Physical add-on interoperation remains a separate check.
 
 ## Watchdog Launch Acknowledgement
 
@@ -395,6 +960,13 @@ runs its implementation at explicit revisions and records native/full-model evid
 Public CI must not clone a moving private branch or replace failed qualification
 with a hash check. Refresh expected outputs only after review.
 
+`fixtures/prompt-contract/v1/production_vectors.json` is regenerated only in
+darkbloom-platform, by its prompt sidecar at an explicit revision. This
+repository copies the file byte-for-byte and records the source revision and
+SHA-256 in the commit. A provider change to the rendered prompt, such as the
+Qwen JSON `response_format` thinking default, lands with the regenerated
+vectors and must pass `scripts/verify-prompt-parity.sh` before review.
+
 The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
 `coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,
@@ -413,8 +985,47 @@ HTTP tests need permission to bind a local port; none of these suites call paid
 models. Bedrock-shaped lifecycle fixtures exercise transport, scanner, saved
 reports and merge decisions together, including truncation, call limits,
 interruption and failed report/diagnostic writes. Selective integration tests
-enforce each model's source citation scope across fresh and cached results.
+enforce each model's source citation scope across fresh and cached results,
+bounded exact-source replay, explicit omissions and unchanged acknowledgments.
+State tests reproduce shared-branch conflicts between different report files,
+including twelve simultaneous writers and a burst exceeding the former retry
+window, cache immutability, bounded recovery and refusal to retry ambiguous writes.
+Request tests verify native schema projection preserves local bounds; workflow
+tests keep current trusted scanner code separate from pinned threat-model data.
+Bedrock usage tests preserve Sol cache-write input and reject malformed cache
+counts; finding-text and both scan paths' analysis tests enforce raw character
+limits including padding.
+Lifecycle tests ensure failed backup accounting also stops a recovered primary,
+and missing native usage or failed response-usage writes preserve validated
+findings while stopping further spending and denying clearance.
+Response-repair tests inject empty analysis in Sonnet, Opus and Sol source and
+integration passes and incorrect primary acknowledgments during integration.
+Both faults share one repair allowance, preserve original findings and uncertainty,
+and stop at a second invalid response, exhausted call budget or failed checkpoint.
+Replay IDs cannot be confused with primary IDs; the integration schema and cache
+identity bind the expected acknowledgments. CLI tests retain original diagnostics
+and findings after final-result write failure. Merge-gate tests reject artifacts
+from another run/attempt even for the same revisions. PR closure has a distinct
+lifecycle stop code and cannot grant merge clearance.
 Live smoke tests establish model compatibility separately.
+Workload tests segment large fixtures into 31 and 62 source batches, then complete
+Sonnet and selected Sol review, hierarchical integrations and one repair. Removing
+duplicate Opus passes reduces those critical-code fixtures from 100 to 69 and
+197 to 135 requests without losing source coverage. Routing regressions retain
+full Sonnet review of clean support files, escalate their findings and uncertainty,
+preserve workflow and renamed-path risk, and target exact integration citations.
+Production `AppAttest.swift`, `Attest.swift`, `AuthLatest.swift` and critical
+test-named files retain independent depth outside explicit support trees.
+Global uncertainty still denies clearance without triggering a blanket rescan;
+cached results preserve the same selected scope. Adapter tests stop after
+exactly 500 requests, apply the larger native output default and preserve fixed
+probe limits. Client configuration tests preserve single-attempt transport and
+allow more response time for workload mode. Lifecycle tests verify stage admission
+failure identifies the
+unadmitted integration rather than the previous source call, manual GitHub job
+reruns perform no paid work, runtime configuration stays bounded and every final
+incomplete outcome requires human review. Workflow checks restrict manual dispatch
+to unpaid preflight and keep the scanner deadline below the job timeout.
 
 From the repository root:
 
@@ -433,6 +1044,7 @@ python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
+python3 scripts/test-darkbloom-route.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
@@ -451,6 +1063,21 @@ checks reject unsafe members, changed inventories, wrong source and entitlements
 `ref` input, no tag path, no production environment, signing identity or secret,
 and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
 Apple runtime behavior.
+
+`scripts/test-provider-release-publication.py` creates isolated local Git tags
+with verbatim annotations, including multiline opening paragraphs, extra blank
+lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
+text and payload/provenance digest guards without invoking signing or live
+publication.
+
+`scripts/test-darkbloom-route.py` runs the actual
+[CI runner routing](build.md#ci-runner-routing) shell step against a loopback
+HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
+and openssl. It covers the default-off switch, fork pull requests, exact label
+grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows on literal Blacksmith
+runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical
@@ -493,6 +1120,9 @@ servers for HTML/Markdown negotiation, real 404s, discovery, canonical/structure
 metadata, sitemaps and OpenAPI validation. Pricing uses a local HTTP upstream,
 including unavailable/malformed responses. Preserve framework `Vary` tokens and
 `Accept` across alternating representations when upgrading Next.js.
+Developer and contact coverage checks browser/RSC 404s, explicit and negotiated
+Markdown, agent discovery links, and their absence from human navigation and
+the XML sitemap.
 
 `landing/tests/story-gestures.test.mjs` covers pointer, wheel and keyboard input,
 vertical-scroll passthrough, controls, cancellation and listener cleanup through
@@ -524,6 +1154,259 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Constrained JSON answers
+
+After rebuilding the provider test product and staging its metallib, run the
+CPU-only JSON-answer suites from `provider-swift/` together with the Flint suites
+whose automaton they share:
+
+```bash
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+```
+
+`QwenJSONAnswerConstraintTests` drives the production constraint over a
+synthetic Qwen-shaped vocabulary: single bytes, the pinned terminators and think
+markers at 248044, 248046, 248068 and 248069, and no piece for any other id up to
+248,320. It covers both prompt phases, masked EOS, schema violations, forbidden
+spellings, mask/transition agreement, token splits, bounded states and the
+pinned tokenizer checks. `QwenJSONAnswerPolicyTests` checks eligibility and
+every prompt-only fallback through `ToolConstraintFactory.make`, and
+`QwenJSONAnswerOutputTests` the completed-output validation.
+`QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
+and scheduler: streamed content, a typed 422 on truncation, requested reasoning
+split before validation, and unchanged tool and other-family paths.
+
+`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
+`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
+directory and select that suite alone; it reads only tokenizer and template
+files, checks the pinned contract and both rendered JSON prompt tails, and walks
+a real tokenization of an answer. Without the variable the suite is skipped,
+which the nested runner reports as an error. None of these suites loads weights
+or establishes answer quality or throughput. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
+
+## Flint native validation
+
+Run `make provider-test` for repository checks. Focused provider suites are
+`FlintPolicyTests`, `FlintDiscoveryTests`, `FlintTemplateReplayTests`,
+`FlintToolChoicePromptPolicyTests`, `FlintContextAdmissionTests`,
+`FlintPagedOnlyBackendTests`, `ModelBenchmarkDispatchTests`,
+`FlintNativeProtocolTests` and `FlintNativeProtocolFactoryTests`; SDK suites
+are `FlintTests`, `FlintToolTests`, `FlintPrefixTests` and
+`ToolCallParserIntegrationTests`. `FlintToolChoicePromptPolicyTests`
+(`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/FlintToolChoicePromptPolicyTests.swift`)
+pins exact-type native framing, original messages, named filtering and invalid
+tool requests against the pinned template. The SDK fixture is generated independently by
+`libs/mlx-swift-lm/scripts/generate-flint-oracle.py` with NumPy and credits the pinned mlx-vlm
+oracle. Numeric assertions retain their declared tolerances and run with
+`MLX_ENABLE_TF32=0`.
+
+`FlintPagedOnlyBackendTests.defaultSettingsBuildRealPagedSlot` assembles a tiny
+Flint through the production slot factory with default `BackendSettings` and no
+engine override. It checks paged attention, native KV and checkpoint precision,
+the artifact's context limit despite a conflicting sizing hint, and the default
+2,048-token solo-prefill stripe. Persistent caching is disabled only for fixture
+isolation; backend, precision and prefill environment overrides are absent.
+
+Verify the prefill output seam against full-logit forward, including identical
+KV and continuation results, sliding-window wrap and both contiguous/paged
+prefix restore. Tool coverage must include schema-aware values, null-preserving
+history, Unicode/chunk boundaries and rejection of unsupported controls and raw
+`</arg_value>` history. These checks do not establish full-model quality or
+throughput. Sources: `libs/mlx-swift-lm/Tests/MLXLMTests/Integration/Flint/`,
+`provider-swift/Tests/ProviderCoreTests/Inference/FlintPolicyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/FlintTemplateReplayTests.swift`.
+
+Run the CPU-only native protocol suites to check dedicated and split markers,
+all prepared tool choices, parallel-call cardinality, quoted tool examples in
+reasoning, raw strings beginning with braces/brackets, JSON delimiter protection,
+custom-stop rejection and bounded state exhaustion. Check mask/transition
+agreement and retain independent complete-frame/schema rejection tests: a
+protocol-valid frame can still contain invalid JSON or arguments. Factory
+fixtures must supply the verified native tokenizer and rendered assistant
+boundary; a generic fake tokenizer cannot establish that contract. Source:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/FlintNativeProtocolTests.swift`
+(`FlintNativeProtocolTests`, `FlintNativeProtocolFactoryTests`). These suites
+do not load model weights or establish full-model answer quality.
+
+Set `DARKBLOOM_FLINT_BACKEND=paged` for the paged HTTP qualification pass and
+select `--kv-backend paged` in the matching performance runs. Retain the resolved
+backend; contiguous reference results do not qualify paged serving.
+
+`FlintHTTPBenchmarkTests` is the opt-in authenticated HTTP baseline. It lives in
+`ServingQualificationTests`, which builds in release; `ProviderCoreTests` uses
+debug-only test hooks. Build that target in release with `-Xswiftc
+-enable-testing`, stage the source-matched metallib, then run only that suite with
+`DARKBLOOM_FLINT_HTTP_BENCHMARK=1`, `MLX_ENABLE_TF32=0`,
+`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE=2048`, `DARKBLOOM_FLINT_BACKEND=paged` and
+task-owned `_ROOT`, `_CONFIG`, `_RECEIPT`, cache, port and a fresh, nonexistent
+`DARKBLOOM_PREFIX_CACHE_TEST_ROOT` with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`.
+`DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` must not be `1`, both prefix-cache
+policies must be off, and the owned config must select paged/native/native
+without an external MTP drafter.
+It verifies 401 before any load, binds the staged metallib, and after every
+request requires the production slot to resolve paged/native/native with the
+2048-token stripe and zero cached prompt tokens. `decode_short` and
+`prefill_4k` (about 4.1K tokens) each run one warmup and
+`DARKBLOOM_FLINT_HTTP_BENCHMARK_MEASURED` requests (default 3). The receipt
+holds counts, timings and hashes only. Its prefill rate is prompt tokens per
+TTFT second, a lower bound on engine prefill; its decode figure is an estimate
+that includes reasoning tokens. Both are single-stream results from a release
+test build, not server capacity or a signed release. Source:
+`provider-swift/Tests/ServingQualificationTests/FlintHTTPBenchmarkTests.swift`.
+
+`FlintR2InstallTests` checks delivery of a published model: with
+`DARKBLOOM_FLINT_R2_INSTALL=1`, a fresh nonexistent absolute
+`DARKBLOOM_FLINT_R2_INSTALL_CACHE`, and the published `_R2_PREFIX`,
+`_R2_AGGREGATE` and `_R2_VERSION`, the production `ModelDownloader` installs
+the manifest into that cache and the test checks the installed aggregate and
+template. Optional `DARKBLOOM_FLINT_HF_REPO` and `_HF_REVISION` pin a public
+Hugging Face source that the downloader tries first, falling back to R2. Then
+run `FlintLiveTests` with `DARKBLOOM_FLINT_CACHE` set to the same root to load
+and serve that copy. It downloads the full model and needs no coordinator.
+Source: `provider-swift/Tests/ProviderCoreTests/Server/FlintR2InstallTests.swift`.
+
+`FlintLiveTests` is opt-in physical-machine qualification, not an ordinary CI
+weight download. In an exclusive GPU process, set `DARKBLOOM_FLINT_LIVE=1` and
+`DARKBLOOM_FLINT_CACHE` to an owned HF-layout cache containing the verified
+`RecursiveSI/flint-int4` snapshot. It starts an authenticated loopback service,
+uses a task-local encrypted-cache directory, executes real production slots,
+and stops/drains them. `DARKBLOOM_FLINT_PORT` selects an unused port;
+Flint is paged-only, so `DARKBLOOM_FLINT_BACKEND` may only be unset or `paged`.
+`DARKBLOOM_FLINT_RECEIPTS` optionally writes synthetic response evidence to an
+owned file. Keep these model-dependent checks separate from tiny-fixture,
+public-CI and signed-release evidence.
+
+`FlintOpenRouterLiveTests` uses the same environment plus
+`DARKBLOOM_FLINT_OPENROUTER_LIVE=1` and always serves paged attention. It sends
+the parameters OpenRouter lists for Flint over loopback HTTP: reasoning effort,
+enabled and exclude controls (chat, streaming and Responses), `stop`,
+`json_object` and strict `json_schema` (alone and with tools), named tools,
+`logprobs`/`top_logprobs` and `seed`. Only the coordinator relay emits
+logprobs, so `FlintRelayLogprobsLiveTests` (same gate; optional
+`DARKBLOOM_FLINT_RELAY_RECEIPTS`) sends sealed requests to the production
+handler on a paged slot and checks the entries, with and without withheld
+reasoning. Sources:
+`provider-swift/Tests/ProviderCoreTests/Server/FlintOpenRouterLiveTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Server/FlintRelayLogprobsLiveTests.swift`.
+
+Keep adversarial history assertions on visible answer content and unintended
+calls. Do not replace a failed answer with a reasoning-only assertion. An
+unconstrained raw-token diagnostic can help identify which terminal was sampled,
+but it bypasses the [production protocol constraint](../architecture/inference.md#native-flint)
+and cannot qualify production reasoning, tool safety or throughput. The engine
+suppresses EOS token text, so decoded content plus `finish_reason: stop` alone
+does not identify the sampled EOS. Keep synthetic token-level diagnostics in
+explicitly owned local evidence; never send tokens, prompts or completions to
+telemetry or heartbeats. Source:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`.
+
+For performance claims, rebuild the exact SDK/provider pins and source-matched
+metallib, record hashes and precision settings, and use an exclusive inference
+process. Separate scalar SDK prefill, production CBv2 decode and HTTP timings.
+Record whether the native constraint is active and whether its vocabulary cache
+is cold or warm. Include tool-less requests, which still pay constraint costs,
+and measure complete request time as well as decode throughput. Compare matched
+constraint policies: masking and decode-chaining eligibility differ from an
+unconstrained diagnostic. See [constraint overhead](../architecture/hardware-support.md#flint-memory-admission).
+A captured dense/expert NAX dispatch establishes execution only; a speedup needs
+a matched portable-path comparison. Track the full provider suite independently
+from successful test compilation and focused SDK tests. See
+[hardware evidence limits](../provider/hardware-requirements.md#flint-validation-scope).
+
+## Nemotron Super component qualification
+
+The [portable fixture harnesses](../../scripts/nemotron-qualification/README.md)
+reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
+Apple Silicon machine. They include the original 88-shard checksum verifier and
+require separate full-checkpoint admission/reservation calibration. Tiny fixture
+passes do not qualify the shipping provider, MTP speed or full image support.
+Prompt parity uses a committed golden corpus from
+`scripts/nemotron-qualification/prompt_golden.py`; token-ID checks run only when
+`NEMOTRON_SUPER_REFERENCE_DIR` names the pinned tokenizer and template, and
+otherwise skip with that instruction.
+
+Nemotron Super image fixtures and their goldens are generated by
+`scripts/nemotron-qualification/image-goldens` (see its
+[README](../../scripts/nemotron-qualification/README.md)). PNG must match Pillow
+byte for byte and the final tensors bitwise; JPEG uses the bounds in the
+[image format reference](../reference/nemotron-super-image-formats.md).
+Regenerated fixtures must be byte-identical unless a pinned reference changes.
+
+The three Nemotron Super reference clips in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/NemotronSuperVideos` and their
+`nemotron-super-video-golden.json` come from NVIDIA's serving path (vLLM's
+OpenCV loader at 2 fps and 256 frames, the HF processor and the pinned
+tokenizer). `NemotronSuperVideoGoldenTests` checks the frame plan, labels,
+grid, decoded frame layout, the red first frame of the colors clip, EVS
+retained counts, the `<video>` replacement ids
+and the template text without the tokenizer; with
+`NEMOTRON_SUPER_REFERENCE_DIR` it also checks the label and full prompt token
+ids. `NemotronSuperVideoBindingTests` covers video admission, the tubelet
+layout, the media charge and its quote, and serves a synthesized MP4 end to
+end on the tiny installed fixture, checking its prompt length and one span per
+tubelet that kept rows; it also checks that batched EVS keeps the rows EVS
+selects over the whole video, that cancelling or draining a decoding video
+returns its charge and that a malformed pruning rate fails the load
+before installing. `NemotronSuperOpenRouterVideoTests` runs OpenRouter's two
+readiness clips (the SDK's `MiMoOpenRouter` resources, read through the source
+tree) through the body bound, request parsing, inspection, the pinned
+template's prompt, the media plan and every sampled frame's decode, then
+serves both on the tiny installed fixture. `NemotronSuperVideoDecodeTests` covers the decoder's
+refusals on synthesized clips (decoded-pixel budget, codec, second track,
+zero-duration frame), per-frame validation, the decode allowance, reader
+cancellation and the container type hint.
+
+The managed slot is covered by `NemotronSuperServingPolicyTests` and
+`NemotronSuperMediaChargeTests` (identity, discovery, image advertisement, load
+plan, footprint, media charge and capacity quotes; CPU only) and
+`NemotronSuperManagedSlotTests` (fixture load through `ProviderLoop`, encrypted
+coordinator and local-endpoint text and image requests on the speculating
+owner, logprobs on both paths without a draft, and relayed thinking-on replies,
+mixed and ending while reasoning, with one entry per generated token on
+reasoning or content chunks; an image beside speculating text, media refusal
+before allocation, cancellation, admission refusal and retirement).
+`toolCallReplyCarriesTheSameLogprobsOnEveryPath` checks that the relay, the
+local stream and the local complete response carry identical entries for
+thinking-on replies that call a tool: only the reasoning and answer tokens'
+when the call ends the reply, and every entry before a newline that follows
+the call. `NemotronSuperLocalOutputTests` checks the same selection for a
+complete response without a model (`NemotronSuperCompleteLogprobs`). The local
+hook's `liveHTTPTextReasoningToolsAndStructuredOutput` checks streamed and
+complete logprobs on the tiny installed fixture for a mixed reply and one that
+ends while reasoning, with entries on the stream's reasoning chunks, and none
+without `logprobs`, and the
+SDK's `NemotronSuperMTPMediaFallbackTests` checks a logprob row's tokens and
+logprobs against the plain owner's while a text row beside it speculates
+([logprob rows](../architecture/inference.md#nemotron-super-logprobs)). Three gated cases need the
+pinned checkpoint: `NEMOTRON_SUPER_CHECKPOINT_DIR` alone checks its discovery
+and that the recorded LOAD constants equal the SDK quotes over every verified
+shard (hashes about 75 GB, loads no weights); adding
+`DARKBLOOM_SUPER_MANAGED_LIVE=1` loads the full checkpoint (about 80 GB) through
+the production loader, once to serve an encrypted text request and once for PNG
+and JPEG questions and an image beside a text request.
+`pinnedCheckpointLogprobsMatchTeacherForcing` (same gate) checks relay logprobs
+against the engine's and, at every step the relay served, against a cold
+prefill of the prompt and the tokens before it, twice: with thinking off up to
+the end of turn, and with thinking on for a 48-token reply that ends inside
+reasoning, whose 48 entries must all ride reasoning chunks. Each served value
+must be within 0.35 nats of the reference, and the served token the reference
+argmax unless the reference prefers another token by at most 0.7 nats, a swap
+two values within the bound allow.
+`DARKBLOOM_SUPER_LIVE_MTP=off` runs it on a plain owner and
+`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK=1` prefills one token per step, which
+makes the reference bitwise equal to the served values. Run them only with exclusive GPU access.
+
+`NemotronSuperOpenRouterCapabilityTests` replays OpenRouter's capability-test
+shapes, built from the captured tool request the platform's conformance fixture
+pins, with reasoning enabled and disabled: tool-call steps 1 and 5, every
+`tool_choice`, `json_object`, strict `json_schema` and JSON formats with tools.
+Each passes the relay's inbound decode, the request plan, the pinned template
+and the output parser, and a compliant response validates streamed and
+complete. CPU only; it does not load a model or measure answer quality.
 
 ## Related
 

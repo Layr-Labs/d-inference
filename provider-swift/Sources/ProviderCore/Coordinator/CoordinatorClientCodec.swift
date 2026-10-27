@@ -19,7 +19,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
-        appAttestResumeNonce: String? = nil
+        appAttestResumeNonce: String? = nil,
+        busy: ProviderBusy? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -56,7 +57,9 @@ public enum CoordinatorClientCodec {
             if let overrides = modelWeightHashOverrides, overrides[model.id] != model.weightHash { current.weightHash = nil }
             return current
         }.filter { $0.weightHash?.isEmpty == false }
-        let candidateIDs = Set(config.autopilotInventory.map(\.id)).subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
+        // Inventory added at runtime stays out of `models` like start inventory.
+        let candidateIDs = Set((config.autopilotInventory + (autopilotInventory ?? [])).map(\.id))
+            .subtracting(ordinaryServingModelIDs ?? Set(config.models.map(\.id)))
         let servingModels = effectiveModels.filter { !candidateIDs.contains($0.id) }
         let constrainedModels = toolConstraintModelIDs(servingModels + inventory)
         return .register(ProviderMessage.Register(
@@ -85,7 +88,8 @@ public enum CoordinatorClientCodec {
             appAttestResumeProtocol: appAttestResumeNonce == nil ? nil : 1,
             appAttestResumeNonce: appAttestResumeNonce,
             modelAutopilot: modelAutopilot,
-            autopilotInventory: inventory.isEmpty ? nil : inventory
+            autopilotInventory: inventory.isEmpty ? nil : inventory,
+            busy: busy
         ))
     }
 
@@ -104,7 +108,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
-        appAttestResumeNonce: String? = nil
+        appAttestResumeNonce: String? = nil,
+        busy: ProviderBusy? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -122,7 +127,8 @@ public enum CoordinatorClientCodec {
                 modelAutopilot: modelAutopilot,
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
                 autopilotInventory: autopilotInventory,
-                appAttestResumeNonce: appAttestResumeNonce
+                appAttestResumeNonce: appAttestResumeNonce,
+                busy: busy
             )
         )
     }
@@ -142,7 +148,8 @@ public enum CoordinatorClientCodec {
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         idleUnloadMins: UInt64? = nil,
-        modelAutopilot: ModelAutopilotSnapshot? = nil
+        modelAutopilot: ModelAutopilotSnapshot? = nil,
+        busy: ProviderBusy? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -159,7 +166,8 @@ public enum CoordinatorClientCodec {
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             idleUnloadMins: idleUnloadMins,
-            modelAutopilot: modelAutopilot
+            modelAutopilot: modelAutopilot,
+            busy: busy
         ))
     }
 

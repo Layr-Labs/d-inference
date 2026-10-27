@@ -224,6 +224,7 @@ public actor ProviderLoop {
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
     internal let stats: AtomicProviderStats
+    internal let usageHistory = ProviderUsageHistory()
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
@@ -248,6 +249,16 @@ public actor ProviderLoop {
     internal var nativeMiMoConsumerLeases: [String: [UUID: NativeLocalConsumerLease]] = [:]
     internal var nativeMiMoJoinedLeaseRevisions: [UUID: [UUID: UInt64]] = [:]
     internal var nativeMiMoClosedConsumerLeaseIDs: Set<UUID> = []
+    /// Builds the managed Nemotron Super owner; tests inject fixtures that
+    /// run the same load transaction (`ProviderLoop+NemotronSuper`).
+    internal var nemotronSuperSlotLoader = NemotronSuperSlotLoader.pinnedCheckpoint
+    /// Runtime-policy environment of the Super load; nil reads the process.
+    internal var nemotronSuperEnvironment: [String: String]?
+    /// Weights, reservations and banks of Super owners whose native work did
+    /// not retire. They stay in the fleet budget and refuse every later Super
+    /// load until restart, except that a wedged retirement completing after
+    /// its bound releases its owner's share.
+    internal var nemotronSuperRetainedWeightBytes: UInt64 = 0
     /// Refusal/hold-only fixture boundary; never supplies a successful native
     /// result, memory estimate, retirement receipt, or replacement model.
     internal var nativeMiMoBoundaryForTesting: (@Sendable (String) async throws -> Void)?
@@ -271,6 +282,11 @@ public actor ProviderLoop {
     /// container EOS snapshot, and the production CBv2 engine builder used
     /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
+    #if DEBUG
+    /// Replaces the GLM publication verdict so its unwind is testable without
+    /// an undersized real pool.
+    internal var glm5NextPublicationRefusalForTesting: (@Sendable (EngineV2Bridge) async -> String?)?
+    #endif
 
     /// Operator-configured hard cap on concurrent model slots
     /// (`backend.maxModelSlots`). This is the memory-safety ceiling: the
@@ -324,7 +340,8 @@ public actor ProviderLoop {
     internal var autopilotTask: Task<Void, Never>?
     internal var autopilotMutationStarted = false
     internal var autopilotGeneration: UInt64 = 0
-    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistory: [String: (command: ModelAutopilotCommand, status: ModelAutopilotStatus.State,
+        error: String?, detail: String?)] = [:]
     internal var autopilotHistoryOrder: [String] = []
     internal var autopilotLastCommandId: String?
     internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
@@ -336,6 +353,55 @@ public actor ProviderLoop {
     /// Explicit desired-build retirements, never inferred from missing catalog
     /// entries. Release cleanup is distinct from network placement authority.
     internal var autopilotSupersededModels: Set<String> = []
+    /// Inventory targets of succeeded operations that keep serving after the
+    /// lease (`ProviderLoop+AutopilotPlacement`). In memory only.
+    internal var autopilotAdoptedModelIDs: Set<String> = []
+    /// Placement holds by model. An expired hold stays as the idle anchor
+    /// until the placement ends; only an unexpired hold protects a slot.
+    internal var autopilotHolds: [String: AutopilotHold] = [:]
+    /// Download settings read from the config file by the policy refresh;
+    /// nil until they first differ from the start configuration.
+    internal var autopilotDownloadSettingsOverride: AutopilotDownloadSettings?
+    /// The last `download_storage` report and when it was measured.
+    internal var autopilotDownloadStorage: ModelAutopilotDownloadStorage?
+    internal var autopilotDownloadStorageAt: ContinuousClock.Instant?
+    /// Downloads on the operator's behalf (`ProviderLoop+AutopilotDownload`):
+    /// a prefetch coordinator whose verified builds join the Autopilot set
+    /// rather than the advertised set. Created on the first request.
+    internal var autopilotDownloadCoordinator: ModelPrefetchCoordinator?
+    /// Builds added to the Autopilot inventory since the last registration;
+    /// the coordinator learns inventory metadata only from `register`.
+    internal var autopilotInventoryAwaitingRegistration: Set<String> = []
+    /// Last check that cached Autopilot builds are still on disk.
+    internal var autopilotCacheSweepAt: ContinuousClock.Instant?
+    /// Background verification of the cached builds the start path left
+    /// unhashed (`startAutopilotCandidateVerification`); cancelled at shutdown.
+    internal var autopilotCandidateVerification: Task<Void, Never>?
+    internal var autopilotCandidateVerificationDone = false
+    /// Replaces the registered-connection check and the planned reconnect of
+    /// `refreshAutopilotInventoryRegistration` in tests; nil in production.
+    internal var autopilotRegistrationSeamForTesting:
+        (registered: @Sendable () async -> Bool, reconnect: @Sendable () -> Bool)?
+    /// Unix milliseconds at which each reported busy reason was first
+    /// continuously observed.
+    internal var autopilotBusyClock = ContinuityClock<ModelAutopilotBusyReason, Int64>()
+    internal var transitionWatchdog = TransitionWatchdog()
+    /// The operation the watchdog cancelled. It fails as `transition_stalled`
+    /// even when an unload or load it was awaiting completes afterwards: it
+    /// then records no lease or placement, and completed steps stay done.
+    internal var autopilotStalledCommandId: String?
+    /// The watchdog asked the startup preload to stop before its next model.
+    internal var startupPreloadStopRequested = false
+    /// The startup preload candidate in progress and when it began. The
+    /// watchdog ages it from that instant even though supervision starts
+    /// only after the registration gate.
+    internal var startupPreloadCandidate: (model: String, startedAt: ContinuousClock.Instant)?
+    /// Advances on every reslice-gate acquisition, so the transition watchdog
+    /// ages each acquisition separately.
+    internal var resliceGateGeneration: UInt64 = 0
+    /// Stamped when a load, startup candidate, advertisement or model switch
+    /// begins, so a retry within one capacity tick is a new occurrence.
+    internal var transitionGenerations = TransitionGenerations()
 
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
@@ -415,6 +481,25 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
     internal var servingDrain = ProviderDrain()
+    /// Add-on holds (`ProviderLoop+AddonHold`): active holds and recent
+    /// outcomes, the drain-and-unload driver, the lease monitor and the local
+    /// socket. `addonHoldPaths` stays nil when no add-on service runs.
+    internal var addonHolds = AddonHoldBook()
+    internal var addonHoldTask: Task<Void, Never>?
+    internal var addonHoldGeneration: UInt64 = 0
+    internal var addonHoldMonitorTask: Task<Void, Never>?
+    internal var addonIPCServer: AddonIPCServer?
+    internal var addonHoldPaths: AddonHoldPaths?
+    /// Test seams: isolated paths, a peer check, a wall clock and the drain
+    /// and settle bounds.
+    internal var addonHoldPathsOverride: AddonHoldPaths?
+    internal var addonPeerAuthenticatorOverride: AddonIPCServer.Authenticate?
+    internal var addonHoldNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    internal var addonHoldDrainTimeout: Duration = ProviderLoop.addonHoldDrainTimeoutDefault
+    internal var addonHoldSettleTimeout: Duration = ProviderLoop.addonHoldSettleTimeoutDefault
+    /// Internal, nil in production: suspends the drain bound's cancellation
+    /// pass where a release can interleave with it.
+    internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -426,6 +511,8 @@ public actor ProviderLoop {
     /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
     internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
     internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// The full weight read behind load-time hash captures (`captureWeightHash`).
+    internal var loadWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
     /// Invalidates prefetch work begun before an operator replaced the set.
     internal var modelSelectionRevision: UInt64 = 0
     internal var modelAdvertisementsInFlight = 0
@@ -433,6 +520,10 @@ public actor ProviderLoop {
     /// unchanged TOML while a manual foreground override was serving.
     public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
+    /// Requests that released the work FIFO at a model-load wait and have not
+    /// returned yet (`ProviderLoop+WorkFIFO.swift`).
+    internal var releasedAdmissions: [String: ReleasedAdmission] = [:]
+    internal var coldLoadReleasesWorkFIFO = WorkFIFOPolicy.releasesColdLoadWaits()
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
@@ -484,6 +575,10 @@ public actor ProviderLoop {
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
+    /// Set when a Nemotron Super slot retires: macOS returns its ~80 GB of
+    /// physical pages up to about a second after Metal drops them, so any
+    /// load inside the window re-samples instead of refusing.
+    internal var nemotronSuperMemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
@@ -589,6 +684,7 @@ public actor ProviderLoop {
     /// choke point every material slot-state change already flows through.
     /// Loop-actor state; the pure policy lives in `CapacityEventHeartbeats`.
     internal var capacityHeartbeatThrottle = CapacityHeartbeatThrottle()
+    internal var desktopActivityObservedAt: Double?
 
     /// The one in-flight trailing-edge timer servicing a
     /// `CapacityHeartbeatThrottle.Verdict.scheduled` verdict. Cancelled on
@@ -657,6 +753,11 @@ public actor ProviderLoop {
     /// `setLoadedModelsFileForTesting` enables it together with a temp path.
     internal var loadedModelsPersistenceEnabled = false
 
+    /// Where a verified managed-load hash is recorded for the next start's
+    /// registration (`VerifiedWeightHashStore`). nil — no writes — until
+    /// `run()` serves with host services, so tests never touch the real file.
+    internal var verifiedWeightHashesFile: URL?
+
     /// Test seams for the startup preload driver: replace the real
     /// `ensureModelLoaded` / self-test decode / free-memory probe with
     /// scripted stubs so the plan, gate timing, admission, and
@@ -702,6 +803,16 @@ public actor ProviderLoop {
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
+    /// The live coordinator connection as reported to `status`/`doctor`;
+    /// nil until the coordinator client starts.
+    internal var coordinatorConnection: DaemonState.CoordinatorConnection?
+    /// When the coordinator's verdict for this connection last became "not
+    /// routable" (`ProviderLoop+ServingAuthorizationRecovery`).
+    internal var unauthorizedSince: Double?
+    internal var lastUnauthorizedReconnectAt: Double?
+    internal var unauthorizedReconnectAttempts = 0
+    internal var unauthorizedReconnectJitter = Double.random(
+        in: 0..<UnauthorizedConnectionRecovery.thresholdJitter)
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is
@@ -742,7 +853,7 @@ public actor ProviderLoop {
     /// deallocated. See `MemoryPressureMonitor` / `OOMDetector`.
     internal var memoryPressureMonitor: MemoryPressureMonitor?
 
-    internal let logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop")
+    internal let logger: ProviderLogger
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
@@ -764,8 +875,11 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         // Scripted slot fixtures must not inherit the test host's RAM.
         kvBudgetForTesting: GlobalKVCacheBudget? = nil,
-        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil,
+        logSinkForTesting: ProviderLogger.Sink? = nil
     ) throws {
+        self.logger = ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "loop",
+            sink: logSinkForTesting)
         self.loopConfig = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
@@ -795,7 +909,11 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(model: model) {
+            // GLM serves only with its embedded MTP; never advertise a build
+            // whose every load would refuse under this MTP configuration.
+            if EngineV2SupportedModels.isSupported(model: model),
+                GLM5NextLocalServing.isLoadable(model, mode: config.config.backend.mtpMode)
+            {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)

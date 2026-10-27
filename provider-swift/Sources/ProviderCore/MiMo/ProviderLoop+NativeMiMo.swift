@@ -237,6 +237,7 @@ extension ProviderLoop {
         try load.commitPublication { modelSlots[modelID] = candidate }
         nativeMiMoCandidates.removeValue(forKey: modelID)
         // This post-publication handoff stays in the same real owned Task.
+        reportPrefixCacheFailure(candidate.engineV2.prefixCacheModelStatus())
         await engineV2Runtime.register(modelId: modelID, bridge: candidate.engineV2)
         try Task.checkCancellation()
         try transaction.requireServingWorkAllowed()
@@ -247,6 +248,7 @@ extension ProviderLoop {
         try requireNativeMiMoProcessWorkAllowed()
         guard !isShuttingDown, !nativeMiMoLifecycleClosed,
             nativeMiMoLoads[modelID] === load, modelSlots[modelID] == nil else { throw CancellationError() }
+        if let refusal = addonHoldLoadRefusal(for: modelID) { throw refusal }
         try throwIfRetiring(modelID)
         try load.recheck()
     }

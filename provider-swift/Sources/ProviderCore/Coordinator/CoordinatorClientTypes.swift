@@ -178,6 +178,9 @@ public struct CoordinatorClientConfig: Sendable {
     /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
     /// after N idle minutes. nil omits the field (test/legacy clients).
     public let idleUnloadMins: UInt64?
+    /// Deadline for one connection to reach `.ready`
+    /// (`CoordinatorConnectionHandshake`).
+    public let handshakeTimeout: TimeInterval
 
     public init(
         url: String,
@@ -197,7 +200,8 @@ public struct CoordinatorClientConfig: Sendable {
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
         idleUnloadMins: UInt64? = nil,
-        autopilotInventory: [ModelInfo] = []
+        autopilotInventory: [ModelInfo] = [],
+        handshakeTimeout: TimeInterval? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -217,6 +221,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
         self.idleUnloadMins = idleUnloadMins
+        self.handshakeTimeout = handshakeTimeout ?? CoordinatorConnectionHandshake.defaultTimeout
     }
 }
 
@@ -360,6 +365,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
     case pongTimeout
     case connectionClosed(Error)
     case suspensionDetected
+    case handshakeTimeout(seconds: TimeInterval)
 
     public var description: String {
         switch self {
@@ -368,6 +374,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
+        case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
     }
 }

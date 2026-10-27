@@ -23,7 +23,8 @@ extension CoordinatorClient {
         // than the immutable `config.models`, so a re-registration after a
         // verified prefetch carries the updated set.
         let prefixCache = state.prefixCacheV2Advertisement()
-        let jsonData = try CoordinatorClientCodec.encodeRegistration(
+        let autopilot = state.modelAutopilotRegistration
+        let registration = CoordinatorClientCodec.registrationMessage(
             from: config,
             models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
@@ -36,11 +37,15 @@ extension CoordinatorClient {
                 ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
-            modelAutopilot: state.modelAutopilot,
+            modelAutopilot: autopilot.snapshot,
             ordinaryServingModelIDs: ordinaryServingModelIDs,
-            autopilotInventory: state.autopilotInventory,
-            appAttestResumeNonce: nwConnection === connection ? appAttestResumeNonce : nil
+            autopilotInventory: autopilot.inventory,
+            appAttestResumeNonce: nwConnection === connection ? appAttestResumeNonce : nil,
+            // A hold survives reconnects: the fresh session must not look
+            // routable until its first heartbeat.
+            busy: state.busy
         )
+        let jsonData = try ProviderProtocolCodec.encodeProviderMessage(registration)
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
         }
@@ -64,6 +69,9 @@ extension CoordinatorClient {
                     }
                 }
             )
+        }
+        if case .register(let sent) = registration {
+            state.registeredAutopilotInventoryIDs = Set((sent.autopilotInventory ?? []).map(\.id))
         }
     }
 
@@ -115,6 +123,9 @@ extension CoordinatorClient {
         // 503 bounces trip a cooldown.
         let status: ProviderStatus = state.refusingNewWork
             ? .draining : (isActive ? .serving : .idle)
+        // Busy fields explain a draining status; never send them beside a
+        // routable one.
+        let busy = status == .draining ? state.busy : nil
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: status,
             activeModel: activeModel,
@@ -132,7 +143,8 @@ extension CoordinatorClient {
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
             idleUnloadMins: config.idleUnloadMins,
-            modelAutopilot: modelAutopilot
+            modelAutopilot: modelAutopilot,
+            busy: busy
         )
 
         do {

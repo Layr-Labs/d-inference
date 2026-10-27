@@ -150,7 +150,7 @@ final class EngineV2MTPProductionAdmissionTests: XCTestCase {
          "num_kv_shared_layers":0,"hidden_size_per_layer_input":32,"sliding_window":16,
          "sliding_window_pattern":2,"max_position_embeddings":2048,"use_double_wide_mlp":false}
         """.utf8)
-        let value = Gemma4TextModel(try JSONDecoder().decode(Gemma4TextConfiguration.self, from: data))
+        let value = Gemma4TextModel(try JSONDecoder().decode(MLXLLM.Gemma4TextConfiguration.self, from: data))
         let captures = try XCTUnwrap(value.cbv2MTPCaptureLayers)
         XCTAssertNotEqual(captures.full, captures.sliding)
         XCTAssertNotNil(EngineV2Factory.ProductionModelAdapter(model: value))

@@ -13,6 +13,7 @@ import subprocess
 COMPONENTS = ("provider", "console")
 COMMON = (
     "Makefile", "mise.toml", ".gitmodules", ".github/workflows/component-changes.yml",
+    ".github/workflows/darkbloom-route.yml",
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
@@ -28,7 +29,7 @@ PROVIDER = (
     "scripts/prepare-mimo-*-fixtures.py", "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",
-    "scripts/test-profile-inventory-auth.py", "scripts/install.sh",
+    "scripts/test-profile-inventory-auth.py", "scripts/test-desktop-api.py", "scripts/install.sh",
     "scripts/test-install-atomic.sh", "scripts/entitlements*.plist",
 )
 CONSOLE = (

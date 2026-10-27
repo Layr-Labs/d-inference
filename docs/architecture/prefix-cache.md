@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-24
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -114,7 +114,10 @@ production-key restart checks remain subject to the
 [acceptance criteria](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
-`gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b`, the exact MiMo identities below and the
+managed `nvidia-nemotron-3.5-super` slot, whose complete checkpoints replace
+its resident bank unless the operator selects the bank (see
+[`inference.md`](inference.md#managed-nemotron-super-slot)).
 GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
 eligible native contiguous fallback uses a distinct complete layout rather than
 reinterpreting the paged file. Gemma automatic MTP resolves its catalog
@@ -126,6 +129,40 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Unregistered GLM sparse-state candidate
+
+`GLM5NextPagedSparseState` owns aligned latent, index-key, pool-gate, validity
+and position history in the native candidate. Its checkpoint includes partial
+pages; opt-in `PagedImmutableSnapshot` ownership requires copy-on-write before
+successor writes. The contiguous transaction owner is a separate baseline, not
+proof of paged execution
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/GLM5Next/GLM5NextPagedSparseState.swift`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedImmutableSnapshot.swift`).
+
+The full-state codec adds the distinct
+`native-paged-glm5next-full-state-v2` layout, preserving the asymmetric payload
+and exact convolution/recurrence state
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/GLM5Next/`).
+Roles that only widen an activation dtype are stored at that dtype and widened
+back exactly on restore; the
+[SSD reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload) lists
+the roles, their wire dtypes and the retired v1 layout. Under the default
+`balanced` checkpoint precision the protected tuple binds the distinct
+`native-paged-glm5next-affine-checkpoint-full-state-v1` store instead: older
+latent rows are coded and restore approximately, while the index/gate/validity
+rows, KDA state and MTP history restore exactly
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)).
+Its existence does not add a qualified provider cache capability. Complete reuse
+still requires one accepted frontier across sparse pages, convolution/recurrence
+and trained MTP, charged import/export ownership, the protected native binding,
+and a verified encrypted restore path. For the locally selected
+`EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp`, SSD eligibility defaults on
+(`PrefixCachePolicy.isGLM5NextDefaultModel`) and binds the protected tuple's
+full-state store; `DARKBLOOM_PREFIX_CACHE=0` opts out. GLM remains outside the
+registered coordinator serving models; see the
+[integration gates](../design/glm53-flash-native.md). Existing families' opt-in
+and recovery policies above are unchanged.
 
 ### MiMo complete state
 
@@ -286,18 +323,27 @@ replay error cannot persist into full-attention state
 
 Both tiers require `DARKBLOOM_PREFIX_CACHE_MEMORY=1` and the global cache
 switch to remain enabled (`PrefixCachePolicy.isMemoryEnabled`). They retain
-no reusable payloads by default. The measurements in this section describe the
+no reusable payloads by default. GLM-5.3-Flash's protected engine hosts
+neither tier: with the opt-in set, its slot logs that it ignores it and keeps
+its complete SSD checkpoints instead of refusing the load
+(`EngineV2SlotFactory.makeProductionBundle`). The measurements in this section describe the
 previous resident implementation, not SSD performance.
 
 | Tier | Lookup and ownership | Gate |
 |---|---|---|
 | Paged resident blocks | Tenant-scoped chained page hashes; generation-validated page handles; shared rows retain physical pages until release | Paged backend and `supportsPrefixReuse`; configured by `PrefixCachePolicy.residentConfig` |
-| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen `supportsRecurrentCheckpointReuse`, native-precision contiguous KV, owning full-attention rows, and a valid slot cache budget |
+| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen on native-precision contiguous KV, or either Nemotron Super owner on its segmented paged KV (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`); `supportsRecurrentCheckpointReuse`, owning full-attention rows, and a valid slot cache budget |
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
 tokens, plain chunks under decode company 512. Packed prefill and preemption
-disarm capture; a ragged range end is simply not a boundary. A bank adopter
+disarm capture; a ragged range end is simply not a boundary. A model whose
+prefill output depends on the chunk partition sets
+`alignsRecurrentCheckpointsToPrefillChunks` instead: Nemotron Super's tiled
+prefill is captured only at multiples of its fixed prefill chunk reached by
+whole chunks, so a restored request runs the same chunk partition as a cold one
+and continues it bit for bit (`NemotronSuperLocalPrefixCache`, see
+[`inference.md`](inference.md)). A bank adopter
 resumes at the restored boundary under ordinary chunking, out of packed
 prefill, exactly as a complete-checkpoint adopter does
 (`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the
@@ -336,6 +382,11 @@ state to disk (`HybridPrefixCache.swift` / `resizeReservation`,
 `HybridCheckpointOwnership.swift`, `EngineV2.swift` / `updateKVBytesCapacity`,
 `Prefix/EngineV2+HybridPrefix.swift` / `hybridPrefixLookup`). Configurable limits are in
 [`../reference/configuration.md#resident-recurrent-prefix-cache`](../reference/configuration.md#resident-recurrent-prefix-cache).
+The bank budget is `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` when set. Otherwise a
+model policy may pass its own default (the pinned Nemotron Super owner sizes
+its bank from the KV grant and the machine, see [inference.md](inference.md)),
+and every other model gets the lesser of 1 GiB and an eighth of the grant
+(`PrefixCachePolicy.hybridConfig`).
 
 A persistent MTP assistant must implement `CBv2MTPPrefixCheckpointDrafter`.
 `Qwen35InlineMTPAssistant` captures the complete normalized trusted prompt
@@ -371,7 +422,11 @@ reservations described above.
 Only the recurrent bank currently publishes resident-ready routing evidence.
 It requires verified weight and prompt-contract identities to advertise
 `prefix_cache_memory_models`; local reuse can operate without the attested
-weight hash because entries never cross loaded model instances. Paged resident
+weight hash because entries never cross loaded model instances. The managed
+Nemotron Super owner supplies them from its own load
+(`NemotronSuperLocalPrefixCache.RoutingIdentity`, see
+[`inference.md`](inference.md)), and binds its default complete SSD
+checkpoints to the same identity. Paged resident
 hits report the memory tier locally but do not yet publish coordinator holder
 anchors. Resident and durable SSD routing evidence remain separate; see
 [cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
@@ -487,6 +542,9 @@ effective checkpoint encoder may compress older attention rows; native recent
 and recurrent/auxiliary state remain exact. Native checkpoint storage preserves
 all captured bytes. See the
 [payload reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload).
+On the native recurrent layouts a request that consumed a restore stores
+its later checkpoints as deltas of the restored file, and a restore reads that
+chain forward together ([delta checkpoints](../reference/ssd-kv-cache.md#delta-complete-checkpoints)).
 Checkpoint encoding does not change capture scheduling. Recurrent (Qwen,
 Nemotron, Bonsai) checkpoints exist at every contiguous computed-range end inside the
 prompt that is a multiple of 256 tokens
@@ -609,6 +667,37 @@ live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/Dem
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`
 (`executeMixed`). Existing checkpoint count/byte and storage floors remain.
 
+GLM-5.3-Flash captures its KDA state under the same range-end rule, but it has
+no solo stripe and its prefill chunk shares one 2,048-token step budget with
+the decode rows of other requests (`EngineV2Factory.glm5NextMaximumStepTokens`).
+Beside a decoding request every range is 2,044–2,047 tokens and none ends on
+the 256-token grid, so such a donor captured nothing, with no disarm or counter
+(one of six donors in a concurrent burst). The protected GLM engine with its
+GLM store therefore sets `CBv2SchedulerConfig.demandedCaptureBoundaryMinimumTokens`
+to the store floor (`EngineV2Factory.demandedCaptureBoundaryMinimumTokens`). A
+request the store would write (a hint at or above the floor, or no hint) ends a
+range at its hinted fork target and at the deepest aligned boundary below its
+prompt end, whatever chunk its company left it. A range that would stop less
+than one 128-token query block short of such a boundary ends on the query grid
+instead, so the range that reaches the boundary keeps the ordinary prefill
+kernels. A hint below the floor marks a fleet-novel prompt and keeps the
+ordinary geometry. The same cut lowers GLM's reuse granularity from 2,048 to
+256 tokens (a 32,682-token prompt publishes 32,512 instead of 30,720). GLM
+adopters resume under ordinary chunking: a forced donor-sized chunk waited
+whenever decode rows shortened the budget and cold-restarted the hit after
+three waits
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
+`completeCheckpointLookup`). GLM's cold prefill depends
+on its partition (the KDA four-token groups, the attention history/current
+split and MoE routing), so as for the MoE Qwen a checkpoint is exactly the
+state its own donor computed. On an M5 Ultra, solo donors of one prompt wrote
+bit-identical checkpoints; a donor beside decoding requests differed from its
+first partial KDA group on (relative L2 about 0.1 in the deepest layers), and
+first-token logprobs of three partitions spread over 0.1 nat while each
+partition repeated exactly. The partition is `demandedCaptureBoundaryRange` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`;
+it shares `demandedCheckpointRange` with the first-token projection.
+
 The benchmark SPI can explicitly select
 `EngineV2BenchmarkCheckpointPartition.demandedRecurrentQualification` to measure
 other actual recurrent paged complete-checkpoint models and longer demanded
@@ -675,7 +764,7 @@ measurements for the independent checkpoint profile:
 
 | Model | Fixed state per checkpoint (window, or recurrent state) | Full rows per 1,024 tokens | File at 6,144 tokens |
 |---|---:|---:|---:|
-| gpt-oss-20b (K/V float32 on 23 of 24 layers) | 6.03 MB | 50.33 MB (49,152 B per token) | 308.0 MB |
+| gpt-oss-20b (bf16 K/V on all 24 layers) | 3.15 MB | 25.17 MB (24,576 B per token) | 154.1 MB |
 | gemma-4-26b-qat-4bit | 209.7 MB | 20.97 MB | 335.5 MB |
 | qwen3.5-9b (conv/SSM state plus MTP history) | 51.5 MB | 41.95 MB | 303.2 MB |
 
@@ -781,6 +870,14 @@ checkpoint ownership remain authoritative. Nested scopes release independently;
 ending a transfer never makes a previously captured calibration guard valid
 again (`SSDPrefixCache`, `SSDHybridCheckpointStore`,
 `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`).
+A provider-staged complete-checkpoint import is the exception: it creates its
+destinations already available from host bytes and evaluates or fences none of
+them, so staging never waits for MLX-Swift's process-wide `evalLock`, which the
+engine holds for another request's whole prefill chunk. The import plan charges
+the largest host-zero source as staging scratch
+([destination contract](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`
+(`CBv2CompleteCheckpointImport`)).
 See [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md) for the calibrated-work
 rules applied to these signals.
 

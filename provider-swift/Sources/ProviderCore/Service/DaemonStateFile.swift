@@ -102,6 +102,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
     public var appAttest: AppAttestLocalStatus?
+    /// Add-on holds of a provider serving the add-on socket; nil for older
+    /// or standalone providers (`darkbloom addon` requires it).
+    public var addonHold: AddonHoldSnapshot?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -347,8 +350,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
         appAttest: AppAttestLocalStatus? = nil,
         autopilot: ModelAutopilotSnapshot? = nil,
         autopilotPhase: String? = nil,
-        autopilotOperation: AutopilotOperation? = nil
+        autopilotOperation: AutopilotOperation? = nil,
+        addonHold: AddonHoldSnapshot? = nil
     ) {
+        self.addonHold = addonHold
         self.schema = schema
         self.pid = pid
         self.processIdentity = processIdentity

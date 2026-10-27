@@ -765,6 +765,34 @@ Keep state paths isolated as in `scripts/run-provider-tests.sh`; these tests
 must never stop an operator process. They do not establish physical Apple
 qualification or end-to-end platform authorization.
 
+## Add-On Hold
+
+These suites need no downloaded model weights, credentials or live provider
+state. The socket and loop tests bind a real `AF_UNIX` socket and take a real
+`flock` in a private temporary runtime directory. The load-fence and managed
+Super cases load synthetic tiny weights through MLX, so they need the staged
+test metallib.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AddonIPCTests|AddonHoldDrainOwnershipTests|AddonHoldStoreTests|AddonPeerPolicyTests|AddonIPCServerTests|AddonHoldLoopTests|AddonHoldServeLoopTests|AddonHoldLoadFence|anAddonHoldRetiresTheSuperSlotButKeepsItsPreloadPlan|aFIFOInPlaceOfARequestIsIgnoredWithoutBlocking|ProviderBusyWireTests|AddonCommandTests|AutopilotBusyReasonTests'
+```
+
+| Coverage | Suites |
+|---|---|
+| `hold.v1` parsing, limits, exact response keys; drain-owner precedence | `AddonIPCTests`, `AddonHoldDrainOwnershipTests` |
+| Owner-only record, a FIFO record refused without blocking, lock probe, runtime paths; the real peer policy refuses the test process | `AddonHoldStoreTests`, `AddonPeerPolicyTests` |
+| Socket permissions, several requests per connection, oversized and unfinished lines, peers refused when accepted so silent ones cannot fill the slots, stale and live sockets | `AddonIPCServerTests` |
+| Unload of every model, kept preload set, idempotency, bounded drain that cancels only its own stragglers, update and reconnect cannot reopen, stop takeover, lease expiry with and without the lock, restart restore, operator mailbox | `AddonHoldLoopTests` |
+| A real tiny-model load running when the hold begins never installs, the hold waits for it, and loads resume after release | `TinyModelLoadTests/AddonHoldLoadFence` |
+| The managed Super slot's own retirement keeps the preload plan; a FIFO mailbox file is refused without blocking | `NemotronSuperManagedSlotTests`, `LifecycleMailboxTests` (filtered cases above) |
+| Loopback coordinator: draining heartbeat with busy fields, no `provider_drain`, 503 draining rejection, planned reconnect keeps the hold in `register`, release heartbeat | `AddonHoldServeLoopTests` |
+| Heartbeat and both register encodings | `ProviderBusyWireTests` |
+
+The peer check is exercised only negatively: no signed add-on is available to
+the test runner, and a test authenticator stands in for it in the socket and
+serve-loop flows. Physical add-on interoperation remains a separate check.
+
 ## Watchdog Launch Acknowledgement
 
 `WatchdogLaunchAdapterTests` (in `LaunchAgentLifecycleTests.swift`) drives the
@@ -1002,6 +1030,7 @@ python3 scripts/test-release-dev-branch.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-release-artifact.py
 python3 scripts/test-provider-release-cache.py
+python3 scripts/test-darkbloom-route.py
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-stage-swiftpm-resource-bundles.py
@@ -1026,6 +1055,15 @@ with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
 publication.
+
+`scripts/test-darkbloom-route.py` runs the actual
+[CI runner routing](build.md#ci-runner-routing) shell step against a loopback
+HTTPS plane with a throwaway certificate; the host needs Bash, Python, jq, curl
+and openssl. It covers the default-off switch, fork pull requests, exact label
+grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
+and hostile reply text. It also pins each routed job's fallback, timeout and
+read-only permissions, and keeps release workflows on literal Blacksmith
+runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication, console packaging and fixture mappings. Historical

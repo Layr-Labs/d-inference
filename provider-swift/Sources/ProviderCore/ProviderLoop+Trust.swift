@@ -104,7 +104,8 @@ extension ProviderLoop {
             appAttest: appAttestLocalStatus,
             autopilot: state.modelAutopilot,
             autopilotPhase: autopilotPhase,
-            autopilotOperation: autopilotOperationView
+            autopilotOperation: autopilotOperationView,
+            addonHold: addonHoldSnapshot
         )
     }
 

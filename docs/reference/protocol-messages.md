@@ -169,6 +169,31 @@ until a confirmed drain and reconnect. Unexpected transport loss and explicit
 force/fault recovery retain their cancellation paths; a dead connection cannot
 deliver a graceful-drain acknowledgement.
 
+## Add-on hold busy fields
+
+While a local add-on holds the Mac ([add-on hold](../architecture/addon-hold.md)),
+the provider stays registered and reports `heartbeat.status = draining` with
+three optional busy fields. `register` carries the same fields, so a connection
+made during a hold is excluded before its first heartbeat. The hold never sends
+`provider_drain`: that barrier fences a connection until it closes, and the hold
+returns on the same connection with its next `idle` or `serving` heartbeat.
+
+| JSON key | Swift | Presence | Meaning |
+|---|---|---|---|
+| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` |
+| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold began |
+| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold` |
+
+All three are omitted when the provider is not held, and a heartbeat sends
+them only beside `status: draining` (`buildHeartbeatFrame` in
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`;
+`ProviderMessage.encodeBusy` in `provider-swift/Sources/ProviderCore/Protocol/ProviderBusy.swift`;
+the raw-attestation register path in `ProviderProtocolCodec.encodeRegisterPreservingRawAttestation`).
+Decoders map an unknown `busy_reason` to absent. Coordinator support for the
+fields is separate platform work; a coordinator that ignores them still stops
+routing on the draining status and clears the mark on the release heartbeat.
+Routed requests that arrive during a hold get the typed draining rejection.
+
 
 
 ## Envelope and the single-parse rule
@@ -256,6 +281,7 @@ connection, first.
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -354,6 +380,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, [coordinator/registry/cache_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_snapshot.go) |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 #### `stats`
 
@@ -1424,7 +1451,7 @@ Report order lists an owner before the work it owns:
 
 | Field | Values |
 |---|---|
-| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
+| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `addon_hold`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
 | `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
 | `capabilities` (`ModelAutopilotCapability`) | `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads` |
 | Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `model_limit_reached`, `storage_limit_reached`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |

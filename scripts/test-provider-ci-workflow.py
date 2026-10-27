@@ -176,8 +176,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, lane in LANES.items():
             with self.subTest(lane=lane):
                 job = self.jobs[job_id]
-                self.assertIn("    runs-on: blacksmith-12vcpu-macos-27", job)
-                self.assertIn("    needs: changes\n", job)
+                # A Darkbloom macOS sandbox when granted, otherwise the same
+                # dedicated Blacksmith runner; requested only when the lane runs.
+                self.assertIn("    runs-on: ${{ fromJSON(needs.route.outputs.routes)['%s'] }}\n" % job_id, job)
+                self.assertIn("        %s macos_arm64 blacksmith-12vcpu-macos-27 "
+                              "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}\n" % job_id,
+                              self.jobs["route"])
+                self.assertIn("    timeout-minutes: 60\n", job)
+                self.assertIn("    needs: [changes, route]\n", job)
                 self.assertIn("    if: ${{ needs.changes.outputs.provider == 'true' }}\n", job)
                 self.assertNotRegex(job, re.compile(r"^    strategy:", re.MULTILINE), msg=job)
                 self.assertNotIn("continue-on-error:", job)

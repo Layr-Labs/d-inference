@@ -200,6 +200,31 @@ struct MTPConfigKeyTests {
         }
     }
 
+    @Test("default auto enables only exact Bonsai 9B identities and prewarms their assistant catalog",
+          arguments: [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID])
+    func automaticBonsaiIsExact(modelID: String) {
+        let backend = BackendSettings()
+        let standalone = StandaloneServerConfig()
+        for mode in [backend.mtpMode, standalone.mtpMode, .on] {
+            #expect(mode.enablesMTP(forModelType: " PRISM_HADAMARD_QWEN35 ",
+                embeddedArtifactDeclared: false, modelID: modelID))
+            #expect(mode.requiresCatalogPrewarm(forModelType: "prism_hadamard_qwen35", modelID: modelID))
+        }
+        #expect(!MTPMode.off.enablesMTP(forModelType: "prism_hadamard_qwen35",
+            embeddedArtifactDeclared: true, modelID: modelID))
+        #expect(!MTPMode.off.requiresCatalogPrewarm(forModelType: "prism_hadamard_qwen35", modelID: modelID))
+        for id in [modelID.uppercased(), modelID + "-copy", " " + modelID, "prism-ml/bonsai-27b"] {
+            #expect(!MTPMode.auto.enablesMTP(forModelType: "prism_hadamard_qwen35",
+                embeddedArtifactDeclared: true, modelID: id))
+            #expect(!MTPMode.auto.requiresCatalogPrewarm(forModelType: "prism_hadamard_qwen35", modelID: id))
+        }
+        for type in [nil, "qwen3_5", "gemma4"] as [String?] {
+            #expect(!MTPMode.auto.enablesMTP(forModelType: type,
+                embeddedArtifactDeclared: false, modelID: modelID))
+            #expect(!MTPMode.auto.requiresCatalogPrewarm(forModelType: type, modelID: modelID))
+        }
+    }
+
     @Test("catalog prewarm follows external assistant eligibility without warming embedded heads")
     func catalogPrewarmPolicy() {
         #expect(MTPMode.auto.requiresCatalogPrewarm(

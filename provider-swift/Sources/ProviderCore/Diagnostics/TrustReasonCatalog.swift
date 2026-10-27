@@ -24,12 +24,12 @@ public enum TrustReasonCatalog {
         if reason.hasPrefix("signature verification failed") {
             return DiagnosticAdvice(
                 message: "the coordinator rejected your attestation signature — usually the Secure Enclave key can't sign.",
-                fix: "run `darkbloom doctor` and check the Secure Enclave key; if headless/SSH, log in at the console once so the key unlocks.")
+                fix: "run `\(BuildEnvironment.current.cliName) doctor` and check the Secure Enclave key; if headless/SSH, log in at the console once so the key unlocks.")
         }
         if reason.hasPrefix("status signature verification failed") {
             return DiagnosticAdvice(
                 message: "the coordinator rejected your signed security-status payload (signature/canonical mismatch).",
-                fix: "update to the latest build with `darkbloom update`; if it persists, review `darkbloom doctor` locally.")
+                fix: "update to the latest build with `\(BuildEnvironment.current.cliName) update`; if it persists, review `\(BuildEnvironment.current.cliName) doctor` locally.")
         }
 
         switch reason {
@@ -42,7 +42,7 @@ public enum TrustReasonCatalog {
             }
             return DiagnosticAdvice(
                 message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
-                fix: "run `darkbloom enroll`, then wait ~5 min for MDM verification.")
+                fix: "run `\(BuildEnvironment.current.cliName) enroll`, then wait ~5 min for MDM verification.")
         case "MDM verification passed":
             return DiagnosticAdvice(
                 message: "hardware-trusted and eligible for traffic.",
@@ -60,11 +60,11 @@ public enum TrustReasonCatalog {
         case "nonce mismatch", "empty signature":
             return DiagnosticAdvice(
                 message: "the attestation challenge response was malformed — likely a stale or broken build.",
-                fix: "`darkbloom update` to the latest build.")
+                fix: "`\(BuildEnvironment.current.cliName) update` to the latest build.")
         case "public key mismatch":
             return DiagnosticAdvice(
                 message: "your Secure Enclave key changed from what was registered (a re-minted key or a different machine identity).",
-                fix: "restart the provider so it re-registers: `darkbloom stop && darkbloom start`.")
+                fix: "restart the provider so it re-registers: `\(BuildEnvironment.current.cliName) stop && \(BuildEnvironment.current.cliName) start`.")
         case "SIP status not reported", "SIP disabled":
             return DiagnosticAdvice(
                 message: "System Integrity Protection is off (or unreported). SIP is required for hardware trust.",
@@ -76,7 +76,7 @@ public enum TrustReasonCatalog {
         case "RDMA status not reported — provider must update to v0.2.0+":
             return DiagnosticAdvice(
                 message: "your build is too old to report required security state.",
-                fix: "`darkbloom update` to a current build.")
+                fix: "`\(BuildEnvironment.current.cliName) update` to a current build.")
         case "binary hash mismatch", "binary hash changed from registration attestation",
              "attested binary hash missing", "binary hash missing",
              "valid attestation required for binary hash policy":
@@ -86,7 +86,7 @@ public enum TrustReasonCatalog {
         case "active model weight hash mismatch":
             return DiagnosticAdvice(
                 message: "the model weights you're serving don't match the registered hash for that model.",
-                fix: "re-download the model with `darkbloom models download <id>` so weights match the registry.")
+                fix: "re-download the model with `\(BuildEnvironment.current.cliName) models download <id>` so weights match the registry.")
 
         default:
             // Never hide an unrecognized reason — surface it verbatim.

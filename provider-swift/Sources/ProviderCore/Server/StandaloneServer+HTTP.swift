@@ -145,18 +145,42 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         } catch let error as MLXOpenAIServiceError {
             // Keep the upstream service's generic message policy distinct from
             // provider engine/media failures, which have bounded public codes.
+            // A response_format answer cut off by max_tokens says so: its text
+            // is fixed and names no request content.
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
-                message: InferenceFailureCode.internalFailure.message)
-        } catch let error where error is MultiModelBatchSchedulerEngineError
-            || error is MediaIngest.MediaError
-        {
+                message: error == .responseFormatCutOffByMaxTokens
+                    ? error.localizedDescription : InferenceFailureCode.internalFailure.message)
+        } catch let error as PreContentDeadlineFailure {
+            // A distributed first-token budget that is already spent refuses
+            // before any SSE header or content, with the existing mapping.
             let failure = ProviderLoop.sanitizedInferenceFailure(
                 from: error, phase: .generation)
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
+            // A cluster pair's refusal names its rule and the model's limits
+            // (a closed template, never request content): the client sees why.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: refusal.rawValue)
+        } catch let error where error is MultiModelBatchSchedulerEngineError
+            || error is MediaIngest.MediaError
+        {
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: error, phase: .generation)
+            // The closed vocabulary only (the error's case name and bounded reason, never its text), so a failing
+            // local request leaves a line in this Mac's log (a cluster's 500 left nothing to read, 2026-10-16).
+            // The engine's own error enum names its case; anything else only its type (no description text).
+            let kind = error is MultiModelBatchSchedulerEngineError
+                ? String(String(describing: error).prefix { $0 != "(" }.prefix(64)) : String(describing: type(of: error))
+            FileHandle.standardError.write(Data(("local API: request failed: \(failure.code.rawValue) (\(kind)"
+                + (failure.errorReason.map { ", \($0.rawValue)" } ?? "") + ")\n").utf8))
+            if ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_LOCAL_ERRORS"] == "1" {
+                FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
+            }
+            let status = HTTPResponse.Status(code: Int(failure.statusCode))
+            return Self.openAIErrorResponse(status: status, message: failure.message)
         }
     }
 
@@ -175,13 +199,15 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// OpenAI-shaped error envelope (matches the body the upstream
     /// `/v1/embeddings` route emits when the engine is missing). Sets
     /// the CORS allow-origin header so browser clients can read the
-    /// body even on a cross-origin request.
+    /// body even on a cross-origin request. `code` is the optional OpenAI
+    /// error code; it is omitted from the body when nil.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
-        message: String
+        message: String,
+        code: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error")
+            error: .init(message: message, type: "invalid_request_error", code: code)
         )
         let data: Data
         do {
@@ -208,6 +234,8 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
+        /// Omitted when nil, so every existing envelope is unchanged.
+        var code: String? = nil
     }
     let error: ErrorObject
 }

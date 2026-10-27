@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-27
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -43,6 +43,14 @@ An over-limit attempt uses the existing `cancel` frame; no provider wire field
 or failure-code vocabulary changes. The internal `response_limit` cause has
 `json:"-"` and cannot be claimed by provider JSON. See the
 [API limits](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#limits-and-validation).
+
+Chat-completion SSE `choices[].logprobs.content` is encoded from ordered generation
+metadata inside the canonical SDK service before provider relay/encryption.
+Optional fields remain omitted when capture is absent. No WebSocket envelope,
+billing, telemetry, token-capture grant or platform enum changes. Parser-held
+metadata follows the [inference contract](../architecture/inference.md).
+Source: `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIChatLogprobs.swift`.
 
 ## App Attest endpoint resumption candidate
 
@@ -169,6 +177,31 @@ until a confirmed drain and reconnect. Unexpected transport loss and explicit
 force/fault recovery retain their cancellation paths; a dead connection cannot
 deliver a graceful-drain acknowledgement.
 
+## Add-on hold busy fields
+
+While a local add-on holds the Mac ([add-on hold](../architecture/addon-hold.md)),
+the provider stays registered and reports `heartbeat.status = draining` with
+three optional busy fields. `register` carries the same fields, so a connection
+made during a hold is excluded before its first heartbeat. The hold never sends
+`provider_drain`: that barrier fences a connection until it closes, and the hold
+returns on the same connection with its next `idle` or `serving` heartbeat.
+
+| JSON key | Swift | Presence | Meaning |
+|---|---|---|---|
+| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` |
+| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold began |
+| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold` |
+
+All three are omitted when the provider is not held, and a heartbeat sends
+them only beside `status: draining` (`buildHeartbeatFrame` in
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`;
+`ProviderMessage.encodeBusy` in `provider-swift/Sources/ProviderCore/Protocol/ProviderBusy.swift`;
+the raw-attestation register path in `ProviderProtocolCodec.encodeRegisterPreservingRawAttestation`).
+Decoders map an unknown `busy_reason` to absent. Coordinator support for the
+fields is separate platform work; a coordinator that ignores them still stops
+routing on the draining status and clears the mark on the release heartbeat.
+Routed requests that arrive during a hold get the typed draining rejection.
+
 
 
 ## Envelope and the single-parse rule
@@ -237,7 +270,7 @@ connection, first.
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
-| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty. `glm5_next_v1` is reported only by builds that serve GLM-5.3-Flash on Apple M5 Max or M5 Ultra with at least 256 GiB (`GLM5NextHardwareRequirement`); the platform accepts it only beside an attested M5 chip family |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
 | `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
@@ -256,6 +289,16 @@ connection, first.
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
+| `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
+| `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
+| `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
+| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
+
+An attested registration is encoded by the raw-attestation encoder, not the
+Codable one. Both write the three member fields, and only for the member role
+(`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
+`encodeRegisterPreservingRawAttestation`).
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -291,13 +334,13 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `model_type` | `string` | `String?` | req in Go | |
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
-| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Qwen4 SSD-offload allowance or exact `mimo_v2` supplement above raw stored bytes: at least 1 GiB. Exact `glm5_next` likewise adds its supplement to raw source bytes (no disk × 1.2): native copies, tokenizer allowance and a `ceil(disk / 32)` residual, at least 1 GiB + 321 MiB, with no SSD subtraction; see [raw GLM quotation](model-registry-format.md#raw-glm-discovery-quotation). Checked addition and source/catalog floors apply; invalid/missing declarations retain platform legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go)
@@ -324,7 +367,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 | Object | Fields |
 |---|---|
 | `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. [coordinator/registry/cache_capabilities_v2.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_capabilities_v2.go), `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
-| `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
+| `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}; optional `detail`, only behind `state` `error` and omitted otherwise, ∈ `SSDPrefixCacheConstructionFailure` raw values (`missing_weight_hash`, `unsupported_plan`, `unsafe_path`, `key_unavailable`, `ephemeral_key_unavailable`, `block_contract_mismatch`, `epoch_unavailable`, `prompt_contract_unavailable`, `identity_unavailable`, `layout_unavailable`, `write_budget_unavailable`, `cache_closed`). Coordinators that predate `detail` ignore it. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`), `SSDPrefixCacheConstructionFailure` (`KVCacheSSD/SSDPrefixCacheFactory.swift`) |
 | `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel`}; `count` (`uint64`, monotonic per process). `cache_maintenance_busy` is emitted only by providers older than the per-file eviction change. Unknown future outcomes are ignored individually by older coordinators. [coordinator/registry/cache_eligibility.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_eligibility.go), `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
@@ -354,6 +397,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, [coordinator/registry/cache_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_snapshot.go) |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 #### `stats`
 
@@ -441,7 +485,7 @@ routing on them.
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
 | `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
-| `kv_bytes_per_token` | `int64` | `Int64` | opt | |
+| `kv_bytes_per_token` | `int64` | `Int64` | opt | Capacity price per reserved token (prompt + max output), excluding fixed per-request bytes; it divides `active_token_budget_max`. A GLM slot reports target KV plus native step scratch and embedded-MTP state per token; its capacity also excludes one step's setup |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
 | `kv_backend` | `*string` | `String?` | ptr | resolved KV kind `"paged"` or `"contiguous"`. **Nil = unknown** (pre-0.8.0 provider), never read as `contiguous`; a non-nil `""` still marshals as `"kv_backend":""` |
 | `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` ([coordinator/registry/kv_backend.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/kv_backend.go)) folds it to a bounded class before any metric tag |
@@ -575,8 +619,15 @@ define the mirror.
 | Key | Meaning |
 |---|---|
 | `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
-| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time since the newest observation at snapshot, even if an older completed observation arrives later |
 | `workload_buckets` | Bounded numeric buckets with `phase` (`prefill`, `decode`, `native_media_prefill`), `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation`, and optional `concurrent_requests` (peak observed request overlap; 1–64; omitted by legacy providers) |
+
+The Swift producer applies the same age rule independently to each workload
+bucket and current-posture series
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift`,
+`EnginePerformanceMeasurements.observe`).
+Completed samples retain the existing receipt-order EWMA and sample counts;
+snapshot time does not replace observation time. Wire fields are unchanged.
 
 `native_media_prefill` records the target decoder's actual computed suffix for
 owner-bound native media, after encoder preparation. It retains cache and
@@ -754,6 +805,15 @@ Go `InferenceResponseChunkMessage` · Swift `InferenceResponseChunk`.
 | `data` | `string` | `String` | opt | SSE chunk text; empty when E2E encryption is active |
 | `encrypted_data` | `*EncryptedPayload` | `EncryptedPayload?` | opt | [`EncryptedPayload`](#encryptedpayload) |
 
+A [streamed `auto` tool call](../architecture/inference.md#streamed-auto-tool-calls)
+spans several chunks whose `choices[].delta.tool_calls` entries share one
+`index`: the first carries `id`, `type`, `function.name` and an empty
+`function.arguments`, later ones only `index` and a `function.arguments`
+fragment. Consumers concatenate the fragments by `index`. Every other call is
+one entry carrying the complete call
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`,
+`streamChatCompletionFrames`).
+
 ### `inference_complete`
 
 Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
@@ -796,6 +856,12 @@ normal terminal handling instead of this exemption. The provider emits it
 through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
 the contract in `sanitizeProviderInferenceError`.
 
+A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
+`token_budget_exhausted`, enriched like other capacity rejections
+(`rejection_reason` `token_budget`); its internal
+`request_exceeds_slot_capacity`/`slot_capacity_committed` marker never reaches
+the wire. See [GLM5Next implementation boundary](../architecture/inference.md#glm5next-implementation-boundary).
+
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
@@ -829,6 +895,7 @@ Swift `ModelAutopilotStatus`
 | `command_id` | `string` / `String` | req | Identifies the immutable command on this provider session |
 | `status` | `string` / `State` | req | `started`, `succeeded`, `failed` |
 | `error` | `string` / `String?` | opt | Diagnostic failure text; not an authorization or capacity signal |
+| `detail` | — / `String?` | opt; Swift only; with consent | With `provider_busy`, the first [busy reason](#model_autopilot-state); `autopilot_operation` when another accepted command owns residency. Absent otherwise; older coordinators ignore it |
 | `model_autopilot` | `*ModelAutopilotState` / `ModelAutopilotSnapshot` | opt in Go; current Swift includes it | Provider command/residency state; status alone never changes scheduler capacity |
 
 `Registry.HandleAutopilotStatus` accepts only the matching current session and
@@ -851,6 +918,26 @@ Go `PrefetchModelStatusMessage` · Swift `PrefetchModelStatus`. `model_id`
 (req); `status` ∈ {`started`, `downloading`, `verified`, `failed`} — `verified`
 is the terminal success: on disk, hash-checked, **not** loaded; `bytes_done`,
 `bytes_total` (`int64`, opt; Swift omits 0); `error` (opt).
+
+For an Autopilot download (below), `verified` also means the build joined the
+Autopilot set, and `failed` carries a closed `error`
+(`provider-swift/Sources/ProviderCore/Autopilot/AutopilotDownload.swift`,
+`AutopilotDownloadRefusal`). A refusal that needs no catalog arrives as the only
+reply; the others follow `started`:
+
+| `error` | Meaning |
+|---|---|
+| `model_not_selected` | No saved consent (or a `private_only` Mac), downloads turned off by the operator, or consent was revoked before the build joined; unchanged from earlier providers |
+| `autopilot_paused` | Saved consent, Autopilot paused |
+| `model_not_supported` | Not an active catalog build with a manifest that this Mac can run: unknown or inactive, RAM floor, runtime capabilities, engine family, load budget, unreportable ID, a failed self-test, or the 256-ID bound |
+| `model_limit_reached` | The operator's `max_models` cap is reached |
+| `storage_limit_reached` | The download would exceed the operator's `max_storage_gb` cap |
+| `insufficient_disk` | The download would leave less free disk than the reserve (`reserve_gb`, default `50` GiB) |
+| `catalog_unavailable` | The catalog or manifest could not be fetched; retryable |
+| `download_failed` | Transfer, verification, scan or hash failed, or the model was loaded when the download verified; retryable |
+
+Shutdown and drain refusals keep their existing text (`provider is shutting
+down`, `provider draining for update`).
 
 ### `models_update`
 
@@ -1055,6 +1142,45 @@ drift correction for the coordinator's ledger, not reservations.
 
 ## Coordinator → provider
 
+The Go side of the member fields above and of `cluster_member_accepted` is in
+`Layr-Labs/darkbloom-platform`; a `coordinator/` path named for them on this
+page is a file in that repository.
+
+### `cluster_member_accepted`
+
+Go `ClusterMemberAcceptedMessage` (`darkbloom-platform:coordinator/protocol/execution_role.go`) ·
+Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
+Sent once per member-role connection as the last step of handling
+[`register`](#register) (`acknowledgeClusterMember`,
+`darkbloom-platform:coordinator/api/provider/cluster_member.go`): after every check that can
+refuse the connection, and whether or not a native runtime catalog is
+configured. A refused or solo registration is sent none. One acceptance per
+negotiation, before a ten-second deadline; the negotiation is discarded on
+reconnect. It proves protocol support and connection binding only — never
+attestation, runtime approval, native-owner authorization or serving
+readiness. A solo connection ignores it. See
+[cluster-control-protocol.md](cluster-control-protocol.md).
+
+A starting member waits for this frame for a bounded time (30 s for a
+foreground `darkbloom start --local --distributed` or `--cluster-member`). Its
+reconnects stay inside that wait: a retry the backoff would place after the
+wait's end is made at the end and runs to its own terms (one ten-second window
+for the handshake, then its connection's ten-second deadline); an attempt
+already under way at the wait's end gets the same terms, so an acceptance
+arriving inside its connection's deadline still connects. A reconnect begun
+after the wait's end never extends it. A wait in which
+no attempt reached the coordinator fails as "coordinator could not be reached",
+not as a refusal of the member role; a reached coordinator that sent no valid
+acceptance in time still ends the member (it is not reconnected under a new
+nonce).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | string | String | req | exactly `cluster_member_accepted` |
+| `execution_role` | string | `ProviderExecutionRole` | req | exactly `cluster_member` |
+| `member_registration_nonce` | string | String | req | exact nonce from this connection's registration |
+| `provider_id` | string | String | req | nonempty, at most 128 UTF-8 bytes |
+
 ### `inference_request`
 
 Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
@@ -1099,6 +1225,71 @@ identity; a changed exact-bound identity is rejected before writer handoff.
 The provider ignores a malformed optional `prompt_work` object and decodes the
 rest of the inference request normally; required request fields remain strict.
 
+#### Unserved content part types
+
+A decrypted Chat body with a content part type no engine serves (none of
+`text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`,
+`input_audio`) is refused before acceptance or any model load with
+`inference_error` status 400 and `failure_code` `invalid_request`, without an
+`error_reason`; the part type never crosses to the coordinator. Pair members
+refuse it the same way. A `response_format` answer the service validates that
+was cut off by `max_tokens` fails with 422 `invalid_request` / `client_error`;
+GLM-5.3-Flash validates its withheld JSON itself and keeps 422
+`generation_failure` / `tool_noncompliance` for a truncated one. Local HTTP names
+the part type and the service-validated cut-off
+([direct mode](../provider/direct-mode.md#refused-request-shapes)). Sources:
+`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+(`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
+(`mapInferenceErrorToStatus`).
+
+#### MiMo Chat tool-schema preservation
+
+The decrypted Chat body adds no envelope field or schema-metadata trust grant.
+Loaded exact `mimo_v2` selects restoration of the original typed tool declarations;
+caller model names do not select this behavior. The public fixture is a fixed
+provider contract, not evidence of a deployed platform implementation.
+
+| Boundary | Contract | Provider source |
+|---|---|---|
+| Original tools | Preserve typeless enums and Boolean property schemas before native rendering, serving, recount and benchmark preparation. Other loaded families retain existing normalization. | `provider-swift/Sources/ProviderCore/Inference/Prompting/MiMo/MiMoV26ToolEvidence.swift` (`restoring`); [native inference](../architecture/inference.md#native-mimo-v26-candidate) |
+| Hosted-tool fallback | Share the existing function-object/string-name structural filter. Malformed retained declarations still fail SDK decoding; unsupported hosted entries follow existing ingress repair. | `provider-swift/Sources/ProviderCore/InboundChatNormalization.swift` (`isRepresentableTool`); `MiMoV26ToolEvidence.OriginalTool` |
+| Reserved metadata | Reject client-authored reserved schema metadata before tool-choice handling, including `none`. No new caller trust or forced-tool capability follows from capture. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`rejectReservedSchemaMetadata`); `MiMoV26ToolEvidence.restoring` |
+| Public regression | Two newly authored reproductions exercise exact provider/local prompt IDs through scripted generation. Historical external-corpus and live platform qualification remain separate. | `fixtures/prompt-contract/mimo-v26-schema-parity-v1.json`; [fixture procedure](../developer/mimo-prompt-fixtures.md#tool-schema-ingress-regressions) |
+
+#### GLM native prompt contract
+
+GLM-5.3-Flash (catalog `glm-5.3-flash` and the local qualification download)
+adds no WebSocket message or trusted caller field. `GLM5NextPromptPolicy`
+selects its text prompt rules only from the loaded model's `model_type`; caller
+model names cannot authorize the raw-schema path.
+
+| Request-body control | Native text contract | Provider source |
+|---|---|---|
+| `reasoning.effort`, `reasoning_effort`, `chat_template_kwargs.reasoning_effort` | Exact `minimal`/`low` render `low`, `medium`/`high` render `high`, `xhigh`/`max` render `max`, matching the platform sidecar; nested, top-level, then template precedence; default `max`. `none` and `off` are thinking-off requests (below); other invalid values reject even when shadowed. `reasoning: null`, null `reasoning` members and a null top-level `reasoning_effort` (OpenAI's nullable field) are unset; `reasoning.summary` and `reasoning.generate_summary` accept `auto`, `concise` or `detailed` as no-ops, because the full reasoning is returned, and `reasoning.mode` accepts OpenRouter's default `standard` (`pro` names a model variant GLM does not have). Other `reasoning` members and values are refused. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`RawControls`, `additionalContext`, `Effort`) |
+| `reasoning.max_tokens`, `thinking.budget_tokens` | Positive integer. Selects the nearest effort when no effort alias is present (`reasoning.max_tokens` before `thinking.budget_tokens`): at most 1,024 renders `low`, at most 8,192 `high`, otherwise `max` (the budgets OpenAI-compatible APIs give `low` and `medium`). The template does not enforce a token budget. | Same source (`Effort.init(reasoningBudget:)`) |
+| `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, top-level `thinking` | Boolean only, except top-level `thinking`, which also takes GLM's API object `{"type": "enabled"\|"disabled", "clear_thinking": Boolean}` and the Anthropic object the coordinator's Messages lowering forwards unchanged: `type` `adaptive` enables thinking, `budget_tokens` is the budget above, and `display` `summarized` is a no-op while `omitted` hides the reasoning (below). All members are optional; other members are refused, and null top-level `thinking` is unset. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a budget (`reasoning.max_tokens` or `thinking.budget_tokens`) is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
+| `include_reasoning`, `reasoning.exclude`, `thinking.display` | Boolean or null (unset); `display` is a string. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. `include_reasoning: false`, `reasoning.exclude: true` and `thinking.display: "omitted"` are OpenRouter's hidden reasoning: the prompt is unchanged, and with thinking on the reasoning is generated, classified on the native channel and withheld from every frame and logprob entry, while still counted in `reasoning_tokens`. With thinking off there is no reasoning to withhold. A cluster pair withholds it the same way on its text and media paths. | Same source (`RawControls`, `withholdsReasoning`); `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`, `prepareClusterGLMMedia`, `prepareClusterGLMImage`); `provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift` |
+| `clear_thinking`, `chat_template_kwargs.clear_thinking`, `thinking.clear_thinking`, `reasoning.context` | Boolean only; top-level, then template value, then the `thinking` object; default `false`. `true` clears historical reasoning, not newly generated reasoning: the template then keeps only the reasoning of assistant turns after the last user turn. OpenRouter's `reasoning.context` spells the same switch: `current_turn` is `true`, `all_turns` is `false`, and `auto` or null is unset. Other context values, and a context that contradicts the effective Boolean, are refused with 400 `invalid_request`, never reconciled. | Same source (`RawControls.contextClearThinking`, `validate`, `additionalContext`) |
+| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as OpenRouter's `reasoning` string, else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. A tool result pairs with its call by ID; its `name` is neither rendered nor compared with the call's function. A legacy assistant `function_call` and the `role: function` result right after it decode as one call and the result answering it (`InboundChatNormalization.normalizeLegacyFunctionCalls`). `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
+| `response_format` `json_object` / `json_schema` | Text requests, with or without tools. GLM's native engine refuses sampler constraints, so this is not constrained decoding: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, and a `json_schema` value must satisfy the caller's schema: through the shared compiled subset when the schema fits it, otherwise against the schema itself (`ToolConstraintValidation.satisfies(_:jsonSchema:)`, which leaves `$ref` targets, `format` and patterns beyond literal prefixes, suffixes and substrings unasserted). Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content. Beside tools the format governs only an answer: calls are exposed and validated as in any tool request, and text generated beside a call is exposed as generated. Image or video input is refused with 400 before any media decode, on one Mac and on a cluster pair alike. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`satisfies`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
+| `tool_choice` `required` / named function | Text requests. Served by structured post-validation, as Qwen 3.5/3.8 and Nemotron are: `ToolChoicePromptPolicy` renders its forcing instruction in the system and last user turns, a named choice offers only that function, reasoning streams on a separate typed channel, and the native GLM parser withholds the call until end of stream. It is exposed only after it parses and passes `ToolConstraintValidation.validate` (declared or named function, compiled schema, cardinality); visible text, a missing, malformed, truncated or schema-invalid call is a 422 `tool_noncompliance` with nothing exposed. Advertised under tool-constraint protocol v1 for the managed GLM identities, so the coordinator routes these requests to such providers. Image or video input with a forced choice is refused with 400 before any media decode, on one Mac and on a cluster pair alike. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift` (`forcedStrategy`, `validateParser`, `advertisesCapability`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift` (`checkNativeToolFailure`) |
+| Unqualified modes | Reject `preserve_thinking`, other `reasoning` or `chat_template_kwargs` keys and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+
+The platform prompt sidecar's GLM mirror still refuses `reasoning.context`,
+`reasoning.mode`, hidden reasoning, a null `reasoning_effort` and the Anthropic
+`thinking` members, so such requests get no coordinator cache plan; the
+provider serves them.
+
+`LocalResponseRequest` retains request-local raw controls for the same later
+loaded-model check; capture alone grants no capability
+(`provider-swift/Sources/ProviderCore/Server/LocalResponseRequest.swift`). The
+fixtures under `fixtures/prompt-contract/glm53-flash/` keep the official template
+as the golden authority and separately identify the `EigenLabs` artifact template
+recognized by `GLM5NextPromptPolicy.templateSHA256`; a LOAD with any other
+template is refused (`GLM5NextLocalQualification.requireShippedTemplate`). They do not
+prove full HTTP/sidecar parity.
+See the [integration gates](../design/glm53-flash-native.md).
+
 ### `cancel`
 
 Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
@@ -1141,6 +1332,7 @@ whole-device reservation. Shadow leases cannot authorize this message.
 | `expected_resident_models` | `[]string` / `[String]` | req | Complete unique resident set expected before mutation, at most32 |
 | `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md#model-autopilot) |
 | `lease_seconds` | `int` / `Int` | req | `0...86400`; minimum hold lease on a newly loaded target, separate from provider residence/idle dwell |
+| `hold_seconds` | — / `Int?` | opt; Swift only | `0...86400` placement hold on the loaded target; absent or `0` records none and leaves an earlier hold; a positive value replaces it; without `load_model_id` it is `invalid_command`. A succeeded operation's hold keeps the target out of LRU eviction and idle unload after its lease ends; another operation may still unload it. Honoured only by providers reporting `placement_holds` |
 
 The provider rejects a changed resident set, busy device, pinned/young victim,
 active lease, unsupported hardware, missing local primary/assistant or infeasible
@@ -1184,13 +1376,30 @@ paused residency. Only a matching live lease can transfer residency ownership.
 Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 `backend == "mlx-swift"`; the provider replies with `load_model_status`.
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
-`model_autopilot` commands instead.
+`model_autopilot` commands instead. Never sent to a `cluster_member` connection
+or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
 
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
-(`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+(`int`, opt, advisory). Download + verify only, no GPU load; for a build in
+ordinary serving the provider replies with `prefetch_model_status` and then
+`models_update`. Refused for a `cluster_member` connection or a pair-held
+device, like `load_model`.
+
+With saved Autopilot consent and downloads not turned off by the operator
+(capability `inventory_downloads`; on by default), a build outside ordinary
+serving is an Autopilot
+download, even under a live lease: the provider downloads and
+verifies it through the same pipeline, adds it to `selected_models` and the
+registration inventory, and sends **no** `models_update`, because that would make
+it ordinary and publicly routable. It never loads or advertises the build; an
+Autopilot operation may load it. With consent but downloads off, such a request
+is refused `model_not_selected` and never takes the ordinary path. The provider then re-registers once when idle (no busy reason,
+operation, live lease or other download)
+so `register.autopilot_inventory` carries the build's `ModelInfo`
+([Autopilot set](../architecture/model-autopilot.md#the-autopilot-model-set)).
 
 ### `desired_models`
 
@@ -1209,7 +1418,9 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. Source:
+Both announce completed updates through `models_update`. A `cluster_member`
+connection is offered no entries and receives only the empty set; a nonempty set
+is refused for a member connection or a pair-held device. Source:
 [coordinator/registry/model_commands.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/model_commands.go) (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 See [revision lifecycle](../architecture/model-revisions.md).
 
@@ -1276,7 +1487,7 @@ support.
 | `observe_only` | `bool` / `Bool` | req; always emitted | Acknowledged shadow mode; a valid shadow lease reports `true` with `active=false` and the matching session |
 | `session_id` | `string` / `String?` | opt | Acknowledged control connection; shadow acknowledgement is not live ownership |
 | `revision` | `string` / `String` | req | Approved consent configuration |
-| `selected_models` | `[]string` / `[String]` | req | Consent requires `1...256` exact verified cached network build IDs, each nonempty and at most `256` UTF-8 bytes; static until explicit inventory refresh, empty never grants permission |
+| `selected_models` | `[]string` / `[String]` | req | The Autopilot model set. Consent requires `1...256` IDs, each nonempty and at most `256` UTF-8 bytes. With saved consent: the persisted selection plus every verified catalog build in the local cache (`AutopilotModelSet`), at most `256`, persisted selection first, sorted. It grows when a download or prefetch verifies and shrinks when a build leaves the cache, under an unchanged `revision`. Without consent: the persisted selection, unchanged. Empty never grants permission |
 | `min_idle_seconds` | `int` / `Int` | req | Inactivity guard separate from minimum residence |
 | `load_history` | `[]ModelAutopilotLoadTiming` / `[ModelAutopilotLoadTiming]?` | opt | At most64 `{model_id, weight_hash, load_ms, measured_at_ms}` measurements; only recent matching bytes influence estimates |
 | `last_elapsed_ms`, `last_release_ms`, `last_load_ms` | `int64` / `Int64?` | opt | Measured last operation phases; no ETA guarantee |
@@ -1287,6 +1498,35 @@ support.
 | `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
 | `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
 | `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
+| `capabilities` | — / `[String]?` | opt; with consent | Additive features beyond protocol 3 (`ModelAutopilotCapability`): `inventory_adoption`, `placement_holds`, `busy_reasons`, and `inventory_downloads` unless the operator turned downloads off. Absent on older providers, which do not adopt, hold or download |
+| `download_storage` | — / `ModelAutopilotDownloadStorage?` | opt; only with `inventory_downloads` | `{disk_free_bytes, reserve_bytes, used_bytes, used_models, limit_bytes?, limit_models?}`, int64 bytes. Free space on the model cache volume (0 when unknown), the reserve a download keeps, the builds Autopilot downloaded that are still on disk, and the operator's caps (absent = no cap). Measured at most once a minute and after each download |
+| `adopted_models` | — / `[String]?` | opt; with consent | Cached inventory targets of succeeded operations that keep serving without a lease; each is resident. Absent when none |
+| `held_models` | — / `[ModelAutopilotHold]?` | opt; with consent | Active holds `{model_id, expires_at_ms}` (Unix milliseconds); each held model is resident and is never evicted for an ordinary cold load. Absent when none |
+| `busy_reasons` | — / `[String]?` | opt; with consent | Every condition that would make the provider answer `provider_busy` now, in report order; absent when not busy |
+| `busy_reason` | — / `String?` | opt; with consent | The first of `busy_reasons` |
+| `busy_since_ms` | — / `Int64?` | opt; with consent | Unix milliseconds since `busy_reason` has been continuously observed |
+| `transition_stalls` | — / `[ModelAutopilotTransitionStall]?` | opt; with consent | Cumulative watchdog stalls in this process, `{transition, count, last_age_ms}`; absent before the first |
+
+The consent-gated fields above are additive: a provider without saved consent
+omits all of them, and coordinators that predate them ignore them because they
+decode provider frames without rejecting unknown keys
+([coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/f512258a5172ee8677746aba4bbd15c7a2d22f9f/coordinator/protocol/messages.go),
+`ProviderMessage.UnmarshalJSON`). `protocol` stays `3`: the coordinator accepts
+inventory only from protocol `3`. A coordinator may rely on adoption or holds
+only after a provider reports the matching capability.
+
+Closed vocabularies (`provider-swift/Sources/ProviderCore/Protocol/Autopilot/ModelAutopilotBusyReason.swift`).
+Report order lists an owner before the work it owns:
+
+| Field | Values |
+|---|---|
+| `busy_reason(s)` (`ModelAutopilotBusyReason`) | `autopilot_operation`, `shutting_down`, `addon_hold`, `draining`, `reconnect_after_retirement`, `model_switch`, `revision_activation`, `revision_update`, `startup_preload`, `preload`, `engine_recovery`, `mtp_upgrade`, `mtp_staging`, `model_advertisement`, `pending_advertisement`, `load_gate`, `model_loading`, `reslice`, `model_unloading`, `model_retiring`, `native_memory_retained`, `inflight_work` |
+| `transition_stalls[].transition` (`ModelAutopilotTransition`) | `autopilot_operation`, `startup_preload`, `preload`, `model_loading`, `model_advertisement`, `model_switch`, `reslice`, `reconnect_after_retirement` |
+| `capabilities` (`ModelAutopilotCapability`) | `inventory_adoption`, `placement_holds`, `busy_reasons`, `inventory_downloads` |
+| Autopilot download `prefetch_model_status.error` (`AutopilotDownloadRefusal`, plus `model_not_selected`) | `model_not_selected`, `autopilot_paused`, `model_not_supported`, `model_limit_reached`, `storage_limit_reached`, `insufficient_disk`, `catalog_unavailable`, `download_failed` |
+
+Bounds and the watchdog's cancellation rules are in the
+[Autopilot architecture](../architecture/model-autopilot.md#busy-reasons-and-stalled-transitions).
 
 Resident entries:
 
@@ -1304,9 +1544,10 @@ replace the paired heartbeat, clear an uncertain operation by age alone or
 make unconfirmed slots routable.
 
 Provider `enabled` reports eligible scheduling participation, not activation.
-When an ordinary successor extends serving permission beyond cached consent,
-the provider reports `enabled=false` and local phase `waiting_inventory`
-until explicit inventory refresh, preserving ordinary serving with old peers.
+When an ordinary successor extends serving permission beyond the Autopilot
+set, the provider reports `enabled=false` and local phase `waiting_inventory`
+until the successor joins the set (its verified prefetch, or an explicit
+inventory refresh), preserving ordinary serving with old peers.
 Saved consent remains independently visible as `consent_enabled=true`.
 It does not itself
 activate warm-only network admission. The default shadow rollout sends leases for
@@ -1336,19 +1577,23 @@ See [history and payout limits](https://github.com/Layr-Labs/darkbloom-platform/
 This additive field does not change protocol-3 control negotiation; qualifying
 reward declarations require an updated provider build to be released separately.
 
-The `selected_models` allowlist is populated by verified active downloaded network
-inventory, not a model picker, arbitrary local/off-catalog discovery or a download
-request. It can be broader than saved `enabled_models`; its metadata is carried
+With saved consent, the `selected_models` set is the persisted selection plus
+every verified active catalog build in the local cache, including builds
+downloaded on the operator's behalf; never arbitrary local or off-catalog
+builds. The operator can turn downloads on their behalf off or limit them
+(`[backend.autopilot_downloads]`). It can be broader than saved `enabled_models`; its metadata is carried
 in optional `register.autopilot_inventory` (`[]ModelInfo`, at most 256 entries),
-not in ordinary `register.models`. Only consented IDs with a nonempty verified
+not in ordinary `register.models`. The inventory is built from the same
+snapshot as that frame's `selected_models`, and the provider records which IDs
+a registration carried. Only consented IDs with a nonempty verified
 weight hash are accepted. Ordinary models win duplicate IDs and weight identity.
 Observation-only models do not grant public/owner routing, capacity or legacy
 load permission until a matching live lease is acknowledged. Shadow planning
 can inspect that metadata without granting permission. Old coordinators ignore
 the additive field and cannot activate protocol 3. Both the ordinary JSON encoder
-and the raw-attestation registration encoder preserve this separation. Ordinary
-restarts reuse the recorded inventory rather than automatically consenting to
-new catalog builds. Implementation: [coordinator/registry/autopilot_inventory.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_inventory.go),
+and the raw-attestation registration encoder preserve this separation. A
+restart recomputes the set from the cache and the catalog under the same saved
+consent; no new consent step applies. Implementation: [coordinator/registry/autopilot_inventory.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/autopilot_inventory.go),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift`.
 
 ### `EncryptedPayload`
@@ -1376,7 +1621,9 @@ There is no separate generic unload command. The provider's ordinary idle timer
 is paused during active control or an explicit pause. Recorded consent alone
 does not pause it during shadow, while waiting or after lease expiry. Commands cannot fall through to implicit LRU
 victims. Standalone surplus unloading follows the configured quiet window; load-driven replacement
-still requires all dwell, memory, pin and donor protections.
+still requires all dwell, memory, pin and donor protections. A succeeded operation's
+`hold_seconds` keeps its target out of the idle timer and LRU eviction until expiry, and its
+adopted inventory serves after the lease; see [placements](../architecture/model-autopilot.md#placements-after-an-operation).
 
 Non-enrolled providers keep their existing idle and legacy model lifecycle.
 `desired_models` release reconciliation remains independent, is deferred behind
@@ -1402,3 +1649,41 @@ backend-capacity heartbeat. See [autopilot architecture](../architecture/model-a
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
 - [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md) — producer, sink and cadence of every datum
 - [api-contracts.md#headers](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#headers) — the `X-Timing` header
+
+## Private cluster still-image reservation
+
+This worker-local additive field is separate from the coordinator WebSocket
+contract and grants no advertised serving modality. Existing authenticated
+worker records protect its transport; the native generation agreement binds
+its bytes and spans before execution.
+
+| Field | Presence and bounds | Source |
+|---|---|---|
+| `ClusterWorkerReservation.stillImages` | Optional; omitted when nil. Base64 JSON envelope, at most `135_000` decoded bytes; GLM pipeline only, no alternate route or MiMo envelope | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerCodec.swift` (`reservation`) |
+| `configurationSHA256` | Required lowercase SHA-256, equal to loaded immutable config | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterStillImages.swift` (`ClusterStillImages`) |
+| `images` | Exactly one still PNG; at most `96 * 1024` encoded bytes, `1024 * 1024` source pixels and `1024` feature tokens; exact causal token offset/count | `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterStillImages.swift` (`validateStructure`, `validate`) |
+
+Each worker independently checks actual PNG metadata and SDK resize geometry.
+Video, animation, unknown fields, overlapping/unowned spans and foreign model
+admission refuse. Payloads and token IDs are not telemetry.
+
+## Private paired batch setup adoption
+
+This pair-control addition is separate from coordinator WebSocket contracts.
+The existing keyed pairing authenticates the sender; the receiver independently
+requires its saved serving rank 0, unchanged capability/model/peer/trust/request
+identity and an empty local native lease before replacing setup pointers.
+
+| Field | Contract | Source |
+|---|---|---|
+| `ClusterServiceCommand.op = batchSetup` | Carries `batchSetup.previousSHA256` and canonical configuration bytes. Exact current-target retry is idempotent; another selected digest refuses. No key or environment is carried. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterAutomaticBatchSetup.swift`, `ClusterServiceWire.swift` in the same directory |
+| `ClusterServiceStatus.child.configurationSHA256` | Optional full digest of the setup the running child actually launched for or the leader supervisor acknowledged. Selected-pointer changes alone never set it. The new leader waits for this exact follower digest before opening a new epoch. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift` (`status`) |
+
+An older receiver refuses the unknown operation. No fallback bypasses the
+saved setup checks or starts a worker alongside an unreleased owner.
+
+### Qwen27 TP assistant READY observation
+
+The local cluster worker's optional `tensorAssistant` observation binds the actually loaded assistant policy, admitted `capacity`, and `maximumSpeculativeWidth`. An admitted-cohort policy requires the width field even at capacity one and requires it to equal capacity. Legacy singleton policy omits the width and resolves it to one. Missing, unexpected or unequal observations refuse the installed pair before publication; policy markers in a binary are compatibility checks rather than READY evidence. This remains the local installed cluster contract and introduces no coordinator telemetry field.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterQwenTensorAssistantReady.swift` (`ClusterQwenTensorAssistantReady`), `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift`, and `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`.

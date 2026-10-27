@@ -176,7 +176,7 @@ enum SSDBlockStore {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_block_store")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_block_store")
     #endif
 
     // MARK: Layout epoch

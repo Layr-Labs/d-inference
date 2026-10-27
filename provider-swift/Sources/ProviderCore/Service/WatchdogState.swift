@@ -74,8 +74,8 @@ public enum WatchdogStateStore {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_WATCHDOG_STATE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/watchdog-state.json")
+        return BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("watchdog-state.json")
     }
 
     /// Upper bound a genuinely-accumulated crash-loop counter can plausibly

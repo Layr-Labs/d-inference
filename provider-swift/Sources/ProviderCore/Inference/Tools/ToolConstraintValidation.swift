@@ -109,10 +109,10 @@ enum ToolConstraintValidation {
                 continue
             case .marker:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool schema contains reserved internal metadata")
+                    "tool schema contains reserved internal metadata", refusal: .reservedToolSchemaMetadata)
             case .beyondWalkBound:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool schema exceeds the reserved-metadata scan depth")
+                    "tool schema exceeds the reserved-metadata scan depth", refusal: .reservedToolSchemaMetadata)
             }
         }
     }
@@ -188,6 +188,18 @@ enum ToolConstraintValidation {
         _ message: String
     ) -> MultiModelBatchSchedulerEngineError {
         .toolChoiceViolation(message)
+    }
+
+    /// Response-format post-validation over the same compiled subset.
+    static func satisfies(_ value: MLXLMCommon.JSONValue, schema: ToolValueSchema) -> Bool {
+        validate(value, against: schema)
+    }
+
+    /// Response-format post-validation against a caller's JSON Schema that the
+    /// compiled subset does not cover, with the broad validator `auto` tool
+    /// calls use.
+    static func satisfies(_ value: MLXLMCommon.JSONValue, jsonSchema: MLXLMCommon.JSONValue) -> Bool {
+        validateJSONSchema(value, schema: jsonSchema, depth: 0)
     }
 
     private static func validate(

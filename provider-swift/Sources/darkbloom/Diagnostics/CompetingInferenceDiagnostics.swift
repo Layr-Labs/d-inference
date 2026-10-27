@@ -8,11 +8,17 @@ struct LocalContentionSnapshot: Equatable, Sendable {
     var ollamaPortListening: Bool
     /// Short process name tokens observed (e.g. "ollama", "llama-server").
     var competingProcessHints: [String]
+    /// The other build environment's provider (dev or production) when it is
+    /// running on this Mac: its models share the same unified memory.
+    var otherProvidersRunning: [String] = []
 
     static let empty = LocalContentionSnapshot(ollamaPortListening: false, competingProcessHints: [])
 
     /// Best-effort live probe. Failures degrade to empty (no false WARNs).
-    static func live(runner: SecurityCommandRunner? = nil) -> LocalContentionSnapshot {
+    static func live(
+        runner: SecurityCommandRunner? = nil,
+        otherProviders: () -> [String] = LocalContentionSnapshot.runningOtherProviders
+    ) -> LocalContentionSnapshot {
         var ollama = false
         var hints: [String] = []
 
@@ -37,8 +43,20 @@ struct LocalContentionSnapshot: Equatable, Sendable {
 
         return LocalContentionSnapshot(
             ollamaPortListening: ollama,
-            competingProcessHints: hints.sorted()
+            competingProcessHints: hints.sorted(),
+            otherProvidersRunning: otherProviders()
         )
+    }
+
+    /// CLI names of the other build environments whose provider process is
+    /// alive, from that install's daemon state file.
+    static func runningOtherProviders() -> [String] {
+        BuildEnvironment.allCases.filter { $0 != .current }.compactMap { other in
+            guard let identity = DaemonStateFile.read(from: DaemonStateFile.path(for: other))?.processIdentity,
+                identity.isCurrent()
+            else { return nil }
+            return other.cliName
+        }
     }
 
     private static func capture(_ path: String, args: [String], runner: SecurityCommandRunner?) -> String? {
@@ -56,7 +74,7 @@ struct LocalContentionSnapshot: Equatable, Sendable {
 }
 
 func competingInferenceCheck(_ snap: LocalContentionSnapshot) -> DoctorCheck {
-    if !snap.ollamaPortListening && snap.competingProcessHints.isEmpty {
+    if !snap.ollamaPortListening && snap.competingProcessHints.isEmpty && snap.otherProvidersRunning.isEmpty {
         return DoctorCheck(
             name: "competing inference",
             status: .pass,
@@ -69,6 +87,9 @@ func competingInferenceCheck(_ snap: LocalContentionSnapshot) -> DoctorCheck {
     }
     if !snap.competingProcessHints.isEmpty {
         parts.append("processes: " + snap.competingProcessHints.joined(separator: ", "))
+    }
+    for other in snap.otherProvidersRunning {
+        parts.append("the `\(other)` provider is also running on this Mac; its models count against the same memory")
     }
     return DoctorCheck(
         name: "competing inference",

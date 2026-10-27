@@ -412,6 +412,38 @@ private struct ThrowingResponder<E: Error>: HTTPResponder {
         "CORS allow-origin must be set on the rendered error response")
 }
 
+private final class CollectedResponseBody: ResponseBodyWriter, @unchecked Sendable {
+    var bytes = ByteBuffer()
+    func write(_ buffer: ByteBuffer) async throws {
+        var buffer = buffer
+        bytes.writeBuffer(&buffer)
+    }
+    func finish(_ trailingHeaders: HTTPFields?) async throws {}
+}
+
+@Test func corsResponderKeepsGLMPolicyRefusalsClosedAndContentFree() async throws {
+    let context = BasicRequestContext(
+        source: ApplicationRequestContextSource(
+            channel: EmbeddedChannel(), logger: Logger(label: #function)))
+    func render(_ error: MultiModelBatchSchedulerEngineError) async throws -> (HTTPResponse.Status, [String: Any]) {
+        let request = Request(
+            head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+            body: .init(buffer: ByteBuffer()))
+        let response = try await CORSResponder(inner: ThrowingResponder(error: error))
+            .respond(to: request, context: context)
+        let body = CollectedResponseBody()
+        try await response.body.write(body)
+        let envelope = try #require(
+            JSONSerialization.jsonObject(with: Data(String(buffer: body.bytes).utf8)) as? [String: Any])
+        return (response.status, try #require(envelope["error"] as? [String: Any]))
+    }
+    let (status, refusal) = try await render(.invalidToolPayload("GLM5: caller-detail"))
+    #expect(status == .badRequest)
+    #expect(refusal["message"] as? String == InferenceFailureCode.invalidRequest.message)
+    #expect(refusal["type"] as? String == "invalid_request_error")
+    #expect(refusal["code"] == nil)
+}
+
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
         models: models
@@ -623,7 +655,8 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
 // MARK: - v0.7.5 one-engine: v2 slot construction + KV re-slice
 
 private final class StandaloneStubLanguageModel: Module, LanguageModel {
-    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+    func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws
+        -> PrepareResult {
         .tokens(input.text)
     }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }

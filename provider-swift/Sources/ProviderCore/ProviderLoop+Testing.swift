@@ -22,6 +22,14 @@ extension ProviderLoop {
     /// Test seam: whether a model id is currently advertised.
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
 
+    #if DEBUG
+    /// Test seam: advertise a model the supported-set filter would drop, to
+    /// exercise `ensureModelLoaded`'s own refusals behind that filter.
+    func advertiseBypassingSupportedSetForTesting(_ model: ModelInfo) {
+        advertisedModels[model.id] = model
+    }
+    #endif
+
     func advertisedModelWeightHashForTesting(_ id: String) -> String? {
         advertisedModels[id]?.weightHash
     }
@@ -131,6 +139,24 @@ extension ProviderLoop {
     func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {
         loadedModelsPersistenceEnabled = enabled
     }
+
+    /// Test seam: record verified managed-load hashes to a temp file.
+    func setVerifiedWeightHashesFileForTesting(_ url: URL?) {
+        verifiedWeightHashesFile = url
+    }
+
+    /// Test seam: observe or replace the full weight read behind load-time
+    /// hash captures.
+    func setLoadWeightHasherForTesting(_ hasher: @escaping @Sendable (URL, String) -> String?) {
+        loadWeightHasher = hasher
+    }
+
+    /// Test seam: the `DARKBLOOM_TTFT_COLD_LOAD_RELEASE` choice, read at init.
+    func setColdLoadReleasesWorkFIFOForTesting(_ enabled: Bool) {
+        coldLoadReleasesWorkFIFO = enabled
+    }
+
+    func releasedAdmissionCountForTesting() -> Int { releasedAdmissions.count }
 
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
     /// with a scripted loader (no weights, no disk).
@@ -288,8 +314,8 @@ extension ProviderLoop {
         modelId: String,
         bridge: EngineV2Bridge,
         newcomer: EngineV2NewcomerBox
-    ) async {
-        await unwindBuiltSlotAndRegrow(modelId: modelId, bridge: bridge, newcomer: newcomer)
+    ) async throws {
+        try await unwindBuiltSlotAndRegrow(modelId: modelId, bridge: bridge, newcomer: newcomer)
     }
 
     /// Test seam: the unload-side re-slice (grow survivors back to their
@@ -352,6 +378,14 @@ extension ProviderLoop {
         releaseResliceGate()
         return bridge
     }
+
+    #if DEBUG
+    func setGLM5NextPublicationRefusalForTesting(
+        _ refusal: (@Sendable (EngineV2Bridge) async -> String?)?
+    ) {
+        glm5NextPublicationRefusalForTesting = refusal
+    }
+    #endif
 
     /// Test seam: swap the spec-dec funnel so lifecycle tests can gate the
     /// MTP preparation await deterministically.
@@ -474,4 +508,20 @@ extension ProviderLoop {
     func markRetiringForTesting(_ modelId: String) {
         retiringModels.insert(modelId)
     }
+}
+
+extension ProviderLoop {
+    /// Test seam: the managed Super loader and its runtime-policy environment.
+    func setNemotronSuperSlotLoaderForTesting(_ loader: NemotronSuperSlotLoader,
+                                              environment: [String: String]) {
+        nemotronSuperSlotLoader = loader
+        nemotronSuperEnvironment = environment
+    }
+
+    /// Test seam: the managed Super owner of a resident slot.
+    func nemotronSuperOwnerForTesting(modelId: String) -> NemotronSuperSlotOwner? {
+        modelSlots[modelId]?.modelContainer.nemotronSuper
+    }
+
+    func nemotronSuperRetainedWeightBytesForTesting() -> UInt64 { nemotronSuperRetainedWeightBytes }
 }

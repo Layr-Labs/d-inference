@@ -69,11 +69,11 @@ enum DoctorRunner {
         } else if daemonUp {
             out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
                                   message: "the daemon is running but hasn't received a trust status from the coordinator yet (or it's stale).",
-                                  fix: "wait ~1 min and re-run `darkbloom doctor`; if it persists, check connectivity below."))
+                                  fix: "wait ~1 min and re-run `\(BuildEnvironment.current.cliName) doctor`; if it persists, check connectivity below."))
         } else {
             out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
                                   message: "the provider daemon isn't running, so live trust status is unavailable.",
-                                  fix: "run `darkbloom start`, then `darkbloom doctor`."))
+                                  fix: "run `\(BuildEnvironment.current.cliName) start`, then `\(BuildEnvironment.current.cliName) doctor`."))
         }
         // Enrollment hint (local) — but skip it when the coordinator already
         // grants this provider hardware trust. Nagging an already-hardware-trusted
@@ -215,7 +215,7 @@ enum DoctorRunner {
             if state.isStale(now: now) {
                 out.append(Diagnostic(section: .runtime, name: "daemon", level: .warn,
                                       message: "running but its last update was \(Int(state.ageSeconds(now: now)))s ago — it may be wedged.",
-                                      fix: "check `darkbloom logs`; consider `darkbloom stop && darkbloom start`."))
+                                      fix: "check `\(BuildEnvironment.current.cliName) logs`; consider `\(BuildEnvironment.current.cliName) stop && \(BuildEnvironment.current.cliName) start`."))
             } else {
                 let warm = WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel)
                 let mru = WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel)
@@ -228,11 +228,14 @@ enum DoctorRunner {
                                       message: "FAILED for \(err.model): \(err.message)",
                                       fix: "see the model-fit check above; serve a model that fits this box's RAM."))
             }
+            if !state.isStale(now: now) {
+                out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
+            }
             // ---- Billing ----
             if state.stats.usageGaps > 0 {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .warn,
                                       message: "\(state.stats.usageGaps) completed request(s) had a missing/zero usage chunk (under-counting risk).",
-                                      fix: "run `darkbloom report --dry-run` to review the logs, then upload with `darkbloom report` if support needs them."))
+                                      fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them."))
             } else {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
                                       message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) tokens reported this session.",

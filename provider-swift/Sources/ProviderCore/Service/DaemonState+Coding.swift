@@ -10,11 +10,12 @@ extension DaemonState {
     enum CodingKeys: String, CodingKey {
         case schema, pid, processIdentity, version, writtenAt
         case startedAt, attestationPublicKey, trust, coordinatorUrl, currentModel
-        case warmModels, advertisedModels, startupPreloadPendingModels, lifecycle, modelSwitch
+        case warmModels, advertisedModels, servingSelection, evictionExclusions
+        case startupPreloadPendingModels, lifecycle, modelSwitch
         case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
-        case autopilotState
+        case autopilotState, addonHold
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,6 +32,8 @@ extension DaemonState {
         currentModel = try c.decodeIfPresent(String.self, forKey: .currentModel)
         warmModels = try c.decode([String].self, forKey: .warmModels)
         advertisedModels = try c.decodeIfPresent([String].self, forKey: .advertisedModels)
+        servingSelection = try c.decodeIfPresent([String].self, forKey: .servingSelection)
+        evictionExclusions = try c.decodeIfPresent([EvictionExclusion].self, forKey: .evictionExclusions)
         startupPreloadPendingModels = try c.decodeIfPresent([String].self, forKey: .startupPreloadPendingModels)
         lifecycle = try c.decodeIfPresent(ProviderDrainStatus.self, forKey: .lifecycle)
         modelSwitch = try c.decodeIfPresent(ProviderModelSwitchStatus.self, forKey: .modelSwitch)
@@ -50,6 +53,7 @@ extension DaemonState {
         autopilotPhase = try c.decodeIfPresent(String.self, forKey: .autopilotPhase)
         autopilotOperation = try c.decodeIfPresent(AutopilotOperation.self, forKey: .autopilotOperation)
         appAttest = try c.decodeIfPresent(AppAttestLocalStatus.self, forKey: .appAttest)
+        addonHold = try c.decodeIfPresent(AddonHoldSnapshot.self, forKey: .addonHold)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -66,6 +70,8 @@ extension DaemonState {
         try c.encodeIfPresent(currentModel, forKey: .currentModel)
         try c.encode(warmModels, forKey: .warmModels)
         try c.encodeIfPresent(advertisedModels, forKey: .advertisedModels)
+        try c.encodeIfPresent(servingSelection, forKey: .servingSelection)
+        try c.encodeIfPresent(evictionExclusions, forKey: .evictionExclusions)
         try c.encodeIfPresent(startupPreloadPendingModels, forKey: .startupPreloadPendingModels)
         try c.encodeIfPresent(lifecycle, forKey: .lifecycle)
         try c.encodeIfPresent(modelSwitch, forKey: .modelSwitch)
@@ -84,5 +90,6 @@ extension DaemonState {
         try c.encodeIfPresent(autopilotPhase, forKey: .autopilotPhase)
         try c.encodeIfPresent(autopilotOperation, forKey: .autopilotOperation)
         try c.encodeIfPresent(appAttest, forKey: .appAttest)
+        try c.encodeIfPresent(addonHold, forKey: .addonHold)
     }
 }

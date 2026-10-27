@@ -118,12 +118,29 @@ extension ModelDownloader {
         }
 
         let renderer = ProgressRenderer()
+        let byteProgress = self.byteProgress
+        let alreadyValidBytes = zip(jobs, alreadyValid).reduce(Int64(0)) { $0 + ($1.1 ? $1.0.file.sizeBytes : 0) }
         // Start the render loop as a detached task.
         let renderTask = Task.detached { [renderer, progress] in
             while !Task.isCancelled {
-                renderer.render(progress.allProgress)
+                if let byteProgress {
+                    let files = progress.allProgress
+                    byteProgress(alreadyValidBytes + files.reduce(Int64(0)) { $0 + $1.downloadedBytes }, manifest.totalSizeBytes)
+                } else {
+                    renderer.render(progress.allProgress)
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
             }
+        }
+
+        // A file's rate clock starts when its transfer does, not when it was
+        // queued behind the concurrency limit.
+        let transfer: @Sendable ((file: ManifestFile, destination: URL, url: String)) async throws -> Void = { job in
+            progress.start(label: job.file.path)
+            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
+                progress.update(label: job.file.path, downloadedBytes: bytes)
+            })
+            progress.complete(label: job.file.path)
         }
 
         do {
@@ -134,35 +151,28 @@ extension ModelDownloader {
                 for _ in 0..<min(concurrency, pending.count) {
                     let job = pending[next]
                     next += 1
-                    group.addTask {
-                        try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
-                            progress.update(label: job.file.path, downloadedBytes: bytes)
-                        })
-                        progress.complete(label: job.file.path)
-                    }
+                    group.addTask { try await transfer(job) }
                 }
 
                 while try await group.next() != nil {
                     if next < pending.count {
                         let job = pending[next]
                         next += 1
-                        group.addTask {
-                            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
-                                progress.update(label: job.file.path, downloadedBytes: bytes)
-                            })
-                            progress.complete(label: job.file.path)
-                        }
+                        group.addTask { try await transfer(job) }
                     }
                 }
             }
 
-            // Stop the render loop and print the final summary.
+            // Stop the render loop, waiting out an in-flight frame so none can
+            // land below the final summary, then print it.
             renderTask.cancel()
-            renderer.finish(progress.allProgress)
+            await renderTask.value
+            if byteProgress == nil { renderer.finish(progress.allProgress) }
         } catch {
             renderTask.cancel()
+            await renderTask.value
             // One last render so the user sees where things stopped.
-            renderer.render(progress.allProgress)
+            if byteProgress == nil { renderer.render(progress.allProgress) }
             // Keep staging ONLY if it holds resumable content (a completed file or
             // a `.part` prefix); otherwise remove the empty husk so a first-file
             // failure doesn't leave a stray staging dir behind. (A promoted file is

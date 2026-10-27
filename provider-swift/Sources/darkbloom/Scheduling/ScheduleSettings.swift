@@ -23,7 +23,7 @@ struct ScheduleSettings: Equatable {
         try schedule?.validate()
         return try withMutableConfig(configPath: configPath) { path, config in
             guard ScheduleSettings(config: config) == expected else {
-                throw ValidationError("Availability or preload settings changed while you were editing. Run `darkbloom schedule` again; nothing was overwritten.")
+                throw ValidationError("Availability or preload settings changed while you were editing. Run `\(BuildEnvironment.current.cliName) schedule` again; nothing was overwritten.")
             }
             guard self != expected else { return false }
             apply(to: &config)

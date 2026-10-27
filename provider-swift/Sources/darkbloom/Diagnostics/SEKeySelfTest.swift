@@ -25,7 +25,7 @@ enum SEKeySelfTest {
             return Result(
                 level: .warn,
                 message: "no verified active daemon attestation identity is available.",
-                fix: "start or restart the provider, then re-run `darkbloom doctor`.")
+                fix: "start or restart the provider, then re-run `\(BuildEnvironment.current.cliName) doctor`.")
         }
         return Result(
             level: .pass,

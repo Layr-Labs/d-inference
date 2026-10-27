@@ -106,6 +106,10 @@ public extension MultiModelBatchSchedulerEngine {
         /// Memory gate for the legacy VLM media path (see
         /// ``ModelRegistryEntry/visionGate``).
         public let visionGate: VisionMemoryGate?
+        /// When a cluster pair's request queue let this request go, if it
+        /// waited there. Its deadlines then start at this instant, as for a
+        /// request that arrived at that moment.
+        public let queueExitedAt: ContinuousClock.Instant?
 
         public init(
                         tokenizer: TokenizerHandle,
@@ -115,8 +119,10 @@ public extension MultiModelBatchSchedulerEngine {
             diffusionContainer: DiffusionGemmaContainer? = nil,
             isVLM: Bool = false,
             engineV2Bridge: EngineV2Bridge? = nil,
-            visionGate: VisionMemoryGate? = nil
+            visionGate: VisionMemoryGate? = nil,
+            queueExitedAt: ContinuousClock.Instant? = nil
         ) {
+            self.queueExitedAt = queueExitedAt
             self.tokenizer = tokenizer
             self.releaseToken = releaseToken
             self.modelType = modelType

@@ -30,15 +30,36 @@ extension EngineV2SlotFactory {
         guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
             return .init(cache: nil, status: .configDisabled)
         }
-        guard let storage = completeCheckpointStorage(
-            kind: preparedBackend.kind, layerKinds: preparedBackend.layerKinds,
-            supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
-            supportsHistoricalAttention: historicalTarget,
-            modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
-            nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
-            assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
-            checkpointQuantization: checkpointQuantization)
-        else {
+        let storage: CompleteCheckpointStorageIdentity?
+        let effectiveMTPConfig: CBv2MTPConfig
+        if let glm = model as? GLM5NextProtectedModel {
+            guard preparedBackend.glm5NextModel === glm,
+                let resolved = try? glm.resolvedMTPConfiguration(mtpConfig, drafter: mtpDrafter) else {
+                return .init(cache: nil, status: .init(state: .disabled, reason: .unsupportedLayout))
+            }
+            effectiveMTPConfig = resolved
+            // A GLM checkpoint includes KDA state and raw latent/index payloads,
+            // not generic full-attention K/V. A profile codes only its older
+            // latent rows; everything else stays exact.
+            storage = CompleteCheckpointStorageIdentity(kind: preparedBackend.kind,
+                layerDTypes: preparedBackend.nativeLayerDTypes,
+                pagedConfig: preparedBackend.pagedPoolConfig,
+                target: .glm5Next(preparedBackend.layerKinds),
+                checkpointQuantization: CBv2CompleteCheckpointStorageQuantization.resolveGLM5Next(
+                    checkpointQuantization, layerKinds: preparedBackend.layerKinds,
+                    pagedConfig: preparedBackend.pagedPoolConfig, assistant: mtpDrafter))
+        } else {
+            effectiveMTPConfig = mtpConfig
+            storage = completeCheckpointStorage(
+                kind: preparedBackend.kind, layerKinds: preparedBackend.layerKinds,
+                supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
+                supportsHistoricalAttention: historicalTarget,
+                modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
+                nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
+                assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
+                checkpointQuantization: checkpointQuantization)
+        }
+        guard let storage else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .unsupportedLayout))
         }
         guard PrefixCachePolicy.checkpointIdentityHash(weightHash) != nil else {
@@ -49,7 +70,7 @@ extension EngineV2SlotFactory {
             binaryHash: PrefixCachePolicy.checkpointBinaryHash,
             loadedMetallibHash: metallibHash(),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            mtpConfig: mtpConfig,
+            mtpConfig: effectiveMTPConfig,
             assistantCodecID: (mtpDrafter as? any CBv2MTPPrefixCheckpointCoding)?.prefixCheckpointCodecID,
             environment: environment, processEnvironment: ProcessInfo.processInfo.environment,
             storage: storage)
@@ -59,23 +80,43 @@ extension EngineV2SlotFactory {
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .runtimeIdentityUnavailable))
         }
-        let cache = await SSDHybridCheckpointStoreFactory.make(
+        switch await SSDHybridCheckpointStoreFactory.build(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,
-            persistentTestNamespace: persistentTestNamespace)
-        return .init(cache: cache, status: cache == nil
-            ? .init(state: .error, reason: .cacheInitFailed) : .scanPending,
-            checkpointQuantization: cache == nil ? nil : storage.checkpointQuantization)
+            persistentTestNamespace: persistentTestNamespace) {
+        case .success(let cache):
+            return .init(cache: cache, status: .scanPending,
+                checkpointQuantization: storage.checkpointQuantization)
+        case .failure(let failure):
+            return .init(cache: nil, status: .init(refusal: failure.reason))
+        }
     }
 
     enum CompleteCheckpointAssistant: Equatable {
-        case none, stateless, persistentCodec, unsupportedPersistent
+        /// `persistentExactHistory`: a persistent codec whose history stays
+        /// exact beside lossy older target rows
+        /// (`CBv2MTPExactHistoryPrefixCheckpointCoding`).
+        case none, stateless, persistentCodec, persistentExactHistory, unsupportedPersistent
 
         init(drafter: (any CBv2MTPDrafter)?) {
             if drafter == nil { self = .none }
-            else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
+            else if drafter is any CBv2MTPExactHistoryPrefixCheckpointCoding {
+                self = .persistentExactHistory
+            } else if drafter is any CBv2MTPPrefixCheckpointCoding { self = .persistentCodec }
             else if drafter is any CBv2MTPRequestStatefulDrafter { self = .unsupportedPersistent }
             else { self = .stateless }
+        }
+
+        /// Whether its state keeps the target's checkpoint rows native. An
+        /// exact-history codec permits lossy rows only beside a paged
+        /// recurrent target, the SDK's rule
+        /// (`CBv2CompleteCheckpointStorageQuantization.permitsLossyTarget`).
+        func keepsNativeStorage(pagedRecurrent: Bool) -> Bool {
+            switch self {
+            case .none, .stateless: false
+            case .persistentExactHistory: !pagedRecurrent
+            case .persistentCodec, .unsupportedPersistent: true
+            }
         }
     }
 
@@ -97,7 +138,7 @@ extension EngineV2SlotFactory {
                 return false
             }), let modelDTypes, modelDTypes.count == layerKinds.count,
                 nativeDTypes == nil || nativeDTypes == modelDTypes,
-                assistant == .none || assistant == .persistentCodec
+                [.none, .persistentCodec, .persistentExactHistory].contains(assistant)
             else { return nil }
             layerDTypes = nativeDTypes ?? modelDTypes
             target = .recurrentFull
@@ -113,11 +154,14 @@ extension EngineV2SlotFactory {
             layerDTypes = nativeDTypes
             target = .historicalAttention(layerKinds)
         }
+        let pagedRecurrent = supportsRecurrent && kind == .paged
         let effectiveQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
             checkpointQuantization, layerKinds: layerKinds, layerDTypes: layerDTypes,
-            pagedConfig: pagedConfig, hasAssistantState: assistant == .persistentCodec)
+            pagedConfig: pagedConfig,
+            hasAssistantState: assistant.keepsNativeStorage(pagedRecurrent: pagedRecurrent))
         return .init(kind: kind, layerDTypes: layerDTypes, pagedConfig: pagedConfig,
-                     target: target, checkpointQuantization: effectiveQuantization)
+                     target: target, checkpointQuantization: effectiveQuantization,
+                     assistantHistory: pagedRecurrent && assistant == .persistentExactHistory)
     }
 
 }

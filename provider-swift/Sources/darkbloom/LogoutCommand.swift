@@ -59,12 +59,12 @@ struct Logout: AsyncParsableCommand {
 
     static func requireExited(_ identities: [ProcessIdentity]) throws {
         guard !identities.contains(where: { $0.isCurrent() }) else {
-            throw ValidationError("A provider process is still running or shutting down. Stop any foreground darkbloom process, then retry logout. The saved credential has not been removed.")
+            throw ValidationError("A provider process is still running or shutting down. Stop any foreground \(BuildEnvironment.current.cliName) process, then retry logout. The saved credential has not been removed.")
         }
     }
 
     static func completionLines(for outcome: ProviderLogout.Outcome) -> [String] {
-        let stopped = "Provider stopped. Automatic restart is disabled until you run `darkbloom start` again."
+        let stopped = "Provider stopped. Automatic restart is disabled until you run `\(BuildEnvironment.current.cliName) start` again."
         switch outcome {
         case .revoked:
             return [stopped, "Logged out. This provider token was revoked and the local credential was removed."]

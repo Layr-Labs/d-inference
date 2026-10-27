@@ -12,12 +12,12 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
-        nativeRetirement: CBv2RequestRetirement? = nil
+        nativeRetirement: CBv2RequestRetirement? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -28,12 +28,12 @@ extension EngineV2Bridge {
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
                 stopSequences: stopSequences,
-                logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
                 profile: profile,
-                nativeRetirement: nativeRetirement
+                nativeRetirement: nativeRetirement,
+                httpResponse: httpResponse
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -59,12 +59,12 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
-        nativeRetirement: CBv2RequestRetirement? = nil
+        nativeRetirement: CBv2RequestRetirement? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -99,6 +99,9 @@ extension EngineV2Bridge {
                     sawFirstToken = true
                     recordFirstToken(
                         id: id, emissionTokens: tokens.count, profileNow: lastDeltaAt)
+                    // A distributed response's first-content budget is met by
+                    // the first committed token, visible yet or not.
+                    httpResponse?.firstTokenCommitted()
                 }
                 recordProgress(id: id, newTokens: tokens.count)
                 if trackStopTokens {
@@ -110,20 +113,17 @@ extension EngineV2Bridge {
                         generatedTokens.append(token)
                     }
                 }
-                // Logprobs passthrough: convert to the OpenAI streaming
-                // entry shape and publish to the per-request channel BEFORE
-                // yielding the chunk, so by the time the SSE frame carrying
-                // this delta's text reaches the frame decorator its entries
-                // are already drainable (happens-before via the yield).
-                if let logprobsChannel, let logprobs, !logprobs.isEmpty {
-                    logprobsChannel.append(
+                // Keep captured metadata in the same ordered stream as its
+                // delta. A producer may run ahead of the HTTP consumer.
+                if let logprobs, !logprobs.isEmpty {
+                    continuation.yield(.logprobs(
                         EngineV2Translation.sseTokenLogprobs(
                             logprobs,
                             decodeToken: { [inner = tokenizer.inner] id in
                                 inner.decode(tokenIds: [id], skipSpecialTokens: false)
                             }
                         )
-                    )
+                    ))
                 }
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
@@ -138,15 +138,25 @@ extension EngineV2Bridge {
                     _testBeforeNativeTerminal = nil
                     await gate(usage)
                 }
+                if let gate = _testPersistentBeforeNativeTerminal { await gate(usage) }
                 #endif
                 sawTerminal = true
+                // The distributed engine emits a clean .finished only after
+                // its lease retired, and a failure as soon as it is known; the
+                // retirement wait below keeps ownership either way. An engine
+                // teardown or a cancelled pump never reaches this line, so
+                // neither can fill the HTTP terminal.
+                httpResponse?.recordTerminal(.init(
+                    promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens,
+                    cause: Self.httpTerminalCause(reason)))
                 if reason == .stop || reason == .length {
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
                         generatedTokens: generatedTokens
                     ))
                 }
-                // Out-of-band usage detail (logprobs-channel pattern): the
+                // Out-of-band usage detail: the
                 // engine's prefix-cache detail has no seat in the shared
                 // `GenerationEvent.info` shape, so the frames loop reads it
                 // from this per-request signal and splices
@@ -281,6 +291,18 @@ extension EngineV2Bridge {
         }
         if !sawFirstToken {
             wedgeMonitor.recordTerminalWithoutFirstToken()
+        }
+    }
+
+    /// The cause a distributed HTTP response reports for an engine finish: nil
+    /// for a natural stop/length, and `.engineError` for a failure that has no
+    /// wire cause of its own.
+    private static func httpTerminalCause(_ reason: CBv2FinishReason) -> InferenceTerminalCause? {
+        switch reason {
+        case .stop, .length: return nil
+        case .cancelled: return .cancelled
+        case .terminal(let cause, _): return wireTerminalCause(cause) ?? .engineError
+        case .error: return .engineError
         }
     }
 

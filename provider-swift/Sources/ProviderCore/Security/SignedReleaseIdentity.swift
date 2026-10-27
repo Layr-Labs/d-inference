@@ -59,7 +59,7 @@ public enum SignedReleaseIdentity {
             case .executableUnavailable:
                 "cannot resolve the running executable"
             case .notPackagedMainExecutable:
-                "signed evidence requires Darkbloom.app/Contents/MacOS/darkbloom "
+                "signed evidence requires \(BuildEnvironment.current.appBundleName)/Contents/MacOS/\(BuildEnvironment.current.cliName) "
                     + "as the running bundle main executable"
             case .signatureInvalid(let detail):
                 "signed release identity verification failed: \(detail)"
@@ -151,11 +151,11 @@ public enum SignedReleaseIdentity {
         let contents = executable.deletingLastPathComponent()
             .deletingLastPathComponent()
         guard executable == canonicalBundleExecutable,
-            executable.lastPathComponent == "darkbloom",
+            executable.lastPathComponent == BuildEnvironment.current.cliName,
             executable.deletingLastPathComponent().lastPathComponent == "MacOS",
             contents.lastPathComponent == "Contents",
             contents.deletingLastPathComponent() == app,
-            app.lastPathComponent == "Darkbloom.app"
+            app.lastPathComponent == BuildEnvironment.current.appBundleName
         else {
             throw VerificationError.notPackagedMainExecutable
         }

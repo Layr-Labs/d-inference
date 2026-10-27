@@ -1,0 +1,212 @@
+{
+ "checks": [
+  {
+   "detail": "No saved cluster reference; ordinary solo behavior is unchanged.",
+   "name": "savedConfiguration",
+   "outcome": "notRun"
+  },
+  {
+   "detail": "ready: an active RDMA port publishes the IPv4-mapped GID that JACCL requires. The cluster port en7 is not isolated (a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7), so macOS or Internet Sharing can take its address away or route other traffic through the cable; run `darkbloom cluster` to give it its own network service with a fixed address, no router and no DNS, outside every bridge, which asks for your approval once in a macOS prompt and lasts across restarts. Local interface state only: no peer was contacted and no collective ran.",
+   "name": "localLink",
+   "outcome": "passed"
+  },
+  {
+   "detail": "rdma_en7 (en7): ready \u00b7 port active \u00b7 own IPv4 address \u00b7 IPv4-mapped GID published \u00b7 not isolated: a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7. The cluster port en7 is not isolated (a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7), so macOS or Internet Sharing can take its address away or route other traffic through the cable; run `darkbloom cluster` to give it its own network service with a fixed address, no router and no DNS, outside every bridge, which asks for your approval once in a macOS prompt and lasts across restarts.",
+   "name": "localLinkDevice.rdma_en7",
+   "outcome": "passed"
+  },
+  {
+   "detail": "defaultRouteViaPort, dnsViaPort, dhcpLeaseOnPort, clusterServiceMissing, otherServiceOnPort: The cluster port en7 is not isolated (a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7), so macOS or Internet Sharing can take its address away or route other traffic through the cable; run `darkbloom cluster` to give it its own network service with a fixed address, no router and no DNS, outside every bridge, which asks for your approval once in a macOS prompt and lasts across restarts.",
+   "name": "localLinkIsolation.rdma_en7",
+   "outcome": "failed"
+  }
+ ],
+ "journal": "absent",
+ "link": {
+  "guidance": "The cluster port en7 is not isolated (a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7), so macOS or Internet Sharing can take its address away or route other traffic through the cable; run `darkbloom cluster` to give it its own network service with a fixed address, no router and no DNS, outside every bridge, which asks for your approval once in a macOS prompt and lasts across restarts.",
+  "port": {
+   "blockers": [],
+   "device": "rdma_en7",
+   "findings": [
+    "defaultRouteViaPort",
+    "dnsViaPort",
+    "dhcpLeaseOnPort",
+    "clusterServiceMissing",
+    "otherServiceOnPort"
+   ],
+   "gidPublished": true,
+   "hardwarePort": "Thunderbolt 6",
+   "hasIPv4Address": true,
+   "interface": "en7",
+   "isolated": false,
+   "isolationGuidance": "The cluster port en7 is not isolated (a default route leaves through en7, a DNS resolver is reached through en7, en7 holds a DHCP lease from the other Mac, no network service of Darkbloom's, another network service configures en7), so macOS or Internet Sharing can take its address away or route other traffic through the cable; run `darkbloom cluster` to give it its own network service with a fixed address, no router and no DNS, outside every bridge, which asks for your approval once in a macOS prompt and lasts across restarts.",
+   "verdict": "ready"
+  },
+  "portsDown": 5,
+  "state": "ready",
+  "thunderbolt": {
+   "receptacles": [
+    {
+     "connected": false,
+     "id": 1,
+     "speed": "Up to 120 Gb/s"
+    },
+    {
+     "connected": false,
+     "id": 2,
+     "speed": "Up to 120 Gb/s"
+    },
+    {
+     "connected": true,
+     "id": 3,
+     "peerModel": "Mac16,10",
+     "peerName": "Mac mini",
+     "speed": "40 Gb/s"
+    },
+    {
+     "connected": false,
+     "id": 4,
+     "speed": "Up to 120 Gb/s"
+    },
+    {
+     "connected": false,
+     "id": 5,
+     "speed": "Up to 120 Gb/s"
+    },
+    {
+     "connected": true,
+     "id": 6,
+     "peerModel": "Mac17,7",
+     "peerName": "MacBook Pro",
+     "speed": "80 Gb/s"
+    }
+   ]
+  }
+ },
+ "mac": {
+  "chip": "Apple M3 Ultra",
+  "diskFreeBytes": 86144842129,
+  "diskTotalBytes": 1995218165760,
+  "osMajor": 27,
+  "osMinor": 2,
+  "osVersion": "27.2 (26B5091g)",
+  "physicalMemoryBytes": 274877906944,
+  "profile": {
+   "allocatorLimitBytes": 261134011596,
+   "chip": "Apple M3 Ultra",
+   "efficiencyCores": 8,
+   "gpuCores": 60,
+   "gpuMaximumBufferBytes": 179357827072,
+   "gpuRecommendedWorkingSetBytes": 239143780352,
+   "memory": {
+    "actualFreeBytes": 174745075712,
+    "admissibleNowBytes": 174745075712,
+    "allocatorHeadroomBytes": 2147483648,
+    "anonymousBytes": 56294801408,
+    "compressorBytes": 0,
+    "countedFileCacheBytes": 0,
+    "fileBackedBytes": 33948270592,
+    "fileCacheAboveReserveBytes": 0,
+    "fileCacheReserveBytes": 98143764480,
+    "gatePolicy": "registered_dense_selected_stage_load_resources_v3",
+    "judged": true,
+    "loadScratchBytes": 8404992,
+    "loadingHeadroomBytes": 4294967296,
+    "minimumAdmissibleBytes": 6442450944,
+    "minimumTrulyFreeBytes": 16777216,
+    "pageSizeBytes": 16384,
+    "pageableBytes": 264988147712,
+    "physicalMemoryBytes": 274877906944,
+    "pressureLevel": 1,
+    "sampledUTC": "2026-10-10T15:49:31Z",
+    "swapUsedBytes": 0,
+    "wiredBytes": 9013673984
+   },
+   "osBuild": "26B5091g",
+   "osVersion": "27.2",
+   "performanceCores": 20,
+   "physicalMemoryBytes": 274877906944,
+   "power": {
+    "lowPowerMode": false,
+    "onExternalPower": true,
+    "thermalState": "nominal"
+   },
+   "schema": "darkbloom_cluster_device_profile_v1"
+  }
+ },
+ "memoryGuard": {
+  "baselineBytes": 27487790695,
+  "decision": "clear",
+  "wiredBytes": 9021145088
+ },
+ "models": [
+  {
+   "artifactSHA256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+   "folder": "Qwen3.5-9B-2026-09-03-r1",
+   "modelID": "Qwen3.5-9B",
+   "totalBytes": 6113952230,
+   "version": "2026-09-03-r1"
+  },
+  {
+   "artifactSHA256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+   "folder": "Qwen3.8-27B-4bit-mtp-2026-09-03-r1",
+   "modelID": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+   "totalBytes": 16320415757,
+   "version": "2026-09-03-r1"
+  },
+  {
+   "artifactSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+   "folder": "gpt-oss-20b-2026-05-25-r1",
+   "modelID": "gpt-oss-20b",
+   "totalBytes": 12104215835,
+   "version": "2026-05-25-r1"
+  },
+  {
+   "artifactSHA256": "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034",
+   "folder": "mimo-v2.6-flash-mopd-2026-09-28-r1",
+   "modelID": "mimo-v2.6-flash-mopd",
+   "totalBytes": 172863462401,
+   "version": "2026-09-28-r1"
+  },
+  {
+   "artifactSHA256": "366d9285ec367633c25b5c064ad94482e04be043c2a515a16e4fcf12c0a8f85b",
+   "folder": "nvidia-nemotron-3.5-lightning-2026-09-30-r1",
+   "modelID": "nvidia-nemotron-3.5-lightning",
+   "totalBytes": 19059595830,
+   "version": "2026-09-30-r1"
+  },
+  {
+   "artifactSHA256": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+   "folder": "qwen3.5-35b-a3b-2026-08-25-r1",
+   "modelID": "qwen3.5-35b-a3b",
+   "totalBytes": 20893747852,
+   "version": "2026-08-25-r1"
+  },
+  {
+   "artifactSHA256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+   "folder": "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1",
+   "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+   "totalBytes": 21308856601,
+   "version": "2026-08-11-r1"
+  },
+  {
+   "artifactSHA256": "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+   "folder": "ternary-bonsai-2-27b-2026-09-17-r1",
+   "modelID": "ternary-bonsai-2-27b",
+   "totalBytes": 8608670713,
+   "version": "2026-09-17-r1"
+  }
+ ],
+ "observedAt": "2026-10-10T15:49:30Z",
+ "pairingCode": {
+  "algorithm": "ssh-ed25519",
+  "basis": "ownHostKey",
+  "code": "034428",
+  "differsFromPin": false
+ },
+ "saved": {
+  "state": "notConfigured"
+ },
+ "schema": "darkbloom_cluster_setup_report_v1",
+ "version": "0.9.19"
+}

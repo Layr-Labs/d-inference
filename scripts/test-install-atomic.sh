@@ -7,6 +7,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INSTALLER="$REPO_ROOT/scripts/install.sh"
 python3 "$REPO_ROOT/scripts/test-install-onboarding.py"
 python3 "$REPO_ROOT/scripts/test-install-coordinator-binding.py"
+python3 "$REPO_ROOT/scripts/test-install-identity.py"
 
 cat > "$ROOT/paged.c" <<'C'
 #include <libgen.h>
@@ -469,6 +470,15 @@ test -x "$FRESH_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 test "$(stat -f '%Lp' "$FRESH_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
 
 assert_pre_paged_rejected "$ROOT/fresh-legacy-install"
+
+# A restrictive caller umask must not leave release files owner-only: the
+# bundle is extracted under umask 022 whatever the invoking shell uses.
+UMASK_INSTALL="$ROOT/umask-install"
+mkdir -p "$UMASK_INSTALL"
+(umask 077; run_install "$VALID" "$UMASK_INSTALL")
+test "$(stat -f '%Lp' "$UMASK_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
+test "$(stat -f '%Lp' \
+    "$UMASK_INSTALL/Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal")" = "644"
 
 echo "atomic installer tests passed"
 

@@ -1,0 +1,24 @@
+{
+ "chunkTokens": 512,
+ "key": {
+  "artifactSHA256": "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
+  "chip": "Apple M5 Max",
+  "osBuild": "26A428",
+  "probe": "recorded_solo_whole_model_prompt8192_chunk512_out128",
+  "runtimeBinarySHA256": "7eb539c49bbae133c66cc755749c8a6014227aefef8d1517bb66278961c5b7b4"
+ },
+ "layerCount": 32,
+ "measuredUTC": "2026-10-09T03:30:00Z",
+ "probedLayers": 32,
+ "promptTokens": 8192,
+ "provenance": "Mac B alone in the G2 session: prefill 2,788, decode 77 to 81 (handoff/HANDOFF.md, gate G2). Sustained prefill from four requests in a row at 8,192 on the serving clock, first token 3.18, 3.54, 3.96, 4.24 s, the fourth being 1,932 tok/s (handoff/DESIGN-gap-map.md, G4); decode under sustained load was not recorded separately",
+ "rested": {
+  "decodeTokensPerSecond": 79,
+  "prefillTokensPerSecond": 2788
+ },
+ "schema": "darkbloom_cluster_speed_measurement_v1",
+ "sustained": {
+  "decodeTokensPerSecond": 79,
+  "prefillTokensPerSecond": 1932
+ }
+}

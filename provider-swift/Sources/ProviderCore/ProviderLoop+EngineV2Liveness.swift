@@ -28,6 +28,12 @@
 ///                 (legacy `livenessRestartCooldown` semantic: never
 ///                 thrash rebuilds; requests 503 / deroute instead)
 ///
+/// Native MiMo slots retire instead of rebuilding. A Nemotron Super slot
+/// leaves serving at once and retires in a task of its own: bridge
+/// shutdown first (no wedged row would ever drain), bounded by
+/// `nemotronSuperWedgeRetirementBound` (past it, a retained fault), and
+/// its reload is refused for the same 120s cooldown.
+///
 /// Serialization: the drain→rebuild→swap stretch holds the RE-SLICE GATE
 /// (grants are read + re-granted across suspension points — a concurrent
 /// load's shrink or an unload's regrow must never interleave, or the
@@ -105,6 +111,16 @@ extension ProviderLoop {
             _ = await retireNativeMiMoOwner(modelID: modelId)
             return
         }
+        // The Super owner is never rebuilt warm: a confirmed wedge retires it,
+        // joined off this tick and bounded (`retireWedgedNemotronSuperSlot`).
+        if isNemotronSuperSlot(modelId) {
+            guard !modelsLoading.contains(modelId), !modelsUnloading.contains(modelId),
+                let bridge = modelSlots[modelId]?.engineV2,
+                await bridge.confirmedWedgeForRecovery(now: now),
+                modelSlots[modelId]?.engineV2 === bridge, autopilotCommand == nil else { return }
+            await retireWedgedNemotronSuperSlot(modelId, now: now)
+            return
+        }
         guard nativeMiMoAllowsReclamation() else { return }
         guard let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),
@@ -123,6 +139,19 @@ extension ProviderLoop {
 
         engineV2RecoveryInProgress.insert(modelId)
         defer { engineV2RecoveryInProgress.remove(modelId) }
+
+        // GLM cannot be rebuilt in place (one-shot native contract; no
+        // target-only fallback). Unload retires it through its native owner.
+        if await bridge.hasGLM5NextNativeOwner || GLM5NextPromptPolicy.applies(modelType: slot.modelType) {
+            let recoveryPin = Self.engineV2RecoveryPinPrefix + modelId
+            requestToModel[recoveryPin] = modelId
+            defer { requestToModel.removeValue(forKey: recoveryPin) }
+            logger.error("engine_v2 liveness: GLM slot \(modelId) wedged — unloading through its native owner")
+            recordModelLoadError(model: modelId,
+                message: "GLM engine wedged; in-place recovery is unsupported — slot unloaded")
+            await unloadModel(modelId)
+            return
+        }
 
         // Cooldown: a second confirmed wedge within 120s of the last
         // recovery ATTEMPT means the rebuild did not stick — stop
@@ -276,7 +305,7 @@ extension ProviderLoop {
                 newBundle.releaseAssistant()
                 clearCacheAfterConfirmedNativeOwnership()
                 rebuildPreparation = rebuildPreparation.fallingBack(reason)
-                prepared = prepared.fallingBack(reason)
+                prepared = try prepared.fallingBack(reason)
                 rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(0)
                 newBundle = try await makeEngineV2BundleForSlot(
                     modelId: modelId,

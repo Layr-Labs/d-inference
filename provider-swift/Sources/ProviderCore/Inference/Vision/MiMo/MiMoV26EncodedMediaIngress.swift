@@ -249,7 +249,7 @@ enum MiMoV26EncodedMediaIngress {
                     // Reuse the actual inline-only, typed memory-backed ingest,
                     // including duration/coded-dimension and byte guards.
                     let decoded = try await MediaIngest.decodeVideo(uri,maxFramePixels:pixelLimit)
-                    guard case .memoryBacked(let owner) = decoded.video else { throw refusal() }
+                    guard case .memoryBacked(let owner) = decoded.video.source else { throw refusal() }
                     try reservation.retainEncodedOwner(owner)
                     let (sum,overflow) = totalVideoPixels.addingReportingOverflow(decoded.framePixels)
                     guard !overflow, sum <= MediaIngest.maxRequestVideoFramePixels else { throw refusal() }

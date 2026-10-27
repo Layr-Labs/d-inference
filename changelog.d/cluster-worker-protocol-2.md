@@ -1,0 +1,3 @@
+### Cluster worker protocol 2: prompts cross as packed token IDs
+
+- A cluster reservation carries its prompt as packed little-endian token IDs (base64) with an explicit count instead of a JSON number array, and the leader builds a relayed command's link wire once. A 31.5K-token reservation decodes in about 1 ms per hop instead of about 12 ms, which shortens time to first token on long prompts. Both Macs must run the same release: a Mac on the previous protocol is refused at setup or pairing ("Install the same Darkbloom release on both Macs, then run `darkbloom cluster` again"), never in the middle of a request.

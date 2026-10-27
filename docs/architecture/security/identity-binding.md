@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-19
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -49,12 +49,38 @@ flowchart LR
 
 | Identity | Produced by | Lifetime | Code |
 |---|---|---|---|
-| SE P-256 signing key | `PersistentEnclaveKey.loadOrCreateVerified`: keychain-backed Secure Enclave key, access group `SLDQ2GJ6TL.io.darkbloom.provider`, label `io.darkbloom.provider.attestation-signing.v2` (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so challenge signing works with the screen locked); an item under the retired label `io.darkbloom.provider.attestation-signing.v1` is never read. Fallback: `SecureEnclaveIdentity.createEphemeral` (CryptoKit `SecureEnclave.P256.Signing.PrivateKey`, lost at exit); `darkbloom-enclave-cli` always uses the ephemeral form | Persistent per Mac and signing identity; per process on the fallback path | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift`; `provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`createAttestationSigner`); `provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift` |
+| SE P-256 signing key | `PersistentEnclaveKey.loadOrCreateVerified`: keychain-backed Secure Enclave key, access group `SLDQ2GJ6TL.io.darkbloom.provider`, label `io.darkbloom.provider.attestation-signing.v2` (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so challenge signing works with the screen locked); a dev build uses the label `io.darkbloom.dev.provider.attestation-signing.v2` in the same access group, so it has its own SE identity; an item under the retired label `io.darkbloom.provider.attestation-signing.v1` is never read. Fallback: `SecureEnclaveIdentity.createEphemeral` (CryptoKit `SecureEnclave.P256.Signing.PrivateKey`, lost at exit); `darkbloom-enclave-cli` always uses the ephemeral form | Persistent per Mac and signing identity; per process on the fallback path | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift`; `provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`createAttestationSigner`); `provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift` |
 | X25519 process key `K` | `NodeKeyPair.generate()` in the `ProviderLoop` initialiser (libsodium CSPRNG); never written to or read from disk | One provider process | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | APNs device token | macOS, for the signed bundle with `aps-environment`; sent as `register.apns_device_token` with `register.apns_environment` | Until the OS rotates it | `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift`; [coordinator/protocol/messages.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/messages.go) (`RegisterMessage`) |
 | Apple device identity | `serialNumber` inside the SE-signed blob (self-reported, SE-signed); serial and UDID inside the MDA leaf certificate (Apple-signed); UDID from the MicroMDM device record | Device lifetime | [coordinator/attestation/attestation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/attestation/attestation.go) (`AttestationBlob`); [coordinator/attestation/mda.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/attestation/mda.go) (`OIDDeviceSerialNumber`, `OIDDeviceUDID`); [coordinator/mdm/mdm.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/mdm/mdm.go) (`LookupDevice`) |
 | Account | `account_id` created by `GetOrCreateUser` for a Privy DID; attached to a provider through a device-linked provider token | Account lifetime | [coordinator/auth/privy.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/auth/privy.go); [coordinator/api/access/device/handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/access/device/handlers.go) |
 | Provider ID | `uuid.New()` per WebSocket connection — a session handle, never an identity | One connection | [coordinator/api/provider/provider.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider/provider.go) (`HandleProviderWS`) |
+
+### Existing identity for private installed calibration
+
+Private installed GLM-5.3-Flash calibration reuses the selected pair's signing
+identity. `GLM5NextCalibrationInstalledPair.load` verifies the exact two-member
+roster, its signatures and digest before loading the signer, then requires its
+public key to match the recorded local identity. `requireUnchanged` rejects a
+changed pairing; `linkSecret` checks it before and after reading the existing
+edge credential. Code:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Calibration/GLM5NextCalibrationInstalledPair.swift`.
+
+This path calls `PersistentEnclaveKey.loadExisting`, which only looks up the
+existing key. Lookup errors propagate without key creation, deletion, repair or
+an ephemeral fallback. Normal provider startup retains its separate
+`loadOrCreateVerified` behavior described above. Code:
+`provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift`.
+
+In DEBUG builds, `DARKBLOOM_DEBUG_SE_KEY_FILE` instead selects
+`SecureEnclaveIdentity.debugLoadExisting`: it reads an existing device-bound
+opaque handle without creating or replacing it. `ClusterConfigurationFiles.read`
+limits that read to 16 KiB and rejects a symlink, a non-regular file or group/other
+permissions on the handle file. Release builds exclude this override. Code:
+`provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`;
+`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationFiles.swift`.
+Reusing a paired identity does not itself grant serving authorization or
+advertise a public model capability; see [provider trust](provider-trust.md).
 
 ### The bindings
 

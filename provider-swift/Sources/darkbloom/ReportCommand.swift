@@ -31,7 +31,7 @@ struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Upload recent provider unified logs for troubleshooting.",
         discussion: """
-        Collects recent macOS unified logs for the dev.darkbloom.provider
+        Collects recent macOS unified logs for the \(BuildEnvironment.current.serviceLogSubsystem)
         subsystem and uploads them to the coordinator only when you invoke this
         command. macOS privacy redactions are preserved. Use --dry-run to review
         the exact report locally before uploading it.
@@ -42,7 +42,7 @@ struct Report: AsyncParsableCommand {
         set of failure patterns and numeric codes. These observations may come
         from other apps and are not attributable to Darkbloom. macOS lets only
         administrator accounts read the system log: run this from an
-        administrator account, or `sudo darkbloom report` if this account is
+        administrator account, or `sudo \(BuildEnvironment.current.cliName) report` if this account is
         allowed to use sudo.
 
         No other application or operating-system logs are included.
@@ -108,7 +108,7 @@ struct Report: AsyncParsableCommand {
         do {
             logData = try collectLogs(last)
             if logData.isEmpty {
-                print("  No provider logs for the given time window (is the provider running? Try: darkbloom start).")
+                print("  No provider logs for the given time window (is the provider running? Try: \(BuildEnvironment.current.cliName) start).")
             }
         } catch ReportLogAccess.denied {
             // Standard accounts cannot open the log store at all. Keep going:

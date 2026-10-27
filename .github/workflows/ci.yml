@@ -19,9 +19,28 @@ jobs:
     permissions:
       contents: read
 
+  # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each read-only
+  # job below. It follows the classifier so only jobs that will run are
+  # requested, and still routes the unconditional jobs if the classifier fails.
+  route:
+    needs: changes
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        release-integrity linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        docs linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        test-provider macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-sdk macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        test-provider-parity macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}
+        lint-console linux_arm64 blacksmith-4vcpu-ubuntu-2404 ${{ needs.changes.outputs.console == 'true' && 1 || 0 }}
+
   release-integrity:
     name: Release Integrity
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-integrity'] }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Validate changelog fragments
@@ -38,13 +57,16 @@ jobs:
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-release-dev-branch.py
           python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-provider-identity.py
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-provider-ci-cache.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-ci-component-paths.py
+          python3 scripts/test-darkbloom-route.py
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 provider-swift/Tests/test_protocol_fixture_resources.py
           python3 scripts/test-app-attest-entitlements.py
@@ -56,8 +78,12 @@ jobs:
           python3 .github/scripts/test-threat-ensemble.py
           python3 .github/scripts/test-threat-budget.py
           python3 .github/scripts/test-threat-bedrock.py
+          python3 .github/scripts/test-threat-diagnostics.py
+          python3 .github/scripts/test-threat-integration-scope.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test model registry workflow with loopback HTTP
+        run: python3 scripts/test_model_registry_workflow.py
       - name: Test bounded MiMo provider fixture provisioning offline
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
@@ -70,7 +96,10 @@ jobs:
 
   docs:
     name: Docs Lint
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['docs'] }}
+    # Full-history checkouts of this repository have taken up to 21 minutes.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -86,9 +115,10 @@ jobs:
 
   test-provider:
     name: Provider Unit Tests
-    needs: changes
+    needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider'] }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -116,7 +146,10 @@ jobs:
       - name: Prepare pinned public MiMo metadata and original corpus
         id: mimo-prompt-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
-        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+        run: |
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV"
       - name: Prepare bounded synthetic MiMo provider fixtures offline
         id: mimo-fixtures
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
@@ -126,7 +159,7 @@ jobs:
       - name: Run Swift tests
         id: provider-unit-tests
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
-        timeout-minutes: 20
+        timeout-minutes: 35
         env:
           MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
         working-directory: provider-swift
@@ -135,7 +168,7 @@ jobs:
         run: |
           python3 ../scripts/run-provider-test-watchdog.py \
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
-            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
       - name: Upload provider test diagnostics
         if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
@@ -145,6 +178,10 @@ jobs:
           path: ${{ runner.temp }}/provider-test-diagnostics
           if-no-files-found: warn
           retention-days: 7
+      - name: Test desktop control API with isolated local state
+        if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
       - name: Run isolated native MiMo startup gates
         if: ${{ !cancelled() && steps.provider-ci-build.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift
@@ -341,9 +378,10 @@ jobs:
 
   test-provider-sdk:
     name: Provider SDK Tests
-    needs: changes
+    needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-sdk'] }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -507,9 +545,10 @@ jobs:
   test-provider-parity:
     # Keep the check name stable; this lane now verifies public Swift golden vectors.
     name: Provider Prompt Parity
-    needs: changes
+    needs: [changes, route]
     if: ${{ needs.changes.outputs.provider == 'true' }}
-    runs-on: blacksmith-12vcpu-macos-27
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['test-provider-parity'] }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -533,7 +572,7 @@ jobs:
 
   provider-test-gate:
     name: Provider Tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: [changes, test-provider, test-provider-sdk, test-provider-parity]
     if: ${{ always() }}
     steps:
@@ -601,9 +640,10 @@ jobs:
 
   lint-console:
     name: Console UI Lint & Build
-    needs: changes
+    needs: [changes, route]
     if: ${{ needs.changes.outputs.console == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['lint-console'] }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

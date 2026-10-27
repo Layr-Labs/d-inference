@@ -5,8 +5,9 @@
 // The v2 engine builds UNQUANTIZED native-float `CBv2LayerCache`s: KV
 // quantization was removed from the product in v0.8.0, so there is exactly
 // one per-token cost. The sizing snapshot is an all-fp16 baseline; slot
-// assembly adds GPT-OSS's fp32 owning-full-row delta before
-// heartbeat/shared-budget publication.
+// assembly prices the observed native per-layer types
+// (`EngineV2SlotFactory.slotKVBytesPerToken`) before heartbeat/shared-budget
+// publication.
 
 import Foundation
 

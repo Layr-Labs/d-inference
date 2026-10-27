@@ -35,6 +35,9 @@ extension ModelBenchmark {
         Qwen4ExpPLEResidency.isQwen4ExpModelType(modelType)
             || modelType == "prism_hadamard_qwen35"
             || modelType == "mimo_v2"
+            // Flint is served only on paged attention; scalar generate would
+            // run its non-paged scalar caches.
+            || modelType == "flint"
     }
 
     static func decodedModelType(from data: Data) throws -> String? {

@@ -8,7 +8,10 @@ extension ProviderLoop {
         // admission; the serve task performs slot teardown before returning.
         startupPreloadTask?.cancel()
         startupPreloadGateWaiter?.cancel()
-        if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
+        // An add-on hold reports through its own daemon-state record.
+        if servingDrain.owner != .lifecycle && servingDrain.owner != .addonHold {
+            lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining)
+        }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
     }
@@ -140,6 +143,7 @@ extension ProviderLoop {
                     Task { await self?.handleLifecycleCommand(request) }
                 }
                 _ = await self?.acceptPendingModelSwitch(from: mailbox)
+                _ = await self?.acceptPendingAddonControl(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
@@ -159,6 +163,17 @@ extension ProviderLoop {
 
     /// OS termination and schedule cancellation use the same admission/drain
     /// path. Neither cancels the event reader or closes the socket first.
+    /// A stopped cluster member serves nothing but its pair slot. With nothing
+    /// in flight, a drain that timed out only on the coordinator's
+    /// acknowledgement (its control connection was replaced meanwhile, as when
+    /// the pair's leader left at the same moment) must not keep the member
+    /// running after its stop signal: the stream ends, the slot retires.
+    internal func shutdownStoppedClusterMember() async {
+        guard isClusterMember, lifecycleRemaining == 0, await drainNativeMiMoOwners() else { return }
+        await releaseClusterMemberSessionBeforeClose()
+        await coordinatorClient?.shutdown()
+    }
+
     public func drainAndShutdown(timeoutSeconds: Int = 600) async -> Bool {
         await drainAndShutdown(timeoutSeconds: timeoutSeconds,
             beforeAwaitingExistingControllerForTesting: nil)
@@ -173,7 +188,10 @@ extension ProviderLoop {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
             guard await stopAppAttestWorkerAndWait() else { return false }
-            if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+            if coordinatorEventLoopStarted {
+                await releaseClusterMemberSessionBeforeClose()
+                await coordinatorClient?.shutdown()
+            }
             else if !(await shutdownBeforeRegistration()) { return false }
             return true
         }
@@ -192,7 +210,10 @@ extension ProviderLoop {
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
         guard await stopAppAttestWorkerAndWait() else { return false }
-        if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+        if coordinatorEventLoopStarted {
+            await releaseClusterMemberSessionBeforeClose()
+            await coordinatorClient?.shutdown()
+        }
         else if !(await shutdownBeforeRegistration()) { return false }
         return true
     }

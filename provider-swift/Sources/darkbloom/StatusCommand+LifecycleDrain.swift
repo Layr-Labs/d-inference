@@ -17,7 +17,7 @@ extension Status {
                 + "new requests are refused until it finishes"
         case .timedOut, .busy:
             return "Not serving: the last drain did not finish (\(status.remaining) unfinished request(s)); "
-                + "new requests are refused. Run `darkbloom stop` or `darkbloom restart` to drain again, "
+                + "new requests are refused. Run `\(BuildEnvironment.current.cliName) stop` or `\(BuildEnvironment.current.cliName) restart` to drain again, "
                 + "or add `--force` to interrupt unfinished work"
         case .drained, .forced:
             // Outside its schedule window the daemon idles as drained without a
@@ -25,7 +25,7 @@ extension Status {
             // already says so, and the window reopens serving on its own.
             guard status.requestID != nil else { return nil }
             return "Not serving: drained; new requests are refused until the provider is replaced. "
-                + "Run `darkbloom restart` or `darkbloom start` to serve again, or `darkbloom stop` to finish stopping"
+                + "Run `\(BuildEnvironment.current.cliName) restart` or `\(BuildEnvironment.current.cliName) start` to serve again, or `\(BuildEnvironment.current.cliName) stop` to finish stopping"
         }
     }
 }

@@ -40,6 +40,9 @@ methodology: STRIDE
 # See docs/architecture/security/attestation.md#provider-connection-control.
 # Current backend behavior belongs to the platform's latest default branch.
 # Immutable links preserve reviewed evidence, not current source or deployment.
+# Provider add-on hold reviewed 2026-10-26: TB-012, A-018 and T-059 describe the
+# local hold socket, its signature check, leases and the machine-lock fallback.
+# Coordinator handling of the busy fields is separate platform work.
 description: >
   Provider and native-runtime threat model, including the external trust
   contracts the provider consumes. The provider and coordinator remain plaintext
@@ -226,6 +229,16 @@ assets:
       Release publication keys cannot approve qualifications. A reported binary hash
       or green CI run alone is not operator qualification or Apple code evidence.
       Code: coordinator/appattest/service/build_qualifications.go.
+
+  - id: A-018
+    name: provider_serving_availability
+    description: >
+      Whether a connected provider takes inference: its admission state, resident
+      models and the coordinator's routing view through heartbeat status and busy fields.
+    sensitivity: medium
+    notes: >
+      An add-on hold withholds it deliberately while the Mac's memory runs VMs.
+      Code: provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift.
 
 trust_boundaries:
   - id: TB-002
@@ -553,6 +566,8 @@ trust_boundaries:
       to verify the DER ECDSA signature over SHA-256(canonical_json_bytes). Three checks
       are mandatory and will fail the attestation: SecureEnclave not available, SIP
       disabled, SecureBoot disabled. ARV and RDMA are parsed and logged but not enforced.
+      RDMA over Thunderbolt is an administrator's switch (System Settings, Privacy &
+      Security on macOS 27 or later; `rdma_ctl enable` in macOS Recovery on macOS 26).
       The blob timestamp must be within ±2 minutes of coordinator time
       (RegistrationAttestationMaxAge, CheckTimestamp()) or the provider is marked
       untrusted; providers re-sign the blob on every reconnect.
@@ -795,6 +810,37 @@ trust_boundaries:
         and committed frames cannot be recalled by revocation."
       - "Checked-in flags and onboarding behavior do not prove live fleet activation.
         Inspect current authorized deployment state separately."
+
+  - id: TB-012
+    name: provider_to_local_addon_hold_socket
+    description: >
+      A separately signed add-on (io.darkbloom.sandbox) asks the provider over an
+      owner-only AF_UNIX socket to leave inference while its VMs use the Mac. Both
+      run as the same user; the socket and the add-on's machine lock coordinate them
+      and are not a boundary against that user.
+    how_it_works: >
+      The provider binds ~/.darkbloom/runtime/addon.sock 0600 in a 0700 directory and
+      never replaces a live socket. For every request it reads the LOCAL_PEERTOKEN
+      audit token, requires the provider's effective UID, selects the running code by
+      that token and requires the Developer ID requirement for io.darkbloom.sandbox
+      under team SLDQ2GJ6TL plus the hardened runtime; the requested add-on must equal
+      the verified identifier. DEBUG builds may add one explicitly configured identity.
+      A hold closes admission, reports status draining with busy fields, finishes
+      accepted work within 120 seconds, unloads every model and never sends the
+      provider_drain barrier or stops the App Attest worker. Leases are 30 to 600
+      seconds; an expired lease ends the hold only when no add-on holds
+      ownership.lock exclusively. Active holds persist 0600 so a restart comes back
+      held. Code: provider-swift/Sources/ProviderCore/Addon/.
+    current_limitations:
+      - "Same-UID code can tamper with the add-on's files, the hold record or the
+        machine lock, or keep the lock open to extend a hold; it can equally stop the
+        provider. The check only keeps other same-UID programs from holding the Mac
+        through the socket."
+      - "Entitlements of the add-on are not inspected beyond the hardened runtime; a
+        debuggable or library-validation-exempt add-on build would widen what can
+        drive it."
+      - "Leases use wall-clock time; a clock change shortens or lengthens a lease.
+        The machine lock still keeps the hold while VMs run."
 
 threats:
   - id: T-007
@@ -2258,3 +2304,36 @@ threats:
     detection_hint: >
       Review public payloads, archives, logs and cache timing separately; never expose
       raw evidence or infer authorization from client-supplied diagnostics.
+
+  - id: T-059
+    trust_boundary: TB-012
+    stride: Denial_of_Service
+    title: A local process holds the provider out of routing or loads models beside running VMs
+    description: >
+      An unsigned same-UID program could try to hold the provider through the add-on
+      socket and stop its earnings, an add-on crash could leave a hold behind, or a
+      lost hold could let models load into memory that VMs still use.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-018]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift
+      - provider-swift/Sources/ProviderCore/Addon/AddonIPCServer.swift
+      - provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift
+      - provider-swift/Sources/ProviderCore/Service/ProviderDrain.swift
+    mitigations:
+      - description: >
+          Per-request audit-token code-signature check with exact identifier, team,
+          Developer ID requirement and hardened runtime; bounded framing, connection
+          count and idle time; leases with a machine-lock fallback; persisted holds;
+          drain ownership no update or reconnect can reopen; and operator release
+          through darkbloom addon release.
+        status: implemented
+      - description: >
+          Same-UID tampering with the add-on, the record or the lock is outside this
+          boundary, as is coordinator enforcement of the busy fields.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Test unsigned peers, oversized and malformed lines, lease expiry with and
+      without the lock, restart restore, and update or reconnect during a hold.

@@ -44,7 +44,7 @@ struct Update: AsyncParsableCommand {
     mutating func run() async throws {
         let config = try loadUpdateConfig(configPath: configOptions.config)
 
-        print("darkbloom update")
+        print("\(BuildEnvironment.current.cliName) update")
         print("Current version: \(ProviderCore.version)")
         print("")
 
@@ -70,7 +70,7 @@ struct Update: AsyncParsableCommand {
                     print("mlx.metallib SHA-256: \(metallibHash)")
                 }
                 print("")
-                print("Run 'darkbloom update' to install.")
+                print("Run '\(BuildEnvironment.current.cliName) update' to install.")
 
             case .restartRequired(let current, let installed):
                 print("v\(installed) is already installed on disk but this process is v\(current).")

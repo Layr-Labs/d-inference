@@ -37,7 +37,7 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
         case .linkedCredentialsRequired:
             return "New providers require macOS 27 or later and coordinator-qualified App Attest. "
                 + "Legacy MDM is only for grandfathered account/key pairs. "
-                + "Run 'darkbloom login' with the existing linked account to check eligibility."
+                + "Run '\(BuildEnvironment.current.cliName) login' with the existing linked account to check eligibility."
         case .existingIdentityRequired(let detail):
             return "New providers require macOS 27 or later and coordinator-qualified App Attest. "
                 + "Legacy MDM requires the grandfathered account's original Secure Enclave key; "
@@ -49,10 +49,15 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
         case .managedByOtherMDM(let serverURL):
+            let state = MDMEnrollmentState.enrolledOtherMDM(serverURL: serverURL)
+            if state.otherInstall != nil {
+                return "This Mac already has \(describeOtherMDM(state)). macOS allows only one MDM "
+                    + "enrollment per device, so this install cannot enroll while that profile is installed."
+            }
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
                 + "enrollment is unavailable here. Keep your organization's profile installed. "
-                + "Upgrade to macOS 27 or later, start the current provider and check `darkbloom status` for "
+                + "Upgrade to macOS 27 or later, start the current provider and check `\(BuildEnvironment.current.cliName) status` for "
                 + "coordinator-qualified App Attest serving."
         }
     }
@@ -319,13 +324,14 @@ public enum LocalDataCleanup: Sendable {
         let fm = FileManager.default
 
         if configDirectory {
-            for relative in [".config/darkbloom", ".config/eigeninference"] {
+            let environment = BuildEnvironment.current
+            for relative in [environment.configDirectoryName] + environment.legacyConfigDirectoryNames {
                 let dir = home.appendingPathComponent(relative)
                 try? fm.removeItem(at: dir)
             }
         }
         if legacyKeyFiles {
-            let darkbloomDir = home.appendingPathComponent(".darkbloom")
+            let darkbloomDir = BuildEnvironment.current.installDirectory(home: home)
             for name in ["wallet_key", "enclave_key.data", "node_key", "secret_key"] {
                 try? fm.removeItem(at: darkbloomDir.appendingPathComponent(name))
             }

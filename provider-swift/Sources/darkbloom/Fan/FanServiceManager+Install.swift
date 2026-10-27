@@ -2,6 +2,7 @@ import DarkbloomFanProtocol
 import DarkbloomFanService
 import CryptoKit
 import Foundation
+import ProviderCore
 
 #if canImport(Darwin)
 import Darwin
@@ -13,14 +14,14 @@ extension FanServiceManager {
         let directory = executable.deletingLastPathComponent()
         guard directory.lastPathComponent == "MacOS" else {
             throw FanServiceManagerError.helperNotBundled([
-                "a signed Darkbloom.app/Contents/Helpers installation"
+                "a signed \(BuildEnvironment.current.appBundleName)/Contents/Helpers installation"
             ])
         }
         let contents = directory.deletingLastPathComponent()
         let app = contents.deletingLastPathComponent()
         guard app.pathExtension == "app" else {
             throw FanServiceManagerError.helperNotBundled([
-                "a signed Darkbloom.app/Contents/Helpers installation"
+                "a signed \(BuildEnvironment.current.appBundleName)/Contents/Helpers installation"
             ])
         }
         let helper = contents.appendingPathComponent("Helpers/darkbloom-fan-helper")
@@ -97,7 +98,7 @@ extension FanServiceManager {
         )
         guard signature.succeeded else {
             throw FanServiceManagerError.signatureFailed(
-                "outer Darkbloom.app: \(signature.output)"
+                "outer \(BuildEnvironment.current.appBundleName): \(signature.output)"
             )
         }
 
@@ -113,7 +114,7 @@ extension FanServiceManager {
               binary.range(of: Data("darkbloom-fan-helper-v1".utf8)) != nil
         else {
             throw FanServiceManagerError.unsafeFile(
-                "Darkbloom.app fan capability marker is missing or invalid"
+                "\(BuildEnvironment.current.appBundleName) fan capability marker is missing or invalid"
             )
         }
         try verifyRegularExecutable(helper)

@@ -1,6 +1,10 @@
 import Foundation
 
 extension EngineV2Bridge {
+    /// Capacity refusal of a Mac whose serving concurrency is full; thrown
+    /// before any stream exists (503 locally, retriable capacity upstream).
+    static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
             deadlinePostureMonitoring == nil else { return }
@@ -29,8 +33,15 @@ extension EngineV2Bridge {
         effectiveServingConcurrency(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
     }
 
+    /// Reviewed profiles and any width above the unqualified width (the
+    /// automatic M5 paged default) need nominal power and thermal posture;
+    /// otherwise admission falls back to the unqualified width.
+    var hasPostureGatedWidth: Bool {
+        performanceProfile != nil || maxConcurrentRequests > unqualifiedMaxConcurrentRequests
+    }
+
     func effectiveServingConcurrency(allowExpansion: Bool) -> Int {
-        let configured = performanceProfile != nil && !allowExpansion
+        let configured = hasPostureGatedWidth && !allowExpansion
             ? unqualifiedMaxConcurrentRequests : maxConcurrentRequests
         return memoryLimitedConcurrency(configured: configured)
     }
@@ -41,21 +52,19 @@ extension EngineV2Bridge {
         qualifiedTextWork: Bool = true,
         recoverPrefillEvidence: Bool = false,
         allowExpansion: Bool? = nil) -> Bool {
-        let effectiveProfile = currentPerformanceProfile(
-            allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
-        let effectiveDeadlineProfile = currentDeadlineProfile(
-            allowQualifiedPosture: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
+        let expansionAllowed = allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion
+        let effectiveProfile = currentPerformanceProfile(allowExpansion: expansionAllowed)
+        let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
         // even while terminal handling also retains it in the active map.
         if usesMemoryLimitedConcurrency {
             let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
-            if occupiedConcurrency >= effectiveServingConcurrency(
-                allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion) {
+            if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
                 return false
             }
         }
-        if performanceProfile != nil && effectiveProfile == nil,
+        if hasPostureGatedWidth, !expansionAllowed,
             active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
             return false
         }
@@ -98,6 +107,9 @@ extension EngineV2Bridge {
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
+        if let (lifetime, key) = qwenMediaHostResources.removeValue(forKey: requestID) {
+            lifetime.nativeDidRetire(key)
+        }
         prefillEvidenceRecovery.retire(requestID)
         if nativeMediaLearnedRequestIDs.remove(requestID) != nil {
             nextNativeMediaBootstrapAt = nil

@@ -23,9 +23,10 @@ extension OOMDetector {
         let needle = processName.lowercased()
         let largest = (body["largestProcess"] as? String)?.lowercased()
         for proc in processes {
-            guard let name = proc["name"] as? String, name.lowercased().contains(needle) else { continue }
+            // Exact name: `darkbloom` must not match the `darkbloom-dev` install.
+            guard let name = proc["name"] as? String, name.lowercased() == needle else { continue }
             let reason = (proc["reason"] as? String) ?? (proc["killDelta"] as? String)
-            let wasKilled = !(reason ?? "").isEmpty || (largest.map { name.lowercased().contains($0) } ?? false)
+            let wasKilled = !(reason ?? "").isEmpty || largest == needle
             guard wasKilled else { continue }   // present in the table but not the victim
             let rpages = (proc["rpages"] as? Int) ?? (proc["pages"] as? Int) ?? 0
             let bytes = UInt64(max(0, rpages)) &* UInt64(max(0, pageSize))
@@ -42,9 +43,15 @@ extension OOMDetector {
     /// MEMORY subtype, or a JETSAM termination namespace.
     public static func parseMemoryCrashReport(contents: String, processName: String) -> Finding? {
         guard let header = jsonHeader(from: contents) else { return nil }
-        let appName = (header["app_name"] as? String) ?? (header["procName"] as? String) ?? ""
-        guard appName.lowercased().contains(processName.lowercased()) else { return nil }
-        guard let body = jsonBody(from: contents) else { return nil }
+        let body = jsonBody(from: contents)
+        // `app_name` can hold the bundle display name (`appDisplayName`) rather than
+        // the executable, so any of the report's name fields may match, but
+        // each must equal this build's process name exactly.
+        let names = [header["app_name"], header["name"], header["procName"], body?["procName"]]
+            .compactMap { $0 as? String }
+        guard let appName = names.first(where: { $0.lowercased() == processName.lowercased() }),
+              let body
+        else { return nil }
 
         if let exception = body["exception"] as? [String: Any] {
             let type = (exception["type"] as? String) ?? ""

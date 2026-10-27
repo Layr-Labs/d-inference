@@ -22,7 +22,7 @@ extension Models {
             variables never change the cache unless you explicitly import them.
             No weights are moved, deleted or downloaded. Discovery does not verify
             weight integrity or network eligibility. Apply changes with darkbloom
-            restart (or darkbloom start if stopped); this command never restarts it.
+            restart (or \(BuildEnvironment.current.cliName) start if stopped); this command never restarts it.
             """
         )
 
@@ -82,7 +82,7 @@ extension Models {
             // scan other caches or initialize serving state.
             let config = try FileManager.default.fileExists(atPath: configPath.path)
                 ? ConfigManager.load(from: configPath)
-                : ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
+                : ProviderConfig(provider: ProviderSettings(name: BuildEnvironment.current.cliName))
             writeLine("Config: \(configPath.path)")
             writeLine("Saved location: \(config.backend.modelCacheDirectory ?? "not set")")
             var current: ModelScanner.ResolvedCache?
@@ -192,7 +192,7 @@ extension Models {
             }
             writeLine("Effective location: \(effective.url.path) (\(Self.source(effective)))")
             writeLine("No weights were moved, deleted or downloaded. The running provider was not changed.")
-            writeLine("Apply configuration changes with: darkbloom restart (or darkbloom start if stopped).")
+            writeLine("Apply configuration changes with: \(BuildEnvironment.current.cliName) restart (or \(BuildEnvironment.current.cliName) start if stopped).")
             return inspection
         }
 

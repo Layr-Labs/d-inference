@@ -9,7 +9,7 @@ struct Stop: AsyncParsableCommand {
 
     @OptionGroup var drain: DrainOptions
 
-    @Flag(help: "Also remove the launchd plist (full uninstall).")
+    @Flag(help: "Also remove the provider, watchdog and desktop API launchd agents (full uninstall).")
     var uninstall = false
 
     mutating func run() async throws {
@@ -18,7 +18,12 @@ struct Stop: AsyncParsableCommand {
         defer { session.release() }
 
         try await ServiceDrain.stopDrainedProvider()
-        if uninstall { try? WatchdogAgent.uninstall() }
+        if uninstall {
+            try? WatchdogAgent.uninstall()
+            // The desktop API agent is KeepAlive; leaving it would keep it running
+            // (and auto-updating) after the app and provider are removed.
+            try? DesktopService.uninstall()
+        }
 
         if uninstall {
             try LaunchAgent.uninstall()
@@ -26,7 +31,7 @@ struct Stop: AsyncParsableCommand {
         } else {
             try LaunchAgent.stop()
             if wasLoaded {
-                print("Provider service stopped. (Won't auto-start at login/reboot until you run `darkbloom start` again.)")
+                print("Provider service stopped. (Won't auto-start at login/reboot until you run `\(BuildEnvironment.current.cliName) start` again.)")
             } else {
                 print("Provider service is not running. (Auto-start at login/reboot is now disabled.)")
             }

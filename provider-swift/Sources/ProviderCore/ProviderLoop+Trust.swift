@@ -46,6 +46,8 @@ extension ProviderLoop {
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
+            servingSelection: ordinaryServingModelIDs.sorted(),
+            evictionExclusions: evictionExclusionRecords(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
             requestWorkPending: DaemonWorkPosture.hasPendingRequest(
@@ -61,7 +63,10 @@ extension ProviderLoop {
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,
-                usageGaps: stats.usageGaps
+                usageGaps: stats.usageGaps,
+                promptTokensProcessed: self.stats.promptTokensProcessed,
+                cachedInputTokens: self.stats.cachedInputTokens,
+                reasoningTokens: self.stats.reasoningTokens
             ),
             capacity: cap.map {
                 DaemonState.Capacity(
@@ -74,7 +79,11 @@ extension ProviderLoop {
                     loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                         || !startupPreloadPendingModels.isEmpty
                         || mtpStagingReservations.hasRetainedTargets
-                        || $0.slots.contains { $0.state == "reloading" })
+                        || $0.slots.contains { $0.state == "reloading" },
+                    modelActivity: $0.slots.map {
+                        .init(model: $0.model, state: $0.state, running: $0.numRunning, waiting: $0.numWaiting)
+                    },
+                    activityObservedAt: desktopActivityObservedAt)
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit
@@ -95,7 +104,8 @@ extension ProviderLoop {
             appAttest: appAttestLocalStatus,
             autopilot: state.modelAutopilot,
             autopilotPhase: autopilotPhase,
-            autopilotOperation: autopilotOperationView
+            autopilotOperation: autopilotOperationView,
+            addonHold: addonHoldSnapshot
         )
     }
 
@@ -126,6 +136,7 @@ extension ProviderLoop {
     /// Records a model-load failure for the diagnostics state file so the
     /// operator sees the exact "Insufficient memory …" text in `doctor`.
     internal func recordModelLoadError(model: String, message: String) {
+        GLM5NextWiredLimitNotice.report(failureMessage: message, modelID: model)
         lastModelLoadError = DaemonState.ModelLoadError(
             model: model, message: message, at: Date().timeIntervalSince1970)
         writeDaemonState()

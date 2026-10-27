@@ -6,7 +6,7 @@ import Foundation
 import ProviderMetallibControl
 import os
 
-private let hashLogger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+private let hashLogger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "security")
 
 enum RuntimeMetallibBindingError: Error, Equatable {
     case sourceUnavailable

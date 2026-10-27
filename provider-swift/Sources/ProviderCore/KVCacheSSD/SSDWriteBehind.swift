@@ -112,7 +112,7 @@ final class SSDWriteBehind: @unchecked Sendable {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_write_behind")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_write_behind")
     #endif
 
     init(

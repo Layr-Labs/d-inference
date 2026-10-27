@@ -432,8 +432,8 @@ struct EngineV2FP32PagedRateTests {
             servingModelIsGPTOSS: false
         ) == nominal)
 
-        // Contiguous GPT-OSS keeps the fp32 owning-full-row delta
-        // (native-width rate), exactly as before this seam existed.
+        // Without observed native types, contiguous GPT-OSS keeps the
+        // conservative fp32 owning-full-row delta.
         #expect(EngineV2SlotFactory.slotKVBytesPerToken(
             resolvedKind: .contiguous,
             pagedPoolDType: nil,
@@ -442,8 +442,7 @@ struct EngineV2FP32PagedRateTests {
             servingModelIsGPTOSS: true
         ) == nominal + 2048)
 
-        // Paged GPT-OSS never takes the native-width path (fp32 full rows
-        // are a contiguous-backend behavior).
+        // Paged GPT-OSS never takes that contiguous fallback delta.
         #expect(EngineV2SlotFactory.slotKVBytesPerToken(
             resolvedKind: .paged,
             pagedPoolDType: "float16",

@@ -12,7 +12,7 @@ import Foundation
 import Security
 import os
 
-private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "persistent-enclave-key")
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "persistent-enclave-key")
 
 // MARK: - Errors
 
@@ -82,7 +82,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// challenge signing works while the screen is locked. (The retired v1
     /// label used `WhenUnlockedThisDeviceOnly`; its one-time migration
     /// has been removed, and a leftover v1 item is simply never read.)
-    public static let defaultLabel = "io.darkbloom.provider.attestation-signing.v2"
+    public static let defaultLabel = BuildEnvironment.current.keychainServicePrefix + ".provider.attestation-signing.v2"
 
     /// Raw P-256 public key (64 bytes: X || Y, without the 0x04 prefix).
     public var publicKeyRaw: Data { _publicKeyRaw }
@@ -114,6 +114,12 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     }
 
     // MARK: - Load or Create
+
+    /// Reuse a paired identity without creating, deleting or repairing keys.
+    /// A missing or unusable key must leave the existing pairing untouched.
+    static func loadExisting(accessGroup: String? = nil, label: String? = nil) throws -> PersistentEnclaveKey {
+        try findExisting(accessGroup: resolveAccessGroup(accessGroup), label: label ?? defaultLabel)
+    }
 
     /// Load an existing persistent key from the keychain, or create one if not
     /// found. New keys are created under `defaultLabel` (v2) with

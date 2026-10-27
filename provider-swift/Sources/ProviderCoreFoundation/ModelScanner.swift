@@ -1,5 +1,6 @@
 import Foundation
 import Logging
+import ProviderBuildEnvironment
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -107,8 +108,19 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Snapshot Discovery
 
-    /// Resolve an explicit refs/main selection, or the latest legacy snapshot
-    /// by modification time only when that selection is genuinely absent.
+    /// Active-revision refs an environment reads, in order: its own
+    /// (`modelRevisionRef`), then production's. The weights cache is shared,
+    /// but each install writes only its own ref, so the two installs never
+    /// move each other's selection.
+    public static func revisionRefNames(for environment: BuildEnvironment = .current) -> [String] {
+        let own = environment.modelRevisionRef
+        let production = BuildEnvironment.prod.modelRevisionRef
+        return own == production ? [own] : [own, production]
+    }
+
+    /// Resolve an explicit `refs/<modelRevisionRef>` selection (see
+    /// `revisionRefNames`), or the latest legacy snapshot by modification time
+    /// only when every selection is genuinely absent.
     ///
     /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
     /// canonicalises the paths it hands back (on macOS a `/var/...` input
@@ -116,26 +128,30 @@ public struct ModelScanner: Sendable {
     /// could come back in a different textual form than the cache directory it
     /// was found under -- and callers that compare or key on those paths would
     /// treat one directory as two.
-    public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
+    public static func findLatestSnapshot(
+        in snapshotsDir: URL, refNames: [String] = ModelScanner.revisionRefNames()
+    ) -> URL? {
         let fm = FileManager.default
         // A managed revision is selected explicitly. Modification times must
         // never activate a staged download or undo a rollback.
-        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
-        switch readSnapshotReference(at: mainRef) {
-        case .invalid:
-            return nil
-        case .selected(let raw):
-            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
-                  !name.utf8.contains(0) else { return nil }
-            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
-            var isDirectory: ObjCBool = false
-            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
-            // Use the same POSIX canonicalization as legacy discovery so one
-            // selected directory cannot acquire two cache/ownership identities.
-            return resolved(selected)
-        case .absent:
-            break
+        let refs = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs")
+        for refName in refNames {
+            switch readSnapshotReference(at: refs.appendingPathComponent(refName)) {
+            case .invalid:
+                return nil
+            case .selected(let raw):
+                let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+                      !name.utf8.contains(0) else { return nil }
+                let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+                var isDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+                // Use the same POSIX canonicalization as legacy discovery so one
+                // selected directory cannot acquire two cache/ownership identities.
+                return resolved(selected)
+            case .absent:
+                continue
+            }
         }
         let entries: [URL]
         do {
@@ -243,15 +259,38 @@ public struct ModelScanner: Sendable {
             return fm.fileExists(atPath: snapshotDir.appendingPathComponent("config.json").path)
         }
 
+        // Recursive's official Flint MLX export has model-00000.safetensors
+        // shards without an index. Bind discovery to native config identity;
+        // the strict Flint loader validates the complete inventory at load.
+        let configURL = snapshotDir.appendingPathComponent("config.json")
+        if let config = boundedModelConfiguration(at: configURL),
+           config["model_type"] as? String == "flint",
+           let files = try? fm.contentsOfDirectory(atPath: snapshotDir.path) {
+            return files.contains { $0.hasPrefix("model-") && $0.hasSuffix(".safetensors") }
+        }
+
         return false
+    }
+
+    /// Discovery must not block on special files or allocate unbounded config data.
+    private static func boundedModelConfiguration(at url: URL) -> [String: Any]? {
+        let fd = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size > 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // MARK: - Weight File Collection
 
-    /// MiMo's strict native loader consumes one of these source-bound receipts.
-    /// Include it in both local attestation and the publisher/downloader file
-    /// list. Do not expand the global filename policy: unrelated existing model
-    /// aggregates must not change merely because they contain a conversion log.
+    /// Include family-specific runtime receipts and distribution notices in
+    /// both attestation and the publisher/downloader inventory. Unrelated
+    /// models retain their existing hashes. Super's indexed config is 8.7 MB,
+    /// so it needs a larger bounded read than MiMo's small configuration.
     private static func modelSpecificIntegrityFileNames(in root: URL) -> Set<String> {
         // HF snapshot symlinks are supported, but never block opening a FIFO
         // or read a special/oversized file during ordinary model discovery.
@@ -262,11 +301,18 @@ public struct ModelScanner: Sendable {
         defer { try? handle.close() }
         var state = stat()
         guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
-              state.st_size > 0, state.st_size <= 1_048_576,
-              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size),
+              state.st_size > 0, state.st_size <= 16_777_216,
+              let data = try? handle.read(upToCount: 16_777_217), data.count == Int(state.st_size),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["model_type"] as? String == "mimo_v2" else { return [] }
-        return ["conversion_manifest.json", "artifact-provenance.json"]
+              let modelType = object["model_type"] as? String else { return [] }
+        switch modelType {
+        case "mimo_v2" where state.st_size <= 1_048_576:
+            return ["conversion_manifest.json", "artifact-provenance.json"]
+        case "nemotron_h_omni":
+            return ["LICENSE.txt", "UPSTREAM_README.md"]
+        default:
+            return []
+        }
     }
 
     /// Whether a filename is an integrity-relevant file (weight or config/tokenizer/template).

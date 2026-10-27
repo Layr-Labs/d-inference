@@ -5,12 +5,20 @@ from pathlib import Path
 from urllib.parse import quote
 from .client import GitHub, ReviewUnavailable
 from .budget_scan import Scanner, failure
-from .context import ThreatContext
+from .context import ThreatContext, canonical_at
 from .paid import PaidCalls
 from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render
 from .runner import same_revision, verify_diff
 from .source import complete_files
 from .state import State
+from .diagnostics import ReviewFailure, failure_record, write_diagnostics
+
+
+class ResultWriteFailure(ReviewUnavailable):
+    """Carry saved scan evidence to the CLI when local result delivery fails."""
+    def __init__(self, snapshot, summary):
+        super().__init__("Final result could not be written; automatic clearance unavailable")
+        self.snapshot, self.summary = snapshot, summary
 
 
 def status_body(repository, head, base, diff_base, snapshot, evidence, history=None, compact=False, clearance=False):
@@ -27,15 +35,35 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
                   [] if compact else snapshot.get("limited_files", []),
                   "Report exceeds comment capacity; see saved findings" if compact else error,
                   diff_base, [] if compact else snapshot.get("outcomes", []))
+    if not complete and (snapshot.get("finished") or errors):
+        body += ("\n\n**Human review required: CI did not complete the security review.** "
+                 "A maintainer must review the saved findings and remaining scope. "
+                 "A green advisory job is not security clearance; do not manually rerun the paid scan.")
+    elif complete and (snapshot.get("manual_review_reasons") or any(
+            finding.get("severity") in ("medium", "high") for finding in snapshot.get("findings", []))):
+        body += "\n\n**Scan completed; human review required.**"
+        if snapshot.get("manual_review_reasons"):
+            body += "\n" + "; ".join(snapshot["manual_review_reasons"])
+    elif complete:
+        body += "\n\n**Scan completed.**"
+    if snapshot.get("diagnostics"):
+        body += "\n\nFailure diagnostics: " + "; ".join(
+            f"`{item['code']}`" for item in snapshot["diagnostics"])
+    if snapshot.get("response_repairs"):
+        repairs = snapshot["response_repairs"]
+        completed = sum(item["status"] == "completed" for item in repairs)
+        body += (f"\n\nResponse repair: {completed}/{len(repairs)} completed; "
+                 "one extra request maximum per scan, charged within the existing provider limits. "
+                 "Earlier findings and uncertainty are retained.")
     # The legacy renderer's full-text-model claim does not describe this engine.
     body = re.sub(r"(?m)^Coverage: .*", "", body)
     if clearance:
         body = body.replace("## Threat model review — advisory", "## Threat model review", 1)
         old = "Findings require human validation; this review never requests changes or blocks merging."
-        body = body.rsplit(old, 1)[0] + (
+        body = body.replace(old, (
             "Merge clearance requires complete coverage with no medium/high findings, or an independent "
             "manual security override. Review-control changes always require human approval. "
-            f"[Override instructions](https://github.com/{repository}/blob/master/docs/developer/threat-model-review.md).")
+            f"[Override instructions](https://github.com/{repository}/blob/master/docs/developer/threat-model-review.md)."), 1)
     body += (f"\n\nCoverage: {snapshot.get('covered_units', 0)}/{snapshot.get('total_units', 0)} source units; "
              f"cross-file integration {'complete' if snapshot.get('integration_completed') else 'pending'}. "
              f"{snapshot.get('depth_batches_pending', 0)} selected depth batch(es) pending. "
@@ -50,15 +78,28 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
         body += (f"\n\nSaved report contains {len(snapshot.get('findings', []))} finding(s) and "
                  f"{len(snapshot.get('limited_files', []))} file(s) requiring manual review.")
     if "bedrock_requests" in snapshot:
+        # Older saved snapshots have no cache breakdown: keep that explicitly
+        # unavailable instead of presenting unrecorded input as zero.
+        cache_input = (f"{snapshot['bedrock_cache_read_input_tokens']} cache-read + "
+                       f"{snapshot['bedrock_cache_write_input_tokens']} cache-write"
+                       if all(key in snapshot for key in ("bedrock_cache_read_input_tokens",
+                                                          "bedrock_cache_write_input_tokens"))
+                       else "unavailable cache")
         body += (f"\n\nBedrock: {snapshot['bedrock_requests']} request(s), "
-                 f"{snapshot['bedrock_input_tokens']} input / {snapshot['bedrock_output_tokens']} output tokens; "
+                 f"{snapshot['bedrock_input_tokens']} uncached + {cache_input} input / "
+                 f"{snapshot['bedrock_output_tokens']} output tokens; "
                  f"{snapshot['bedrock_unknown_usage']} request(s) with unknown usage. "
                  f"OpenRouter backup used {snapshot['openrouter_fallbacks']} time(s). "
                  "Dollar amounts above cover OpenRouter only; AWS billing is reconciled separately.")
+        if snapshot.get("bedrock_call_policy") == "workload":
+            body += (f"\nWorkload allowance: {snapshot['bedrock_call_limit']} native request(s), including "
+                     "one shared response repair; "
+                     f"{snapshot['bedrock_call_ceiling']} emergency ceiling. "
+                     "Selected depth and integration rounds are admitted as their scope becomes known.")
     return body
 
 
-def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
+def run(event, env, github=None, state=None, paid_factory=PaidCalls):
     repository = event["repository"]["full_name"]
     pr = event["pull_request"]
     head, base, number = pr["head"]["sha"], pr["base"]["sha"], pr["number"]
@@ -83,11 +124,14 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     snapshot = {"errors": [], "findings": []}
     scanner = None
     publication_uncertain = False
+    lifecycle_phase = "setup"
 
     def alive():
         current = github.pull()
+        if current.get("state") != "open":
+            raise ReviewFailure("PR closed or merged; review stopped without merge clearance", "PR_CLOSED")
         if not same_revision(current, head, base_ref):
-            raise ReviewUnavailable("PR revision changed")
+            raise ReviewFailure("PR revision changed; outdated review stopped", "PR_REVISION_CHANGED")
         if diff_base:
             verify_diff(github, current, base, head, diff_base)
 
@@ -119,19 +163,25 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
     def checkpoint(value):
         nonlocal snapshot, history
         snapshot = value
+        # Preserve local progress before a remote checkpoint/publication can fail.
+        write_diagnostics(env, snapshot)
         # Save even when the PR head moved. Publication alone needs a live head.
-        history = state.checkpoint(run_id, {"repository": repository, "head": head, "base": base,
+        history = state.checkpoint(run_id, {"repository": repository, "run": run_id, "head": head, "base": base,
                                            "diff_base": diff_base, "previous_comment": previous,
                                            "review": snapshot})
         publish()
 
     try:
+        if env.get("GITHUB_RUN_ATTEMPT", "1") != "1":
+            raise ReviewFailure("Manual scanner reruns are disabled; independent human review required",
+                                "MANUAL_SCAN_RERUN_DISABLED")
         if env.get("THREAT_REVIEW_ENABLED") != "true":
             snapshot["errors"] = ["Paid review is paused. Budgeted pilot must be explicitly enabled by a maintainer"]
             publish()
             return "Paid review paused; no provider requests made."
         # A normal PR cannot request expensive depth by adding text or a label.
-        # Dispatch is the only override, checked against current permissions.
+        # Trusted callers retain the deep-review option, with current permissions
+        # checked even though the CI workflow no longer exposes paid dispatch.
         force_deep = event.get("review_depth") == "deep"
         if force_deep:
             actor = event["sender"]["login"]
@@ -148,26 +198,34 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
             raise ReviewUnavailable("Review key missing")
         # A large PR can take time to collect. Acknowledge it and archive prior
         # advice before those reads, rather than leaving the author waiting.
+        lifecycle_phase = "initial_checkpoint"
         checkpoint(snapshot)
+        lifecycle_phase = "collect_source"
         files = github.files(current["changed_files"])
         alive()
         files = complete_files(github, files, diff_base, head)
-        context = ThreatContext((root / "docs/threat-model.yaml").read_text())
+        lifecycle_phase = "canonical_context"
+        context = ThreatContext(canonical_at(github, base))
         if bedrock:
             from .bedrock import BedrockCalls
             paid = BedrockCalls(state, number, run_id, key, context.prefix(), env, alive=alive)
         else:
             paid = paid_factory(state, number, run_id, key, context.prefix(), alive=alive)
-        scanner = Scanner(context, files, state, paid, checkpoint, base)
+        scanner = Scanner(context, files, state, paid, checkpoint, base,
+                          diagnostic_checkpoint=lambda value: write_diagnostics(env, value))
         # Merge clearance requires this run's model evidence. Existing cached
         # advice remains useful for advisory mode but cannot grant auto-merge.
         scanner.use_cache = env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") != "true"
         evidence = scanner.evidence
+        lifecycle_phase = "scan"
         checkpoint(scanner.snapshot())
         snapshot = scanner.run(force_deep)
     except Exception as error:
         snapshot = scanner.snapshot() if scanner else snapshot
+        snapshot["finished"] = True
         snapshot.setdefault("errors", []).append(failure(error))
+        snapshot.setdefault("diagnostics", []).append(failure_record(
+            error, {"stage": "lifecycle", "phase": lifecycle_phase}))
         try:
             checkpoint(snapshot)
         except Exception:
@@ -179,9 +237,25 @@ def run(event, root, env, github=None, state=None, paid_factory=PaidCalls):
                 # Delivery can fail or become stale; return the saved report
                 # to the Actions summary rather than losing local findings.
                 pass
+    write_diagnostics(env, snapshot)
     if env.get("THREAT_REVIEW_RESULT_FILE"):
-        Path(env["THREAT_REVIEW_RESULT_FILE"]).write_text(json.dumps({
-            "repository": repository, "head": head, "base": base, "diff_base": diff_base,
-            "review": snapshot}))
+        path = Path(env["THREAT_REVIEW_RESULT_FILE"])
+        try:
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(json.dumps({
+                "repository": repository, "run": run_id, "head": head, "base": base, "diff_base": diff_base,
+                "review": snapshot}))
+            temporary.replace(path)
+        except OSError:
+            snapshot.setdefault("errors", []).append("Final result unavailable; automatic clearance blocked")
+            snapshot.setdefault("diagnostics", []).append({"code": "RESULT_WRITE_FAILED", "phase": "result"})
+            write_diagnostics(env, snapshot)
+            try:
+                checkpoint(snapshot)
+            except Exception:
+                pass  # Saved scan diagnostics remain authoritative; never restart paid work.
+            raise ResultWriteFailure(snapshot, status_body(
+                repository, head, base, diff_base, snapshot, evidence, history,
+                clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")) from None
     return status_body(repository, head, base, diff_base, snapshot, evidence, history,
                        clearance=env.get("THREAT_REVIEW_REQUIRE_CLEARANCE") == "true")

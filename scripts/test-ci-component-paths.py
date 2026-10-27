@@ -92,7 +92,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
             "scripts/test-profile-inventory-auth.py", "scripts/test-qwen4-packaged-resources.py",
             "scripts/verify-prompt-parity.sh", "scripts/verify-nemotron-prompt-parity.sh",
-            "scripts/install.sh", "scripts/test-install-atomic.sh",
+            "scripts/install.sh", "scripts/test-install-atomic.sh", "scripts/test-desktop-api.py",
         ):
             self.assertTrue((ROOT / path).is_file(), path)
             self.assertTrue(routing.classify([path])["provider"], path)
@@ -212,7 +212,8 @@ class GitDiffTests(unittest.TestCase):
 class WorkflowRoutingTests(unittest.TestCase):
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
         for filename in ("ci.yml", "component-changes.yml", "provider-release-cache.yml",
-                         "provider-signing-validation.yml", "release-swift.yml"):
+                         "provider-signing-validation.yml", "release-swift.yml",
+                         "release-provider.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             with self.subTest(filename=filename):
                 for forbidden in ("actions/setup-go@", "go.mod", "coordinator/",
@@ -237,8 +238,10 @@ class WorkflowRoutingTests(unittest.TestCase):
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
             self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
             self.assertIn("contents: read", jobs["changes"])
+            # Runner routing follows the classifier, so only selected lanes are requested.
+            self.assertIn("    needs: changes\n", jobs["route"])
             for lane, component in lanes.items():
-                self.assertIn("    needs: changes\n", jobs[lane])
+                self.assertIn("    needs: [changes, route]\n", jobs[lane])
                 self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
                 self.assertNotIn("continue-on-error:", jobs[lane])
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())

@@ -12,25 +12,40 @@ extension ProviderLoop {
             connections: (previous?.connections ?? 0) + (connected ? 1 : 0))
     }
 
-    /// Runs every capacity tick. Logs when the coordinator stops or resumes
-    /// routing this connection, and re-registers a connection it keeps
-    /// refusing (`UnauthorizedConnectionRecovery`).
+    /// A request the coordinator routes here is newer evidence than a refusal
+    /// it sent earlier (`ServingReadiness`). The next state write persists it.
+    internal func noteCoordinatorRequest(now: Double = Date().timeIntervalSince1970) {
+        guard coordinatorConnection?.connected == true else { return }
+        coordinatorConnection?.lastRequestAt = now
+    }
+
+    /// Runs every capacity tick on the verdict `status` and `doctor` show.
+    /// Logs when the coordinator starts or stops refusing this connection,
+    /// and re-registers a connection it keeps refusing
+    /// (`UnauthorizedConnectionRecovery`).
     internal func superviseServingAuthorization(now: Double = Date().timeIntervalSince1970) {
         guard let connection = coordinatorConnection, connection.connected, !isShuttingDown else {
             unauthorizedSince = nil
             return
         }
-        if let authorization = lastTrustStatus?.authorization,
-           authorization.hasCurrentAppAttestAuthorization(now: now) || authorization.path == "legacy" {
-            unauthorizedReconnectAttempts = 0
-        }
-        let lacksAuthorization = UnauthorizedConnectionRecovery.connectionLacksAuthorization(
-            connectedAt: connection.since, trust: lastTrustStatus, now: now)
-        guard !advertisedModels.isEmpty, lacksAuthorization else {
-            if unauthorizedSince != nil, !lacksAuthorization { logger.info(.coordinatorRoutingConnection) }
+        switch ServingReadiness.verdict(connection: connection, trust: lastTrustStatus, now: now) {
+        case .blocked? where !advertisedModels.isEmpty:
+            superviseRefusedConnection(now: now)
+        case .blocked?:
             unauthorizedSince = nil
-            return
+        case .authorized?:
+            unauthorizedReconnectAttempts = 0
+            if unauthorizedSince != nil { logger.info(.coordinatorRoutingConnection) }
+            unauthorizedSince = nil
+        case .pending?, .unconfirmed?, nil:
+            // A refusal the coordinator stopped repeating says nothing about
+            // the connection now; it is not evidence of routing either.
+            if unauthorizedSince != nil { logger.info(.coordinatorRefusalUnconfirmed) }
+            unauthorizedSince = nil
         }
+    }
+
+    private func superviseRefusedConnection(now: Double) {
         guard let since = unauthorizedSince else {
             unauthorizedSince = now
             logger.warning(.coordinatorNotRoutingConnection)

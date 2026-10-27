@@ -199,6 +199,37 @@ struct SelectedModelRecoveryPolicyTests {
         #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID, Fixture.superID])
     }
 
+    /// An add-on hold that begins while an attempt loads cancels it, as it
+    /// cancels coordinator preloads. The hold's unload pass waits for loads
+    /// only `addonHoldSettleTimeout`, so a longer recovery load would finish
+    /// beside the add-on's VMs. Super keeps waiting for after the release.
+    @Test(.timeLimit(.minutes(1)))
+    func anAddonHoldCancelsTheAttemptInProgress() async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let (release, releaseLoad) = AsyncStream<Void>.makeStream()
+        defer { releaseLoad.finish() }
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in
+            for await _ in release { break }
+            try Task.checkCancellation()
+            await fixture.install(id)
+        }
+        await loop.checkSelectedModelRecoveryIfDue(now: .now)
+        #expect(await modelLoadingWaitUntil { fixture.shutdownCalls(Fixture.glmID) == 1 })
+        let hold = try #require(await loop.holdForAddon("io.darkbloom.sandbox", vmBytes: 0, leaseSeconds: 60))
+        defer { Task { await loop.endAddonHold(holdID: hold.holdID, as: .released) } }
+
+        try #require(await modelLoadingWaitUntil { await loop.selectedModelRecovery.attempt == nil },
+                     "the recovery load kept running under the hold")
+        #expect(await modelLoadingWaitUntil { await loop.addonHoldsForTesting().first?.state == .held })
+        #expect(await loop.modelLoadingResidentIDs().isEmpty)
+        await checkSelectedModelRecovery(loop, at: .now)
+        let paused = try await superRecoveryEntry(loop)
+        #expect(paused.blocker == "the provider is draining")
+        #expect(await loop.modelLoadingResidentIDs().isEmpty)
+    }
+
     /// With no explicit selection every model on disk is served and a cold
     /// one loads on request: nothing is retried.
     @Test func withoutAnExplicitSelectionNothingIsRetried() async throws {

@@ -189,7 +189,9 @@ selection, including a stale start selection, an Autopilot pin or an advertised
 model a request could load straight back (`isProtectedFromRecoveryEviction`),
 never touches a held slot, and waits while a live lease or a pause manages
 residency. A recovery attempt is busy as `preload`, so an operation is refused
-while it evicts or loads. The policy refresh also re-reads `enabled_models`,
+while it evicts or loads. An [add-on hold](addon-hold.md) pauses recovery like
+any drain and cancels an attempt in progress, as it cancels coordinator
+preloads (`enterAddonHold`). The policy refresh also re-reads `enabled_models`,
 which the recovery uses only to stop retrying a model the saved filter dropped
 and to name a model that stays in the running daemon's selection until a
 restart.

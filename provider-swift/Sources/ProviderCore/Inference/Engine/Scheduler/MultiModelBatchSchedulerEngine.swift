@@ -1235,7 +1235,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
-                var formatOutput = prepared.responseFormat.map(FlintResponseFormatOutput.init)
+                var formatOutput = prepared.responseFormat.map(JSONAnswerOutput.init)
                 var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
                 /// A GLM JSON answer leaves only after it validates; its
                 /// reasoning and every other event stream unchanged.

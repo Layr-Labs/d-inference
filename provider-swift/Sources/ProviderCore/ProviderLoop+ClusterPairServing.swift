@@ -177,11 +177,16 @@ extension ProviderLoop: NativePairMemberServingHost {
     public func stopServingCommittedStart(epoch: UUID) async {
         guard clusterPairServingEpoch == epoch else { return }
         clusterPairServingStopped = true
-        // A serve still forming the pair sees the stop and ends it itself.
-        guard !clusterPairServingForming else { return }
+        // The session sends its release receipt once this returns, so the
+        // slot retires first, even while the serve still forms the pair (its
+        // publication and warmup canary can take minutes). Retirement is
+        // idempotent and the publication stops at a retired slot.
         if let handle = clusterPairSlot, handle.membershipEpoch == epoch {
             await retireClusterPairSlot(handle.id, reason: "committed start ended")
         }
+        // A serve still forming sees the stop and ends the start itself;
+        // ending it here would let the next start begin under it.
+        guard !clusterPairServingForming else { return }
         endClusterPairServing(epoch)
     }
 

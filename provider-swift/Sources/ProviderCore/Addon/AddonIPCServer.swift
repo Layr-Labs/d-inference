@@ -27,8 +27,8 @@ final class AddonIPCServer: @unchecked Sendable {
     static let maximumConnections = 8
     /// An idle connection is closed; the add-on reconnects for its next renew.
     static let idleTimeout: Duration = .seconds(300)
-    /// A request line must complete this long after its first byte arrives,
-    /// however slowly the rest trickles in.
+    /// A request line must complete this long after the server first holds
+    /// part of it, however slowly the rest trickles in.
     static let requestTimeout: Duration = .seconds(10)
     static let handlerTimeout: Duration = .seconds(30)
     private static let writeTimeout: Duration = .seconds(5)
@@ -37,7 +37,6 @@ final class AddonIPCServer: @unchecked Sendable {
     let socketURL: URL
     private let authenticate: Authenticate
     private let handle: Handle
-    private let idleTimeout: Duration
     private let requestTimeout: Duration
     private let log: @Sendable (String) -> Void
     private let lock = NSLock()
@@ -48,13 +47,11 @@ final class AddonIPCServer: @unchecked Sendable {
     private var boundSocket: (device: dev_t, inode: ino_t)?
 
     init(socketURL: URL, authenticate: @escaping Authenticate, handle: @escaping Handle,
-         idleTimeout: Duration = AddonIPCServer.idleTimeout,
          requestTimeout: Duration = AddonIPCServer.requestTimeout,
          log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.socketURL = socketURL
         self.authenticate = authenticate
         self.handle = handle
-        self.idleTimeout = idleTimeout
         self.requestTimeout = requestTimeout
         self.log = log
     }
@@ -191,7 +188,7 @@ final class AddonIPCServer: @unchecked Sendable {
             let ready = poll(&descriptor, 1, Self.pollMilliseconds)
             if ready < 0 && errno != EINTR { return }
             if ready <= 0 {
-                if ContinuousClock.now - lastActivity >= idleTimeout { return }
+                if ContinuousClock.now - lastActivity >= Self.idleTimeout { return }
                 continue
             }
             let count = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }

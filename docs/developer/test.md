@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-27
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1095,6 +1095,39 @@ Report exact selector, revision, native resources and model identity. Distinguis
 compile-only, fixed vectors, tiny native fixtures, full-model execution,
 signed-artifact tests and private platform integration. Document skips and
 unavailable hardware honestly. Local validation does not authorize deployment.
+
+## Constrained JSON answers
+
+After rebuilding the provider test product and staging its metallib, run the
+CPU-only JSON-answer suites from `provider-swift/` together with the Flint suites
+whose automaton they share:
+
+```bash
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+```
+
+`QwenJSONAnswerConstraintTests` drives the production constraint over a
+synthetic Qwen-shaped vocabulary: single bytes, the pinned terminators and think
+markers at 248044, 248046, 248068 and 248069, and no piece for any other id up to
+248,320. It covers both prompt phases, masked EOS, schema violations, forbidden
+spellings, mask/transition agreement, token splits, bounded states and the
+pinned tokenizer checks. `QwenJSONAnswerPolicyTests` checks eligibility and
+every prompt-only fallback through `ToolConstraintFactory.make`, and
+`QwenJSONAnswerOutputTests` the completed-output validation.
+`QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
+and scheduler: streamed content, a typed 422 on truncation, requested reasoning
+split before validation, and unchanged tool and other-family paths.
+
+`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
+`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
+directory and select that suite alone; it reads only tokenizer and template
+files, checks the pinned contract and both rendered JSON prompt tails, and walks
+a real tokenization of an answer. Without the variable the suite is skipped,
+which the nested runner reports as an error. None of these suites loads weights
+or establishes answer quality or throughput. Sources:
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
 
 ## Flint native validation
 

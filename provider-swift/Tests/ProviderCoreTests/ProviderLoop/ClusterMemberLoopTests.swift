@@ -51,6 +51,44 @@ struct ClusterMemberLoopTests {
         #expect(await loop.memberWorkIsEmpty())
     }
 
+    /// A member without a live pair slot refuses with the bare 503, and the
+    /// refused attempt releases its coordinator reservation: through the
+    /// handler's lifetime owner (a request that raced a slot retire past the
+    /// dispatcher) and from the dispatcher itself. The handler also settles
+    /// the lookup receipt before the terminal.
+    @Test func memberRefusalWithoutPairSlotReleasesTheReservation() async throws {
+        let loop = try makeMemberLoop()
+        let handled = MemberMessages()
+        let reservation = UUID().uuidString
+        await loop.handleInferenceRequest(requestId: "raced", ciphertext: Data([1]), senderPublicKey: nil,
+            cacheReceiptNonce: "member-nonce", authenticatedCacheScope: nil,
+            serviceReservationID: reservation, send: SendHandle { handled.append($0) })
+        let replies = handled.snapshot
+        try #require(replies.count == 3)
+        if case .prefixCacheLookup("raced", "member-nonce", .skippedCapacity, _, _, _, _) = replies[0] {}
+        else { Issue.record("lookup receipt not settled first: \(replies[0])") }
+        if case .inferenceError(let id, let failure, nil) = replies[1] {
+            #expect(id == "raced" && failure.code == .modelUnavailable && failure.statusCode == 503)
+        } else { Issue.record("expected the bare member refusal: \(replies[1])") }
+        if case .serviceReservationReleased(let id) = replies[2] { #expect(id == reservation.lowercased()) }
+        else { Issue.record("reservation not released: \(replies[2])") }
+        #expect(await loop.memberWorkIsEmpty())
+
+        let dispatched = MemberMessages()
+        let event = CoordinatorEvent.inferenceRequest(requestId: "dispatched", ciphertext: Data([1]),
+            senderPublicKey: nil, cacheReceiptNonce: nil, cacheScope: nil, prefixCacheProtocol: nil,
+            toolSchemaMetadataProtocol: nil, firstContentDeadline: nil, receivedAt: .now,
+            profile: RequestProfileBuilder(), serviceReservationID: reservation)
+        #expect(await loop.consumeClusterMemberEvent(event, send: SendHandle { dispatched.append($0) }))
+        let direct = dispatched.snapshot
+        try #require(direct.count == 2)
+        if case .inferenceError(let id, let failure, nil) = direct[0] {
+            #expect(id == "dispatched" && failure.code == .modelUnavailable && failure.statusCode == 503)
+        } else { Issue.record("expected the bare member refusal first: \(direct[0])") }
+        if case .serviceReservationReleased(let id) = direct[1] { #expect(id == reservation.lowercased()) }
+        else { Issue.record("reservation not released: \(direct[1])") }
+    }
+
     /// Model autopilot postdates the research branch. Saved consent is valid
     /// for a solo provider and must never apply to a control-only member.
     @Test func autopilotLeaseAndCommandAreDroppedAndSavedConsentNeverApplies() async throws {

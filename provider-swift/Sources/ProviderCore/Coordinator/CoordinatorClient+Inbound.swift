@@ -38,13 +38,19 @@ extension CoordinatorClient {
 
     private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder,
         serviceReservationID: String?) {
-        let response = encodeInferenceError(
-            requestId: requestId,
+        refuseInferenceBeforeDispatch(requestId: requestId,
             failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-            profile: profile.wireObject())
-        sendOnCurrentConnection(response, identifier: "inference_error")
-        // This frame never enters the provider request pipeline, so no later
-        // bridge submission can acquire service for its attempt.
+            profile: profile.wireObject(), serviceReservationID: serviceReservationID)
+    }
+
+    /// Refuse an inference request on the receive path. This frame never
+    /// enters the provider request pipeline, so no later bridge submission can
+    /// acquire service for its attempt: its reservation is released at once.
+    private func refuseInferenceBeforeDispatch(requestId: String, failure: InferenceFailure,
+        profile: InferenceProfile? = nil, serviceReservationID: String?) {
+        sendOnCurrentConnection(
+            encodeInferenceError(requestId: requestId, failure: failure, profile: profile),
+            identifier: "inference_error")
         if let id = ServiceReservationLifetime.normalizedID(serviceReservationID) {
             outboundRouter.yield(.serviceReservationReleased(serviceReservationID: id))
         }
@@ -111,9 +117,9 @@ extension CoordinatorClient {
             // A member serving its pair slot (S09) hands the request to the
             // loop like any provider; every other member refuses it here.
             if config.executionRole == .clusterMember, state.memberPairSlotModel == nil {
-                sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
-                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
-                    identifier: "inference_error")
+                refuseInferenceBeforeDispatch(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503),
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
             // The receive callback anchored this before executor scheduling,

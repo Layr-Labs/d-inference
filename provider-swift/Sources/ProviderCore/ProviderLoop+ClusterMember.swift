@@ -41,12 +41,12 @@ extension ProviderLoop {
         case .runtimeOutdated:
             memberConnectionID = nil
             latchMemberControlStop(Self.memberStopReasonRuntimeOutdated)
-        case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _):
+        case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, let serviceReservationID, _):
             // A leader serving its pair slot handles the request like any
             // provider; the handler checks the requested model. Every other
             // member refuses it with the retryable no-model answer.
             if clusterPairSlot != nil { return false }
-            rejectClusterMemberInference(id, send: send)
+            rejectClusterMemberInference(id, serviceReservationID: serviceReservationID, send: send)
             return true
         case .loadModel(let id):
             rejectClusterMemberLoad(id, send: send)
@@ -91,9 +91,18 @@ extension ProviderLoop {
         logger.warning("cluster member stops: \(reason)")
     }
 
-    internal func rejectClusterMemberInference(_ id: String, send: SendHandle) {
-        send.send(.inferenceError(requestId: id,
-            failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)))
+    /// The retryable no-model answer of a member without a live pair slot.
+    internal static func clusterMemberInferenceRefusal(_ id: String) -> OutboundMessage {
+        .inferenceError(requestId: id, failure: InferenceFailure(code: .modelUnavailable, statusCode: 503))
+    }
+
+    /// The refused request never enters the pipeline, so no lease can follow:
+    /// its service reservation is released at once.
+    internal func rejectClusterMemberInference(_ id: String, serviceReservationID: String?, send: SendHandle) {
+        send.send(Self.clusterMemberInferenceRefusal(id))
+        if let reservation = ServiceReservationLifetime.normalizedID(serviceReservationID) {
+            send.send(.serviceReservationReleased(serviceReservationID: reservation))
+        }
     }
     internal func rejectClusterMemberLoad(_ id: String, send: SendHandle) {
         send.send(.loadModelStatus(modelId: id, status: .failed,

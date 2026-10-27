@@ -237,6 +237,13 @@ SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
 
+## Missing base reward
+
+`doctor` billing is local usage reporting, not a coordinator
+`model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
+(or amounts that match a smaller RAM class) while `doctor` is green, follow
+[Check a missing base reward](base-rewards.md).
+
 ## Collect a report
 
 ```bash
@@ -262,4 +269,5 @@ provider logs or `devicecheckd` evidence.
 - [CLI reference](./cli-reference.md) — flags, paths, runtime constants.
 - [Installation](./installation.md) · [Quickstart](./quickstart.md).
 - [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
+- [Check a missing base reward](./base-rewards.md) — green `doctor` vs missing `model=base_reward`.
 - [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

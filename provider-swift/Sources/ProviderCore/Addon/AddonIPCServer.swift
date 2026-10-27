@@ -26,6 +26,7 @@ final class AddonIPCServer: @unchecked Sendable {
     /// An idle connection is closed; the add-on reconnects for its next renew.
     static let idleTimeout: Duration = .seconds(300)
     static let handlerTimeout: Duration = .seconds(30)
+    private static let writeTimeout: Duration = .seconds(5)
     private static let pollMilliseconds: Int32 = 200
 
     let socketURL: URL
@@ -59,12 +60,7 @@ final class AddonIPCServer: @unchecked Sendable {
         guard listener >= 0 else { throw Failure.system("socket", errno) }
         do {
             try Self.configure(listener)
-            var address = try Self.address(path)
-            let bound = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
+            let bound = try Self.withAddress(path) { Darwin.bind(listener, $0, $1) }
             guard bound == 0 else { throw Failure.system("bind", errno) }
             guard chmod(path, 0o600) == 0 else { throw Failure.system("chmod", errno) }
             var info = stat()
@@ -116,12 +112,7 @@ final class AddonIPCServer: @unchecked Sendable {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { Darwin.close(fd) }
-        guard var address = try? address(path) else { return false }
-        return withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
-            }
-        }
+        return (try? withAddress(path) { Darwin.connect(fd, $0, $1) }) == 0
     }
 
     // MARK: - Accept
@@ -229,7 +220,7 @@ final class AddonIPCServer: @unchecked Sendable {
 
     /// Bounded write of one whole response line.
     private static func write(_ data: Data, to fd: Int32) -> Bool {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let deadline = ContinuousClock.now.advanced(by: writeTimeout)
         var offset = 0
         while offset < data.count {
             guard ContinuousClock.now < deadline else { return false }
@@ -244,7 +235,10 @@ final class AddonIPCServer: @unchecked Sendable {
         return true
     }
 
-    private static func address(_ path: String) throws -> sockaddr_un {
+    /// Runs `call` (`bind` or `connect`) with `path` as its socket address.
+    private static func withAddress<Result>(
+        _ path: String, _ call: (UnsafePointer<sockaddr>, socklen_t) -> Result
+    ) throws -> Result {
         var address = sockaddr_un()
         let bytes = Array(path.utf8CString)
         guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
@@ -255,7 +249,11 @@ final class AddonIPCServer: @unchecked Sendable {
         withUnsafeMutableBytes(of: &address.sun_path) { target in
             bytes.withUnsafeBytes { source in target.copyMemory(from: source) }
         }
-        return address
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                call($0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
     }
 }
 

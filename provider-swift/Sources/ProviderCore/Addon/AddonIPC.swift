@@ -71,7 +71,7 @@ enum AddonIPC {
         case "hold":
             guard let fields = try? decoder.decode(HoldFields.self, from: line),
                   isBundleIdentifier(fields.addon),
-                  AddonHold.leaseSeconds.contains(fields.leaseSeconds) else { return .failure(.invalidRequest) }
+                  AddonHold.leaseSecondsRange.contains(fields.leaseSeconds) else { return .failure(.invalidRequest) }
             return .success(.hold(addon: fields.addon, vmBytes: fields.vmBytes, leaseSeconds: fields.leaseSeconds))
         case "status", "release":
             guard let reference = try? decoder.decode(HoldReference.self, from: line),
@@ -80,7 +80,7 @@ enum AddonIPC {
         case "renew":
             guard let reference = try? decoder.decode(HoldReference.self, from: line),
                   isHoldID(reference.holdID), let lease = reference.leaseSeconds,
-                  AddonHold.leaseSeconds.contains(lease) else { return .failure(.invalidRequest) }
+                  AddonHold.leaseSecondsRange.contains(lease) else { return .failure(.invalidRequest) }
             return .success(.renew(holdID: reference.holdID, leaseSeconds: lease))
         default:
             return .failure(.invalidRequest)

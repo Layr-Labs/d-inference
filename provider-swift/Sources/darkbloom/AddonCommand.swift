@@ -26,12 +26,13 @@ struct Addon: AsyncParsableCommand {
             abstract: "Hold the provider as the operator, exactly as an add-on would.",
             discussion: "Admission closes at once, accepted requests finish (up to two minutes), then every model unloads. Running the command again renews the lease. The hold ends when released or when its lease expires while no add-on holds the machine lock.")
 
-        @Option(help: "Lease in seconds (30...600).")
-        var leaseSeconds: Int = 600
+        @Option(help: "Lease in seconds (\(AddonHoldControlRequest.leaseSecondsRange)).")
+        var leaseSeconds: Int = AddonHoldControlRequest.leaseSecondsRange.upperBound
 
         mutating func validate() throws {
-            guard (30...600).contains(leaseSeconds) else {
-                throw ValidationError("--lease-seconds must be between 30 and 600")
+            let range = AddonHoldControlRequest.leaseSecondsRange
+            guard range.contains(leaseSeconds) else {
+                throw ValidationError("--lease-seconds must be between \(range.lowerBound) and \(range.upperBound)")
             }
         }
 
@@ -62,6 +63,8 @@ struct Addon: AsyncParsableCommand {
         }
     }
 
+    static let answerTimeout: Duration = .seconds(10)
+
     /// One mailbox round trip to the live provider, bound to its process
     /// identity so a stale request can never reach a replacement process.
     static func send(_ action: AddonHoldControlRequest.Action, leaseSeconds: Int? = nil,
@@ -70,7 +73,7 @@ struct Addon: AsyncParsableCommand {
         let request = AddonHoldControlRequest(target: identity, action: action, leaseSeconds: leaseSeconds, force: force)
         let mailbox = LifecycleMailbox(identity: identity)
         try mailbox.writeAddonRequest(request)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        let deadline = ContinuousClock.now.advanced(by: answerTimeout)
         while ContinuousClock.now < deadline {
             guard identity.isCurrent() else {
                 throw ValidationError("The provider exited before answering; the outcome is unknown.")
@@ -78,7 +81,8 @@ struct Addon: AsyncParsableCommand {
             if let status = mailbox.readAddonStatus(), status.requestID == request.id { return status }
             try await Task.sleep(for: .milliseconds(200))
         }
-        throw ValidationError("The provider did not answer within 10 seconds; the outcome is unknown.")
+        throw ValidationError(
+            "The provider did not answer within \(answerTimeout.components.seconds) seconds; the outcome is unknown.")
     }
 
     static func liveIdentity(

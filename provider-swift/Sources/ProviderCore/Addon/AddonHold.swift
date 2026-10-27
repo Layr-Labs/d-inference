@@ -6,7 +6,7 @@ struct AddonHold: Codable, Sendable, Equatable {
     /// `draining` until accepted work finished and every model unloaded.
     enum State: String, Codable, Sendable { case draining, held }
 
-    static let leaseSeconds: ClosedRange<Int> = 30...600
+    static let leaseSecondsRange: ClosedRange<Int> = 30...600
 
     var holdID: String
     var addon: String
@@ -85,7 +85,7 @@ struct AddonHoldBook: Sendable {
     private(set) var ended: [Ended] = []
     /// Expired leases kept because the machine lock is still held, so the
     /// keep is reported once per hold rather than on every check.
-    var keptByMachineLock: Set<String> = []
+    private var keptByMachineLock: Set<String> = []
 
     init(restoring holds: [AddonHold] = []) {
         for hold in holds { active[hold.addon] = hold }
@@ -109,9 +109,17 @@ struct AddonHoldBook: Sendable {
 
     mutating func insert(_ hold: AddonHold) { active[hold.addon] = hold }
 
-    mutating func update(_ hold: AddonHold) {
+    /// Stores a renewed hold. Its fresh lease is no longer kept by the lock.
+    mutating func recordRenewal(_ hold: AddonHold) {
         guard active[hold.addon]?.holdID == hold.holdID else { return }
         active[hold.addon] = hold
+        keptByMachineLock.remove(hold.holdID)
+    }
+
+    /// Notes an expired lease that stays because the machine lock is held.
+    /// True only the first time per hold.
+    mutating func keepForMachineLock(holdID: String) -> Bool {
+        keptByMachineLock.insert(holdID).inserted
     }
 
     mutating func markHeld() {

@@ -134,7 +134,7 @@ extension ProviderLoop {
         case .status:
             break
         case .hold:
-            let lease = request.leaseSeconds ?? AddonHold.leaseSeconds.upperBound
+            let lease = request.leaseSeconds ?? AddonHold.leaseSecondsRange.upperBound
             if holdForAddon(AddonHoldControlRequest.operatorAddon, vmBytes: 0, leaseSeconds: lease) == nil {
                 failure = .unavailable
             }
@@ -177,8 +177,7 @@ extension ProviderLoop {
         var renewed = hold
         renewed.renew(leaseSeconds: leaseSeconds, nowMs: addonHoldNowMs())
         if let vmBytes { renewed.vmBytes = vmBytes }
-        addonHolds.update(renewed)
-        addonHolds.keptByMachineLock.remove(renewed.holdID)
+        addonHolds.recordRenewal(renewed)
         persistAddonHolds()
         AddonHoldTelemetry.emit(.renewed, hold: renewed)
         writeDaemonState()
@@ -327,7 +326,7 @@ extension ProviderLoop {
             if machineLockObservation() == .free {
                 for hold in expired { endAddonHold(holdID: hold.holdID, as: .expired) }
             } else {
-                for hold in expired where addonHolds.keptByMachineLock.insert(hold.holdID).inserted {
+                for hold in expired where addonHolds.keepForMachineLock(holdID: hold.holdID) {
                     logger.warning("Add-on hold lease from \(hold.addon) expired while the machine lock is held; keeping the hold until the lock is released")
                     AddonHoldTelemetry.emit(.keptByMachineLock, hold: hold)
                 }

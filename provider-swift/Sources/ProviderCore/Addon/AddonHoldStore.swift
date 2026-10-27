@@ -33,7 +33,7 @@ struct AddonHoldStore: Sendable {
               let data = try? file.read(upToCount: Self.maximumBytes + 1),
               let record = try? JSONDecoder().decode(Record.self, from: data),
               record.schema == Record.currentSchema,
-              record.holds.allSatisfy({ AddonHold.leaseSeconds.contains($0.leaseSeconds) }) else {
+              record.holds.allSatisfy({ AddonHold.leaseSecondsRange.contains($0.leaseSeconds) }) else {
             return .invalid
         }
         return .holds(record.holds)

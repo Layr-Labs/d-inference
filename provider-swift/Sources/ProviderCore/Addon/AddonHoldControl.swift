@@ -7,11 +7,14 @@ public struct AddonHoldControlRequest: Codable, Sendable, Equatable {
 
     /// The `busy_addon` of a hold placed from the command line.
     public static let operatorAddon = "operator"
+    /// Lease bounds of every hold. The CLI validates against them before
+    /// sending: the provider drops a request outside them unanswered.
+    public static let leaseSecondsRange: ClosedRange<Int> = AddonHold.leaseSecondsRange
 
     public let id: String
     public let target: ProcessIdentity
     public let action: Action
-    /// `hold` only: 30...600.
+    /// `hold` only, within `leaseSecondsRange`.
     public let leaseSeconds: Int?
     /// `release` only: release even while the machine lock is held.
     public let force: Bool
@@ -26,12 +29,14 @@ public struct AddonHoldControlRequest: Codable, Sendable, Equatable {
         createdAt = Date().timeIntervalSince1970
     }
 
-    /// Same freshness window as a lifecycle drain request.
+    /// Only a request for this process created within the last minute (5 s
+    /// of clock skew allowed): an operator command must not take effect long
+    /// after the CLI stopped waiting for it.
     public func isValid(for identity: ProcessIdentity, now: Double = Date().timeIntervalSince1970) -> Bool {
         guard target == identity, UUID(uuidString: id) != nil, createdAt.isFinite,
               createdAt <= now + 5, now - createdAt <= 60 else { return false }
         switch action {
-        case .hold: return leaseSeconds.map(AddonHold.leaseSeconds.contains) ?? false
+        case .hold: return leaseSeconds.map(Self.leaseSecondsRange.contains) ?? false
         case .status, .release: return leaseSeconds == nil
         }
     }

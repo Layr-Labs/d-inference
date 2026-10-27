@@ -255,6 +255,24 @@ struct AddonHoldLoopTests {
         await h.loop.cancelAddonTestRequests()
     }
 
+    @Test func noRetirementPathRewritesThePreloadPlanWhileHeld() async throws {
+        let h = try await harness()
+        defer { h.remove() }
+        await h.loop.setLoadedModelsFileForTesting(h.sandbox.loadedModelsFile)
+        let stub = makeInertStubBridge(modelId: "test/plan")
+        await h.loop.modelLoadingInstallSlot("test/plan", bridge: stub.bridge)
+        await h.loop.persistLoadedModelSetForTesting()
+        let id = try Self.holdID(await h.hold())
+        try await h.awaitState(id, .held)
+        // Native MiMo and Nemotron Super retirements write the set through
+        // the same call; while held it keeps the plan a restart preloads.
+        await h.loop.persistLoadedModelSetForTesting()
+        #expect(LoadedModelsStore.read(from: h.sandbox.loadedModelsFile) == ["test/plan"])
+        #expect(await h.loop.handleAddonIPC(.release(holdID: id), peer: Self.peer) == .released)
+        await h.loop.persistLoadedModelSetForTesting()
+        #expect(LoadedModelsStore.read(from: h.sandbox.loadedModelsFile).isEmpty)
+    }
+
     @Test func updateDrainAndReconnectCannotReopenAHold() async throws {
         let h = try await harness()
         defer { h.remove() }

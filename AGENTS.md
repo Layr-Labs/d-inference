@@ -2,8 +2,7 @@
 
 This repository owns the Swift provider, device-local APIs, MLX/native runtime
 integration, public fixtures, provider release tooling and the landing site.
-The existing `console-ui/` source snapshot, build/test tooling and hosting
-configuration are retained; new console development belongs to the platform.
+The web console lives in darkbloom-platform (`console-ui`).
 Start with `docs/README.md`; documentation rules are in `docs/AGENTS.md`.
 
 ## Workspace And Ownership
@@ -19,7 +18,6 @@ Never nest the repositories or relocate an existing checkout incidentally.
 Centralized coordinator/backend, Rust prompt sidecar, consumer-console and
 admin development belongs exclusively in `darkbloom-platform`. Never implement,
 commit, push or upload new centralized/backend/console code to `d-inference`.
-The retained console snapshot is not authorization to develop it here.
 Provider-local Swift services,
 HTTP APIs and native execution remain here. Verify `git remote -v`, branch,
 status and the full intended diff before publishing anything.
@@ -42,14 +40,13 @@ specific human approval.
 | `provider-swift/` | Provider CLI, security, local services, inference and tests |
 | `libs/` | MLX, MLX-Swift and MLX-Swift-LM gitlinks |
 | `landing/` | Independent Next.js marketing app, including its API routes |
-| `console-ui/` | Retained consumer/provider console snapshot and existing build/test/hosting configuration; development owner is the platform |
-| `coordinator/tests/protocol/testdata/` | Two retained JSON fixtures read by console tests, not a coordinator implementation |
+| `coordinator/tests/protocol/testdata/` | Two shared protocol JSON fixtures, not a coordinator implementation |
 | `fixtures/` | Public fixed-input contracts, not backend implementations |
 | `scripts/` | Native qualification, provider builds/install/publication and repository checks |
 | `docs/` | Provider/native docs and immutable historical evidence |
 
 Use `mise.toml` and `Makefile`: `make provider-build`, `make provider-test`,
-`make landing`, `make ui-install ui-lint ui-test ui-build`, `make docs-check`,
+`make landing`, `make docs-check`,
 and `make docs-impact-check BASE=<target>`.
 Follow `docs/developer/build.md` and `docs/developer/test.md` for focused native
 checks. Do not run tests against production, real accounts or real credentials.
@@ -64,9 +61,7 @@ real Apple attestation and full-model GPU evidence remain distinct gates.
   changes require coordinated review with the platform owner. Keep enum casing,
   optional-field omission, units and lifecycle semantics aligned. Do not copy
   backend code here or fetch a moving private branch in ordinary provider CI.
-  The retained TypeScript mirror is `console-ui/src/lib/telemetry-types.ts`;
-  keep it aligned with Swift and the external Go contract. Console fixture
-  tests still read the two JSON files under `coordinator/tests/protocol/testdata/`.
+  The TypeScript telemetry mirror lives in darkbloom-platform (`console-ui`).
 - `ProviderCore.version` is the local release authority. Coordinate the platform
   version snapshot/fallback separately; no local backend source constant is
   required. Keep tags, built binary versions and signed artifact identity aligned.

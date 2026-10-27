@@ -40,7 +40,6 @@ class DocsImpactCheckTests(unittest.TestCase):
             "public fixtures and qualification": "provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/process_memory_wire.json",
             "build and test tooling": "scripts/docs-impact-rules.json",
             "landing": "landing/package.json",
-            "retained console": "console-ui/package.json",
             "console protocol fixtures": "coordinator/tests/protocol/testdata/process_memory_wire.json",
             "repository ownership": "AGENTS.md",
         }
@@ -84,13 +83,6 @@ class DocsImpactCheckTests(unittest.TestCase):
                     self.assertIn(pattern, retained_fixtures)
             for document in rule["docs_any_of"]:
                 self.assertTrue((ROOT / document).is_file(), document)
-
-    def test_retained_console_telemetry_keeps_both_documentation_obligations(self):
-        changed = ["console-ui/src/lib/telemetry-types.ts"]
-        self.assertEqual({rule["name"] for rule, _ in checker.violations(RULES, changed)},
-                         {"provider telemetry", "retained console"})
-        self.assertEqual(checker.violations(RULES, changed + [
-            "docs/reference/telemetry-schema.md", "docs/architecture/components/console-ui.md"]), [])
 
     def test_prompt_fixture_provisioner_requires_qualification_documentation(self):
         source = "scripts/prepare-prompt-fixtures.py"

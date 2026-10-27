@@ -29,7 +29,7 @@ class ComponentPathsTests(unittest.TestCase):
 
     def test_instructions_and_docs_never_select_expensive_lanes(self):
         paths = ["AGENTS.md", "docs/AGENTS.md", "docs/developer/test.md",
-                 "provider-swift/AGENTS.md", "console-ui/AGENTS.md",
+                 "provider-swift/AGENTS.md",
                  "scripts/docs-check.sh", "scripts/test-docs-impact-check.py",
                  "scripts/admin.sh", "landing/src/app/page.tsx"]
         self.assertFalse(any(routing.classify(paths).values()))
@@ -41,14 +41,12 @@ class ComponentPathsTests(unittest.TestCase):
             "libs/mlx-swift": {"provider"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
             ".github/actions/provider-ci-build/action.yml": {"provider"},
-            ".github/workflows/ci.yml": {"provider", "console"},
+            ".github/workflows/ci.yml": {"provider"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
-            "console-ui/package-lock.json": {"console"},
-            ".githooks/pre-commit": {"console"},
-            ".githooks/pre-push": {"console"},
-            "coordinator/tests/protocol/testdata/paged_footprint_wire.json": {"console"},
-            "coordinator/tests/protocol/testdata/process_memory_wire.json": {"console"},
+            "console-ui/package-lock.json": set(),
+            "coordinator/tests/protocol/testdata/paged_footprint_wire.json": set(),
+            "coordinator/tests/protocol/testdata/process_memory_wire.json": set(),
             "go.sum": set(),
             "scripts/run-coordinator-tests.py": set(),
             ".github/workflows/integration.yml": set(),
@@ -68,7 +66,7 @@ class ComponentPathsTests(unittest.TestCase):
                 selected = routing.classify([path])
                 self.assertEqual({name for name, value in selected.items() if value}, {"provider"})
 
-    def test_retained_console_fixture_inputs_match_provider_contracts(self):
+    def test_shared_protocol_fixtures_match_provider_contracts(self):
         for name in ("paged_footprint_wire.json", "process_memory_wire.json"):
             with self.subTest(name=name):
                 relative = "coordinator/tests/protocol/testdata/" + name
@@ -76,7 +74,7 @@ class ComponentPathsTests(unittest.TestCase):
                 provider_fixture = ROOT / "provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol" / name
                 self.assertEqual(fixture.read_bytes(), provider_fixture.read_bytes())
                 self.assertIsInstance(json.loads(fixture.read_text()), dict)
-                self.assertEqual(routing.classify([relative]), {"provider": False, "console": True})
+                self.assertEqual(routing.classify([relative]), {"provider": False})
 
     def test_selected_executable_dependencies_are_classified(self):
         # Explicitly pin the executable dependencies, not every scripts/** file.
@@ -172,8 +170,7 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
-        self.assertTrue(selected["console"], "console changes must retain their own lane")
-        self.assertEqual(set(selected), {"provider", "console"})
+        self.assertEqual(set(selected), {"provider"})
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()
@@ -191,12 +188,11 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(self.pr(head, self.git("rev-parse", "HEAD"))["provider"])
 
     def test_push_before_after_and_new_branch_and_manual(self):
-        self.write("console-ui/new.ts")
+        self.write("landing/new.ts")
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
         selected = self.run_detector("push", event)
         self.assertFalse(selected["provider"])
-        self.assertTrue(selected["console"])
         for ref in ("refs/heads/master", "refs/heads/main"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
@@ -219,8 +215,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                 for forbidden in ("actions/setup-go@", "go.mod", "coordinator/",
                                   "admin-ui/", "e2e/", "install-release-rust.sh", "cargo "):
                     self.assertNotIn(forbidden, text)
-                if filename != "ci.yml":
-                    self.assertNotIn("console-ui/", text)
+                self.assertNotIn("console-ui/", text)
                 self.assertNotRegex(text, r"(?m)^\s+repository:")
         for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
@@ -232,7 +227,7 @@ class WorkflowRoutingTests(unittest.TestCase):
     def test_expensive_jobs_depend_on_successful_classifier(self):
         expected = {
             "ci.yml": {"test-provider": "provider", "test-provider-sdk": "provider",
-                       "test-provider-parity": "provider", "lint-console": "console"},
+                       "test-provider-parity": "provider"},
         }
         for name, lanes in expected.items():
             jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
@@ -250,25 +245,10 @@ class WorkflowRoutingTests(unittest.TestCase):
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
         self.assertIn("if: github.event_name == 'push'", ci["cache-swift"])
 
-    def test_retained_console_checks_do_not_restore_backend_execution(self):
+    def test_removed_console_has_no_ci_lane_or_hooks(self):
         ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
-        console = ci["lint-console"]
-        self.assertIn("name: Console UI Lint & Build", console)
-        self.assertIn("node-version: '22'", console)
-        self.assertIn("cache-dependency-path: console-ui/package-lock.json", console)
-        commands = [workflow.run_command(step) for step in workflow.step_blocks(console)
-                    if workflow.field(step, "run")]
-        self.assertEqual(commands, ["cd console-ui && npm ci", "cd console-ui && npx eslint src/",
-                                    "cd console-ui && npm test", "cd console-ui && npm run build"])
-        for name, job in ci.items():
-            if name != "lint-console":
-                self.assertNotIn("console-ui/", job)
-        for name in ("pre-commit", "pre-push"):
-            hook = ROOT / ".githooks" / name
-            self.assertTrue(os.access(hook, os.X_OK))
-            content = hook.read_text()
-            self.assertIn("npx eslint", content)
-            self.assertNotRegex(content, r"\b(go|gofmt)\b")
+        self.assertNotIn("lint-console", ci)
+        self.assertFalse((ROOT / ".githooks").exists())
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()

@@ -1021,9 +1021,8 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
-The retained console tests still read
 `coordinator/tests/protocol/testdata/paged_footprint_wire.json` and
-`coordinator/tests/protocol/testdata/process_memory_wire.json`. These are fixtures,
+`coordinator/tests/protocol/testdata/process_memory_wire.json` are fixtures,
 not a retained coordinator implementation/test suite. Preserve agreement with the
 provider resource copies and run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
@@ -1285,19 +1284,11 @@ checks. `SSDCheckpointMaintenanceEpochTests`, `SSDTrackedNativeRetryTests` and
 real-completion fences and refusal/recovery. Permission cases require a non-root
 test user and only change temporary fixture directories.
 
-## Retained Console
+## Console
 
-```bash
-make ui-install ui-lint ui-test ui-build
-```
-
-Vitest covers route handlers, validation, state and protocol fixtures. ESLint
-checks `src/`; the console lane and console-only pre-commit hook remain.
-The retained `next build` ignores TypeScript errors, so it does not replace
-lint, Vitest or the separate `npm run typecheck` diagnostic in `console-ui/`.
-Use isolated fixtures/services, never real accounts or billing credentials.
-See [console architecture](../architecture/components/console-ui.md);
-new console development remains platform-owned.
+The web console's tests run in the platform repository; this repository has no
+console test targets, CI lane or hooks. See
+[console](../architecture/components/console-ui.md).
 
 ## Landing
 

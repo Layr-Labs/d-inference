@@ -106,12 +106,13 @@ struct DoctorOperatorDiagnosisTests {
                 "/v1/releases/latest": .init(
                     status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
             ])
-            func diagnose(_ authorization: ProviderAuthorizationStatus) async throws -> Diagnostic {
+            func diagnose(_ authorization: ProviderAuthorizationStatus,
+                          receivedAgo: Double = 30) async throws -> Diagnostic {
                 let now = Date().timeIntervalSince1970
                 var state = try CLICommandSandbox.runningState(
                     now: now,
                     trust: .init(trustLevel: "self_signed", status: "online",
-                                 reason: "Provider authorization updated", receivedAt: now - 30,
+                                 reason: "Provider authorization updated", receivedAt: now - receivedAgo,
                                  authorization: authorization),
                     currentModel: "acme/Warm-4bit", warmModels: ["acme/Warm-4bit"],
                     advertisedModels: ["acme/Warm-4bit"])
@@ -130,6 +131,16 @@ struct DoctorOperatorDiagnosisTests {
             #expect(blocked.level == .fail)
             #expect(blocked.message.hasPrefix("NOT receiving coordinator work: the coordinator is not routing work here: the login keychain"))
             #expect(blocked.fix?.hasPrefix("log in at this Mac's console to unlock the login keychain") == true)
+
+            // The coordinator refused the connection at registration and has
+            // said nothing since, as it does for a legacy-verified Mac.
+            let unconfirmed = try await diagnose(ProviderAuthorizationStatus(
+                appAttestAvailable: true, path: "none", reason: "app_attest_qualification_required",
+                sessionID: "session", machineID: ""), receivedAgo: 1_150)
+            #expect(unconfirmed.level == .info)
+            #expect(unconfirmed.message == "unconfirmed (no current coordinator verdict; the last one, 19m ago, "
+                + "did not authorize this connection: app_attest_qualification_required)")
+            #expect(unconfirmed.fix == nil)
 
             let eligible = try await diagnose(CLICommandSandbox.appAttestAuthorization(now: Date().timeIntervalSince1970))
             #expect(eligible.level == .pass)

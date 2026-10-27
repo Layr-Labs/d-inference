@@ -1,6 +1,9 @@
 import Foundation
 
 /// When to re-register a connection the coordinator keeps refusing to route.
+/// "Refusing" is the blocked `ServingReadiness` verdict that `status` and
+/// `doctor` show, so only current evidence counts: a refusal the coordinator
+/// stopped repeating does not.
 ///
 /// A new registration starts a new coordinator verification session. That
 /// clears coordinator-side states only a reconnect clears: a verification
@@ -33,18 +36,5 @@ enum UnauthorizedConnectionRecovery {
     static func retryInterval(afterAttempts attempts: Int) -> TimeInterval {
         let doublings = min(max(attempts - 1, 0), 8)
         return min(firstRetryInterval * pow(2, Double(doublings)), maximumRetryInterval)
-    }
-
-    /// Whether the coordinator's latest status says this connection may not be
-    /// routed: an explicit `none` path, an expired App Attest lease, or no
-    /// status long after registering. A status without an authorization object
-    /// (a coordinator without App Attest serving) is not judged.
-    static func connectionLacksAuthorization(
-        connectedAt: Double, trust: DaemonState.Trust?, now: Double
-    ) -> Bool {
-        guard let trust else { return now - connectedAt >= ServingReadiness.statusGraceSeconds }
-        if trust.status == "untrusted" || trust.status == "offline" { return true }
-        guard let authorization = trust.authorization else { return false }
-        return !authorization.hasCurrentAppAttestAuthorization(now: now) && authorization.path != "legacy"
     }
 }

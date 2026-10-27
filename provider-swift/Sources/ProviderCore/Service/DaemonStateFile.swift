@@ -335,10 +335,14 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var since: Double
         /// Registrations this process has completed, including the first.
         public var connections: Int
-        public init(connected: Bool, since: Double, connections: Int) {
+        /// Epoch seconds when the coordinator last sent this connection an
+        /// inference request; nil before the first.
+        public var lastRequestAt: Double?
+        public init(connected: Bool, since: Double, connections: Int, lastRequestAt: Double? = nil) {
             self.connected = connected
             self.since = since
             self.connections = connections
+            self.lastRequestAt = lastRequestAt
         }
     }
 

@@ -35,6 +35,7 @@ extension ProviderLoop {
         addonPeerAuthenticatorOverride = authenticate
     }
     func setAddonHoldDrainTimeoutForTesting(_ timeout: Duration) { addonHoldDrainTimeout = timeout }
+    func setAddonHoldSettleTimeoutForTesting(_ timeout: Duration) { addonHoldSettleTimeout = timeout }
     func restartAddonHoldServiceForTesting() {
         stopAddonHoldService()
         addonHoldPaths = nil

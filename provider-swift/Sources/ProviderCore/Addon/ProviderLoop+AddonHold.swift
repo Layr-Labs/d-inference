@@ -13,7 +13,7 @@ extension ProviderLoop {
     /// beside the add-on's VMs.
     static let addonHoldDrainTimeoutDefault: Duration = .seconds(120)
     /// Load transitions get this long to settle before models unload anyway.
-    static let addonHoldSettleTimeout: Duration = .seconds(60)
+    static let addonHoldSettleTimeoutDefault: Duration = .seconds(60)
 
     var addonHoldActive: Bool { !addonHolds.isEmpty }
 
@@ -274,10 +274,13 @@ extension ProviderLoop {
         generation == addonHoldGeneration && servingDrain.owner == .addonHold && !isShuttingDown && !Task.isCancelled
     }
 
-    /// Unloads every resident model once load transitions settle. Returns the
-    /// models a faulted retirement keeps resident.
+    /// Unloads every resident model once load transitions settle. A load
+    /// still running at the settle bound cannot publish its slot
+    /// (`addonHoldLoadRefusal`), but it owns memory until it unwinds, so the
+    /// hold waits for the load gate before its last sweep. Returns the models
+    /// a faulted retirement keeps resident.
     private func unloadAllModelsForAddonHold(generation: UInt64) async -> [String] {
-        let settleDeadline = ContinuousClock.now.advanced(by: Self.addonHoldSettleTimeout)
+        let settleDeadline = ContinuousClock.now.advanced(by: addonHoldSettleTimeout)
         while ContinuousClock.now < settleDeadline {
             guard ownsAddonHold(generation) else { return [] }
             if modelSwitchMutationsSettled {
@@ -286,6 +289,13 @@ extension ProviderLoop {
                 await retryPendingNativeMiMoRetirements()
                 if modelSlots.isEmpty { return [] }
             }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if isLoadingAny {
+            logger.warning("Add-on hold: a model load is still unwinding; the Mac is held once it ends")
+        }
+        while isLoadingAny {
+            guard ownsAddonHold(generation) else { return [] }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         await unloadResidentModels(generation: generation)
@@ -301,6 +311,18 @@ extension ProviderLoop {
 
     private func publishAddonBusy() {
         state.busy = addonHolds.oldest.map { ProviderBusy(reason: .addon, sinceMs: $0.sinceMs, addon: $0.addon) }
+    }
+
+    // MARK: - Model load fence
+
+    /// While any hold is active no model may start loading or publish a slot:
+    /// the add-on's VMs need the memory. A load already running when the hold
+    /// began ends at its next check instead of installing. The refusal is
+    /// transient (`loadErrorStatusCode` maps it to 503), so callers retry
+    /// elsewhere or after the release.
+    func addonHoldLoadRefusal(for modelID: String) -> InferenceError? {
+        guard addonHoldActive else { return nil }
+        return .modelLoadFailed("An add-on holds this Mac; '\(modelID)' cannot load until it releases")
     }
 
     // MARK: - Leases

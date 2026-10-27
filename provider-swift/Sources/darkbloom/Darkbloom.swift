@@ -29,6 +29,7 @@ struct Darkbloom: AsyncParsableCommand {
         subcommands: [
             Start.self,
             Switch.self,
+            Addon.self,
             Stop.self,
             Restart.self,
             Status.self,

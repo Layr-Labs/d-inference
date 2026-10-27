@@ -192,6 +192,9 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
+        if servingDrain.owner == .addonHold {
+            logger.info("Startup preload skipped: an add-on holds this Mac; models load after it releases")
+        }
         guard !Task.isCancelled, !servingDrain.refusing else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {

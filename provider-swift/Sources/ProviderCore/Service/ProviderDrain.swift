@@ -3,19 +3,34 @@ import Foundation
 /// One admission state shared by updates, CLI lifecycle commands and signals.
 /// The loop actor owns it. Update staging is separate and still admits work.
 struct ProviderDrain: Sendable {
-    enum Owner: Sendable { case update, reconnect, modelSwitch, lifecycle }
+    /// `addonHold` closes admission while an add-on uses the Mac. The process,
+    /// its coordinator connection and its App Attest worker keep running.
+    enum Owner: Sendable { case update, reconnect, modelSwitch, lifecycle, addonHold }
     enum Phase: String, Codable, Sendable { case serving, draining, drained }
     private(set) var phase: Phase = .serving
     private(set) var owner: Owner?
 
     var refusing: Bool { phase != .serving }
 
+    /// Admission is closed because the process, its connection or its model
+    /// inventory is about to change. An add-on hold changes none of them, so
+    /// startup and App Attest recovery treat it as serving.
+    var refusingForServiceChange: Bool { refusing && owner != .addonHold }
+
     mutating func begin(_ owner: Owner) {
         // A cancelled update must never reopen or replace an explicit stop.
         if self.owner == .lifecycle { return }
+        // Only a stop preempts a switch or a hold. An update or reconnect
+        // that later resumes cannot reopen admission an add-on still holds.
         if self.owner == .modelSwitch && owner != .lifecycle { return }
+        if self.owner == .addonHold && owner != .lifecycle { return }
         self.owner = owner
         phase = .draining
+    }
+    mutating func resumeAddonHold() {
+        guard owner == .addonHold else { return }
+        owner = nil
+        phase = .serving
     }
     mutating func resumeReconnect() {
         guard owner == .reconnect else { return }

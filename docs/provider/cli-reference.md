@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -153,6 +153,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
+| `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
@@ -900,6 +901,35 @@ and take effect after `darkbloom restart`. The provider reports the policy in
 its heartbeat (`idle_unload_mins`) so the dashboard shows an empty slot as
 "sleeping, wakes on demand" rather than as a fault. `--json` prints the policy
 machine-readably.
+
+## `darkbloom addon`
+
+Operator debugging of [add-on holds](../architecture/addon-hold.md): inspect,
+place or release the hold a local add-on uses while its VMs run. The commands
+reach the running provider through its owner-only lifecycle mailbox, bound to
+the live process identity; add-ons themselves use the
+[local socket](../reference/addon-hold-ipc.md).
+
+```bash
+darkbloom addon [status]
+darkbloom addon hold [--lease-seconds <30...600>]
+darkbloom addon release [--force]
+```
+
+| Subcommand / flag | Default | Effect |
+|---|---|---|
+| `status` | default subcommand | Active holds (add-on, `draining` or `held`, start time, lease) and whether an add-on holds the machine lock |
+| `hold --lease-seconds <n>` | `600` | Hold as add-on `operator`, exactly like an add-on: admission closes, accepted work finishes (up to 120 s), every model unloads. Repeating renews the lease |
+| `release` | — | Release every active hold; the provider serves again at once on the same connection |
+| `release --force` | `false` | Release even while an add-on holds the machine lock, so its VMs may still be using memory |
+
+Without `--force`, `release` refuses while the machine lock is held. A provider
+without add-on support (older, or a standalone `--local` server) is refused
+before anything is sent. The command waits up to 10 seconds for the provider's
+answer. `darkbloom status` prints `Not serving: held by add-on …` while held.
+Code: `provider-swift/Sources/darkbloom/AddonCommand.swift` (`Addon`),
+`provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift`
+(`handleAddonControl`).
 
 ## `darkbloom stop`
 
@@ -1725,6 +1755,7 @@ manual use.
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
 | Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
+| Add-on runtime | `~/.darkbloom/runtime/` (`0700`): `addon.sock` (`0600`, test override `DARKBLOOM_ADDON_SOCKET`), `addon-hold.json` (`0600`, active holds) and the add-on's `ownership.lock` ([IPC reference](../reference/addon-hold-ipc.md#files)) | `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift` (`AddonHoldPaths`) |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Verified weight hashes | `~/.darkbloom/verified-weights.json` (`DARKBLOOM_VERIFIED_WEIGHTS_FILE`), `0600`; managed GLM load hashes bound to file identities, reused for startup registration | `provider-swift/Sources/ProviderCore/Service/VerifiedWeightHashStore.swift` |

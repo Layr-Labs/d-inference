@@ -57,13 +57,17 @@ Before tagging `v0.10.4`:
 
 Roll out in this order; each step is a separate approval:
 
-1. Deploy a `darkbloom-platform` coordinator that includes
-   [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516)
-   close to the tag. Its prompt sidecar plans a Qwen JSON `response_format`
-   without thinking, as 0.10.4 renders it. While a provider and the coordinator
-   disagree, that provider's Qwen JSON requests without a thinking control get
-   cache receipts that fail with `prompt_anchor_mismatch` and lose cache
-   affinity; serving is unaffected.
+1. Before the tag, deploy a `darkbloom-platform` coordinator that includes
+   [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516),
+   [#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and
+   [#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541). #516's
+   prompt sidecar plans a Qwen JSON `response_format` without thinking, as
+   0.10.4 renders it. While a provider and the coordinator disagree, that
+   provider's Qwen JSON requests without a thinking control get cache receipts
+   that fail with `prompt_anchor_mismatch` and lose cache affinity; serving is
+   unaffected. #491 repeats each refusal every 5 seconds and #541 tells a
+   legacy Mac when its first passing challenge authorizes it; 0.10.4's
+   `Traffic:` line and re-registration act only on that current evidence.
 2. Tag `v0.10.4` ([step 4](#4-tag-and-push-production-source)).
 3. The platform snapshots its provider contracts from the tagged commit
    (`python3 scripts/provider-contracts.py snapshot <tag commit>`), sets

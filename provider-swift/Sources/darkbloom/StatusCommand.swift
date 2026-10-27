@@ -151,6 +151,10 @@ struct Status: AsyncParsableCommand {
         } else {
             print("Trust: awaiting coordinator status")
         }
+        if Self.lifecycleDrainLine(state.lifecycle) == nil, !state.isStale(now: now),
+           let verdict = ServingReadiness.verdict(state, now: now) {
+            for line in Self.trafficLines(verdict) { print(line) }
+        }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)
@@ -178,7 +182,7 @@ struct Status: AsyncParsableCommand {
         }
         for line in Self.evictionExclusionLines(state: state) { print(line) }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
-        print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
+        for line in Self.servedRequestLines(state: state, now: now) { print(line) }
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
             print("  Recorded \(Self.compactDuration(now - err.at)) ago")

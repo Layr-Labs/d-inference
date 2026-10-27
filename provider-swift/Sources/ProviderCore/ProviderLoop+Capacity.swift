@@ -79,6 +79,7 @@ extension ProviderLoop {
         await cleanupAutopilotSupersededModels()
         await refreshModelCalibration()
         await refreshAutopilotInventoryRegistration()
+        superviseServingAuthorization()
         writeDaemonState()
     }
 

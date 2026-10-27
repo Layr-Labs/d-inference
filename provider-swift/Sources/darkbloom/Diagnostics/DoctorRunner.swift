@@ -6,6 +6,20 @@ import ProviderCore
 /// the daemon state file (trust reason, live runtime), and a coordinator
 /// version check. Returns sectioned `Diagnostic`s for the renderer.
 enum DoctorRunner {
+    static func trafficDiagnostic(_ verdict: ServingReadiness.Verdict) -> Diagnostic {
+        switch verdict {
+        case .authorized(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .pass,
+                              message: "eligible for coordinator work (\(detail))", fix: nil)
+        case .pending(let detail):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .info,
+                              message: "not yet eligible (\(detail))", fix: nil)
+        case .blocked(let advice):
+            return Diagnostic(section: .traffic, name: "coordinator traffic", level: .fail,
+                              message: "NOT receiving coordinator work: \(advice.message)", fix: advice.fix)
+        }
+    }
+
     static func buildOperatorDiagnosis(
         snapshot: RuntimeSnapshot,
         coordinatorURL: String
@@ -95,6 +109,11 @@ enum DoctorRunner {
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }
+        }
+
+        // ---- Coordinator traffic: is this connection routable, and if not, why? ----
+        if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
+            out.append(trafficDiagnostic(verdict))
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----

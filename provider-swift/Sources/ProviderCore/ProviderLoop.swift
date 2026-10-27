@@ -803,6 +803,16 @@ public actor ProviderLoop {
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
+    /// The live coordinator connection as reported to `status`/`doctor`;
+    /// nil until the coordinator client starts.
+    internal var coordinatorConnection: DaemonState.CoordinatorConnection?
+    /// When the coordinator's verdict for this connection last became "not
+    /// routable" (`ProviderLoop+ServingAuthorizationRecovery`).
+    internal var unauthorizedSince: Double?
+    internal var lastUnauthorizedReconnectAt: Double?
+    internal var unauthorizedReconnectAttempts = 0
+    internal var unauthorizedReconnectJitter = Double.random(
+        in: 0..<UnauthorizedConnectionRecovery.thresholdJitter)
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is

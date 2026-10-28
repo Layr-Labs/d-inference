@@ -15,13 +15,16 @@
 // Rules:
 // * Applied ONLY to fields the request omits. Explicit request values
 //   always win (`temperature: 0` still means greedy).
-// * `seed`, `logit_bias`, the frequency/presence penalties and `max_tokens`
-//   are untouched.
+// * `seed`, `logit_bias`, the frequency penalty and `max_tokens` are
+//   untouched; only a model-card default sets the presence penalty.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
 //   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
+//   The catalog Qwen3.5-9B build ships no `generation_config.json`; it takes
+//   its model card's thinking-mode values (`qwen35CardDefaults`), whose
+//   presence penalty stops greedy decoding repeating itself to `max_tokens`.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -41,15 +44,17 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public var topP: Float?
     public var topK: Int?
     public var repetitionPenalty: Float?
+    public var presencePenalty: Float?
 
     public init(
         temperature: Float? = nil, topP: Float? = nil, topK: Int? = nil,
-        repetitionPenalty: Float? = nil
+        repetitionPenalty: Float? = nil, presencePenalty: Float? = nil
     ) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.repetitionPenalty = repetitionPenalty
+        self.presencePenalty = presencePenalty
     }
 
     /// Legacy behavior: every omitted knob collapses to the contract's no-op
@@ -57,6 +62,10 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// repetitionPenalty `1.0`) — exactly what `samplingParams(from:)`
     /// produced before artifact defaults existed.
     public static let legacy = EngineV2SamplingDefaults()
+
+    /// Qwen3.5-9B's model-card values for thinking mode, the template default.
+    static let qwen35CardDefaults = EngineV2SamplingDefaults(
+        temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
 
     public var isLegacy: Bool { self == .legacy }
 
@@ -84,6 +93,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static func resolve(
         modelId: String, modelType: String?, modelDirectory: URL?
     ) -> EngineV2SamplingDefaults {
+        if modelId == "Qwen3.5-9B", modelType == "qwen3_5" { return qwen35CardDefaults }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory
         else { return .legacy }

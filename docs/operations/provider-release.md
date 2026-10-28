@@ -508,6 +508,13 @@ to the Apple-team requirement for every version (`scripts/install.sh`,
 rejects the ad-hoc signed fan helper of a dev-branch build until a separate
 change relaxes that check for pre-release versions.
 
+Ruling (David, 2026-10-28): DevNet runs dev end to end. Dev-identity Macs with
+`auto_update` on move to the dev build. Under SemVer a text identifier outranks a
+number, so `X.Y.Z-dev.branch.N` ranks above `X.Y.Z-dev.M` for every N and M. The
+ruling holds only when the coordinator returns the SemVer-greatest active
+release. The current coordinator does not do this, as the rest of this section
+shows.
+
 Both the master dev lane and this lane publish to the dev coordinator and can
 advance the dev `releases/latest/` aliases. `/v1/releases/latest` does not order
 by `created_at`. The coordinator compares the dot-separated numeric parts of the

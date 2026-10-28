@@ -11,6 +11,17 @@ name: Release Dev-Branch Provider (self-signed)
 # "Verify checked-out source" check (HEAD equals GITHUB_SHA) holds by design. To
 # build the same commit again, re-run the push run.
 #
+# Latest dev release (ruling, David, 2026-10-28): DevNet runs dev end to end,
+# and dev-identity Macs with auto_update on move to the dev build. Under SemVer
+# a text identifier outranks a number, so X.Y.Z-dev.branch.N > X.Y.Z-dev.M. The
+# coordinator does not use SemVer for /v1/releases/latest yet: its store
+# (darkbloom-platform coordinator/internal/store/shared/release_version.go,
+# ReleaseVersionGreater) reads each dot-separated part as an integer, so
+# `branch` counts as 0 and X.Y.Z-dev.M > X.Y.Z-dev.branch.N for every M > 0. At
+# the same core version the master dev build stays latest, and the publish job
+# fails in await_latest after it registers this build. The ruling holds only
+# after the coordinator compares release versions with SemVer.
+#
 # Why this is a separate workflow from release-swift.yml:
 #   release-swift.yml holds the production Apple signing certificate and the
 #   production release keys. Its trust gate (scripts/provider_release_resume/

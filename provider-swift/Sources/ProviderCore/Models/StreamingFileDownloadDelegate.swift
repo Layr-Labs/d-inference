@@ -56,10 +56,11 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     private var decided: Outcome?
     private var setupError: Error?
 
-    // The continuation may be resumed from any delegate callback; guard it.
+    // Cancellation can complete a suspended URLSession task before attach runs.
+    // Keep the first terminal result so either callback order resumes the waiter.
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Outcome, Error>?
-    private var resumed = false
+    private var result: Result<Outcome, Error>?
 
     init(
         partial: URL,
@@ -79,21 +80,23 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     /// Attach the awaiting continuation. Call exactly once, immediately before
     /// `task.resume()`.
     func attach(_ continuation: CheckedContinuation<Outcome, Error>) {
-        lock.lock()
-        self.continuation = continuation
-        lock.unlock()
+        let completed: Result<Outcome, Error>? = lock.withLock {
+            if let result { return result }
+            self.continuation = continuation
+            return nil
+        }
+        if let completed { continuation.resume(with: completed) }
     }
 
     private func finish(_ result: Result<Outcome, Error>) {
-        lock.lock()
-        guard !resumed, let cont = continuation else { lock.unlock(); return }
-        resumed = true
-        continuation = nil
-        lock.unlock()
-        switch result {
-        case .success(let outcome): cont.resume(returning: outcome)
-        case .failure(let error): cont.resume(throwing: error)
+        let cont: CheckedContinuation<Outcome, Error>? = lock.withLock {
+            guard self.result == nil else { return nil }
+            self.result = result
+            let cont = continuation
+            continuation = nil
+            return cont
         }
+        cont?.resume(with: result)
     }
 
     // MARK: URLSessionDataDelegate

@@ -8,9 +8,167 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.3 — candidate (unpublished)
+## v0.10.4 — candidate (unpublished)
 
-Prepared on 2026-10-26; tagging and publication are separate steps.
+Prepared on 2026-10-27; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- Deploy a coordinator that includes [darkbloom-platform#516](https://github.com/Layr-Labs/darkbloom-platform/pull/516) close to this rollout. For a Qwen 3.5, 3.6 or 3.8 request with a JSON `response_format` and no thinking control, a 0.10.4 provider renders the no-thinking prompt, and #516's prompt sidecar plans the same prompt. While a provider and the coordinator disagree (a 0.10.4 provider behind a coordinator without #516, or a 0.10.3 provider behind one with it), those requests' cache receipts fail with `prompt_anchor_mismatch`, and each failure quarantines that provider's cache affinity for the whole model for up to 10 minutes; every request is still served.
+- Clients see the Qwen JSON changes: a JSON request without a thinking control answers without reasoning. On `qwen3_5` and `qwen3_5_moe` text requests without tools the answer is grammar-constrained, so an output budget or `stop` string that cuts the JSON value short now ends in a 422 `tool_noncompliance` after the content streamed, instead of a successful truncated answer. While a constrained request decodes, no request in the same decode step speculates with MTP.
+- On 0.10.4, Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6-35B-A3B and MiMo-V2.6-Flash providers advertise forced `tool_choice` (`required` and named functions) in `tool_constraint_models`. Coordinators send forced tool choice only to providers that advertise it, so 0.10.3 providers never receive these requests and no provider-version floor is needed. Until an updated provider of the model is online, the coordinator keeps refusing such requests with 400.
+- Delta complete checkpoints need no migration and are safe to roll back. Complete checkpoints are stored per provider build, because their namespace binds the binary and loaded-metallib hashes: an updated provider starts with cold complete checkpoints, as after any update, and a provider rolled back to 0.10.3 never restores a 0.10.4 file. A 0.10.3 reader also refuses a delta file as incompatible. `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` writes complete files again; it is forwarded to the launchd provider job, and like other forwarded settings it takes effect at the next `darkbloom start` (`restart`, updates and watchdog recovery reuse the saved environment).
+- A connected provider that the coordinator has not authorized for 15–30 minutes re-registers once it is idle, then again after 30 minutes, 1 hour, 2 hours and every 4 hours while it stays unauthorized. Each re-registration starts a new coordinator verification session. A fleet that loses authorization at once, as in an Apple or coordinator outage, spreads its first re-registrations over 15 minutes. Only current evidence counts: an untrusted or offline status, an expired App Attest lease, no status 90 seconds after connecting, or a refusal received in the last 60 seconds. An older refusal shows as `unconfirmed` and never triggers re-registration, a legacy (MDM) verdict counts as authorized whatever its age, and a coordinator request that arrives after the latest status counts as routed.
+- Deploy a coordinator that includes [darkbloom-platform#491](https://github.com/Layr-Labs/darkbloom-platform/pull/491) and [darkbloom-platform#541](https://github.com/Layr-Labs/darkbloom-platform/pull/541) before this rollout. #491 repeats a refusal every 5 seconds while App Attest serving is on, so `Traffic:` names the cause and re-registration can act on it; #541 tells a legacy Mac when its first passing challenge authorizes it. Behind an older coordinator, a refused App Attest Mac shows `unconfirmed` most of the time and is not re-registered, and a legacy Mac that verified after registering shows `unconfirmed` instead of eligible until it receives a request; both are still served or refused exactly as the coordinator decides.
+- `darkbloom status` changes its served-requests line (see "Status says which requests the served count covers"). Scripts that match the literal `Requests served:` or read a fixed word position need updating.
+- Only the signed Darkbloom Sandbox add-on (`io.darkbloom.sandbox`, team `SLDQ2GJ6TL`) or an operator running `darkbloom addon hold` can hold a provider; other Macs are unchanged. The coordinator side, [darkbloom-platform#514](https://github.com/Layr-Labs/darkbloom-platform/pull/514), is already in production: a held Mac stays connected, leaves supply, earns no uptime or reward credit while held and shows as busy.
+- `libs/mlx-swift` (`4926d3d9`), `libs/mlx` and the nested `mlx` (`31f550af`) and `libs/mlx-swift-lm` (`aee6ebb6`) are unchanged from 0.10.3, so no Metal kernel source changes.
+- The desktop app (#1615, #1617), CI (#1619, #1631), landing site (#1599) and documentation (#1602) entries below change no provider artifact; the desktop app ships through its own `desktop-vX.Y.Z` releases. #1599 is already in the `v0.10.2` tag and #1615 in `v0.10.3`, releases that left their notes pending.
+
+### Operator check for a missing base reward
+
+- New provider how-to for a $0 `model=base_reward` period while `doctor` is green: console last-1000 check, last-public floor snapshot (not deployed policy), and `darkbloom report` without pasting hostnames or tokens into a public issue.
+- `doctor` billing remains local usage reporting. It still does not name a coordinator skip or ranking reason.
+
+### CI can run read-only jobs on Darkbloom Sandboxes
+
+- A route job chooses a Darkbloom Sandbox or the existing Blacksmith runner for each read-only CI job. Routing stays off until the repository variable `DARKBLOOM_ROUTING` is `on`; plane errors, timeouts and unexpected replies keep the Blacksmith runner.
+- Release, signing, publication and credentialed jobs, and `master` cache warming, stay on Blacksmith. The component classifier and the `Provider Tests` gate run on GitHub-hosted `ubuntu-24.04`, and routed jobs have job-level timeouts.
+
+### Console tooling removed with the console source
+
+- The console source now lives only in darkbloom-platform; #1625 removed this repository's `console-ui/` snapshot. The tooling that still pointed at it is removed too: the `Console UI Lint & Build` CI job and its `console` change lane, the `make ui-install`, `ui-lint`, `ui-test`, `ui-build` and `ui` targets (`make test` and `make build` no longer run them), the console-only `.githooks` pre-commit and pre-push hooks, the `/console-ui` Dependabot entry, and the console tests' copies of `paged_footprint_wire.json` and `process_memory_wire.json` under `coordinator/tests/protocol/testdata/`. Provider tests keep their own copies of those fixtures.
+- The console architecture page and the console section of the configuration reference are removed; console architecture and configuration are documented in darkbloom-platform.
+
+### Providers recover from a stalled coordinator reconnect
+
+- A coordinator connection whose TLS handshake or WebSocket upgrade never completes now fails after 30 seconds and retries with the usual backoff. Before, a reconnect that stalled this way (for example while the coordinator restarted) waited indefinitely: the provider kept showing `Trust: awaiting coordinator status`, received no requests and recovered only after its process restarted.
+- `darkbloom stop`, `restart` and `start` now drain gracefully when the provider has no registered coordinator session and no unfinished requests, and report the coordinator acknowledgement as not needed. Before, they failed with `coordinator acknowledgement false`, left the provider draining (refusing work, with automatic restart disabled) and required `--force`.
+
+### Say why a connected provider gets no coordinator work
+
+- `darkbloom status` adds a `Traffic:` line and `darkbloom doctor` a `coordinator traffic` check. Either the coordinator can route work to this connection, or the line says why it cannot, with a fix: not connected; no coordinator verdict minutes after connecting (previously only `Trust: awaiting coordinator status`); an `untrusted` or `offline` status; App Attest authorization expired and not renewed; or the coordinator's reason for not authorizing it. Reasons include a locked login keychain, a stalled Apple App Attest call, App Attest unavailable on macOS 26 or outside a logged-in GUI session, and a connection without a linked account (`darkbloom login`). A connected Mac with a warm model no longer looks healthy while it receives nothing. Neither appears while an add-on holds the connected Mac: the hold, which `darkbloom status` reports on its own `Not serving:` line, is why no work arrives, not the connection's authorization.
+- Only current evidence says a connection gets no work. A refusal counts while it is at most 60 seconds old, as when the coordinator keeps repeating it, and not in the first 90 seconds after connecting. An older refusal reads `unconfirmed`, with its age and reason and no fix: the current coordinator sends no status when legacy verification authorizes a connection after the refusal it sends at registration, so legacy-verified Macs are never told they are excluded or need macOS 27. A request the coordinator routed after its latest status reads as eligible.
+- The daemon state file records the coordinator connection (`coordinator_connection`: connected, since when it has been up or down, the registrations since the provider started, and `last_request_at`, when the coordinator last sent the connection a request). Failed reconnect attempts do not reset the time, so a long outage reads as one.
+- The provider now re-registers a connection the coordinator keeps refusing for 15–30 minutes (a random delay per process), then again after 30 minutes, 1 hour, 2 hours and every 4 hours while the refusal stays current. A refusal sent once at registration never triggers it. It waits until the provider is idle: no accepted or local requests, model loads, Autopilot operation, drain or update. A new registration starts a new coordinator verification session, which clears coordinator states that previously needed a restart, such as verification that stopped after an unclassified failure or waits out an hourly retry. `darkbloom logs` shows when the coordinator starts refusing the connection, when it authorizes it, when its refusal is no longer current, and each re-registration.
+
+### Delta complete checkpoints
+
+- A request that restored a Qwen complete checkpoint with native recurrent state (`native-paged-full-recurrent-v1` or `native-contiguous-full-recurrent-v1`) now writes its later checkpoints as deltas: only the rows the restored file lacks, plus the recurrent state. On a six-turn 30K–55K-token conversation, checkpoint writes fell from 20.0 GB to 5.4 GB with identical outputs and unchanged TTFT on both layouts, so the daily write cap lasts about four times longer. `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS=0` restores complete files. It also reaches the background provider: `darkbloom start` copies it into the launchd job, and `darkbloom restart` keeps the saved environment.
+
+### Desktop release signs the DMG
+
+The desktop release workflow now signs the DMG with the Eigen Labs Developer ID
+before notarizing it. The first dry run built, signed and notarized the app, but
+Gatekeeper rejected the unsigned DMG (`source=no usable signature`).
+
+### Desktop app updates itself
+
+Desktop releases now embed an update feed: Release `desktop-latest`, whose
+assets each `desktop-vX.Y.Z` release replaces with its zip, blockmap,
+`latest-mac.yml` and a version-less `Darkbloom-arm64.dmg`. Installed apps check
+it at launch and every 4 hours, download in the background and install on quit.
+A release build without a feed is refused, since the feed is fixed at build
+time. The workflow verifies the embedded feed URL and that `latest-mac.yml`
+matches the published files.
+
+### Forced tool calls on Qwen 3.5, Qwen 3.6 and MiMo
+
+- Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6-35B-A3B and MiMo-V2.6-Flash now
+  advertise `tool_choice` `required` and named-function support, so the
+  coordinator routes those requests to them instead of rejecting them with
+  HTTP 400. Calls stay withheld until they parse and match the declared
+  schema.
+- A forced call on Qwen 3.5-family models (including Qwen3.8-27B) no longer
+  fails when the model writes a newline between parallel calls or around a
+  call. Any other text still fails the request.
+
+### JSON response formats answer without Qwen thinking
+
+- A chat request with a JSON `response_format` (`json_object` or `json_schema`)
+  on the Qwen 3.5, 3.6 and 3.8 template family now renders the no-thinking
+  prompt unless the caller supplies a thinking control (`reasoning.enabled`,
+  `enable_thinking`, `chat_template_kwargs.enable_thinking`, any reasoning
+  effort or a positive `reasoning.max_tokens` budget). The templates think by
+  default, and the reasoning block regularly spent the caller's `max_tokens`
+  before the JSON answer began: on Qwen3.5-9B, 47-79% of JSON requests with a
+  2,048-token budget returned empty content.
+- The coordinator prompt sidecar must mirror this rule for cache planning; the
+  regenerated public prompt vectors change only the Qwen-family JSON cases.
+- On `qwen3_5` and `qwen3_5_moe` text requests without tools or `tool_choice`,
+  the JSON answer is now grammar-constrained, as on exact Flint: only one JSON
+  value of the schema's shared compiled subset can be sampled, with declared
+  properties as its only keys, and the end-of-turn token is masked until the
+  value is complete. With the instruction alone, about 7-9% of Qwen3.5-9B
+  answers broke the schema (a near-miss key, a string for an integer, prose).
+  A budget that ends first, or a `stop` string that cuts the value short, is
+  now a 422 `tool_noncompliance` after the content streamed, instead of a
+  successful truncated answer. The prompt is unchanged, so the sidecar needs no
+  new rule.
+- Schemas outside the subset, tools or `tool_choice` beside the format, image
+  or video input and tokenizers that fail the pinned vocabulary checks keep the
+  prompt-only behavior; none of them is newly refused. While a constrained row
+  decodes, other rows in the same decode step do not speculate with MTP, as
+  with a `stop`, logprob or penalty row today.
+- A constrained request that omits `max_tokens` no longer fails with "Response
+  generation failed". Token constraints were sized with the scheduler's default
+  while the engine used the bridge's model-derived default, and the engine
+  refuses a mismatched budget. This also fixes Flint requests without
+  `max_tokens` on the local endpoint; coordinator traffic always carries one.
+
+### Developer and contact guidance stays in agent documents
+
+- Remove Developers and Contact HTML pages, footer links and XML sitemap entries. Human-facing API links use the official documentation.
+- Preserve explicit and negotiated Markdown guidance, with direct document links from the agent index and other Markdown resources.
+
+### Add-on hold hardening
+
+- A model load already running when an add-on hold begins, such as a local
+  request's cold load, no longer installs its model afterwards. No load starts
+  while held, a running one ends with a retryable 503, and the hold reports
+  `held` only once it has unwound.
+- Releasing a hold while its 120-second bound is cancelling leftover requests
+  no longer cancels or loses track of work accepted after the release.
+- A hold that unloads a native MiMo or Nemotron Super model keeps
+  `loaded-models.json`, so the next start still preloads it.
+- The add-on socket verifies a connection's signer before the connection takes
+  one of its 8 slots, so unsigned programs cannot keep the add-on out, and a
+  request line must finish within 10 seconds.
+- The hold record and `darkbloom addon` mailbox files are read without blocking:
+  a FIFO at their paths is refused instead of stalling the provider.
+
+### Reversible add-on hold
+
+- A signed local add-on, such as the Darkbloom Sandbox, can hold the provider
+  through the owner-only socket `~/.darkbloom/runtime/addon.sock` while its VMs
+  run. The provider stays connected, reports `status: draining` with
+  `busy_reason`, `busy_since_ms` and `busy_addon`, lets accepted work finish
+  (up to 120 seconds), then unloads every model. Release returns it to routing
+  on the same connection.
+- Holds have 30–600 second leases. An expired lease ends the hold only when the
+  add-on no longer holds `ownership.lock`, and a restarted or updated provider
+  comes back held without loading models.
+- Updates and Autopilot operations wait for the hold, and reconnects keep it;
+  Autopilot reports `addon_hold`. `darkbloom addon status|hold|release`
+  inspects or overrides holds for debugging, and `darkbloom status` shows an
+  active hold.
+- Coordinator handling of the busy fields ships separately; older coordinators
+  still stop routing on the draining status.
+
+### Status says which requests the served count covers
+
+- `darkbloom status` now prints `Requests served since the daemon started (… ago): N | output tokens: M` instead of `Requests served: N | tokens: M` with no window. The count restarts with the daemon and includes requests that ended early on a coordinator cancel or a dropped connection, which the coordinator may not pay for, and free requests to your own machine. Status prints how many ended early and points to the console's Earnings page for paid jobs.
+- The line still starts with `Requests served` and keeps `|` between the two counts. A script that matches the literal `Requests served:` or reads a fixed word position needs updating.
+- `darkbloom doctor` describes the same counts as completed since the daemon started rather than "reported this session".
+- The daemon state file records `cancellations_partial_complete` beside the served totals.
+
+### Live model switch with a custom model cache
+
+- `darkbloom switch` now scans the `model_cache_directory` set in `provider.toml`. With a non-default directory it previously rejected every local model as missing or unsupported, and its picker listed installed models as downloads, although the running provider served them from that directory.
+
+## v0.10.3
+
+Published 2026-10-26 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.3)).
 
 ### M5 providers no longer crash on long Gemma 4 and Qwen prompts
 

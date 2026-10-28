@@ -535,26 +535,29 @@ ruleset's bypass list create or update a ref. Because a dev push gets the
 Developer ID signature, `dev` needs a pull_request rule before the lane runs. A
 repository administrator adds that rule.
 
-Both the master dev lane and this lane publish to the dev coordinator and can
-advance the dev `releases/latest/` aliases. `/v1/releases/latest` returns the
-active release that `ReleaseVersionGreater` ranks highest. That comparison is not
-SemVer: it reads each dot-separated part of the version as an integer, so a
-non-numeric part such as `branch` counts as 0. It uses `created_at` only to break
-a tie on the same version
+The dev coordinator can still hold `X.Y.Z-dev.<run>` releases from the master
+dev lane; `0.10.4-dev.224` is the latest dev release on 2026-10-28.
+`/v1/releases/latest` returns the active release that `ReleaseVersionGreater`
+ranks highest. That comparison is not SemVer: it reads each dot-separated part of
+the version as an integer, so a non-numeric part such as `branch` counts as 0. It
+uses `created_at` only to break a tie on the same version
 ([`ReleaseVersionGreater` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/internal/store/shared/release_version.go);
 [`GetLatestRelease` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/store/postgres/releases.go)).
-Thus:
+Until the coordinator ranks releases by SemVer:
 
-- When the dev-branch base version is lower than the master base version, the
-  master dev build stays latest. The dev-branch build is registered, but the
-  publication does not advance the latest aliases.
-- When the two base versions are equal, `X.Y.Z-dev.<run>` ranks above
-  `X.Y.Z-dev.branch.<run>`, and the master dev build stays latest. The
+- At a lower base version than an existing `-dev.<run>` release, that release
+  stays latest. The dev-branch build is registered, but the publication does not
+  advance the latest aliases.
+- At an equal base version, `X.Y.Z-dev.<run>` ranks above
+  `X.Y.Z-dev.branch.<run>`, so the existing release stays latest. The
   publication script then waits for a latest version that does not come, and the
-  `publish` job fails after it registers the release.
-- When the dev-branch base version is higher, the newest dev-branch build is
-  latest until a master dev build with an equal or higher base version is
-  published.
+  `publish-release` job fails after it registers the release.
+- At a higher base version, the newest dev-branch build is latest.
+
+When the coordinator ranks by SemVer 2.0, an alphanumeric identifier ranks above
+a numeric one in the same position. Then `X.Y.Z-dev.branch.<run>` ranks above
+`X.Y.Z-dev.<run>`, and the newest dev-branch build at the highest base version is
+latest.
 
 An existing install's self-updater may not downgrade to a lower version, while a
 fresh install takes the latest.

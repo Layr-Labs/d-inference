@@ -3137,6 +3137,107 @@ struct SSDWholeRootMaintenanceTests {
         #expect(FileManager.default.fileExists(atPath: lookalike.path))
     }
 
+    @Test("a header corrupted after an earlier pass loses its ownership proof, even with its mtime restored")
+    func remembersHeaderVerdictsOnlyForUnchangedFiles() throws {
+        let root = try tempDir("whole-root-verdict-change")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeOwnedFile(
+            root: root,
+            modelKey: "abcdefabcdef",
+            tagHex: "ab00112233445566778899aabbccddee",
+            modifiedAt: 1_000)
+        #expect(SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 1_000_000, nowSeconds: 2_000, budgetBytes: Int.max).filesSeen == 1)
+        #expect(SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 1_000_000, nowSeconds: 2_000, budgetBytes: Int.max).filesSeen == 1)
+
+        // Same size and mtime; only the status-change time records the write.
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.write(contentsOf: Data(repeating: 0, count: 64))
+        try handle.close()
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: file.path)
+
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 1, nowSeconds: 10_000, budgetBytes: 0)
+        #expect(result.filesSeen == 0)
+        #expect(result.ttlExpired == 0 && result.budgetEvicted == 0)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test("a malformed lookalike replaced by a block is owned on the next pass")
+    func replacedLookalikeIsReadAgain() throws {
+        let root = try tempDir("whole-root-verdict-replace")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = root.appendingPathComponent("abcdefabcdef", isDirectory: true)
+        let fanout = model.appendingPathComponent("ab", isDirectory: true)
+        try FileManager.default.createDirectory(at: fanout, withIntermediateDirectories: true)
+        let lookalike = fanout.appendingPathComponent("ab00112233445566778899aabbccddee.dbk3")
+        try Data("not-a-darkbloom-block".utf8).write(to: lookalike)
+        #expect(SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 1_000_000, nowSeconds: 2_000, budgetBytes: Int.max).filesSeen == 0)
+
+        let block = try writeOwnedFile(
+            root: root,
+            modelKey: "abcdefabcdef",
+            tagHex: "ab00112233445566778899aabbccddee",
+            modifiedAt: 1_000)
+        #expect(block.path == lookalike.path)
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 900, nowSeconds: 10_000, budgetBytes: Int.max)
+        #expect(result.filesSeen == 1)
+        #expect(result.ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: block.path))
+    }
+
+    @Test("a header read that failed outside the unchanged file is retried by the next pass")
+    func failedHeaderReadIsRetried() throws {
+        let container = try tempDir("whole-root-verdict-retry")
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: container.path)
+            try? FileManager.default.removeItem(at: container)
+        }
+        let root = container.appendingPathComponent("kv3", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = try writeOwnedFile(
+            root: root,
+            modelKey: "abcdefabcdef",
+            tagHex: "ab00112233445566778899aabbccddee",
+            modifiedAt: 1_000)
+
+        // Search-only access keeps the walk working but fails the header
+        // read's descriptor chain (EACCES here; EIO or EMFILE in production).
+        // Neither the file nor its identity changes.
+        func blockedPass() throws -> SSDWholeRootMaintainer.Result {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o100], ofItemAtPath: container.path)
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700], ofItemAtPath: container.path)
+            }
+            return SSDWholeRootMaintainer.shared.maintain(
+                root: root, ttlSeconds: 900, nowSeconds: 10_000, budgetBytes: Int.max)
+        }
+        let blocked = try blockedPass()
+        #expect(blocked.filesSeen == 0 && blocked.ttlExpired == 0)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+
+        // A file remembered as readable is not reused while its directory
+        // chain fails the read checks.
+        #expect(SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 1_000_000, nowSeconds: 2_000, budgetBytes: Int.max).filesSeen == 1)
+        let blockedAfterRead = try blockedPass()
+        #expect(blockedAfterRead.filesSeen == 0 && blockedAfterRead.ttlExpired == 0)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root, ttlSeconds: 900, nowSeconds: 10_000, budgetBytes: Int.max)
+        #expect(result.filesSeen == 1)
+        #expect(result.ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
     @Test("maintenance rejects roots reached through a symlinked ancestor")
     func symlinkedRootIsNeverTraversed() throws {
         let container = try tempDir("whole-root-symlink-container")

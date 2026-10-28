@@ -1016,9 +1016,9 @@ darkbloom sandbox uninstall [--yes]
    the next commands.
 
 While the installer runs, Ctrl-C reaches the installer, not the CLI, and setup
-exits `130` saying it is safe to rerun. A failed installer's exit status
-becomes the CLI's, after the stage marked ✗, the installer's `error` detail and
-the last lines of its stderr that do not repeat it.
+exits `130`; an enrollment waiting for approval goes on and a rerun follows it.
+A failed installer's exit status becomes the CLI's, after the stage marked ✗,
+its `failed` message and the last lines of its stderr that do not repeat it.
 
 Rerunning `setup` decides from the add-on's answer
 (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupCommand.swift`,
@@ -1033,30 +1033,48 @@ Rerunning `setup` decides from the add-on's answer
 
 ### Installer progress events
 
-With `--json-progress`, the installer writes one JSON object per stdout line,
-schema 1; other lines show as text, and stderr is kept for the error report.
-Unknown fields are ignored (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupProgress.swift`,
-`SandboxInstallerEvent`, `SandboxSetupRenderer`).
+These are the add-on's command contract as of add-on 1.0.1 (schema 1): new
+fields and events may appear without a new schema, so unknown ones are
+ignored; other stdout lines show as text, and stderr is kept for the error
+report (`provider-swift/Sources/darkbloom/Sandbox/SandboxSetupProgress.swift`,
+`SandboxInstallerEvent`, `SandboxSetupRenderer`). With `--json-progress` the
+installer writes one object per line: `{"schema":1,"event":"stage","stage":…,
+"step":n,"steps":8,"status":…,"message":…}` with the stage's own fields beside
+them, and a successful run ends with one `{"event":"summary",…}`.
 
-| `stage` | Line | Fields |
+| `status` | Meaning | The CLI |
 |---|---|---|
-| `checking` | Checking this Mac | `detail` |
-| `verifying` | Verifying release `version` | `version`, `detail` |
-| `installing` | Installing | `detail` |
-| `waiting_for_approval` | Waiting for approval; the link and code print above it at once | `url` (or `verification_uri_complete`, `verification_uri`), `code` (or `user_code`), `expires_in` seconds |
-| `waitlisted` | On the waitlist; how to stop and come back prints above it | `detail` |
-| `enrolled` | Enrolled (host `host_id`), a milestone | `host_id` |
-| `starting` | Starting | `detail` |
-| `downloading_images` | Downloading images N% | `progress`, 0 to 1 |
-| `ready` | Ready, a milestone | — |
-| `error` | Marks the running stage ✗ with `detail` when the installer fails | `detail` |
-| any other | `detail` as the line | `detail` |
+| `started` | A stage begins; `message` is its title | The stage becomes the running line |
+| `progress` | Something while the stage runs | The approval link and code or the waitlist print at once; download progress updates the running line; another `message` prints under the stage when it ends |
+| `done` | The stage ended; `message` is its one-line result | `✓ Title`, then the stage's messages |
+| `failed` | The last event of a failed run; `message` and `exit_code` | `✗ Title` and the message; stderr lines that only repeat it are dropped |
 
-On a terminal the running stage is the last line, with a spinner, and turns
-into ✓ when the next stage starts; elsewhere each stage prints once, when it
-ends. A stage's `detail` prints under its line when the stage ends. An
-installer that exits `0` while images download ends with `• Downloading images
-N%, continuing in the background`.
+| `stage` | Line | Fields the CLI reads |
+|---|---|---|
+| `checking_mac` | Checking this Mac | — |
+| `verifying_release` | Verifying release | — |
+| `installing` | Installing | — |
+| `waiting_for_approval` | Waiting for approval, or waiting for Darkbloom to approve the account | `progress` with `user_code`, `verification_uri`, `verification_uri_complete` (or `null`) and `browser_opened`; `progress` with `waitlisted: true` |
+| `enrolled` | Enrolled | — |
+| `starting` | Starting | — |
+| `downloading_images` | Downloading images N% | `progress` (0 to 1) with `--wait-ready` |
+| `ready` | Ready | — |
+| another | its `started` message | — |
+
+The summary's `slots` (`linux`, `macos`: `count`, `automatic`, `limit`) and
+`console_url` feed the setup summary. On a terminal the running stage is the
+last line, with a spinner, and turns into ✓ or ✗ when it ends; elsewhere each
+stage prints once, when it ends, and `--wait-ready` download progress prints
+every tenth.
+
+| Installer exit status | `setup` says |
+|---|---|
+| `0` | The summary: state, jobs at a time (automatic and the limit, or your choice), next commands |
+| `2` | This Mac cannot host Darkbloom Sandbox as it is (the failed stage says why) |
+| `3` | Not enrolled: the code was denied or expired, or the waitlist request ended; run `setup` to start again |
+| `4` | Jobs are running; run `setup` again once they finish, `pause` meanwhile |
+| `130` | Stopped; an enrollment waiting for approval goes on, and a rerun follows it |
+| other | Setup did not finish; it is safe to rerun |
 
 ### Add-on commands
 
@@ -1067,9 +1085,13 @@ N%, continuing in the background`.
 | `darkbloom-sandbox uninstall --yes` | `uninstall` | none; terminal attached |
 | `darkbloom-sandbox status` | `status`, for an add-on older than `status --json` | none; terminal attached |
 
-`status --json` (schema 1) is decoded leniently: only an integer `schema` of 1
-or more and a string `state` are required, so older and newer add-ons still
-render (`provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift`,
+`status --json` exits `1` when nothing is installed and still prints its
+document, so the CLI reads stdout whatever the exit status. `pause` and
+`resume` exit `0` (also when already so) and `1` when nothing is installed,
+which the CLI reports as not set up. `status --json` (schema 1, every member
+present, nullable ones as `null`) is decoded leniently: only an integer
+`schema` of 1 or more and a string `state` are required, so older and newer
+add-ons still render (`provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift`,
 `SandboxAddonStatus`).
 
 | Field | Type | Use |
@@ -1078,14 +1100,14 @@ render (`provider-swift/Sources/darkbloom/Sandbox/SandboxAddon.swift`,
 | `installed` | bool | `false` reads as not set up |
 | `version` | string | Shown in the heading |
 | `host_id` | string or null | Shown as `Host` |
-| `state` | `not_installed`, `waiting_for_approval`, `waitlisted`, `enrolling`, `downloading_images`, `ready`, `running`, `paused`, `updating`, `stopped`, `error` | The heading and what it means for inference; another value shows as text |
-| `detail` | string | Shown as `Detail` |
-| `slots.linux`, `slots.macos` | `{"total": n, "free": n}` | Free slots; a platform with no slots is left out |
+| `state` | `not_installed`, `waiting_for_approval`, `waitlisted`, `enrolling`, `downloading_images`, `ready`, `running`, `paused`, `updating`, `stopped`, `error` | The heading; another value shows as text |
+| `detail` | string | The line under the heading, except for `ready`, `running`, `paused` and `stopped`, where the CLI says what the state means for inference and which command to run |
+| `slots.linux`, `slots.macos` | `{"total": n, "free": n}` | Free slots while the agent reports (`ready`, `running`, `paused`, `updating`); a platform without slots is left out |
 | `jobs_running` | integer | `running N jobs` |
-| `images` | `[{"platform", "state": "installed" \| "downloading" \| "missing", "progress": 0..1 or null}]` | Images line and download percentage |
-| `accepting` | bool | A ready Mac with `false` reads as not taking jobs |
-| `last_update_check` | Unix seconds (or milliseconds), ISO 8601, or null | `Updates` line |
-| `console_url` | string | `Console` line and the setup summary's earnings link |
+| `images` | `[{"platform": "linux" \| "macos", "state": "installed" \| "downloading" \| "missing", "progress": 0..1 or null}]` | Images line and the download percentage |
+| `accepting` | bool | A ready Mac with `false` shows the add-on's `detail` |
+| `last_update_check` | Unix seconds or null (milliseconds and ISO 8601 are read too) | `Updates` line |
+| `console_url` | string | `Console` line and the setup summary |
 
 An add-on that answers with exit status `64` or its usage on stderr predates
 the option or action: `status` then shows the add-on's own `status` output,
@@ -1946,7 +1968,7 @@ manual use.
 | `1` | `ExitCode.failure` — every runtime error listed above |
 | `64` | swift-argument-parser validation error (unknown flag, missing positional, `fan configure` with no option) |
 | `130` | `darkbloom sandbox setup` stopped with Ctrl-C while the add-on installer ran |
-| other | `darkbloom sandbox setup` exits with a failing add-on installer's own status; `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
+| `2`, `3`, `4`, other | `darkbloom sandbox setup` exits with a failing add-on installer's own status ([what each means](#installer-progress-events)); `sandbox logs` and `sandbox uninstall` with `tail`'s or the add-on's |
 
 ## Paths and identifiers
 

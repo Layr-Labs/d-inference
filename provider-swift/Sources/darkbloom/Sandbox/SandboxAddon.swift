@@ -86,12 +86,14 @@ extension SandboxAddon {
         result.terminationStatus == 64 || result.stderr.contains("usage: darkbloom-sandbox")
     }
 
-    /// The exit status and the last line the add-on printed.
+    /// The exit status and the last line the add-on printed, without its
+    /// `error: ` prefix.
     static func failureSummary(_ result: SecurityCommandResult) -> String {
         let output = [result.stderr, result.stdout]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
-        let last = output?.split(separator: "\n").last.map { String($0).trimmingCharacters(in: .whitespaces) }
+        var last = output?.split(separator: "\n").last.map { String($0).trimmingCharacters(in: .whitespaces) }
+        if let line = last, line.hasPrefix("error: ") { last = String(line.dropFirst("error: ".count)) }
         return "exit status \(result.terminationStatus)" + (last.map { ": \($0)" } ?? "")
     }
 }
@@ -208,11 +210,6 @@ extension SandboxAddonStatus {
         !images.isEmpty && images.allSatisfy { $0.state == "installed" }
     }
 
-    /// The overall download progress of the images not installed yet.
-    var imageProgress: Double? {
-        let pending = images.filter { $0.state != "installed" }
-        let known = pending.compactMap(\.progress)
-        guard !pending.isEmpty, !known.isEmpty else { return nil }
-        return known.reduce(0, +) / Double(pending.count)
-    }
+    /// The image downloading now (the add-on fetches one at a time).
+    var downloadingImage: Image? { images.first { $0.state == "downloading" } }
 }

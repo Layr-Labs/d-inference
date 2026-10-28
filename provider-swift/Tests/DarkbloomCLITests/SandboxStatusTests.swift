@@ -7,22 +7,26 @@ import Testing
 
 @Suite("darkbloom sandbox status")
 struct SandboxStatusTests {
-    @Test("schema 1 decodes every field; missing fields and unknown states still decode")
+    @Test("schema 1 as add-on 1.0.1 writes it decodes every field; missing fields and unknown states still decode")
     func decoding() throws {
         let ready = SandboxFixtures.status(SandboxFixtures.ready)
         #expect(ready == SandboxAddonStatus(
-            schema: 1, installed: true, version: "1.2.0", hostID: "h_8f2c1a", state: .ready, detail: nil,
+            schema: 1, installed: true, version: "1.0.1", hostID: SandboxFixtures.host, state: .ready,
+            detail: "Ready for jobs (free slots: Linux 1 of 1, macOS 1 of 1)",
             linux: .init(total: 1, free: 1), macOS: .init(total: 1, free: 1), jobsRunning: 0,
-            images: [.init(platform: "linux_arm64", state: "installed", progress: nil),
-                     .init(platform: "macos_arm64", state: "installed", progress: nil)],
+            images: [.init(platform: "linux", state: "installed", progress: nil),
+                     .init(platform: "macos", state: "installed", progress: nil)],
             accepting: true, lastUpdateCheck: Date(timeIntervalSince1970: SandboxFixtures.lastUpdateCheck),
-            consoleURL: "https://api-sandbox.darkbloom.dev"))
+            consoleURL: "https://api-sandbox.darkbloom.dev/macs/\(SandboxFixtures.host)"))
         #expect(ready.imagesInstalled)
 
         let downloading = SandboxFixtures.status(SandboxFixtures.downloading)
         #expect(downloading.state == .downloadingImages)
-        #expect(downloading.imageProgress == 0.42)
+        #expect(downloading.downloadingImage == .init(platform: "linux", state: "downloading", progress: 0.42))
         #expect(!downloading.imagesInstalled)
+
+        let absent = SandboxFixtures.status(SandboxFixtures.notInstalled)
+        #expect(!absent.installed && absent.state == .notInstalled && absent.hostID == nil)
 
         let minimal = SandboxFixtures.status(SandboxFixtures.minimal)
         #expect(minimal.installed && minimal.state == .ready && minimal.jobsRunning == 0 && minimal.images.isEmpty)
@@ -59,50 +63,62 @@ struct SandboxStatusTests {
     func readyScreen() {
         let now = Date(timeIntervalSince1970: SandboxFixtures.lastUpdateCheck + 720)
         #expect(SandboxStatusView.lines(SandboxFixtures.status(SandboxFixtures.ready), now: now) == [
-            "Darkbloom Sandbox 1.2.0: ready",
+            "Darkbloom Sandbox 1.0.1: ready",
             "  Waiting for jobs. Inference runs as usual until a job starts.",
             "  Free slots: Linux 1 of 1, macOS 1 of 1",
             "  Images: Linux installed, macOS installed",
-            "  Host: h_8f2c1a",
+            "  Host: \(SandboxFixtures.host)",
             "  Updates: automatic, last checked 12m ago",
-            "  Console: https://api-sandbox.darkbloom.dev (jobs and earnings)",
+            "  Console: https://api-sandbox.darkbloom.dev/macs/\(SandboxFixtures.host) (jobs and earnings)",
             "  Pause: darkbloom sandbox pause (running jobs finish; no new ones)",
             "  Logs: darkbloom sandbox logs",
         ])
     }
 
-    @Test("each state says what it means for inference and what to do")
+    @Test("each state says what it means for inference, or the add-on's own detail, and what to run next")
     func states() {
         func screen(_ json: String) -> [String] { SandboxStatusView.lines(SandboxFixtures.status(json)) }
         let running = screen(SandboxFixtures.running)
-        #expect(running[0] == "Darkbloom Sandbox 1.2.0: running 1 job")
+        #expect(running[0] == "Darkbloom Sandbox 1.0.1: running 1 job")
         #expect(running[1] == "  Inference is paused while jobs run, and resumes after the last one ends.")
         #expect(running[2] == "  Free slots: Linux 0 of 1, macOS 1 of 1")
 
         let paused = screen(SandboxFixtures.paused)
-        #expect(paused[0] == "Darkbloom Sandbox 1.2.0: paused")
+        #expect(paused[0] == "Darkbloom Sandbox 1.0.1: paused")
         #expect(paused[1] == "  1 job still running; it finishes normally. No new jobs until you run `darkbloom sandbox resume`.")
+        #expect(paused.contains("  Free slots: Linux 0 of 1, macOS 0 of 1"))
         #expect(paused.contains("  Resume: darkbloom sandbox resume"))
         #expect(paused.contains("  Updates: automatic, not checked yet"))
 
         let downloading = screen(SandboxFixtures.downloading)
-        #expect(downloading[0] == "Darkbloom Sandbox 1.2.0: downloading images (42%)")
-        #expect(downloading.contains("  Images: Linux installed, macOS downloading 42%"))
+        #expect(downloading[0] == "Darkbloom Sandbox 1.0.1: downloading images (Linux 42%)")
+        #expect(downloading[1] == "  Downloading its linux image: 42%")
+        #expect(downloading[2] == "  Images: Linux downloading 42%, macOS missing")
+        #expect(!downloading.contains { $0.hasPrefix("  Free slots:") })
 
         let waiting = screen(SandboxFixtures.waiting)
-        #expect(waiting[0] == "Darkbloom Sandbox 1.2.0: waiting for approval")
-        #expect(waiting[1].contains("Run `darkbloom sandbox setup` to see the link and code again."))
+        #expect(waiting[0] == "Darkbloom Sandbox 1.0.1: waiting for approval")
+        #expect(waiting[1] == "  Approve this Mac at https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT (code WDJB-MJHT)")
         #expect(!waiting.contains { $0.hasPrefix("  Free slots:") || $0.hasPrefix("  Host:") })
+        #expect(waiting.contains("  Follow the setup: darkbloom sandbox setup"))
 
         let error = screen(SandboxFixtures.error)
-        #expect(error[0] == "Darkbloom Sandbox 1.2.0: error")
-        #expect(error[1] == "  See `darkbloom sandbox logs` for details.")
-        #expect(error[2] == "  Detail: the macOS image failed verification")
+        #expect(error[0] == "Darkbloom Sandbox 1.0.1: error")
+        #expect(error[1] == "  Not connected to the plane (cannot reach the plane); it keeps trying")
+        #expect(error.contains("  Repair: darkbloom sandbox setup"))
+
+        var stopped = SandboxFixtures.status(SandboxFixtures.error)
+        stopped.state = .stopped
+        #expect(SandboxStatusView.lines(stopped)[1]
+            == "  The agent is not running, so this Mac gets no jobs. Run `darkbloom sandbox setup` to start it.")
 
         let future = screen(SandboxFixtures.future)
         #expect(future[0] == "Darkbloom Sandbox: hibernating")
-        #expect(future[1] == "  Your add-on is newer than this CLI. Run `darkbloom update` for a matching CLI.")
-        #expect(future[2] == "  Detail: Sleeping until 22:00")
+        #expect(future[1] == "  Sleeping until 22:00")
+        var silent = SandboxFixtures.status(SandboxFixtures.future)
+        silent.detail = nil
+        #expect(SandboxStatusView.lines(silent)[1]
+            == "  Your add-on is newer than this CLI. Run `darkbloom update` for a matching CLI.")
     }
 
     @Test("color marks the state only when enabled")
@@ -110,7 +126,7 @@ struct SandboxStatusTests {
         let plain = SandboxStatusView.lines(SandboxFixtures.status(SandboxFixtures.error), color: false)
         let colored = SandboxStatusView.lines(SandboxFixtures.status(SandboxFixtures.error), color: true)
         #expect(!plain[0].contains("\u{1B}["))
-        #expect(colored[0] == "Darkbloom Sandbox 1.2.0: \u{1B}[1;31merror\u{1B}[0m")
+        #expect(colored[0] == "Darkbloom Sandbox 1.0.1: \u{1B}[1;31merror\u{1B}[0m")
     }
 
     @Test("darkbloom status gets one line when the add-on is installed, and none when it is not")
@@ -124,8 +140,8 @@ struct SandboxStatusTests {
         #expect(line(SandboxFixtures.ready) == "Sandboxes: ready, no jobs running; free slots Linux 1/1, macOS 1/1")
         #expect(line(SandboxFixtures.running) == "Sandboxes: running 1 job; free slots Linux 0/1, macOS 1/1")
         #expect(line(SandboxFixtures.paused)
-            == "Sandboxes: paused (1 job finishing, no new jobs); free slots Linux 0/1, macOS 1/1")
-        #expect(line(SandboxFixtures.downloading) == "Sandboxes: downloading images (42%)")
+            == "Sandboxes: paused (1 job finishing, no new jobs); free slots Linux 0/1, macOS 0/1")
+        #expect(line(SandboxFixtures.downloading) == "Sandboxes: downloading images (Linux 42%)")
         #expect(line(SandboxFixtures.waiting) == "Sandboxes: waiting for approval." + details)
         #expect(line(SandboxFixtures.error) == "Sandboxes: error." + details)
         #expect(line(SandboxFixtures.future) == "Sandboxes: hibernating." + details)

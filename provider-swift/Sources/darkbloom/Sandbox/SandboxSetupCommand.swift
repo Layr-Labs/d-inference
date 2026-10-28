@@ -81,6 +81,7 @@ enum SandboxSetupPlan: Equatable, Sendable {
 
     static func decide(_ query: SandboxAddonQuery, changingSlots: Bool) -> SandboxSetupPlan {
         let repair = "running the installer again to repair it"
+        let capitalizedRepair = "Running the installer again to repair it"
         switch query {
         case .notInstalled:
             return .fresh
@@ -95,7 +96,8 @@ enum SandboxSetupPlan: Equatable, Sendable {
             case .stopped:
                 return .rerun("The add-on's agent is stopped; \(repair).")
             case .error:
-                return .rerun("The add-on reports an error" + (status.detail.map { " (\($0))" } ?? "") + "; \(repair).")
+                guard let detail = status.detail else { return .rerun("The add-on reports an error; \(repair).") }
+                return .rerun("The add-on reports an error: \(detail). \(capitalizedRepair).")
             case .ready, .running, .paused, .downloadingImages, .updating, .unknown:
                 return changingSlots ? .rerun("Applying the new slot counts.") : .alreadySetUp(status)
             }
@@ -142,7 +144,6 @@ struct SandboxSetupFlow {
             guard try await checkAndConfirm() else { return }
         }
         try await install()
-        printSummary()
     }
 
     // MARK: - Check and confirm
@@ -216,10 +217,9 @@ struct SandboxSetupFlow {
         let arguments = [file.path] + SandboxInstaller.arguments(options, jsonProgress: jsonProgress)
         print("")
         let exit: SandboxChildProcess.Exit
+        var summary: SandboxInstallerEvent?
         if jsonProgress {
-            exit = try await runWithProgress(arguments, directory: file.deletingLastPathComponent(),
-                                             approvalPage: url.deletingLastPathComponent()
-                                                 .appendingPathComponent("device").absoluteString)
+            (exit, summary) = try await runWithProgress(arguments, directory: file.deletingLastPathComponent())
         } else {
             print("This version of the installer does not report its steps to the CLI; its own output follows.")
             if options.noBrowser || options.waitReady { print("It does not support --no-browser or --wait-ready.") }
@@ -229,23 +229,34 @@ struct SandboxSetupFlow {
         }
         guard exit.succeeded else {
             print("")
-            if exit.interrupted {
-                print("Setup stopped. Run `\(cli) sandbox setup` again to continue; it is safe to rerun.")
-                throw ExitCode(130)
-            }
-            print("Setup did not finish. When the problem above is fixed, run `\(cli) sandbox setup` again; "
-                + "it is safe to rerun.")
-            throw ExitCode(exit.signal == nil && exit.status != 0 ? exit.status : 1)
+            print(Self.advice(exit))
+            throw ExitCode(exit.interrupted ? 130 : exit.signal == nil && exit.status != 0 ? exit.status : 1)
         }
+        printSummary(installer: summary)
     }
 
     static let shell = URL(fileURLWithPath: "/bin/sh")
 
-    private func runWithProgress(_ arguments: [String], directory: URL, approvalPage: String) async throws
-        -> SandboxChildProcess.Exit
+    /// What a failed or stopped installer means for the owner, by its exit status.
+    static func advice(_ exit: SandboxChildProcess.Exit) -> String {
+        let rerun = "`\(Sandbox.cli) sandbox setup`"
+        if exit.interrupted {
+            return "Setup stopped. An enrollment waiting for approval goes on; run \(rerun) again to follow it."
+        }
+        switch exit.signal == nil ? exit.status : 1 {
+        case 2: return "This Mac cannot host Darkbloom Sandbox as it is; see why above."
+        case 3: return "This Mac was not enrolled: the code was denied or expired, or the waitlist request ended. "
+            + "Run \(rerun) to start again."
+        case 4: return "Jobs are running on this Mac. Run \(rerun) again once they finish; "
+            + "`\(Sandbox.cli) sandbox pause` keeps new ones from starting."
+        default: return "Setup did not finish. When the problem above is fixed, run \(rerun) again; it is safe to rerun."
+        }
+    }
+
+    private func runWithProgress(_ arguments: [String], directory: URL) async throws
+        -> (SandboxChildProcess.Exit, SandboxInstallerEvent?)
     {
-        let renderer = SandboxSetupRenderer(interactive: terminal, color: color, browserOpens: !options.noBrowser,
-                                            approvalPage: approvalPage)
+        let renderer = SandboxSetupRenderer(interactive: terminal, color: color)
         let errors = SandboxOutputTail()
         let spinner: Task<Void, Never>? = terminal ? Task {
             while !Task.isCancelled {
@@ -268,42 +279,39 @@ struct SandboxSetupFlow {
         } else if exit.interrupted {
             renderer.finish(.interrupted)
         } else {
-            renderer.finish(.failed(Self.failureLines(detail: renderer.failureDetail, errors: errors.lastLines(5),
-                                                      status: exit.status)))
+            // The installer writes its error to stderr as `error: …` too; the renderer drops repeats.
+            renderer.finish(.failed(status: exit.status, errors: errors.lastLines(5)))
         }
-        return exit
-    }
-
-    /// The installer's error, then the end of its stderr minus lines that
-    /// only repeat it.
-    static func failureLines(detail: String?, errors: [String], status: Int32) -> [String] {
-        let others = errors.filter { line in
-            guard let detail else { return true }
-            return !line.contains(detail) && !detail.contains(line)
-        }
-        let lines = (detail.map { [$0] } ?? []) + others
-        return lines.isEmpty ? ["The installer exited with status \(status)."] : lines
+        return (exit, renderer.summary)
     }
 
     // MARK: - Summary
 
-    private func printSummary() {
+    private func printSummary(installer: SandboxInstallerEvent?) {
         print("")
         guard case .status(let status, _) = addon.queryStatus(timeout: Sandbox.statusTimeout), status.installed else {
             print("Done. Check this Mac with `\(cli) sandbox status`.")
             return
         }
-        Self.summary(status, server: options.server, color: color).forEach { print($0) }
+        Self.summary(status, installer: installer, server: options.server, color: color).forEach { print($0) }
     }
 
-    static func summary(_ status: SandboxAddonStatus, server: String, color: Bool) -> [String] {
+    /// The add-on's state now, the slots the installer chose (from its
+    /// summary event, else the configured totals) and the next commands.
+    static func summary(_ status: SandboxAddonStatus, installer: SandboxInstallerEvent? = nil, server: String,
+                        color: Bool) -> [String] {
         let cli = Sandbox.cli
         let headline = SandboxStatusView.headline(status)
         var lines = ["Darkbloom Sandbox is set up on this Mac: "
             + DoctorTerminalStyle.verdict(headline.text, level: headline.level, color: color)]
-        lines.append("  " + SandboxStatusView.meaning(status))
-        let slots = [("Linux", status.linux?.total ?? 0), ("macOS", status.macOS?.total ?? 0)]
-            .filter { $0.1 > 0 }.map { "\($0.1) \($0.0)" }
+        lines.append("  " + SandboxStatusView.explanation(status))
+        let slots: [String] = [("Linux", installer?.linuxSlots, status.linux), ("macOS", installer?.macOSSlots, status.macOS)]
+            .compactMap { name, choice, configured in
+                guard let count = choice?.count ?? configured?.total, count > 0 else { return nil }
+                guard let choice else { return "\(count) \(name)" }
+                return "\(count) \(name) (" + (choice.automatic ? "automatic" + (choice.limit.map { ", limited by \($0)" } ?? "")
+                    : "your choice") + ")"
+            }
         if !slots.isEmpty { lines.append("  Jobs at a time: \(slots.joined(separator: ", "))") }
         lines += [
             "",
@@ -311,7 +319,7 @@ struct SandboxSetupFlow {
             "  \(cli) sandbox status    see jobs, slots and images",
             "  \(cli) sandbox pause     let running jobs finish and take no new ones",
             "  \(cli) sandbox logs -f   follow the add-on's log",
-            "  Earnings: \(status.consoleURL ?? server) (Billing → Earnings)",
+            "  Console: \(status.consoleURL ?? installer?.consoleURL ?? server) (jobs; earnings under Billing → Earnings)",
             "  Keep this Mac plugged in, awake and logged in.",
         ]
         return lines

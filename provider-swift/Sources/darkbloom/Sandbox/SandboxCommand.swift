@@ -223,7 +223,7 @@ extension Sandbox {
             "detail": "Darkbloom Sandbox is not set up on this Mac. Run `\(cli) sandbox setup`.",
             "slots": ["linux": ["total": 0, "free": 0], "macos": ["total": 0, "free": 0]],
             "jobs_running": 0, "images": [Any](), "accepting": false, "last_update_check": NSNull(),
-            "console_url": defaultServer,
+            "console_url": defaultServer + "/macs",
         ]
         let data = (try? JSONSerialization.data(withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]))
             ?? Data()
@@ -233,16 +233,22 @@ extension Sandbox {
     /// `pause` or `resume` through the add-on, then the state it left.
     static func perform(_ action: String) throws {
         let addon = SandboxAddon.live()
+        let notSetUp = "Darkbloom Sandbox is not set up on this Mac. Set it up with `\(cli) sandbox setup`."
         switch addon.perform([action], timeout: actionTimeout) {
         case .notInstalled:
-            printError("Darkbloom Sandbox is not set up on this Mac. Set it up with `\(cli) sandbox setup`.")
+            printError(notSetUp)
             throw ExitCode.failure
         case .outdated:
             printError("This version of the add-on cannot \(action) from the CLI. It updates itself; "
                 + "run `\(cli) sandbox setup` to update it now.")
             throw ExitCode.failure
         case .failed(let reason):
-            printError("The add-on could not \(action) (\(reason)). See `\(cli) sandbox logs`.")
+            // The add-on refuses both when nothing is installed under its command.
+            if case .status(let status, _) = addon.queryStatus(timeout: statusTimeout), !status.installed {
+                printError(notSetUp)
+            } else {
+                printError("The add-on could not \(action) (\(reason)). See `\(cli) sandbox logs`.")
+            }
             throw ExitCode.failure
         case .done:
             var jobsRunning = 0

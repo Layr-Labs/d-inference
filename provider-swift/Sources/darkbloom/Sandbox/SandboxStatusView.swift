@@ -14,7 +14,10 @@ enum SandboxStatusView {
         case .waitlisted: return ("on the waitlist", .warn)
         case .enrolling: return ("enrolling", .warn)
         case .downloadingImages:
-            return ("downloading images" + (status.imageProgress.map { " (\(percent($0)))" } ?? ""), .warn)
+            let image = status.downloadingImage.flatMap { image in
+                image.progress.map { " (\(platformName(image.platform)) \(percent($0)))" }
+            }
+            return ("downloading images" + (image ?? ""), .warn)
         case .ready: return (status.jobsRunning > 0 ? "running \(jobs(status.jobsRunning))" : "ready", .pass)
         case .running: return ("running \(jobs(status.jobsRunning))", .pass)
         case .paused: return ("paused", .warn)
@@ -62,15 +65,32 @@ enum SandboxStatusView {
         }
     }
 
+    /// The line under the heading. While jobs can run, the CLI says what it
+    /// means for inference; otherwise the add-on's own `detail` is the most
+    /// specific (the approval link and code, a refusal, disk space), and the
+    /// CLI's words stand in when an add-on sends none.
+    static func explanation(_ status: SandboxAddonStatus) -> String {
+        switch status.state {
+        case .running, .paused, .stopped:
+            return meaning(status)
+        case .ready where status.accepting != false || status.jobsRunning > 0:
+            return meaning(status)
+        default:
+            return status.detail ?? meaning(status)
+        }
+    }
+
     /// The `darkbloom sandbox status` screen.
     static func lines(_ status: SandboxAddonStatus, now: Date = Date(), color: Bool = false) -> [String] {
         let headline = headline(status)
         let title = "Darkbloom Sandbox" + (status.version.map { " \($0)" } ?? "") + ": "
         var lines = [title + DoctorTerminalStyle.verdict(headline.text, level: headline.level, color: color)]
-        lines.append("  " + meaning(status))
-        if let detail = status.detail { lines.append("  Detail: \(detail)") }
+        lines.append("  " + explanation(status))
         guard status.state != .notInstalled else { return lines }
-        if let slots = slotsText(status) { lines.append("  Free slots: \(slots)") }
+        // Free slots mean something only while the agent reports.
+        if [.ready, .running, .paused, .updating].contains(status.state), let slots = slotsText(status) {
+            lines.append("  Free slots: \(slots)")
+        }
         if !status.images.isEmpty { lines.append("  Images: \(imagesText(status.images))") }
         if let host = status.hostID { lines.append("  Host: \(host)") }
         let checked = status.lastUpdateCheck.map {
@@ -78,10 +98,19 @@ enum SandboxStatusView {
         } ?? "not checked yet"
         lines.append("  Updates: automatic, \(checked)")
         if let console = status.consoleURL { lines.append("  Console: \(console) (jobs and earnings)") }
-        lines.append(status.state == .paused
-            ? "  Resume: \(cli) sandbox resume" : "  Pause: \(cli) sandbox pause (running jobs finish; no new ones)")
+        lines.append("  " + nextStep(status))
         lines.append("  Logs: \(cli) sandbox logs")
         return lines
+    }
+
+    /// The command that moves this state along.
+    static func nextStep(_ status: SandboxAddonStatus) -> String {
+        switch status.state {
+        case .paused: return "Resume: \(cli) sandbox resume"
+        case .waitingForApproval, .waitlisted, .enrolling: return "Follow the setup: \(cli) sandbox setup"
+        case .stopped, .error: return "Repair: \(cli) sandbox setup"
+        default: return "Pause: \(cli) sandbox pause (running jobs finish; no new ones)"
+        }
     }
 
     static func notInstalledLines() -> [String] {

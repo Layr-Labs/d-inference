@@ -137,33 +137,41 @@ struct SandboxSetupTests {
 
     // MARK: - Progress events
 
-    @Test("progress lines decode into stages; anything else is shown as text")
-    func events() {
-        #expect(SandboxInstallerOutput(line: #"{"schema":1,"stage":"verifying","version":"1.2.0"}"#)
-            == .event(.init(stage: .verifying, version: "1.2.0")))
-        #expect(SandboxInstallerOutput(line: #"""
-            {"schema":1,"stage":"waiting_for_approval","verification_uri_complete":"https://s/device?user_code=AB","user_code":"AB","expires_in":600,"extra":true}
-            """#) == .event(.init(stage: .waitingForApproval, url: "https://s/device?user_code=AB", code: "AB",
-                                  expiresIn: 600)))
-        #expect(SandboxInstallerOutput(line: #"{"stage":"downloading_images","progress":1.7}"#)
-            == .event(.init(stage: .downloadingImages, progress: 1)))
-        #expect(SandboxInstallerOutput(line: #"{"schema":1,"stage":"vm_check","detail":"Checking the VM runtime"}"#)
-            == .event(.init(stage: .other("vm_check"), detail: "Checking the VM runtime")))
+    @Test("installer events decode as add-on 1.0.1 writes them; anything else is shown as text")
+    func events() throws {
+        let started = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events[2]))
+        #expect(started.kind == .stage && started.stage == "verifying_release" && started.status == .started)
+        #expect(started.message == "Verifying release")
+        let approval = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events[8]))
+        #expect(approval.status == .progress && approval.userCode == "WDJB-MJHT" && approval.browserOpened == false)
+        #expect(approval.verificationURI == "https://api-sandbox.darkbloom.dev/device")
+        #expect(approval.verificationURIComplete == "https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT")
+        let summary = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events.last!))
+        #expect(summary.kind == .summary && summary.hostID == SandboxFixtures.host)
+        #expect(summary.linuxSlots == .init(count: 1, automatic: true, limit: "cores"))
+        #expect(summary.consoleURL == "https://api-sandbox.darkbloom.dev/macs/\(SandboxFixtures.host)")
+        let failed = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.stage(
+            "waiting_for_approval", "failed", "the owner denied the request", #""exit_code":3"#)))
+        #expect(failed.status == .failed && failed.exitCode == 3)
+        let download = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.stage(
+            "downloading_images", "progress", "Downloading", #""platform":null,"progress":1.7"#)))
+        #expect(download.progress == 1)
+        #expect(SandboxInstallerEvent(json: #"{"event":"stage","stage":"x","status":"later"}"#)?.status == .other("later"))
+        #expect(SandboxInstallerEvent(json: #"{"event":"heartbeat"}"#)?.kind == .other("heartbeat"))
         #expect(SandboxInstallerOutput(line: "==> Downloading the latest release") == .text("==> Downloading the latest release"))
-        #expect(SandboxInstallerOutput(line: #"{"no":"stage"}"#) == .text(#"{"no":"stage"}"#))
+        #expect(SandboxInstallerOutput(line: #"{"no":"event"}"#) == .text(#"{"no":"event"}"#))
         #expect(SandboxInstallerOutput(line: "   ") == nil)
-        #expect(SandboxInstallerEvent(stage: .other("vm_check")).title == "Vm Check")
-        #expect(SandboxInstallerEvent(stage: .enrolled, hostID: "h_1").title == "Enrolled (host h_1)")
-        #expect(SandboxInstallerEvent(stage: .downloadingImages, progress: 0.426).title == "Downloading images 42%")
+        #expect(SandboxInstallerEvent.title(stage: "starting", message: "Starting the agent") == "Starting")
+        #expect(SandboxInstallerEvent.title(stage: "vm_check", message: "Checking the VM runtime") == "Checking the VM runtime")
+        #expect(SandboxInstallerEvent.title(stage: "vm_check", message: nil) == "Vm Check")
     }
 
     /// Each event as the renderer gets it.
-    private static func render(_ lines: [String], interactive: Bool = false, browserOpens: Bool = true,
+    private static func render(_ lines: [String], interactive: Bool = false,
                                finish outcome: SandboxSetupRenderer.Outcome = .succeeded) -> String {
         let output = LineCollector()
-        let renderer = SandboxSetupRenderer(interactive: interactive, color: false, browserOpens: browserOpens,
-                                            approvalPage: "https://sandbox.example/device",
-                                            width: { 80 }, write: { output.append($0) })
+        let renderer = SandboxSetupRenderer(interactive: interactive, color: false, width: { 80 },
+                                            write: { output.append($0) })
         for line in lines {
             if let parsed = SandboxInstallerOutput(line: line) { renderer.handle(parsed) }
             if interactive { renderer.tick() }
@@ -172,73 +180,128 @@ struct SandboxSetupTests {
         return output.all.joined()
     }
 
-    @Test("off a terminal each stage prints once it ends; the approval link prints at once")
+    @Test("off a terminal each stage prints once it ends, with its results; the approval link prints at once")
     func transcript() {
-        #expect(Self.render(FakeSandboxInstaller.events + [
-            #"{"schema":1,"stage":"downloading_images","progress":0.71}"#,
-            #"{"schema":1,"stage":"downloading_images","progress":0.75}"#,
-            #"{"schema":1,"stage":"ready"}"#,
-        ], browserOpens: false) == """
+        #expect(Self.render(FakeSandboxInstaller.events) == """
               ✓ Checking this Mac
-              ✓ Verifying release 1.2.0
+                Apple M4 Max, 16 cores, 128 GB memory, macOS 27.0.1; logged in as ada
+              ✓ Verifying release
+                Downloaded 1.0.1 from https://api-sandbox.darkbloom.dev: the archive matches its manifest, the app is Darkbloom's (team SLDQ2GJ6TL)
+                Darkbloom Sandbox 1.0.1, signed by Darkbloom (Developer ID team SLDQ2GJ6TL); the release's signature checks out
               ✓ Installing
-                Linux slots: 1
+                ~/DarkbloomSandbox: 1 Linux slot and 1 macOS slot
 
-                Approve this Mac in your browser, signed in to your Darkbloom account:
-                  https://sandbox.invalid/device?user_code=WXYZ-1234
-                Code: WXYZ-1234 (expires in 15 min). Earnings go to the account that approves.
-                Open the link yourself. The CLI cannot approve for you.
+                Approve this Mac in your browser, signed in to the Darkbloom account that should own it:
+                  https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT
+                Code: WDJB-MJHT. Check the Mac shown, then press Approve; the CLI cannot approve for you.
+                Open the link in a browser on any device.
+                Earnings for jobs on this Mac go to the account that approves it.
 
               ✓ Waiting for approval
-              ✓ Enrolled (host h_test)
+                Approved after 0:42
+              ✓ Enrolled
+                Host 0b7d4e2a-91c3-4f6e-8a25-7c1d3e9f4b60; App Attest verified this app
               ✓ Starting
-                Downloading images 71%
-              ✓ Downloading images 75%
+                Connected to https://api-sandbox.darkbloom.dev
+              ✓ Downloading images
+                In the background (about 13 GB for Linux and 42 GB for macOS)
               ✓ Ready
+                Not yet: this Mac takes jobs once its first image is installed
 
             """)
     }
 
-    @Test("an installer that stops while images download says they continue")
-    func backgroundDownload() {
-        let transcript = Self.render(FakeSandboxInstaller.events)
-        #expect(transcript.hasSuffix("  ✓ Starting\n  • Downloading images 42%, continuing in the background\n"))
-        #expect(transcript.contains(
-            "    Your browser should open it; if not, open the link yourself. The CLI cannot approve for you.\n"))
+    @Test("--wait-ready download progress prints every tenth; an opened browser and the waitlist are said so")
+    func waitingStages() {
+        let stage = FakeSandboxInstaller.stage
+        let transcript = Self.render([
+            stage("waiting_for_approval", "started", "Waiting for approval", ""),
+            stage("waiting_for_approval", "progress", "Opened…",
+                  #""browser_opened":true,"user_code":"WDJB-MJHT","verification_uri":"https://s.example/device","verification_uri_complete":null"#),
+            stage("waiting_for_approval", "progress", "Your account is on the waitlist…", #""waitlisted":true"#),
+            stage("waiting_for_approval", "done", "Approved after 2:01:13", ""),
+            stage("downloading_images", "started", "Downloading images", ""),
+            stage("downloading_images", "progress", "Downloading its linux image: 5% 0:01", #""platform":"linux","progress":0.05"#),
+            stage("downloading_images", "progress", "Downloading its linux image: 42% 0:09", #""platform":"linux","progress":0.42"#),
+            stage("downloading_images", "progress", "Downloading its linux image: 47% 0:10", #""platform":"linux","progress":0.47"#),
+            stage("downloading_images", "progress", "Downloading its linux image: 100% 0:21", #""platform":"linux","progress":1"#),
+            stage("downloading_images", "done", "Installed: linux; the rest in the background", #""installed":["linux"]"#),
+        ])
+        #expect(transcript == """
+
+                Approve this Mac in your browser, signed in to the Darkbloom account that should own it:
+                  https://s.example/device
+                Code: WDJB-MJHT. Check the Mac shown, then press Approve; the CLI cannot approve for you.
+                Your browser opened this page. If it didn't, open the link yourself.
+                Earnings for jobs on this Mac go to the account that approves it.
+
+
+                Your account is on the waitlist: Darkbloom reviews new Mac owners before their first Mac joins.
+                Leave this running, or press Ctrl-C and run `darkbloom sandbox setup` again later; this Mac enrolls once your account is approved.
+
+              ✓ Waiting for approval
+                Approved after 2:01:13
+                Downloading images 5%
+                Downloading images 42%
+              ✓ Downloading images
+                Installed: linux; the rest in the background
+
+            """)
+        // On a terminal the running line says what it waits for.
+        let live = Self.render([
+            stage("waiting_for_approval", "started", "Waiting for approval", ""),
+            stage("waiting_for_approval", "progress", "…", #""waitlisted":true"#),
+        ], interactive: true, finish: .interrupted)
+        #expect(live.contains("  ⠙ Waiting for Darkbloom to approve your account"))
+        #expect(live.hasSuffix("\r\u{1B}[2K  ✗ Waiting for approval (stopped)\n"))
     }
 
     @Test("on a terminal the running stage is a spinner line that turns into a check mark")
     func interactive() {
-        let transcript = Self.render([
-            #"{"schema":1,"stage":"checking"}"#,
-            #"{"schema":1,"stage":"verifying","version":"1.2.0"}"#,
-        ], interactive: true)
+        let transcript = Self.render(Array(FakeSandboxInstaller.events[0..<3]), interactive: true)
         #expect(transcript == "  ⠋ Checking this Mac"
             + "\r\u{1B}[2K  ⠙ Checking this Mac"
-            + "\r\u{1B}[2K  ✓ Checking this Mac\n  ⠙ Verifying release 1.2.0"
-            + "\r\u{1B}[2K  ⠹ Verifying release 1.2.0"
-            + "\r\u{1B}[2K  ✓ Verifying release 1.2.0\n")
+            + "\r\u{1B}[2K  ✓ Checking this Mac\n    Apple M4 Max, 16 cores, 128 GB memory, macOS 27.0.1; logged in as ada\n"
+            + "  ⠹ Verifying release"
+            + "\r\u{1B}[2K  ⠸ Verifying release"
+            + "\r\u{1B}[2K  ✓ Verifying release\n")
     }
 
-    @Test("failures show the installer's error, then its stderr; Ctrl-C marks the stage stopped")
+    @Test("a failed stage shows the installer's message once, then stderr lines that add something")
     func failures() {
-        let failed = Self.render([
-            #"{"schema":1,"stage":"checking"}"#,
-            #"{"schema":1,"stage":"error","detail":"this Mac is enrolled with another service"}"#,
-        ], finish: .failed(SandboxSetupFlow.failureLines(
-            detail: "this Mac is enrolled with another service",
-            errors: ["error: this Mac is enrolled with another service", "see ~/DarkbloomSandbox/agent/enroll.log"],
-            status: 1)))
-        #expect(failed == """
-              ✗ Checking this Mac
-                this Mac is enrolled with another service
+        let stage = FakeSandboxInstaller.stage
+        let message = "enrollment did not complete: the owner denied the request; run the installer again"
+        #expect(Self.render([
+            stage("waiting_for_approval", "started", "Waiting for approval", ""),
+            stage("waiting_for_approval", "failed", message, #""exit_code":3"#),
+        ], finish: .failed(status: 3, errors: ["error: \(message)", "see ~/DarkbloomSandbox/agent/enroll.log"])) == """
+              ✗ Waiting for approval
+                \(message)
                 see ~/DarkbloomSandbox/agent/enroll.log
 
             """)
-        #expect(SandboxSetupFlow.failureLines(detail: nil, errors: [], status: 3) == ["The installer exited with status 3."])
-        #expect(Self.render([#"{"schema":1,"stage":"waitlisted"}"#], finish: .interrupted).hasSuffix(
-            "  ✗ On the waitlist, waiting for Darkbloom to approve your account (stopped)\n"))
-        #expect(Self.render([], finish: .failed(["boom"])) == "  ✗ Setup failed\n    boom\n")
+        #expect(Self.render([stage("checking_mac", "started", "Checking this Mac", "")],
+                            finish: .failed(status: 1, errors: ["boom"])) == "  ✗ Checking this Mac\n    boom\n")
+        #expect(Self.render([], finish: .failed(status: 3, errors: []))
+            == "  ✗ Setup failed\n    The installer exited with status 3.\n")
+        #expect(Self.render([stage("installing", "started", "Installing", "")], finish: .interrupted)
+            == "  ✗ Installing (stopped)\n")
+    }
+
+    @Test("each installer exit status gets its own next step")
+    func advice() {
+        func advice(_ status: Int32, signal: Int32? = nil) -> String {
+            SandboxSetupFlow.advice(.init(status: status, signal: signal))
+        }
+        #expect(advice(2) == "This Mac cannot host Darkbloom Sandbox as it is; see why above.")
+        #expect(advice(3).hasPrefix("This Mac was not enrolled: the code was denied or expired"))
+        #expect(advice(4) == "Jobs are running on this Mac. Run `darkbloom sandbox setup` again once they finish; "
+            + "`darkbloom sandbox pause` keeps new ones from starting.")
+        #expect(advice(130) == "Setup stopped. An enrollment waiting for approval goes on; run "
+            + "`darkbloom sandbox setup` again to follow it.")
+        #expect(advice(2, signal: SIGINT) == advice(130))
+        #expect(advice(1).hasPrefix("Setup did not finish."))
+        #expect(advice(9, signal: SIGKILL).hasPrefix("Setup did not finish."))
     }
 
     // MARK: - Plan
@@ -255,30 +318,33 @@ struct SandboxSetupTests {
         #expect(plan(SandboxFixtures.downloading) == .alreadySetUp(SandboxFixtures.status(SandboxFixtures.downloading)))
         #expect(plan(SandboxFixtures.ready, changingSlots: true) == .rerun("Applying the new slot counts."))
         #expect(plan(SandboxFixtures.waiting) == .rerun("Continuing the setup on this Mac (waiting for approval)."))
-        #expect(plan(SandboxFixtures.error) == .rerun("The add-on reports an error (the macOS image failed "
-            + "verification); running the installer again to repair it."))
+        #expect(plan(SandboxFixtures.error) == .rerun("The add-on reports an error: Not connected to the plane "
+            + "(cannot reach the plane); it keeps trying. Running the installer again to repair it."))
         #expect(SandboxSetupPlan.decide(.outdated, changingSlots: false)
             == .rerun("Updating the add-on: this version is older than the CLI expects."))
         #expect(SandboxSetupPlan.decide(.unresponsive(seconds: 10), changingSlots: false)
             == .rerun("The add-on did not answer within 10 seconds; running the installer again to repair it."))
     }
 
-    @Test("the summary names the state, the slots and what to do next")
-    func summary() {
+    @Test("the summary names the state, the slots the installer chose and what to do next")
+    func summary() throws {
+        let installer = try #require(SandboxInstallerEvent(json: FakeSandboxInstaller.events.last!))
         let lines = SandboxSetupFlow.summary(SandboxFixtures.status(SandboxFixtures.downloading),
-                                             server: "https://sandbox.example", color: false)
+                                             installer: installer, server: "https://sandbox.example", color: false)
         #expect(lines == [
-            "Darkbloom Sandbox is set up on this Mac: downloading images (42%)",
-            "  Jobs start once an image is installed.",
-            "  Jobs at a time: 1 Linux, 1 macOS",
+            "Darkbloom Sandbox is set up on this Mac: downloading images (Linux 42%)",
+            "  Downloading its linux image: 42%",
+            "  Jobs at a time: 1 Linux (automatic, limited by cores), 1 macOS (automatic, limited by cores)",
             "",
             "Next",
             "  darkbloom sandbox status    see jobs, slots and images",
             "  darkbloom sandbox pause     let running jobs finish and take no new ones",
             "  darkbloom sandbox logs -f   follow the add-on's log",
-            "  Earnings: https://api-sandbox.darkbloom.dev (Billing → Earnings)",
+            "  Console: https://api-sandbox.darkbloom.dev/macs/\(SandboxFixtures.host) (jobs; earnings under Billing → Earnings)",
             "  Keep this Mac plugged in, awake and logged in.",
         ])
+        let chosen = SandboxSetupFlow.summary(SandboxFixtures.status(SandboxFixtures.ready), server: "https://s", color: false)
+        #expect(chosen[2] == "  Jobs at a time: 1 Linux, 1 macOS")
     }
 
     // MARK: - End to end
@@ -330,29 +396,18 @@ struct SandboxSetupTests {
             What changes
 
             """))
-        #expect(first.contains("""
+        #expect(first.contains("\n\n" + Self.render(FakeSandboxInstaller.events) + """
 
-              ✓ Checking this Mac
-              ✓ Verifying release 1.2.0
-              ✓ Installing
-                Linux slots: 1
-
-            """))
-        #expect(first.contains("    Open the link yourself. The CLI cannot approve for you.\n"))
-        #expect(first.contains("""
-              ✓ Enrolled (host h_test)
-              ✓ Starting
-              • Downloading images 42%, continuing in the background
-
-            Darkbloom Sandbox is set up on this Mac: ready
-              Waiting for jobs. Inference runs as usual until a job starts.
-              Jobs at a time: 1 Linux, 1 macOS
+            Darkbloom Sandbox is set up on this Mac: downloading images (Linux 42%)
+              Downloading its linux image: 42%
+              Jobs at a time: 1 Linux (automatic, limited by cores), 1 macOS (automatic, limited by cores)
 
             Next
 
             """))
         let second = try #require(outputSection(output, from: "== SECOND", to: "== ARGUMENTS"))
-        #expect(second.hasPrefix("Darkbloom Sandbox is already set up on this Mac.\n\nDarkbloom Sandbox 1.2.0: ready\n"))
+        #expect(second.hasPrefix("Darkbloom Sandbox is already set up on this Mac.\n\n"
+            + "Darkbloom Sandbox 1.0.1: downloading images (Linux 42%)\n"))
         #expect(second.hasSuffix(
             "\nTo change how many jobs run at a time: darkbloom sandbox setup --linux-slots <n> --macos-slots <n>\n"))
         let arguments = try #require(outputSection(output, from: "== ARGUMENTS", to: "requests"))
@@ -366,7 +421,7 @@ struct SandboxSetupTests {
             let sandbox = try CLICommandSandbox.enter(autoRestart: false)
             defer { sandbox.remove() }
             CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(
-                FakeSandboxInstaller.script(events: [], jsonProgress: false).utf8))])
+                FakeSandboxInstaller.script(events: [], addonStatus: SandboxFixtures.ready, jsonProgress: false).utf8))])
             try await SandboxSetupFlow(
                 options: SandboxSetupOptions(server: "https://sandbox.invalid", waitReady: true, macOSSlots: 1),
                 confirmed: true, addon: .live(), interactiveInput: false, terminal: false, color: false,
@@ -380,22 +435,25 @@ struct SandboxSetupTests {
             This version of the installer does not report its steps to the CLI; its own output follows.
             It does not support --no-browser or --wait-ready.
 
-            ==> Darkbloom Sandbox 1.1.0 downloaded and checked
+            ==> Darkbloom Sandbox 1.0.0 downloaded and checked
 
             Darkbloom Sandbox is set up on this Mac: ready
             """))
         #expect(output.hasSuffix("== ARGUMENTS\n--macos-slots\n1\n"))
     }
 
-    @Test("a failing installer keeps its exit status and says how to retry")
+    @Test("a failing installer keeps its exit status and says what it means")
     func failingInstaller() async throws {
-        let result = try await #require(processExitsWith: .exitCode(3), observing: [\.standardOutputContent]) {
+        let message = "Darkbloom Sandbox 1.0.1 needs macOS 28 or later"
+        let result = try await #require(processExitsWith: .exitCode(2), observing: [\.standardOutputContent]) {
             _ = try CLICommandSandbox.enter(autoRestart: false)
+            let stage = FakeSandboxInstaller.stage
             CoordinatorStub.install(["/install.sh": .init(status: 200, body: Data(FakeSandboxInstaller.script(
-                events: [#"{"schema":1,"stage":"checking"}"#, #"{"schema":1,"stage":"verifying","version":"1.2.0"}"#,
-                         #"{"schema":1,"stage":"error","detail":"the downloaded app is not Darkbloom's"}"#],
-                standardError: "codesign: the signature is invalid",
-                exitStatus: 3).utf8))])
+                events: Array(FakeSandboxInstaller.events[0..<3])
+                    + [stage("verifying_release", "failed", "Darkbloom Sandbox 1.0.1 needs macOS 28 or later",
+                             #""exit_code":2,"step":2,"steps":8"#)],
+                standardError: "error: Darkbloom Sandbox 1.0.1 needs macOS 28 or later",
+                exitStatus: 2).utf8))])
             await exitWithCommandStatus {
                 try await SandboxSetupFlow(options: SandboxSetupOptions(server: "https://sandbox.invalid"),
                                            confirmed: true, addon: .live(), interactiveInput: false,
@@ -406,11 +464,11 @@ struct SandboxSetupTests {
         let output = decodedText(result.standardOutputContent)
         #expect(output.hasSuffix("""
               ✓ Checking this Mac
-              ✗ Verifying release 1.2.0
-                the downloaded app is not Darkbloom's
-                codesign: the signature is invalid
+                Apple M4 Max, 16 cores, 128 GB memory, macOS 27.0.1; logged in as ada
+              ✗ Verifying release
+                \(message)
 
-            Setup did not finish. When the problem above is fixed, run `darkbloom sandbox setup` again; it is safe to rerun.
+            This Mac cannot host Darkbloom Sandbox as it is; see why above.
 
             """))
     }

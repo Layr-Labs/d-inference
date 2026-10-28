@@ -82,6 +82,10 @@ state, continues an unfinished setup or repairs the add-on.
 - **`[WARN] Network`, `Power` or `Sleep`.** These do not block setup, but a
   sleeping, unplugged or dropped Mac loses its running jobs, and lost jobs are
   not paid. Follow the `↳ fix:` line.
+- **`This Mac was not enrolled`** (exit status 3). The code was denied or
+  expired, or the waitlist request ended. Run setup again for a new code.
+- **`Jobs are running on this Mac`** (exit status 4). An add-on update or a
+  slot change waits for running jobs; run setup again once they finish.
 - **`This version of the add-on …`.** The add-on predates the command; it
   updates itself, or `darkbloom sandbox setup` updates it now.
 - **`Sandboxes: installed; the add-on did not answer within 2s`.** `darkbloom

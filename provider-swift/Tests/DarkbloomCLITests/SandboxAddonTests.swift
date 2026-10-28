@@ -65,6 +65,29 @@ struct SandboxAddonTests {
         #expect(addon.perform(["resume"], timeout: 60) == .failed("exit status 1: agent state unreadable"))
     }
 
+    @Test("an add-on command with nothing installed under it reads as not set up, its refusals too")
+    func emptyInstall() async throws {
+        let root = FakeSandboxAddon.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FakeSandboxAddon.install(.empty, at: root)
+        let addon = SandboxAddon(root: root)
+        guard case .status(let status, _) = addon.queryStatus(timeout: 60) else {
+            Issue.record("the not_installed document must decode although status exits 1")
+            return
+        }
+        #expect(!status.installed && SandboxStatusView.statusLine(.status(status, json: "")) == nil)
+        #expect(addon.perform(["pause"], timeout: 60)
+            == .failed("exit status 1: Darkbloom Sandbox is not installed in /Users/ada/DarkbloomSandbox"))
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            try FakeSandboxAddon.install(.empty, at: sandbox.sandboxAddonRoot)
+            await exitWithCommandStatus { try await runCLICommand(Sandbox.Pause.self, ["sandbox", "pause"]) }
+        }
+        let errors = decodedText(result?.standardErrorContent ?? [])
+        #expect(errors.contains("Darkbloom Sandbox is not set up on this Mac. Set it up with `darkbloom sandbox setup`."))
+    }
+
     @Test("a hung add-on costs at most the timeout")
     func hung() throws {
         let root = FakeSandboxAddon.temporaryRoot()
@@ -165,7 +188,7 @@ struct SandboxAddonTests {
         #expect(none.contains("  Set it up with `darkbloom sandbox setup`. Docs: \(Sandbox.docsURL)\n"))
         #expect(none.hasSuffix(Sandbox.notInstalledJSON + "\n"))
         let paused = try #require(outputSection(output, from: "== PAUSED", to: "== OUTDATED"))
-        #expect(paused.hasPrefix("Darkbloom Sandbox 1.2.0: paused\n  1 job still running;"))
+        #expect(paused.hasPrefix("Darkbloom Sandbox 1.0.1: paused\n  1 job still running;"))
         #expect(paused.hasSuffix("\n" + SandboxFixtures.paused + "\n"))
         let outdated = try #require(outputSection(output, from: "== OUTDATED", to: "== END"))
         #expect(outdated.hasPrefix("This version of the add-on has no `status --json`, so its own status follows."))

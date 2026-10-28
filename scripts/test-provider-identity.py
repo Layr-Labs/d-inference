@@ -122,7 +122,7 @@ class ProviderIdentityTests(unittest.TestCase):
         for marker in (MARKER, STAGING_MARKER):
             self.assertIn(f'[[ "$GITHUB_REF_NAME" == *{marker}* ]]', resolve)
             self.assertIn(f'release_version="${{release_version}}{marker}${{GITHUB_RUN_NUMBER}}"', resolve)
-        # The master dev lane stamps -dev.N; the dev-branch lane stamps
+        # A master validation build stamps -dev.N; a dev push stamps
         # -dev.branch.N, so the check accepts the optional branch segment for the
         # dev marker. Staging stays -staging.N.
         self.assertIn('"$PROVIDER_VERSION"' + MARKER.replace(".", "\\.") + "(branch\\.)?[1-9]", check)

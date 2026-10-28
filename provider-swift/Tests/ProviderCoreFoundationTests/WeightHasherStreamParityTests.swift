@@ -29,8 +29,8 @@ final class WeightHasherStreamParityTests: XCTestCase {
     }
 
     /// `fill` bytes with each 4 KiB page's offset written at its start. With a
-    /// short repeating pattern every full chunk is identical, so a skipped,
-    /// repeated or reordered chunk would not change the digest.
+    /// short repeating pattern every full chunk is identical, so hashing one
+    /// chunk in place of another would not change the digest.
     private func pageStampedPayload(size: Int, fill: UInt8) -> Data {
         var data = Data(repeating: fill, count: size)
         for page in stride(from: 0, to: size, by: 4096) {

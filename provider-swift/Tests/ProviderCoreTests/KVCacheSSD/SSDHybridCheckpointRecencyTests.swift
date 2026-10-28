@@ -117,8 +117,27 @@ struct SSDHybridCheckpointRecencyTests {
         defer { expired.close() }
         #expect(expired.stats().entries == 0)
         #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(expired.stats().corruptDropped == 0, "an expired checkpoint is not a corrupt one")
         // TTL expiry at scan is a per-file removal: the epoch survives it.
         #expect(expired.config.epochStore?.current == epoch)
         await expired.closeAndWait()
+    }
+
+    @Test("a checkpoint that fails validation at startup is still counted as corrupt")
+    func startupCorruptionStillCounts() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let clock = Clock()
+        let first = try makeStore(fixture, clock: clock)
+        #expect(try await fixture.donate(first) == [256])
+        let file = fixture.file(first)
+        await first.closeAndWait()
+        try Data([0, 1, 2]).write(to: file)
+        let restarted = try makeStore(fixture, clock: clock)
+        defer { restarted.close() }
+        #expect(restarted.stats().entries == 0)
+        #expect(restarted.stats().corruptDropped == 1)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        await restarted.closeAndWait()
     }
 }

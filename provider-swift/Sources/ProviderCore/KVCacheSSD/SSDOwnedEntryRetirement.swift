@@ -23,6 +23,30 @@ enum SSDOwnedEntryRetirement {
         }
     }
 
+    /// Files retired under one hold of a store's removal lock and the epoch
+    /// barrier. Lookups on the engine's submit thread read the epoch through
+    /// that barrier and a donor's index publication waits on the removal lock,
+    /// so a long TTL or budget sweep is retired in short holds. Each hold
+    /// rereads the epoch record, so smaller slices slow the sweep.
+    static let filesPerSlice = 16
+
+    /// Retires `urls` a slice at a time through `retire`, which takes the
+    /// locks and returns nil when the store refuses. Stops at the first
+    /// refusal and returns what the earlier slices removed.
+    static func removeInSlices(_ urls: [URL], retire: ([URL]) -> Result?) -> Result {
+        var total = Result()
+        var start = 0
+        repeat {
+            let end = min(start + filesPerSlice, urls.count)
+            guard let part = retire(Array(urls[start ..< end])) else { break }
+            total.removed.formUnion(part.removed)
+            total.indexedBytesFreed += part.indexedBytesFreed
+            total.externalChange = total.externalChange || part.externalChange
+            start = end
+        } while start < urls.count
+        return total
+    }
+
     static func remove(
         urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?
     ) -> Result? {

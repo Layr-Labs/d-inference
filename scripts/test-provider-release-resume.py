@@ -158,9 +158,9 @@ class RecoveryTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 verify_workflow_source(api, env)
         # Dev from any other branch or trigger is refused: another branch push,
-        # a dispatch on dev, and a tag.
-        for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master"),
-                                    ("GITHUB_REF", "refs/heads/devx", "require master"),
+        # a dispatch on dev, and a pull request.
+        for key, value, message in [("GITHUB_REF", "refs/heads/candidate", "require master or dev"),
+                                    ("GITHUB_REF", "refs/heads/devx", "require master or dev"),
                                     ("GITHUB_EVENT_NAME", "workflow_dispatch", "current reviewed master"),
                                     ("GITHUB_EVENT_NAME", "pull_request", "trusted tag push")]:
             with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, message):

@@ -67,8 +67,10 @@ def verify_source(api, source, branch="master"):
 
 def verify_workflow_source(api, env):
     source = env["GITHUB_SHA"]
-    if (env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "branch"
-            and env.get("GITHUB_REF") == "refs/heads/dev"):
+    event = env.get("GITHUB_EVENT_NAME")
+    ref_type = env.get("GITHUB_REF_TYPE")
+    ref = env.get("GITHUB_REF")
+    if event == "push" and ref_type == "branch" and ref == "refs/heads/dev":
         # A dev push signs and publishes a dev release only, never staging or
         # prod. The commit must be GitHub-verified and on dev ancestry; dev may
         # already have moved on.
@@ -77,19 +79,20 @@ def verify_workflow_source(api, env):
         verify_source(api, source, "dev")
         return source
     master = verify_source(api, source)
-    if env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "tag":
+    if event == "push" and ref_type == "tag":
         tag = env["GITHUB_REF_NAME"]
-        if env.get("GITHUB_REF") != "refs/tags/" + tag:
+        if ref != "refs/tags/" + tag:
             raise ValueError("Release tag ref mismatch")
         verify_tag(api, tag, source)
-    elif env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "branch":
+    elif event == "push" and ref_type == "branch":
         # A master push publishes staging only. verify_source proved the commit is
         # verified and on master ancestry; master may already have moved on.
-        if env.get("GITHUB_REF") != "refs/heads/master":
-            raise ValueError("Branch push releases require master")
-    elif env.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        if env.get("GITHUB_REF") != "refs/heads/master" or source != master:
+        if ref != "refs/heads/master":
+            raise ValueError("Branch push releases require master or dev")
+    elif event == "workflow_dispatch":
+        if ref != "refs/heads/master" or source != master:
             raise ValueError("Manual release tooling must be the current reviewed master commit")
     else:
-        raise ValueError("Release requires a trusted tag push, a master push or a manual dispatch on master")
+        raise ValueError("Release requires a trusted tag push, a master or dev push, "
+                         "or a manual dispatch on master")
     return source

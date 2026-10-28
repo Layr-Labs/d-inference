@@ -10,20 +10,22 @@ authorize releases, infrastructure or hosting changes.
 ## When To Use
 
 Use `.github/workflows/release-swift.yml` for a production version tag, a
-staging publication, or a signed validation bundle. Build, SDK qualification, signing,
-R2 staging and publication are separate jobs. Staging/publication failures retry
-the retained artifact rather than rebuilding or re-signing it.
+staging publication, or a signed validation bundle. Build, SDK qualification,
+signing, R2 staging and publication are separate jobs. Staging/publication
+failures retry the retained artifact rather than rebuilding or re-signing it.
 
 A push to `master` that changes the provider or its release tooling publishes a
-staging release when the `STAGING_ENABLED` repository variable is set (DBLM-771:
-staging tracks main). While that variable is unset, a master push publishes
-nothing. A `vX.Y.Z` tag publishes production. No path of this workflow publishes
-a dev release. DevNet runs the d-inference `dev` branch from end to end: its dev
-releases come from `.github/workflows/release-dev-branch.yml`. `.github/workflows/release-swift.yml` is the
-thin caller that routes each trigger to one or more environment lanes; the
-reusable `.github/workflows/release-provider.yml` runs the resolve, build,
-qualification, signing, R2 staging and publication chain for one environment. To
-find the newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
+staging release when the `STAGING_ENABLED` repository variable is `true`
+(DBLM-771: staging tracks main). While that variable is unset, a master push
+publishes nothing. A `vX.Y.Z` tag publishes production. No path of this workflow
+publishes a dev release. DevNet runs the d-inference `dev` branch from end to
+end: its dev releases come from `.github/workflows/release-dev-branch.yml`.
+
+`.github/workflows/release-swift.yml` is the thin caller that routes each trigger
+to at most one environment lane. The reusable `.github/workflows/release-provider.yml`
+runs the resolve, build, qualification, signing, R2 staging and publication
+chain for one environment. To find the newest dev release, read
+`https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.4`, a patch release over `v0.10.3`.
 A Qwen 3.5, 3.6 or 3.8 request with a JSON `response_format` and no thinking
@@ -285,10 +287,11 @@ provider releases from the d-inference `dev` branch through
 The source gate on `master` admits a push to `dev` for the `dev` environment
 only. `verify_workflow_source` (`scripts/provider_release_resume/api.py`)
 requires a GitHub-verified commit on `dev` ancestry and refuses `staging`, `prod`
-and a missing environment. The resolver stamps `X.Y.Z-dev.branch.N` (`N` is the
-run number) and refuses a dev push routed to another environment and a push from
-any other branch. `resolve-env` still runs the gate from `master`. A dev build
-signs with the same Developer ID as staging and prod.
+and a missing environment. `resolve-env` runs this gate from `master`, and then
+runs `scripts/resolve-provider-release.sh` from the pushed commit. The resolver
+stamps `X.Y.Z-dev.branch.N` (`N` is the run number). It refuses a dev push routed
+to another environment and a push from any other branch. A dev build signs with
+the same Developer ID as staging and prod.
 
 Before upload, `build-and-release` checks the final archived app against the
 designated requirement of the provider self-updater

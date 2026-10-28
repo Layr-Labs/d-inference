@@ -1,12 +1,12 @@
 name: Provider Release Lane (reusable)
 
-# One environment's CLI-only Swift release pipeline, called once per environment
-# by release-swift.yml. The caller routes triggers to environments (master push
-# -> staging; tag -> prod; dispatch -> the chosen environment, or the dev lane
-# for a signed validation build) and owns the lane-level serialization groups;
-# this reusable workflow encapsulates the whole resolve -> build -> qualify ->
-# sign -> stage -> publish chain so each lane keeps its own artifact ids and
-# digests, which a matrix would collapse into one.
+# One environment's CLI-only Swift release pipeline. Two callers call it once
+# per lane: release-swift.yml (master push -> staging; tag -> prod; dispatch ->
+# the chosen environment, or the dev lane for a signed validation build) and
+# release-dev-branch.yml (dev push -> dev). Each caller owns its lane-level
+# serialization groups; this reusable workflow encapsulates the whole resolve ->
+# build -> qualify -> sign -> stage -> publish chain so each lane keeps its own
+# artifact ids and digests, which a matrix would collapse into one.
 #
 # Builds and ships:
 #   - Darkbloom.app          (signed, notarized app; the only installed artifact)
@@ -33,7 +33,8 @@ name: Provider Release Lane (reusable)
 #                         master path publishes a dev release.
 #   - push to dev      -> dev release X.Y.Z-dev.branch.<run number>, through
 #                         the dev branch's caller (release-dev-branch.yml).
-#                         The master gate admits it for environment dev only.
+#                         master's source gate admits it for environment dev
+#                         only.
 #   - workflow_dispatch -> the chosen environment: a staging release or prod
 #                         recovery; or a signed dev validation build that is
 #                         never published.
@@ -56,8 +57,9 @@ name: Provider Release Lane (reusable)
 #   DEV_COORDINATOR_URL   / PROD_COORDINATOR_URL   / STAGING_COORDINATOR_URL
 #   DEV_RELEASE_KEY       / PROD_RELEASE_KEY       / STAGING_RELEASE_KEY
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771);
-# a staging lane runs but its publication is inert until they exist. Apple
-# signing secrets are shared (same cert for all envs).
+# release-swift.yml runs the staging lane only when the STAGING_ENABLED
+# repository variable is 'true'. Apple signing secrets are shared (same cert for
+# all envs).
 
 on:
   workflow_call:
@@ -138,7 +140,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           # master's gate admits a dev push (refs/heads/dev) for environment dev
-          # only; every other trigger is checked as before.
+          # only, so it needs the lane's environment. A tag, a master push and a
+          # dispatch get the master checks.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
         run: python3 scripts/provider-release-resume.py verify-source
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -153,8 +156,8 @@ jobs:
           # The caller always passes the environment (one lane per environment).
           # The script still validates it against GITHUB_EVENT_NAME and
           # GITHUB_REF: a master push accepts only staging, a dev push only dev,
-          # a master dev lane runs only as a signed validation build, and prod
-          # needs a source-matching tag.
+          # a dispatched dev lane runs only as a signed validation build, and
+          # prod needs a source-matching tag.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}

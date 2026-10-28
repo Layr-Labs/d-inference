@@ -398,7 +398,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("github.ref_type == 'branch'", prod)
         resolver = (ROOT / 'scripts/resolve-provider-release.sh').read_text()
         self.assertIn("Production publication requires a source-matching release tag", resolver)
-        self.assertIn('Branch pushes publish staging only', resolver)
+        self.assertIn('Master pushes publish staging only', resolver)
         sign = job(RELEASE, 'build-and-release')
         self.assertIn("needs.resolve-env.result == 'success'", sign)
 

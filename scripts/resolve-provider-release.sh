@@ -14,18 +14,18 @@ validation_only=${RELEASE_VALIDATION_ONLY:-false}
 # still carries no dispatch inputs, so any other environment on a branch push is
 # a misconfiguration and must fail closed. A push never selects prod, so the
 # production signing identity stays tag-gated.
-dev_branch=false
+dev_push=false
 if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF_TYPE:-}" = branch ]; then
   case "${GITHUB_REF:-}" in
     refs/heads/master)
       case "$release_environment" in
         staging) ;;
-        *) echo "::error::Branch pushes publish staging only (got ${release_environment:-<empty>})" >&2; exit 1 ;;
+        *) echo "::error::Master pushes publish staging only (got ${release_environment:-<empty>})" >&2; exit 1 ;;
       esac
       ;;
     refs/heads/dev)
       case "$release_environment" in
-        dev) dev_branch=true ;;
+        dev) dev_push=true ;;
         *) echo "::error::Dev branch pushes publish dev only (got ${release_environment:-<empty>})" >&2; exit 1 ;;
       esac
       ;;
@@ -52,7 +52,7 @@ if [ "$validation_only" = true ] && {
   echo '::error::Signed validation requires workflow_dispatch with environment=dev' >&2
   exit 1
 fi
-if [ "$release_environment" = dev ] && [ "$validation_only" != true ] && [ "$dev_branch" != true ]; then
+if [ "$release_environment" = dev ] && [ "$validation_only" != true ] && [ "$dev_push" != true ]; then
   echo '::error::A dev release requires a push to the dev branch; master builds dev only as a validation build' >&2
   exit 1
 fi
@@ -83,7 +83,7 @@ if [ "$release_environment" = dev ]; then
     echo '::error::A dev release requires GITHUB_RUN_NUMBER' >&2
     exit 1
   fi
-  if [ "$dev_branch" = true ]; then
+  if [ "$dev_push" = true ]; then
     # A dev push stamps -dev.branch.N, apart from the -dev.N validation builds.
     release_version="${release_version}-dev.branch.${GITHUB_RUN_NUMBER}"
   else

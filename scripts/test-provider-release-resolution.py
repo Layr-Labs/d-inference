@@ -8,6 +8,11 @@ import tempfile
 import unittest
 
 
+def branch_push(branch):
+    return {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REF": "refs/heads/" + branch, "GITHUB_REF_NAME": branch}
+
+
 class ReleaseResolutionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -53,8 +58,7 @@ class ReleaseResolutionTests(unittest.TestCase):
         # A master push publishes staging only; the caller routes the lane and
         # passes RELEASE_ENVIRONMENT. The push itself carries no dispatch inputs,
         # so validation and version overrides are ignored.
-        push = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/master", "GITHUB_REF_NAME": "master"}
+        push = branch_push("master")
         for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
             with self.subTest(extra=extra):
                 result, values = self.resolve(**push, RELEASE_ENVIRONMENT="staging", **extra)
@@ -69,15 +73,14 @@ class ReleaseResolutionTests(unittest.TestCase):
                 with self.subTest(environment=environment, extra=extra):
                     result, values = self.resolve(**push, RELEASE_ENVIRONMENT=environment, **extra)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("Branch pushes publish staging only", result.stderr)
+                    self.assertIn("Master pushes publish staging only", result.stderr)
                     self.assertEqual(values, {})
 
     def test_dev_push_publishes_a_dev_branch_build_only(self):
         # A dev push publishes dev only, stamped -dev.branch.N apart from the
         # -dev.N validation builds. The push carries no dispatch inputs, so
         # validation and version overrides are ignored.
-        push = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/dev", "GITHUB_REF_NAME": "dev"}
+        push = branch_push("dev")
         for extra in ({}, {"RELEASE_VALIDATION_ONLY": "true"}, {"RELEASE_VERSION_OVERRIDE": "0.9.1"}):
             with self.subTest(extra=extra):
                 result, values = self.resolve(**push, RELEASE_ENVIRONMENT="dev", **extra)
@@ -104,16 +107,14 @@ class ReleaseResolutionTests(unittest.TestCase):
 
     def test_prerelease_versions_carry_the_run_number_and_production_does_not(self):
         summary = self.root / "summary"
-        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="branch",
-                                      GITHUB_REF="refs/heads/master", GITHUB_RUN_NUMBER="1077",
+        result, values = self.resolve(**branch_push("master"), GITHUB_RUN_NUMBER="1077",
                                       RELEASE_ENVIRONMENT="staging", GITHUB_STEP_SUMMARY=str(summary))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(values["version"], "0.9.0-staging.1077")
         self.assertEqual(summary.read_text(), "### staging provider release 0.9.0-staging.1077\n")
         summary.unlink()
         # A dev push (the d-inference dev caller) stamps -dev.branch.<run number>.
-        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="branch",
-                                      GITHUB_REF="refs/heads/dev", GITHUB_RUN_NUMBER="1077",
+        result, values = self.resolve(**branch_push("dev"), GITHUB_RUN_NUMBER="1077",
                                       RELEASE_ENVIRONMENT="dev", GITHUB_STEP_SUMMARY=str(summary))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.1077", "publish": "true"})

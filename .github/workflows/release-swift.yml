@@ -1,7 +1,7 @@
 name: Release Provider Bundle (Swift)
 
 # CLI-only Swift release entry point. This workflow owns the triggers and routes
-# each one to one or more environment lanes; the whole resolve -> build ->
+# each one to at most one environment lane; the whole resolve -> build ->
 # qualify -> sign -> stage -> publish chain lives in the reusable
 # .github/workflows/release-provider.yml, called once per environment.
 #
@@ -26,7 +26,8 @@ name: Release Provider Bundle (Swift)
 # with the real Developer ID; resolve-provider-release.sh refuses prod on any
 # non-tag trigger, so a master push can never reach the prod signing identity.
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771),
-# so a staging lane runs but its publication is inert until they exist.
+# so the staging lane runs only when the STAGING_ENABLED repository variable is
+# 'true' (see the staging job).
 
 run-name: >-
   ${{ (github.ref_type == 'tag' && format('prod provider release {0}', github.ref_name)) ||

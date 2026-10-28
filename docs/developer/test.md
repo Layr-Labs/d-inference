@@ -1067,15 +1067,15 @@ publication.
 `scripts/test-provider-release-pipeline.py` and
 `scripts/test-provider-release-resolution.py` pin the routing of
 `.github/workflows/release-swift.yml`. A master push publishes staging only, and
-only when `STAGING_ENABLED` is set. A tag publishes prod. No master path
+only when `STAGING_ENABLED` is `true`. A tag publishes prod. No master path
 publishes dev: the dispatch has no `dev` choice, the `dev` lane runs only as an
 unpublished signed validation build, and the resolver refuses a dev publication
 from master and a master push routed to dev. A push to `dev` resolves to
 `X.Y.Z-dev.branch.N` for `dev` only; `staging`, `prod` and other branches are
 refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
 push needs environment `dev` and a verified commit on `dev` ancestry, and the
-tag, master push and dispatch rows are unchanged. The pipeline test pins the
-final-app check against the self-updater's designated requirement.
+tag, master push and dispatch rows keep the master checks. The pipeline test
+pins the final-app check against the self-updater's designated requirement.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

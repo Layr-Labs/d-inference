@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-22
+> Last updated: 2026-10-28
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -22,6 +22,16 @@ than its width: each redraw moves the cursor back over the previous block,
 which cannot reach rows that have scrolled off screen. Each completed file is
 printed once above that block. Without a terminal only the completion lines are
 printed.
+
+`StreamingFileDownloadDelegate` in
+`provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift`
+retains the first terminal result until its awaiting continuation is attached.
+Cancelling a suspended `URLSession` task can deliver completion before
+`ModelDownloader.streamDownload` attaches that continuation. Either ordering
+resumes the waiter once; cancellation closes the writer and leaves received
+bytes in the resumable `.part` file. `ModelDownloader.downloadFile` propagates
+`CancellationError` without retrying, allowing download tasks and their artifact
+writer lease to unwind.
 
 Media discovery uses `ModelMediaPolicy.advertisesMedia` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`.

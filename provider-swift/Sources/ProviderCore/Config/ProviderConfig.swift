@@ -20,7 +20,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
     public var autoUpdate: Bool
-    /// When true (default), the watchdog relaunches the provider ~5 min after a
+    /// When true (default), the watchdog relaunches the provider 1–2 min after a
     /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
     /// Maximum random delay (seconds) inserted between staging a verified

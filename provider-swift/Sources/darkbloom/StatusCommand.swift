@@ -83,7 +83,7 @@ struct Status: AsyncParsableCommand {
             return "off (auto_restart = false)"
         }
         if WatchdogAgent.isLoaded() {
-            return "on (watchdog active; relaunches ~5 min after a crash)"
+            return "on (watchdog active; relaunches 1–2 min after a crash, ~5 min in a crash loop)"
         }
         if WatchdogAgent.isInstalled() {
             return "on (watchdog installed but not loaded)"

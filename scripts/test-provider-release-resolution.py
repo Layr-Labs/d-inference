@@ -111,6 +111,14 @@ class ReleaseResolutionTests(unittest.TestCase):
         self.assertEqual(values["version"], "0.9.0-staging.1077")
         self.assertEqual(summary.read_text(), "### staging provider release 0.9.0-staging.1077\n")
         summary.unlink()
+        # A dev push (the d-inference dev caller) stamps -dev.branch.<run number>.
+        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="branch",
+                                      GITHUB_REF="refs/heads/dev", GITHUB_RUN_NUMBER="1077",
+                                      RELEASE_ENVIRONMENT="dev", GITHUB_STEP_SUMMARY=str(summary))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values, {"environment": "dev", "version": "0.9.0-dev.branch.1077", "publish": "true"})
+        self.assertEqual(summary.read_text(), "### dev provider release 0.9.0-dev.branch.1077\n")
+        summary.unlink()
         result, values = self.resolve(RELEASE_VALIDATION_ONLY="true", GITHUB_STEP_SUMMARY=str(summary))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(summary.read_text(),

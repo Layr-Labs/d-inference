@@ -19,8 +19,7 @@ name: Provider Release Lane (reusable)
 # names from provider-swift/identity/provider-identity.json, so it installs
 # beside production. scripts/provider_release_identity.py exports them. The bundle
 # identifier, the signing identity (the real Developer ID for every environment —
-# dev, staging and prod all sign with $DEVELOPER_ID; only the separate
-# release-dev-branch.yml lane self-signs), the flat bin/ names (the SwiftPM
+# dev, staging and prod all sign with $DEVELOPER_ID), the flat bin/ names (the SwiftPM
 # product names) and the bundle file name are the same for all; the coordinator's
 # release registration requires the last two.
 #

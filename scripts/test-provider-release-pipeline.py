@@ -367,8 +367,8 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_every_environment_signs_with_the_real_developer_id_not_self_signed(self):
         # dev, staging and prod share one signing job with no per-environment
-        # branch: all sign with the Developer ID. Only the separate
-        # release-dev-branch.yml lane ad-hoc self-signs; this lane never does.
+        # branch: all sign with the Developer ID, including a dev push through
+        # the master gate. This lane never signs ad-hoc.
         sign = job(RELEASE, 'build-and-release')
         self.assertEqual(sign.count('--sign "$DEVELOPER_ID"'), 5)
         for adhoc in ('--sign -', 'codesign -s -', 'self-sign', 'ad-hoc', 'adhoc',

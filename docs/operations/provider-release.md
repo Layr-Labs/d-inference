@@ -450,8 +450,8 @@ identity (`scripts/install.sh`, `select_provider_identity`;
 Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
 when it is `'true'`, a master push publishes a staging release in parallel with
 the dev release (DBLM-771), signed with the same Developer ID as dev and prod —
-staging is a normal Developer-ID dev-family release, not the self-signed build of
-`release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
+staging is a normal Developer-ID dev-family release, as is the dev-branch build
+of `release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
 number, like the dev lane's `X.Y.Z-dev.N`. Publish a staging build by hand with
 the same version form (the flag gates the manual lane too):
 
@@ -490,63 +490,50 @@ the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
 
-#### Dev-Branch Lane (Dev Only, Self-Signed)
+#### Dev-Branch Lane (Dev Only)
 
 Dev builds dev, and master builds master. A push to the d-inference `dev` branch
-starts `.github/workflows/release-dev-branch.yml`, which builds a provider from
-the pushed commit and publishes it to the dev coordinator. A master push builds
-and publishes through `release-swift.yml`. No workflow dispatches a build of
-another branch. The lane has no `workflow_dispatch`.
+starts `.github/workflows/release-dev-branch.yml`. A master push and a release
+tag run `release-swift.yml`. No workflow dispatches a build of another branch,
+and the dev-branch lane has no `workflow_dispatch`.
 
-A new `build-sign` attempt makes new signed bytes under the same version, and
-the coordinator refuses them with HTTP 409
-(`scripts/provider-release-publication.py`). Re-run failed jobs only when
-`build-sign` passed. To rebuild, push a new commit. The workflow-level
-`release-dev-branch` concurrency group does not cancel a running run, but a
+`release-dev-branch.yml` is only a caller. Its one job checks
+`github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
+with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
+same chain as every release lane: the source gate, the build, the SDK
+qualification, Developer ID signing, notarization and stapling, R2 staging and
+registration on the dev coordinator. A dev-branch build therefore has the same
+signature as a master build and passes the same checks: the fan-helper
+requirement of `scripts/install.sh` and the self-updater's
+`DarkbloomCodeSignature` production requirement. The push trigger uses the
+`paths:` list of the `release-swift.yml` master push, with
+`release-dev-branch.yml` in place of `release-swift.yml`.
+
+| Item | Dev-branch lane |
+|---|---|
+| Version | `X.Y.Z-dev.branch.<run>`, stamped by `scripts/resolve-provider-release.sh` and accepted by `scripts/check-release-version.sh` |
+| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`. The gate must accept a `refs/heads/dev` push for environment `dev`; until master carries that change, the lane fails at the gate. |
+| Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
+| Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
+| GitHub environment | None. All of these are repository secrets. |
+| Serialization | Workflow group `release-dev-branch`; publication group `provider-publication-dev` |
+
+`secrets: inherit` passes every repository secret to the reusable workflow. For
+environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
+`STAGING_*` or unprefixed publication secret only behind an
+`environment == 'prod'` or `environment == 'staging'` guard.
+`scripts/test-release-dev-branch.py` pins this.
+
+To retry, follow [Retry Staging Or Publication](#retry-staging-or-publication):
+re-run failed jobs only after the signing job passed, and push a new commit to
+rebuild. The `release-dev-branch` group does not cancel a running run, but a
 newer dev push cancels a run that is still pending in the group.
 
-Review is not enforced on `dev`. Its rules are required signatures and the
+Review is not enforced on `dev` today. Its rules are required signatures and the
 "Darkbloom PR access control" ruleset, which lets only the accounts on that
-ruleset's bypass list create or update a ref. Those accounts can push signed
-commits straight to `dev`, and the lane builds and publishes what they push.
-
-The push trigger uses the same `paths:` list as the master push trigger of
-`release-swift.yml`, with `release-dev-branch.yml` in place of
-`release-swift.yml`. Both jobs check `github.ref == 'refs/heads/dev'`. Both jobs
-check out the pushed commit (`github.sha`) with no `ref:` override, so the
-"Verify checked-out source" step of `.github/actions/provider-release-build`
-(`HEAD` equals `GITHUB_SHA`) holds.
-
-Job `build-sign` compiles the pushed commit and signs it ad-hoc
-(`codesign -s -`). It holds no secret. It never reads a production secret or the
-production Apple signing identity. Job `publish` runs the publication scripts of
-the same dev commit. It holds only `DEV_RELEASE_KEY` and the `DEV_R2_*` and
-`DEV_COORDINATOR_URL` repository secrets, and attaches no GitHub environment. It
-only uploads the bundle and registers it; it never runs the built binary. The
-version is `X.Y.Z-dev.branch.<run>`, which `scripts/check-release-version.sh`
-accepts and which stays distinct from the master dev lane's `X.Y.Z-dev.<run>`.
-
-The installer accepts an ad-hoc signature for pre-release versions: for a
-version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
-relaxed designated requirement that keeps the bundle identifier
-`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
-(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
-the full Apple-team requirement unchanged, and a prod coordinator is never
-served a pre-release version. The installer extracts the release archive with
-`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
-installed app owner-only; private state it creates elsewhere keeps its own modes
-(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
-than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
-device-attestation tier, not a code-signature tier.
-
-The installer is a pinned provider-contract snapshot, so the dev coordinator
-serves the relaxed installer only after the `darkbloom-platform` served copy is
-re-snapshotted from the merged commit in a separate platform PR. The relaxed
-requirement applies only to the app. The installer pins the bundled fan helper
-to the Apple-team requirement for every version (`scripts/install.sh`,
-`FAN_HELPER_REQUIREMENT` and `verify_fan_helper_capability`). Thus the installer
-rejects the ad-hoc signed fan helper of a dev-branch build until a separate
-change relaxes that check for pre-release versions.
+ruleset's bypass list create or update a ref. Because a dev push gets the
+Developer ID signature, `dev` needs a pull_request rule before the lane runs. A
+repository administrator adds that rule.
 
 Both the master dev lane and this lane publish to the dev coordinator and can
 advance the dev `releases/latest/` aliases. `/v1/releases/latest` returns the

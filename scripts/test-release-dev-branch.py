@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Offline scoping checks for the dev-branch provider lane.
 
-`.github/workflows/release-dev-branch.yml` builds a provider from the pushed
-`dev` commit and publishes it to the DEV coordinator as a self-signed release.
-Dev builds dev and master builds master: these assertions prove the lane starts
-only on a push to `dev`, with release-swift.yml's master push paths, has no
-dispatch and no `ref:` override, so both jobs use the pushed commit. Each job is
-guarded to `refs/heads/dev`. The lane never selects a tag path or a GitHub
-environment, never references a production secret or the production Apple
-signing identity, never submits the bundle to Apple's release-signing service,
-publishes only with the DEV_* secrets, never runs the built binary in the
-credentialed job, and stamps a version that carries the `-dev.` marker.
+`.github/workflows/release-dev-branch.yml` is a thin caller: a push to `dev`
+calls the reusable `.github/workflows/release-provider.yml` with environment
+`dev`, which builds, signs with the Developer ID, notarizes and publishes the
+pushed commit to the DEV coordinator. Dev builds dev and master builds master.
+
+These assertions pin the caller: it starts only on a push to `dev`, with
+release-swift.yml's master push paths, has no dispatch, no input and no
+`ref:`, and its one job is guarded to `refs/heads/dev` and only calls the
+reusable workflow with environment `dev` and `secrets: inherit`. The caller
+names no secret, has no step and signs nothing itself, so there is no second
+build or signing path and no ad-hoc signature. They also pin the reusable
+workflow's dev path: the secrets it reads for a non-prod, non-staging lane are
+exactly the Apple signing and notarization set, used only in the signing job,
+plus DEV_* secrets; it never signs ad-hoc; its signing job verifies the fan
+helper against the Apple-team requirement; and its publication serializes per
+environment.
 
 actionlint validates the complete YAML syntax; this test pins the trust scope.
 """
@@ -23,7 +29,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/release-dev-branch.yml"
 RELEASE_SWIFT = ROOT / ".github/workflows/release-swift.yml"
+RELEASE_PROVIDER = ROOT / ".github/workflows/release-provider.yml"
 DEV_GUARD = "    if: github.ref == 'refs/heads/dev'\n"
+# The Apple secrets every Developer ID lane reads; shared by all environments.
+APPLE_SIGNING_SECRETS = {
+    "APPLE_CERTIFICATE_P12", "APPLE_CERTIFICATE_PASSWORD",
+    "PROVISIONING_PROFILE_BASE64", "APPLE_ID", "APPLE_APP_PASSWORD",
+}
+SIGNING_JOB = "build-and-release"
+# A prod or staging secret is read only behind this exact environment guard.
+GUARDED_SECRET = re.compile(
+    r"^\s*needs\.resolve-env\.outputs\.environment == '(prod|staging)' && "
+    r"secrets\.[A-Z0-9_]+ \|\| ''\s*$")
+ADHOC_SIGNING = ("--sign -", "--sign=-", "codesign -s -", "-s - ", "self-sign",
+                 "ad-hoc", "adhoc")
 
 
 def top_level_block(text, key):
@@ -54,14 +73,25 @@ def jobs(text):
     return dict(zip(parts[1::2], parts[2::2]))
 
 
-class ReleaseDevBranchScopeTests(unittest.TestCase):
+def without_comments(text):
+    return re.sub(r"(?m)^\s*#.*$", "", text)
+
+
+def secret_references(text):
+    """Yield (expression, offset) for every `secrets` word inside `${{ }}`.
+    Expressions are case-insensitive, so the search is too."""
+    for expression in re.finditer(r"\$\{\{(.*?)\}\}", text, re.S):
+        for match in re.finditer(r"(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])",
+                                 expression.group(1), re.I):
+            yield expression.group(1), expression.start()
+
+
+class ReleaseDevBranchCallerTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text(encoding="utf-8")
+        self.code = without_comments(self.text)
         self.on_block = top_level_block(self.text, "on")
         self.jobs = jobs(self.text)
-
-    def test_workflow_file_exists(self):
-        self.assertTrue(WORKFLOW.is_file(), WORKFLOW)
 
     def test_push_to_dev_is_the_only_trigger(self):
         # A push is the only event, and only a dev branch push starts it.
@@ -73,12 +103,11 @@ class ReleaseDevBranchScopeTests(unittest.TestCase):
             self.assertNotRegex(push, rf"\b{token}\b", token)
 
     def test_no_dispatch_and_no_input(self):
-        # A re-run of a push run rebuilds the same commit; no other entry point
-        # may pick a different source.
+        # No entry point may pick a different source than the pushed commit.
         for token in ("workflow_dispatch", "workflow_call", "workflow_run",
                       "repository_dispatch", "pull_request", "schedule",
                       "inputs.", "github.event.inputs"):
-            self.assertNotIn(token, self.text, token)
+            self.assertNotIn(token, self.code, token)
 
     def test_push_paths_equal_release_swift_master_push_paths(self):
         expected = push_paths(RELEASE_SWIFT.read_text(encoding="utf-8"))
@@ -88,114 +117,107 @@ class ReleaseDevBranchScopeTests(unittest.TestCase):
                     for path in expected]
         self.assertEqual(push_paths(self.text), expected)
 
-    def test_every_checkout_uses_the_pushed_commit(self):
-        # No `ref:` anywhere: build-sign compiles github.sha and publish runs the
-        # same commit's scripts, so the shared build action's HEAD == GITHUB_SHA
-        # check holds by design.
+    def test_the_only_job_is_the_guarded_call_of_the_reusable_workflow(self):
+        self.assertEqual(set(self.jobs), {"dev"})
+        job = self.jobs["dev"]
+        self.assertIn(DEV_GUARD, job)
+        self.assertEqual(len(re.findall(r"(?m)^    if:", job)), 1)
+        # A local path: the reusable workflow of the pushed commit, no @ref.
+        self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", job),
+                         ["./.github/workflows/release-provider.yml"])
+        # Exactly one input, environment dev; the version, resume and
+        # validation inputs keep their defaults.
+        with_block = job.split("\n    with:\n", 1)[1]
+        with_block = re.split(r"(?m)^    [a-z]", with_block, maxsplit=1)[0]
+        self.assertEqual(re.findall(r"(?m)^      ([a-z_]+): (.+)$", with_block),
+                         [("environment", "dev")])
+        self.assertEqual(
+            [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
+            ["if", "permissions", "uses", "with", "secrets"])
+        self.assertIn("\n    secrets: inherit\n", job)
+        # The caller grants exactly what the reusable workflow declares.
+        self.assertIn("\n    permissions:\n      contents: write\n      actions: read\n", job)
+        self.assertIn("\npermissions:\n  contents: read\n", self.text)
+
+    def test_the_caller_has_no_build_or_signing_path_of_its_own(self):
+        # No step, no runner, no checkout and no signing in the caller.
+        for token in ("steps:", "runs-on:", "run:", "actions/checkout",
+                      "codesign", "notarytool", "xcrun", "DEVELOPER_ID"):
+            self.assertNotIn(token, self.code, token)
+        for token in ADHOC_SIGNING:
+            self.assertNotIn(token, self.code, token)
         self.assertNotRegex(self.text, r"(?m)^\s+ref:")
-        self.assertEqual(self.text.count("uses: actions/checkout@"), 2)
-        for name, body in self.jobs.items():
-            with self.subTest(job=name):
-                self.assertEqual(body.count("uses: actions/checkout@"), 1)
-                self.assertIn("persist-credentials: false", body)
-        self.assertIn("submodules: recursive", self.jobs["build-sign"])
-        self.assertIn('run-name: >-\n  dev-branch provider build of ${{ github.sha }}', self.text)
+        self.assertIn('run-name: >-\n  dev-branch provider release of ${{ github.sha }} '
+                      '(-dev.branch.${{ github.run_number }})', self.text)
 
-    def test_every_job_is_guarded_to_the_dev_branch(self):
-        self.assertEqual(set(self.jobs), {"build-sign", "publish"})
-        for name, body in self.jobs.items():
-            with self.subTest(job=name):
-                self.assertIn(DEV_GUARD, body)
-                self.assertEqual(len(re.findall(r"(?m)^    if:", body)), 1)
+    def test_the_caller_names_no_secret_and_no_environment(self):
+        # `secrets: inherit` on the call is the only secret reference; no
+        # expression reads the secrets context, and no job attaches a GitHub
+        # environment.
+        self.assertEqual(list(secret_references(self.text)), [])
+        self.assertEqual(re.findall(r"(?i)(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", self.code),
+                         ["secrets"])
+        self.assertEqual(self.code.count("secrets: inherit"), 1)
+        self.assertEqual(re.findall(r"(?m)^\s+environment:.*$", self.code),
+                         ["      environment: dev"])
+        for token in ("PROD_", "STAGING_", "'prod'", '"prod"', "'staging'", "refs/tags",
+                      "tags:", "github.ref_type", "ref_name"):
+            self.assertNotIn(token, self.code, token)
 
-    def test_no_tag_path_anywhere(self):
-        for token in ("refs/tags", "tags:", "ref_type == 'tag'",
-                      "github.ref_type", "ref_name"):
-            self.assertNotIn(token, self.text, token)
-
-    def test_no_production_environment_or_secret(self):
-        for token in ("PROD_", "environment: prod", "ENV_PREFIX: prod",
-                      "environment=prod", "'prod'", '"prod"', "secrets.PROD",
-                      "secrets.APPLE", "secrets.RELEASE_KEY",
-                      "secrets.PROVISIONING_PROFILE", "secrets: inherit"):
-            self.assertNotIn(token, self.text, token)
-        # The DEV_* values are repository secrets; no job attaches a GitHub
-        # environment, whose secrets would shadow or widen them.
-        self.assertNotRegex(self.text, r"(?m)^\s+environment:")
-        # Every `secrets` reference in every expression is exactly
-        # `secrets.DEV_<NAME>`. Expressions are case-insensitive, so the search
-        # is too; `toJSON(secrets)`, `secrets['X']`, `secrets[...]` and
-        # `SECRETS.DEV_X` all fail.
-        expressions = re.findall(r"\$\{\{(.*?)\}\}", self.text, re.S)
-        self.assertTrue(expressions)
-        references = 0
-        for expression in expressions:
-            for match in re.finditer(r"(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])",
-                                     expression, re.I):
-                references += 1
-                self.assertRegex(expression[match.start():],
-                                 r"^secrets\.DEV_[A-Z0-9_]+(?![A-Za-z0-9_.\[])",
-                                 expression)
-        self.assertGreater(references, 0)
-        # No `secrets` context reaches the file outside an expression either.
-        outside = re.sub(r"\$\{\{.*?\}\}", "", self.text, flags=re.S)
-        outside = re.sub(r"(?m)^\s*#.*$", "", outside)
-        self.assertNotRegex(outside, r"(?i)(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])")
-        # The publication job is pinned to the dev environment.
-        self.assertIn("ENV_PREFIX: dev", self.text)
-
-    def test_no_production_signing_identity_or_apple_release_submission(self):
-        # The production Apple signing identity and release-signing submission
-        # live only in release-swift.yml and must never appear here.
-        for token in ("DEVELOPER_ID", "Developer ID", "Developer-ID",
-                      "notariz", "notary", "APPLE_CERTIFICATE",
-                      "APPLE_TEAM_ID", "stapler", "xcrun"):
-            self.assertNotIn(token, self.text, token)
-        # Signing is ad-hoc only.
-        self.assertIn("codesign --force --sign - ", self.text)
-
-    def test_publishes_only_with_the_dev_release_key(self):
-        self.assertIn("RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}", self.text)
-        self.assertRegex(self.text, r"secrets\.DEV_R2_ACCESS_KEY_ID")
-        self.assertRegex(self.text, r"secrets\.DEV_COORDINATOR_URL")
-        # The shared publication script registers the release and advances the
-        # dev latest aliases only when the coordinator reports it as latest.
-        self.assertIn(
-            "python3 scripts/provider-release-publication.py publish", self.text)
-
-    def test_version_carries_the_dev_marker_and_the_branch_segment(self):
-        # Carrying -dev. makes the installer pick the dev identity; the branch
-        # segment keeps it distinct from the master dev lane's -dev.N.
-        self.assertIn("-dev.branch.", self.text)
-        match = re.search(r'VERSION="\$\{BASE\}(-dev\.branch\.\$\{RUN_NUMBER\})"',
-                          self.text)
-        self.assertIsNotNone(match, "dev-branch version string not found")
-
-    def test_serialization_groups_are_unchanged(self):
-        # The workflow serializes with itself; publish joins release-provider.yml's
-        # dev publication group so the two dev lanes never register at once.
+    def test_serialization_group_is_unchanged(self):
         self.assertIn("\nconcurrency:\n  group: release-dev-branch\n  cancel-in-progress: false\n",
                       self.text)
-        self.assertIn("    concurrency:\n      group: provider-publication-dev\n"
-                      "      cancel-in-progress: false\n", self.jobs["publish"])
 
-    def test_build_sign_job_references_no_secret(self):
-        # The build-sign job compiles and ad-hoc signs the pushed commit. It must
-        # hold no credential, so its body references no secret; every `secrets.`
-        # reference lives in the publish job.
-        self.assertNotIn("secrets.", self.jobs["build-sign"])
-        self.assertIn("secrets.", self.jobs["publish"])
 
-    def test_publish_never_executes_the_built_binary(self):
-        # The credentialed job receives the built bytes only as the downloaded
-        # bundle. It never extracts the bundle or runs a binary from it.
-        publish = self.jobs["publish"]
-        self.assertIn("needs: build-sign", publish)
-        self.assertIn('gh run download "$GITHUB_RUN_ID"', publish)
-        for token in ("tar x", "tar -x", "tar z", "tar -z", "ditto", "codesign",
-                      "bin/darkbloom", "PRODUCT_CLI_NAME", "CLI_NAME", "Contents/MacOS",
-                      ".app", "--version", "BIN_DIR", "chmod"):
-            self.assertNotIn(token, publish, token)
+class ReusableDevPathTests(unittest.TestCase):
+    """The reusable workflow's path for environment dev, which the caller runs."""
+
+    def setUp(self):
+        self.text = RELEASE_PROVIDER.read_text(encoding="utf-8")
+        self.jobs = jobs(self.text)
+
+    def test_dev_reads_only_the_apple_signing_set_and_dev_secrets(self):
+        # Every secret read without a prod or staging guard is a DEV_* secret
+        # or one of the Apple signing secrets, and each Apple secret is read
+        # only in the signing job.
+        unguarded = set()
+        for name, body in self.jobs.items():
+            for expression, _ in secret_references(body):
+                if GUARDED_SECRET.match(expression):
+                    continue
+                match = re.fullmatch(r"\s*secrets\.([A-Z0-9_]+)\s*", expression)
+                self.assertIsNotNone(match, expression)
+                secret = match.group(1)
+                unguarded.add(secret)
+                if secret in APPLE_SIGNING_SECRETS:
+                    self.assertEqual(name, SIGNING_JOB, secret)
+                else:
+                    self.assertTrue(secret.startswith("DEV_"), secret)
+        self.assertEqual(unguarded & APPLE_SIGNING_SECRETS, APPLE_SIGNING_SECRETS)
+        self.assertIn("DEV_RELEASE_KEY", unguarded)
+        self.assertNotRegex(self.text, r"(?m)^\s+environment: (prod|staging|dev)\s*$")
+
+    def test_dev_path_signs_with_the_developer_id_never_ad_hoc(self):
+        signing = self.jobs[SIGNING_JOB]
+        self.assertIn('--sign "$DEVELOPER_ID"', signing)
+        self.assertIn("xcrun notarytool submit", signing)
+        self.assertIn('xcrun stapler staple "$APP"', signing)
+        code = without_comments(self.text)
+        for token in ("--sign -", "--sign=-", "codesign -s -"):
+            self.assertNotIn(token, code, token)
+        # The fan helper is verified against the Apple-team requirement.
+        self.assertIn('FAN_HELPER_REQUIREMENT="anchor apple generic and identifier '
+                      '\\"$FAN_HELPER_ID\\" and certificate leaf[subject.OU] = '
+                      '\\"$APPLE_TEAM_ID\\""', signing)
+        self.assertIn('"-R=$FAN_HELPER_REQUIREMENT"', signing)
+
+    def test_dev_publication_serializes_per_environment(self):
+        publish = self.jobs["publish-release"]
+        self.assertIn("    concurrency:\n      group: provider-publication-"
+                      "${{ needs.resolve-env.outputs.environment }}\n"
+                      "      cancel-in-progress: false\n", publish)
+        self.assertIn("DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}", publish)
+        self.assertIn("python3 scripts/provider-release-publication.py publish", publish)
 
 
 if __name__ == "__main__":

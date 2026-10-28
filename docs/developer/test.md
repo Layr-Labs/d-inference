@@ -1249,13 +1249,17 @@ source is absent, signed tags and trusted `master` before secrets, exact artifac
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
 `scripts/test-release-dev-branch.py` pins the dev-branch lane
-(`.github/workflows/release-dev-branch.yml`) to dev scope. The only trigger is a
-push to `dev`, with the `paths:` list of the `release-swift.yml` master push.
-The lane has no dispatch and no input, and no checkout sets `ref:`. Both jobs
-check `refs/heads/dev`. The lane has no tag path, no GitHub environment, no
-production signing identity and no production secret. Job `build-sign` uses no
-secret, and job `publish` uses only `DEV_*` secrets and never runs the built
-binary. These CPU-only checks do not prove Apple runtime behavior.
+(`.github/workflows/release-dev-branch.yml`). The only trigger is a push to
+`dev`, with the `paths:` list of the `release-swift.yml` master push. The lane
+has no dispatch, no input and no `ref:`. Its one job checks `refs/heads/dev` and
+only calls `release-provider.yml` with `environment: dev` and `secrets: inherit`.
+The caller names no secret and has no step, so it has no build or signing path
+of its own. In `release-provider.yml`, every secret read without a prod or
+staging guard is a `DEV_*` secret or one of the five Apple signing secrets, and
+those are read only in the signing job. The signing job signs with the
+Developer ID, notarizes, staples and verifies the fan helper against the
+Apple-team requirement; nothing signs ad-hoc. These CPU-only checks do not
+prove Apple runtime behavior.
 
 `scripts/test-provider-release-publication.py` creates isolated local Git tags
 with verbatim annotations, including multiline opening paragraphs, extra blank

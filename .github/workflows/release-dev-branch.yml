@@ -1,80 +1,54 @@
-name: Release Dev-Branch Provider (self-signed)
+name: Release Dev-Branch Provider
 
-# Dev-branch provider lane: a push to the d-inference `dev` branch builds a
-# provider from the pushed dev commit and publishes it to the dev coordinator as
-# a self-signed release.
+# Dev-branch provider lane: a push to the d-inference `dev` branch builds,
+# signs, notarizes and publishes a provider from the pushed dev commit to the
+# dev coordinator. DevNet runs the dev branch end to end.
 #
-# Branch rule: dev builds dev, and master builds master. A master push builds and
-# publishes through release-swift.yml; a dev push builds and publishes through
-# this file. No workflow dispatches a build of another branch. Each job builds or
-# publishes github.sha, the pushed commit, so the shared build action's
-# "Verify checked-out source" check (HEAD equals GITHUB_SHA) holds by design.
+# Branch rule: dev builds dev, and master builds master. A master push and a
+# release tag run release-swift.yml; a dev push runs this file. No workflow
+# dispatches a build of another branch.
 #
-# Re-runs: a new build-sign attempt makes new signed bytes under the same
-# version, and the coordinator refuses them (provider-release-publication.py,
-# HTTP 409). Re-run failed jobs only when build-sign passed. To rebuild, push a
-# new commit. A newer dev push cancels a run that is still pending in the
-# release-dev-branch group; a running run always completes.
+# This file is only a caller. Its one job calls the reusable
+# release-provider.yml with environment dev, the same chain that every release
+# lane runs: the source gate, the build, the SDK qualification, Developer ID
+# signing, notarization and stapling, R2 staging and registration. There is no
+# second build or signing path here. The reusable workflow comes from the pushed
+# commit; its source gate (job resolve-env) runs master's copy of
+# scripts/provider-release-resume.py verify-source, and the pushed commit's
+# scripts/resolve-provider-release.sh stamps the version
+# <base>-dev.branch.<run number>.
 #
-# Latest dev release, as the coordinator works today: /v1/releases/latest
-# returns the active release that darkbloom-platform's ReleaseVersionGreater
-# ranks highest (coordinator/internal/store/shared/release_version.go, used by
-# the Postgres and memory GetLatestRelease). It is not SemVer: it reads each
-# dot-separated part as an integer, so `branch` counts as 0.
-#   - Dev base lower than the master base: the master dev build stays latest.
-#     This build is registered, and publish leaves the latest aliases alone.
-#   - Equal bases: X.Y.Z-dev.M ranks above X.Y.Z-dev.branch.N for every M > 0,
-#     so the master dev build stays latest. publish registers this build, then
-#     fails in await_latest.
-#   - Dev base higher: the newest build of this lane is latest until a master
-#     dev build with an equal or higher base is published.
+# Secrets: `secrets: inherit` on the call is the only secret reference in this
+# file. For environment dev the reusable workflow reads the Apple signing and
+# notarization secrets (APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD,
+# PROVISIONING_PROFILE_BASE64, APPLE_ID, APPLE_APP_PASSWORD) in its signing job
+# and only DEV_* secrets for staging and publication. It reads a PROD_*,
+# STAGING_* or unprefixed publication secret only when the environment is prod
+# or staging. All of these are repository secrets; no job attaches a GitHub
+# environment.
 #
-# Why this is a separate workflow from release-swift.yml:
-#   release-swift.yml holds the production Apple signing certificate and the
-#   production release keys. Its trust gate (scripts/provider_release_resume/
-#   api.py verify_source and resolve-provider-release.sh) refuses to build
-#   anything but the reviewed master tip, on purpose. This workflow never
-#   touches that gate, never reads a production secret and never submits the
-#   bundle to Apple's release-signing service. It signs the bundle ad-hoc
-#   (codesign -s -) and publishes with DEV_RELEASE_KEY and the dev R2 keys only.
+# Trust: only a push to `dev` starts this file, and the job also checks that
+# github.ref is refs/heads/dev. Review is not enforced on `dev` today: its rules
+# are required signatures and the "Darkbloom PR access control" ruleset, which
+# lets only the accounts on that ruleset's bypass list create or update a ref.
+# A dev push now gets the Developer ID signature, so `dev` needs a pull_request
+# rule before this lane runs.
 #
-# Trust model:
-#   - Only a push to `dev` starts this file, and each job also checks that
-#     github.ref is refs/heads/dev. Review is not enforced on `dev`: its rules
-#     are required signatures and the "Darkbloom PR access control" ruleset,
-#     which lets only the accounts on that ruleset's bypass list create or
-#     update a ref. Those accounts can push signed commits straight to `dev`.
-#     Both jobs run whatever such a push puts on `dev`.
-#   - Job `build-sign` compiles and ad-hoc signs the pushed commit. It holds no
-#     secret.
-#   - Job `publish` holds DEV_RELEASE_KEY and the dev R2 keys (repository
-#     secrets, no GitHub environment) and nothing else. It runs dev's copy of the
-#     publication scripts. It only uploads bytes and makes the registration
-#     calls; it never runs the built binary.
-#
-# Signature model (option B):
-#   The installer accepts an ad-hoc / non-Apple-anchored signature for versions
-#   that carry a pre-release marker (-dev. or -staging.), while prod keeps the
-#   full Apple-team requirement unchanged (scripts/install.sh
-#   select_provider_identity and verify_staged_app_signature). The installer is
-#   a pinned provider-contract snapshot: the dev coordinator serves the
-#   darkbloom-platform copy, which must be re-snapshotted from the merged
-#   d-inference commit in a separate darkbloom-platform PR. The relaxed clause
-#   applies only to the app. The installer still pins the bundled fan helper to
-#   the Apple-team requirement for every version (scripts/install.sh
-#   FAN_HELPER_REQUIREMENT, verify_fan_helper_capability), so it rejects this
-#   lane's ad-hoc signed fan helper until a separate change relaxes that check
-#   for pre-release versions.
+# Re-runs: a new signing attempt makes new signed bytes under the same version,
+# and the coordinator refuses them (HTTP 409). Re-run failed jobs only after the
+# signing job passed. To rebuild, push a new commit. A newer dev push cancels a
+# run that is still pending in the release-dev-branch group; a running run
+# always completes.
 
 run-name: >-
-  dev-branch provider build of ${{ github.sha }} (-dev.branch.${{ github.run_number }})
+  dev-branch provider release of ${{ github.sha }} (-dev.branch.${{ github.run_number }})
 
 on:
   push:
-    # A dev push publishes a dev-branch build. These paths are release-swift.yml's
+    # A dev push publishes a dev-branch release. These paths are release-swift.yml's
     # master push paths, with this file in place of release-swift.yml: the
-    # provider sources, the submodule pins, and every script the shared build
-    # action and the publication run.
+    # provider sources, the submodule pins, and every script the reusable
+    # workflow and .github/actions/provider-release-build run.
     branches: [dev]
     paths:
       - 'provider-swift/**'
@@ -110,8 +84,8 @@ on:
       - 'scripts/run-nested-suite.sh'
       - 'scripts/run-provider-test-watchdog.py'
 
-# One dev-branch publication at a time, serialized with itself. This never joins
-# the release-dev group that release-swift.yml uses for the master dev lane.
+# One dev-branch release at a time, serialized with itself. The reusable
+# workflow's publish job also joins provider-publication-dev.
 concurrency:
   group: release-dev-branch
   cancel-in-progress: false
@@ -120,254 +94,15 @@ permissions:
   contents: read
 
 jobs:
-  build-sign:
-    name: Build and ad-hoc self-sign the dev provider
+  dev:
     if: github.ref == 'refs/heads/dev'
-    runs-on: blacksmith-12vcpu-macos-27
-    timeout-minutes: 60
+    # The reusable workflow declares contents: write (gh release create, prod
+    # only) and actions: read (download this run's artifacts); a caller must
+    # grant at least what it declares.
     permissions:
-      contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      source_sha: ${{ steps.version.outputs.source_sha }}
-      artifact_name: ${{ steps.sign.outputs.artifact_name }}
-      binary_hash: ${{ steps.sign.outputs.binary_hash }}
-      bundle_hash: ${{ steps.sign.outputs.bundle_hash }}
-      metallib_hash: ${{ steps.sign.outputs.metallib_hash }}
-      code_directory_hash: ${{ steps.sign.outputs.code_directory_hash }}
-    env:
-      # Dev identity and dev build defaults. Package.swift compiles the dev
-      # coordinator URL from this; the version marker selects the dev identity.
-      DARKBLOOM_RELEASE_ENVIRONMENT: dev
-    steps:
-      # Build only the pushed dev commit (github.sha). No secret is referenced in
-      # this job.
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12.10'
-      - name: Derive the dev-branch version
-        id: version
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          BASE=$(awk -F'"' '/public static let version =/ { print $2 }' \
-            provider-swift/Sources/ProviderCore/ProviderCore.swift)
-          # Distinct from the master dev lane's X.Y.Z-dev.N: the `branch` segment
-          # keeps every dev-branch build apart from the numeric master dev lane.
-          VERSION="${BASE}-dev.branch.${RUN_NUMBER}"
-          ./scripts/check-release-version.sh "$VERSION"
-          SOURCE_SHA=$(git rev-parse HEAD)
-          {
-            echo "version=$VERSION"
-            echo "source_sha=$SOURCE_SHA"
-          } >> "$GITHUB_OUTPUT"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Dev-branch version: $VERSION from $SOURCE_SHA"
-      - uses: ./.github/actions/provider-release-build
-        id: build
-        with:
-          lane: release
-          version: ${{ steps.version.outputs.version }}
-      - name: Resolve packaged dev app names
-        run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
-      - name: Stage the unsigned dev app, ad-hoc sign it, retain the bundle
-        id: sign
-        env:
-          BIN_DIR: ${{ steps.build.outputs.bin-dir }}
-          METALLIB: ${{ steps.build.outputs.metallib }}
-          CLUSTER_HELPERS: ${{ steps.build.outputs.cluster-helpers-dir }}
-          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          # The CLI the build stamped must report the dev-branch version.
-          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$PRODUCT_CLI_NAME" --version)"
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-
-          # Reuse the exact unsigned app layout the master lane builds.
-          UNSIGNED="$RUNNER_TEMP/unsigned-provider"
-          python3 scripts/provider-signing-validation.py stage \
-            --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
-            --cluster-helpers "$CLUSTER_HELPERS" \
-            --output "$UNSIGNED" --version "$VERSION"
-
-          STAGE="$RUNNER_TEMP/dev-branch-bundle"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE/bin"
-          APP="$STAGE/$APP_NAME"
-          cp -R "$UNSIGNED/$APP_NAME" "$APP"
-
-          cat > "$APP/Contents/Info.plist" << PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleIdentifier</key>
-              <string>io.darkbloom.provider</string>
-              <key>CFBundleExecutable</key>
-              <string>${CLI_NAME}</string>
-              <key>CFBundleName</key>
-              <string>${APP_DISPLAY_NAME}</string>
-              <key>CFBundleVersion</key>
-              <string>${VERSION}</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${VERSION}</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
-          </dict>
-          </plist>
-          PLIST
-
-          # Ad-hoc signature only: no certificate, no entitlements that need a
-          # provisioning profile, no Apple release-signing submission. Sign
-          # nested Mach-O first, the
-          # bundle last. Without keychain-access-groups the provider uses an
-          # ephemeral Secure Enclave key and stays at the self_signed tier, which
-          # is exactly what the dev coordinator accepts.
-          codesign --force --sign - "$APP/Contents/MacOS/mlx.metallib"
-          if [ -f "$APP/Contents/Helpers/darkbloom-fan-helper" ]; then
-            codesign --force --sign - "$APP/Contents/Helpers/darkbloom-fan-helper"
-          fi
-          # The cluster helpers (ad-hoc too), resources first: a nested code location may hold no unsigned file.
-          for helper in mlx.metallib pagedattention.metal darkbloom-cluster-worker darkbloom-cluster-plan; do
-            codesign --force --sign - "$APP/Contents/Helpers/$helper"
-          done
-          codesign --force --sign - "$APP/Contents/MacOS/$ENCLAVE_NAME"
-          codesign --force --sign - "$APP/Contents/MacOS/$CLI_NAME"
-          codesign --force --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-
-          # Flat verifier copies keep the SwiftPM product names; the coordinator
-          # artifact verifier hashes bin/darkbloom.
-          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$PRODUCT_CLI_NAME"
-          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$PRODUCT_ENCLAVE_NAME"
-          cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
-
-          BUNDLE="$RUNNER_TEMP/publication-input/darkbloom-bundle-macos-arm64.tar.gz"
-          mkdir -p "$RUNNER_TEMP/publication-input"
-          tar czf "$BUNDLE" -C "$STAGE" .
-
-          BINARY_HASH=$(shasum -a 256 "$STAGE/bin/$PRODUCT_CLI_NAME" | cut -d' ' -f1)
-          METALLIB_HASH=$(shasum -a 256 "$STAGE/bin/mlx.metallib" | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 "$BUNDLE" | cut -d' ' -f1)
-          CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
-            "$APP/Contents/MacOS/$CLI_NAME" 2>&1 \
-            | sed -n 's/^CandidateCDHashFull sha256=//p')
-          if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Expected one full SHA-256 CodeDirectory hash from the ad-hoc signed provider"
-            exit 1
-          fi
-          {
-            echo "artifact_name=dev-branch-bundle-${SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"
-            echo "binary_hash=$BINARY_HASH"
-            echo "metallib_hash=$METALLIB_HASH"
-            echo "bundle_hash=$BUNDLE_HASH"
-            echo "code_directory_hash=$CODE_DIRECTORY_HASH"
-          } >> "$GITHUB_OUTPUT"
-      - name: Transfer the self-signed dev bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ steps.sign.outputs.artifact_name }}
-          path: ${{ runner.temp }}/publication-input/darkbloom-bundle-macos-arm64.tar.gz
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 3
-
-  publish:
-    name: Register the dev build on the dev coordinator
-    needs: build-sign
-    if: github.ref == 'refs/heads/dev'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
-    permissions:
-      contents: read
+      contents: write
       actions: read
-    # Join the dev publication serialization group that release-swift.yml's
-    # publish-release job uses for environment=dev, so a dev-branch publish and
-    # a master dev publish never register against the dev coordinator at once.
-    concurrency:
-      group: provider-publication-dev
-      cancel-in-progress: false
-    env:
-      ENV_PREFIX: dev
-      VERSION: ${{ needs.build-sign.outputs.version }}
-      RELEASE_SOURCE_SHA: ${{ needs.build-sign.outputs.source_sha }}
-      BINARY_HASH: ${{ needs.build-sign.outputs.binary_hash }}
-      BUNDLE_HASH: ${{ needs.build-sign.outputs.bundle_hash }}
-      METALLIB_HASH: ${{ needs.build-sign.outputs.metallib_hash }}
-      CODE_DIRECTORY_HASH: ${{ needs.build-sign.outputs.code_directory_hash }}
-    steps:
-      # Dev's copy of every publication script runs here, at the same pushed
-      # commit (github.sha) that build-sign compiled. The built bytes
-      # arrive only as the downloaded bundle and are never executed.
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12.10'
-      - name: Resolve dev publication endpoints
-        env:
-          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
-        run: |
-          set -euo pipefail
-          test -n "$DEV_R2_PUBLIC_URL"
-          test -n "$DEV_COORDINATOR_URL"
-          {
-            echo "r2_public_url=$DEV_R2_PUBLIC_URL"
-            echo "coordinator_url=$DEV_COORDINATOR_URL"
-          } >> "$GITHUB_ENV"
-      - name: Download this run's self-signed dev bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT: ${{ needs.build-sign.outputs.artifact_name }}
-        run: |
-          set -euo pipefail
-          test -n "$ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "$ARTIFACT" --dir "$RUNNER_TEMP/publication-input"
-      - name: Prepare the exact dev release identity
-        id: prepare
-        env:
-          R2_PUBLIC_URL: ${{ env.r2_public_url }}
-          COORDINATOR_URL: ${{ env.coordinator_url }}
-        run: |
-          set -euo pipefail
-          python3 scripts/provider-release-publication.py prepare \
-            --directory "$RUNNER_TEMP/provider-publication" \
-            --bundle "$RUNNER_TEMP/publication-input/darkbloom-bundle-macos-arm64.tar.gz"
-          {
-            echo "RELEASE_PAYLOAD_SHA256=$(shasum -a 256 "$RUNNER_TEMP/provider-publication/release-payload.json" | cut -d' ' -f1)"
-            echo "RELEASE_PROVENANCE_SHA256=$(shasum -a 256 "$RUNNER_TEMP/provider-publication/release-provenance.json" | cut -d' ' -f1)"
-          } >> "$GITHUB_ENV"
-      - name: Install publication tools
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/publication-tools"
-          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
-          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
-      - name: Stage the immutable bundle in dev R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ env.r2_public_url }}
-        run: python3 scripts/provider-release-publication.py stage --directory "$RUNNER_TEMP/provider-publication"
-      - name: Register the release and publish dev latest aliases
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          R2_PUBLIC_URL: ${{ env.r2_public_url }}
-          COORDINATOR_URL: ${{ env.coordinator_url }}
-          RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
-        run: python3 scripts/provider-release-publication.py publish --directory "$RUNNER_TEMP/provider-publication"
+    uses: ./.github/workflows/release-provider.yml
+    with:
+      environment: dev
+    secrets: inherit

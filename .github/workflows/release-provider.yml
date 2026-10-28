@@ -37,8 +37,9 @@ name: Provider Release Lane (reusable)
 #   - workflow_dispatch -> the chosen environment: a staging release or prod
 #                         recovery; or a signed dev validation build that is
 #                         never published.
-# Every dev build carries -dev.<run number> and every staging build
-# -staging.<run number>: the build stamps it into ProviderCore.version, so
+# A dev push build carries -dev.branch.<run number>, a dev validation build
+# -dev.<run number> and a staging build -staging.<run number>: the build stamps
+# it into ProviderCore.version, so
 # `darkbloom --version` shows it. prod is reachable only through a tag (or a
 # retained-build recovery dispatch); resolve-provider-release.sh refuses prod on
 # any non-tag trigger, so a push can never reach the prod signing identity.

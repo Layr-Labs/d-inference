@@ -322,6 +322,12 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('static let teamID = "SLDQ2GJ6TL"', swift)
         self.assertIn('static let bundleIdentifier = "io.darkbloom.provider"', swift)
         self.assertIn("APPLE_TEAM_ID: 'SLDQ2GJ6TL'", RELEASE)
+        # The two literal parts of DarkbloomCodeSignature.designatedRequirement,
+        # so that a format change in Swift fails here too.
+        self.assertIn('"anchor apple generic and identifier \\"\\(bundleIdentifier)\\" "', swift)
+        self.assertIn('+ "and certificate leaf[subject.OU] = \\"\\(teamID)\\""', swift)
+        swift_requirement = ('anchor apple generic and identifier "io.darkbloom.provider" '
+                             'and certificate leaf[subject.OU] = "SLDQ2GJ6TL"')
         requirement = ('APP_REQUIREMENT="anchor apple generic and identifier \\"io.darkbloom.provider\\" '
                        'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\""')
         self.assertIn(requirement, sign)
@@ -330,6 +336,11 @@ class ReleasePipelineTests(unittest.TestCase):
                       '            "-R=$APP_REQUIREMENT" "$SMOKE_ROOT/$APP_NAME"', verify)
         self.assertLess(sign.index('tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"'),
                         sign.index(requirement))
+        # The shell value, after the shell removes its escapes and expands the
+        # team, is the Swift requirement byte for byte.
+        shell_value = requirement.split('APP_REQUIREMENT="', 1)[1][:-1]
+        self.assertEqual(shell_value.replace('\\"', '"').replace('$APPLE_TEAM_ID', 'SLDQ2GJ6TL'),
+                         swift_requirement)
 
     def test_source_gate_receives_the_lane_environment(self):
         # master's gate admits a dev push for environment dev only, so the trust
@@ -367,8 +378,8 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_every_environment_signs_with_the_real_developer_id_not_self_signed(self):
         # dev, staging and prod share one signing job with no per-environment
-        # branch: all sign with the Developer ID, including a dev push through
-        # the master gate. This lane never signs ad-hoc.
+        # branch: all sign with the Developer ID, including the dev-branch lane
+        # that release-dev-branch.yml calls. Nothing signs ad-hoc.
         sign = job(RELEASE, 'build-and-release')
         self.assertEqual(sign.count('--sign "$DEVELOPER_ID"'), 5)
         for adhoc in ('--sign -', 'codesign -s -', 'self-sign', 'ad-hoc', 'adhoc',

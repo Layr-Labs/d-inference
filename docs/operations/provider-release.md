@@ -299,10 +299,11 @@ production release key keep a dev build out of production.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. A dev validation build uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
-are empty in every job unless the resolved environment is `prod`. Dev creates no
-GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
-the `DEV_R2_PUBLIC_URL` origin.
+path below. A dev lane reads the shared Apple signing secrets and only the
+`DEV_*` publication secrets: the `PROD_*` and legacy secret values are empty in
+every job unless the resolved environment is `prod`. Dev creates no GitHub
+Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and the
+`DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
@@ -313,13 +314,16 @@ builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags an
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-Every dev build has the version `X.Y.Z-dev.N`. `X.Y.Z` is the source
+A dev release from a dev push has the version `X.Y.Z-dev.branch.N`, and a
+master validation build has `X.Y.Z-dev.N`. `X.Y.Z` is the source
 `ProviderCore.version` and `N` is the workflow run number. The release lane
 writes this version into `ProviderCore.version` before it compiles, so
 `darkbloom --version`, the app `Info.plist`, the registration and the R2 path all
-show the `-dev.N` marker. SemVer puts `X.Y.Z-dev.N` below `X.Y.Z` and orders dev
-builds by `N`, so a dev provider updates to each newer dev build. Production
-versions never have a suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
+show the dev marker. SemVer puts `X.Y.Z-dev.branch.N` below `X.Y.Z` and orders
+dev-branch builds by `N`. The dev coordinator ranks releases with
+`ReleaseVersionGreater`, not SemVer, until [darkbloom-platform#551](https://github.com/Layr-Labs/darkbloom-platform/pull/551) is
+deployed (see the Dev-Branch Lane section). Production versions never have a
+suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
 use the dev form, for example `0.9.20-dev.0`, because `0.9.20` excludes every
 `0.9.20-dev.N` build.
 
@@ -404,7 +408,7 @@ These values are the same for both builds:
 - The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
   bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
   registration requires these names. Dev uploads go to the dev bucket under the
-  `-dev.N` version.
+  `-dev.branch.N` version.
 
 These surfaces are shared, and an operator must know about them:
 
@@ -452,9 +456,9 @@ identity (`scripts/install.sh`, `select_provider_identity`;
 Staging **tracks main**, gated by the `STAGING_ENABLED` repository variable:
 when it is `'true'`, a master push publishes a staging release (DBLM-771),
 signed with the same Developer ID as dev and prod —
-staging is a normal Developer-ID dev-family release, not the self-signed build of
-`release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
-number, like a dev build's `X.Y.Z-dev.N`. Publish a staging build by hand with
+staging is a normal Developer-ID dev-family release, as is the dev-branch build
+of `release-dev-branch.yml`. A `X.Y.Z-staging.N` version carries the workflow run
+number, like a dev build's `X.Y.Z-dev.branch.N`. Publish a staging build by hand with
 the same version form (the flag gates the manual lane too):
 
 ```bash
@@ -493,44 +497,77 @@ the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
 
-#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+#### Dev-Branch Lane (Dev Only)
 
-`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
-commit and publishes it to the dev coordinator without merging to master. It is
-dispatch-only on `master`, so the credentialed publication logic runs the
-reviewed master copy of every script; it checks out the chosen `ref` only to
-compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
-the production Apple signing identity. The branch binary is compiled and signed
-in a job that holds no secret, and is never run in a step that holds a
-credential. The version is `X.Y.Z-dev.branch.<run>`, which
-`scripts/check-release-version.sh` accepts and which stays distinct from the
-master dev lane's `X.Y.Z-dev.<run>`.
+Dev builds dev, and master builds master. A push to the d-inference `dev` branch
+starts `.github/workflows/release-dev-branch.yml`. A master push and a release
+tag run `release-swift.yml`. No workflow dispatches a build of another branch,
+and the dev-branch lane has no `workflow_dispatch`.
 
-```bash
-gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
-```
+`release-dev-branch.yml` is only a caller. Its one job checks
+`github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
+with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
+same chain as every release lane: the source gate, the build, the SDK
+qualification, Developer ID signing, notarization and stapling, R2 staging and
+registration on the dev coordinator. A dev-branch build therefore has the same
+signature as a master build and passes the same checks: the fan-helper
+requirement of `scripts/install.sh` and the self-updater's
+`DarkbloomCodeSignature` production requirement. The push trigger uses the
+`paths:` list of the `release-swift.yml` master push, with
+`release-dev-branch.yml` in place of `release-swift.yml`.
 
-The installer accepts an ad-hoc signature for pre-release versions: for a
-version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
-relaxed designated requirement that keeps the bundle identifier
-`io.darkbloom.provider` pinned but drops the Apple-anchor and team-OU clause
-(`scripts/install.sh`, `verify_staged_app_signature`). Production versions keep
-the full Apple-team requirement unchanged, and a prod coordinator is never
-served a pre-release version. The installer extracts the release archive with
-`/usr/bin/tar` under umask 022, so a restrictive caller umask cannot leave the
-installed app owner-only; private state it creates elsewhere keeps its own modes
-(`scripts/install.sh`, `install_bundle_atomically`). The dev coordinator also hashes the bundle rather
-than inspecting the Apple signature, and `MIN_TRUST=self_signed` is a
-device-attestation tier, not a code-signature tier.
+| Item | Dev-branch lane |
+|---|---|
+| Version | `X.Y.Z-dev.branch.<run>`, stamped by `scripts/resolve-provider-release.sh` and accepted by `scripts/check-release-version.sh` |
+| Source gate | Job `resolve-env` runs master's copy of `scripts/provider-release-resume.py verify-source`. The gate must accept a `refs/heads/dev` push for environment `dev`; until master carries that change, the lane fails at the gate. |
+| Signing and notarization secrets | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID`, `APPLE_APP_PASSWORD`, read only in job `build-and-release` |
+| Publication secrets | `DEV_R2_*`, `DEV_COORDINATOR_URL`, `DEV_RELEASE_KEY` |
+| GitHub environment | None. All of these are repository secrets. |
+| Serialization | Workflow group `release-dev-branch`; publication group `provider-publication-dev` |
 
-The installer is a pinned provider-contract snapshot, so the dev coordinator
-serves the relaxed installer only after the `darkbloom-platform` served copy is
-re-snapshotted from the merged commit in a separate platform PR. Until that
-re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
-and rejects the self-signed build. Because `/v1/releases/latest` orders by
-`created_at`, publishing makes the branch build the latest dev release; an
-existing install's self-updater may not downgrade to a lower run number, while a
-fresh install takes the newest.
+`secrets: inherit` passes every repository secret to the reusable workflow. For
+environment `dev` it reads only the secrets in the table; it reads a `PROD_*`,
+`STAGING_*` or unprefixed publication secret only behind an
+`environment == 'prod'` or `environment == 'staging'` guard.
+`scripts/test-release-dev-branch.py` pins this.
+
+To retry, follow [Retry Staging Or Publication](#retry-staging-or-publication):
+re-run failed jobs only after the signing job passed, and push a new commit to
+rebuild. The `release-dev-branch` group does not cancel a running run, but a
+newer dev push cancels a run that is still pending in the group.
+
+Review is not enforced on `dev` today. Its rules are required signatures and the
+"Darkbloom PR access control" ruleset, which lets only the accounts on that
+ruleset's bypass list create or update a ref. Because a dev push gets the
+Developer ID signature, `dev` needs a pull_request rule before the lane runs. A
+repository administrator adds that rule.
+
+The dev coordinator can still hold `X.Y.Z-dev.<run>` releases from the master
+dev lane; `0.10.4-dev.224` is the latest dev release on 2026-10-28.
+`/v1/releases/latest` returns the active release that `ReleaseVersionGreater`
+ranks highest. That comparison is not SemVer: it reads each dot-separated part of
+the version as an integer, so a non-numeric part such as `branch` counts as 0. It
+uses `created_at` only to break a tie on the same version
+([`ReleaseVersionGreater` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/internal/store/shared/release_version.go);
+[`GetLatestRelease` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/store/postgres/releases.go)).
+Until the coordinator ranks releases by SemVer:
+
+- At a lower base version than an existing `-dev.<run>` release, that release
+  stays latest. The dev-branch build is registered, but the publication does not
+  advance the latest aliases.
+- At an equal base version, `X.Y.Z-dev.<run>` ranks above
+  `X.Y.Z-dev.branch.<run>`, so the existing release stays latest. The
+  publication script then waits for a latest version that does not come, and the
+  `publish-release` job fails after it registers the release.
+- At a higher base version, the newest dev-branch build is latest.
+
+When the coordinator ranks by SemVer 2.0, an alphanumeric identifier ranks above
+a numeric one in the same position. Then `X.Y.Z-dev.branch.<run>` ranks above
+`X.Y.Z-dev.<run>`, and the newest dev-branch build at the highest base version is
+latest.
+
+An existing install's self-updater may not downgrade to a lower version, while a
+fresh install takes the latest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

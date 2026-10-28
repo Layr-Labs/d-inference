@@ -80,6 +80,42 @@ struct SSDHybridCheckpointRecencyTests {
         }
     }
 
+    @Test("a hit rewrites the file's mtime at most once per refresh interval, so receipts survive in between")
+    func persistedRecencyInterval() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let clock = Clock()
+        let store = try makeStore(fixture, clock: clock, ttlSeconds: SSDPrefixCachePolicy.defaultTTLSeconds)
+        defer { store.close() }
+        #expect(store.recencyRefreshSeconds == 60)
+        #expect(try await fixture.donate(store) == [256])
+        let file = fixture.file(store)
+        func modified() throws -> Date? {
+            try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        }
+        func stage(_ identifier: UInt64, at seconds: Int64) async {
+            clock.advance(to: seconds)
+            #expect(await store.stage(requestID: .init(identifier), request: fixture.request(),
+                reserveReadScratch: fixture.reserveReadScratch, makeImportPlan: fixture.plan).staged)
+        }
+        // The new file's wall-clock mtime is ahead of this clock, so it refreshes.
+        await stage(601, at: 1000)
+        #expect(try modified() == Date(timeIntervalSince1970: 1000))
+        await stage(602, at: 1059)
+        #expect(try modified() == Date(timeIntervalSince1970: 1000))
+        #expect(store.index.oldest()?.lastAccess == 1059, "the in-memory index records every hit")
+        #expect(try await fixture.donate(store, receipt: 601) == [256])
+        #expect(store.stats().donationReadBytes == 0, "no touch since 601 recorded the file identity")
+        await stage(603, at: 1060)
+        #expect(try modified() == Date(timeIntervalSince1970: 1060))
+        #expect(try await fixture.donate(store, receipt: 602) == [256])
+        #expect(store.stats().donationReadBytes > 0, "603's refresh outdated 602's receipt")
+        for identifier: UInt64 in [601, 602, 603] { await store.abandonStaging(requestID: .init(identifier)) }
+        await store.closeAndWait()
+        #expect(store.stats().stagedBytesInUse == 0)
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
     @Test("successful reads persist sliding TTL across restart without changing ciphertext or epoch")
     func slidingTTLAndRestart() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()

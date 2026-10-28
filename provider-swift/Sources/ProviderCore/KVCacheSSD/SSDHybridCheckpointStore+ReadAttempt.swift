@@ -45,7 +45,7 @@ extension SSDHybridCheckpointStore {
                 return .init(.missAbsent)
             }
             let loaded = try await readCheckpoint(
-                candidate: candidate, request: request, lease: lease,
+                candidate: candidate, request: request, access: access, lease: lease,
                 readScratch: readScratch, budget: budget, check: check, countRead: countRead,
                 blame: { failing = $0 }, makeImportPlan: makeImportPlan)
             let staged = loaded.staged
@@ -93,9 +93,54 @@ extension SSDHybridCheckpointStore {
                 statsBox.update { $0.misses += 1 }
                 return .init(.missAbsent)
             }
-            removeCorrupt(failing)
+            // Another reader may still be streaming these bytes. The last one
+            // to fail, the next writer or maintenance removes them instead.
+            whileSoleHolder(of: failing, in: candidate, access: access) { removeCorrupt(failing) }
             return .init(.missCorrupt)
         }
+    }
+
+    /// Persisted recency needs only TTL resolution: a file whose mtime is
+    /// younger than 1/30 of the TTL (one minute at the 30-minute default)
+    /// keeps it, so receipts pinned to its identity survive repeated hits.
+    var recencyRefreshSeconds: Int64 { config.ttlSeconds / 30 }
+
+    /// Runs `mutate` only while nothing else holds or awaits the file: the leaf
+    /// through a non-blocking upgrade of this read's shared lease, an ancestor
+    /// through a free exclusive lease. A busy file is left unchanged.
+    private func whileSoleHolder(of tag: Data, in candidate: ReadCandidate,
+                                 access: SSDCheckpointFileCoordinator.Access, _ mutate: () -> Void) {
+        if tag == candidate.chain.last {
+            guard access.tryUpgrade() else { return }
+            defer { access.downgrade() }
+            mutate()
+        } else if let held = fileCoordinator.tryAcquire(to: fileURL(tag)) {
+            defer { held.release() }
+            mutate()
+        }
+    }
+
+    /// Recency survives a restart and orders whole-root maintenance by mtime.
+    /// A touch also moves ctime, failing a concurrent reader's identity proof
+    /// and every receipt pinned to the file, so it needs the file alone and
+    /// waits until the mtime is `recencyRefreshSeconds` old. The in-memory
+    /// index records every hit regardless.
+    private func persistRecency(of candidate: ReadCandidate, access: SSDCheckpointFileCoordinator.Access) {
+        let now = config.nowSeconds()
+        for tag in candidate.chain where !recencyIsCurrent(at: fileURL(tag), now: now) {
+            whileSoleHolder(of: tag, in: candidate, access: access) {
+                SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(now))],
+                                                at: fileURL(tag), under: config.root)
+            }
+        }
+    }
+
+    /// A future or unreadable mtime is not current.
+    private func recencyIsCurrent(at url: URL, now: Int64) -> Bool {
+        guard let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        else { return false }
+        let age = now - Int64(modified.timeIntervalSince1970)
+        return age >= 0 && age < recencyRefreshSeconds
     }
 
     private struct LoadedCheckpoint {
@@ -107,7 +152,7 @@ extension SSDHybridCheckpointStore {
     }
 
     private func readCheckpoint(
-        candidate: ReadCandidate, request: CBv2Request,
+        candidate: ReadCandidate, request: CBv2Request, access: SSDCheckpointFileCoordinator.Access,
         lease: SSDCheckpointStageReservation, readScratch: CBv2CompleteCheckpointIOLease,
         budget: SSDCheckpointReadBudget, check: () throws -> Void, countRead: @escaping (Int) -> Void,
         blame: (Data) -> Void,
@@ -154,15 +199,8 @@ extension SSDHybridCheckpointStore {
         } catch { throw ReadControl.capacity }
         readScratch.close()
         guard let filling = importer else { throw CBv2CompleteCheckpointError.allocationFailed }
-        // Recency survives a restart. Only the leaf is held; an ancestor busy
-        // elsewhere keeps its mtime, so no other reader's file identity moves.
-        for tag in candidate.chain {
-            let held = tag == candidate.chain.last ? nil : fileCoordinator.tryAcquire(to: fileURL(tag))
-            guard held != nil || tag == candidate.chain.last else { continue }
-            SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(config.nowSeconds()))],
-                                            at: fileURL(tag), under: config.root)
-            held?.release()
-        }
+        // Any touch precedes the identity this second open records.
+        persistRecency(of: candidate, access: access)
         statsBox.update { $0.filesRead += candidate.chain.count }
         var files = try openChain(candidate, tracksIdentity: true, check: check, beforeRead: budget.beforeRead,
                                   countRead: countRead, blame: blame)

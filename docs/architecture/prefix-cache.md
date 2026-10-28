@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-24
+> Last updated: 2026-10-28
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -799,6 +799,11 @@ reads each candidate's size and recency under one lock, so request lookup visits
 only its prefix candidates and does not scan unrelated cached entries. A probe
 does not extend TTL; authenticated use still controls recency updates and
 validates replacements or evictions (`SSDHybridCheckpointStore+Read.swift`).
+Restores of one checkpoint share its per-file lease and read it in parallel;
+its writer, duplicate validation and maintenance take the lease exclusively,
+in arrival order. A reader rewrites the file's mtime or removes a corrupt file
+only while it holds the file alone
+([same-file coordination](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 Before file I/O, the provider reserves bounded host read scratch. A shared
 native process owner prices destinations, zero-fill scratch, metadata and full
 request promises through Admission; it does not duplicate the provider's host

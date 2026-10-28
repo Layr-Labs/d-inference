@@ -7,7 +7,23 @@ struct SSDCheckpointFileCoordinatorTests {
     private let file = URL(fileURLWithPath: "/checkpoint-tests/first.dbk3")
     private let otherFile = URL(fileURLWithPath: "/checkpoint-tests/second.dbk3")
 
-    @Test("maintenance skips an active commit and never jumps queued readers")
+    /// The order in which queued accesses were granted.
+    private final class Grants: @unchecked Sendable {
+        private let lock = NSLock()
+        private var names: [String] = []
+        var order: [String] { lock.withLock { names } }
+        func record(_ name: String) { lock.withLock { names.append(name) } }
+    }
+
+    private func acquire(_ access: SSDCheckpointFileCoordinator.Access, as name: String,
+                         into grants: Grants) -> Task<Void, any Error> {
+        Task {
+            try await access.acquire()
+            grants.record(name)
+        }
+    }
+
+    @Test("maintenance skips an active commit or read and never jumps queued readers")
     func nonblockingMaintenance() async throws {
         let coordinator = SSDCheckpointFileCoordinator()
         let writer = try #require(coordinator.tryAcquire(to: file))
@@ -15,7 +31,7 @@ struct SSDCheckpointFileCoordinatorTests {
         #expect(coordinator.tryAcquire(to: file) == nil)
         let independent = try #require(coordinator.tryAcquire(to: otherFile))
         independent.release()
-        let reader = coordinator.makeAccess(to: file)
+        let reader = coordinator.makeAccess(to: file, mode: .shared)
         let task = Task { try await reader.acquire() }
         defer { task.cancel(); reader.cancel(); reader.release() }
         try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
@@ -54,6 +70,141 @@ struct SSDCheckpointFileCoordinatorTests {
         try await secondTask.value
         second.release()
         #expect(coordinator.trackedFileCount == 0)
+    }
+
+    @Test("shared readers hold a file together; a writer waits for every one of them")
+    func sharedReadersOverlap() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let grants = Grants()
+        let first = coordinator.makeAccess(to: file, mode: .shared)
+        try await first.acquire()
+        defer { first.release() }
+        let second = coordinator.makeAccess(to: file, mode: .shared)
+        let secondTask = acquire(second, as: "second", into: grants)
+        defer { secondTask.cancel(); second.cancel(); second.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order == ["second"] }
+        try await secondTask.value
+        #expect(coordinator.pendingCount(for: file) == 0)
+        #expect(coordinator.trackedFileCount == 1)
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        let writer = coordinator.makeAccess(to: file)
+        let writerTask = acquire(writer, as: "writer", into: grants)
+        defer { writerTask.cancel(); writer.cancel(); writer.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        first.release()
+        #expect(coordinator.pendingCount(for: file) == 1, "one reader still holds the file")
+        #expect(grants.order == ["second"])
+        second.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order.count == 2 }
+        try await writerTask.value
+        #expect(grants.order == ["second", "writer"])
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        writer.release()
+        #expect(coordinator.trackedFileCount == 0)
+    }
+
+    @Test("a queued writer holds back later readers, which then enter together")
+    func queuedWriterOrdersLaterReaders() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let grants = Grants()
+        let reader = coordinator.makeAccess(to: file, mode: .shared)
+        try await reader.acquire()
+        defer { reader.release() }
+        let writer = coordinator.makeAccess(to: file)
+        let writerTask = acquire(writer, as: "writer", into: grants)
+        defer { writerTask.cancel(); writer.cancel(); writer.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        let late = (0..<2).map { _ in coordinator.makeAccess(to: file, mode: .shared) }
+        let lateTasks = late.enumerated().map { acquire($0.element, as: "late\($0.offset)", into: grants) }
+        defer { for (task, access) in zip(lateTasks, late) { task.cancel(); access.cancel(); access.release() } }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 3 }
+        #expect(grants.order.isEmpty, "later readers must not join the active reader past a queued writer")
+        reader.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { !grants.order.isEmpty }
+        try await writerTask.value
+        #expect(grants.order == ["writer"])
+        #expect(coordinator.pendingCount(for: file) == 2)
+        writer.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order.count == 3 }
+        for task in lateTasks { try await task.value }
+        #expect(grants.order.first == "writer" && Set(grants.order.dropFirst()) == ["late0", "late1"])
+        #expect(coordinator.pendingCount(for: file) == 0)
+        for access in late { access.release() }
+        #expect(coordinator.trackedFileCount == 0)
+    }
+
+    @Test("upgrade needs the only holder and no queued request; downgrade admits waiting readers")
+    func upgradeAndDowngrade() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let grants = Grants()
+        let owner = coordinator.makeAccess(to: file, mode: .shared)
+        #expect(!owner.tryUpgrade(), "an access that holds nothing cannot upgrade")
+        try await owner.acquire()
+        defer { owner.release() }
+        #expect(owner.tryUpgrade())
+        #expect(!owner.tryUpgrade(), "already exclusive")
+        let reader = coordinator.makeAccess(to: file, mode: .shared)
+        let readerTask = acquire(reader, as: "reader", into: grants)
+        defer { readerTask.cancel(); reader.cancel(); reader.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        #expect(coordinator.tryAcquire(to: file) == nil)
+        owner.downgrade()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order == ["reader"] }
+        try await readerTask.value
+        #expect(!owner.tryUpgrade() && !reader.tryUpgrade(), "neither of two readers may upgrade")
+        reader.release()
+        let writer = coordinator.makeAccess(to: file)
+        let writerTask = acquire(writer, as: "writer", into: grants)
+        defer { writerTask.cancel(); writer.cancel(); writer.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        #expect(!owner.tryUpgrade(), "a sole reader cannot overtake a queued writer")
+        owner.release()
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order == ["reader", "writer"] }
+        try await writerTask.value
+        #expect(!writer.tryUpgrade() && !owner.tryUpgrade())
+        owner.downgrade()
+        #expect(coordinator.tryAcquire(to: file) == nil, "downgrading a released access changes nothing")
+        writer.release()
+        #expect(coordinator.trackedFileCount == 0)
+    }
+
+    @Test("a withdrawn queued writer readmits readers behind it; a withdrawn reader holds nothing")
+    func cancelledSharedWaiters() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let grants = Grants()
+        let reader = coordinator.makeAccess(to: file, mode: .shared)
+        try await reader.acquire()
+        defer { reader.release() }
+        let writer = coordinator.makeAccess(to: file)
+        let writerTask = acquire(writer, as: "writer", into: grants)
+        defer { writerTask.cancel(); writer.cancel(); writer.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        let queued = coordinator.makeAccess(to: file, mode: .shared)
+        let queuedTask = acquire(queued, as: "queued", into: grants)
+        defer { queuedTask.cancel(); queued.cancel(); queued.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 2 }
+        writerTask.cancel()
+        await #expect(throws: CancellationError.self) { try await writerTask.value }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { grants.order == ["queued"] }
+        try await queuedTask.value
+        #expect(coordinator.pendingCount(for: file) == 0)
+        reader.release()
+        queued.release()
+        #expect(coordinator.trackedFileCount == 0)
+
+        let commit = try #require(coordinator.tryAcquire(to: file))
+        let blocked = coordinator.makeAccess(to: file, mode: .shared)
+        let blockedTask = Task { try await blocked.acquire() }
+        defer { blockedTask.cancel(); blocked.cancel(); blocked.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        blockedTask.cancel()
+        await #expect(throws: CancellationError.self) { try await blockedTask.value }
+        #expect(coordinator.pendingCount(for: file) == 0)
+        #expect(coordinator.trackedFileCount == 1)
+        commit.release()
+        #expect(coordinator.trackedFileCount == 0)
+        let retirement = try #require(coordinator.tryAcquire(to: file))
+        retirement.release()
     }
 
     @Test("queued cancellation refunds a waiter without unlocking its active reader")
@@ -96,14 +247,15 @@ struct SSDCheckpointFileCoordinatorTests {
         #expect(coordinator.trackedFileCount == 0)
     }
 
-    @Test("handoff racing cancellation resumes exactly once and prunes every file")
-    func cancellationHandoff() async throws {
+    @Test("handoff racing cancellation resumes exactly once and prunes every file",
+          arguments: [SSDCheckpointFileCoordinator.Mode.exclusive, .shared])
+    func cancellationHandoff(waiterMode: SSDCheckpointFileCoordinator.Mode) async throws {
         let coordinator = SSDCheckpointFileCoordinator()
         for offset in 0..<128 {
             let url = file.appendingPathComponent(String(offset))
             let owner = coordinator.makeAccess(to: url)
             try await owner.acquire()
-            let queued = coordinator.makeAccess(to: url)
+            let queued = coordinator.makeAccess(to: url, mode: waiterMode)
             let task = Task {
                 defer { queued.release() }
                 try await queued.acquire()

@@ -100,6 +100,17 @@ native memory ownership, cancellation, media decoding, paged KV and resource
 packaging there as well as provider behavior. Preserve all retained lane gates;
 do not treat the repository split as permission to skip native regressions.
 
+### Download completion ownership
+
+After rebuilding the provider test products, select
+`StreamingFileDownloadDelegateTests` through the isolated provider test runner.
+The suite cancels a real suspended `URLSession` task before attaching its waiter,
+checks both completion orders and duplicate terminal callbacks, races attachment
+against completion, and verifies that cancellation preserves the exact received
+`.part` bytes. Fixtures use unique temporary directories and never resume a
+network task or load model weights. These component tests do not qualify live
+HTTP downloads or model serving.
+
 ### Local Responses and reasoning regressions
 
 After building the exact provider/SDK test products, run these focused suites
@@ -493,8 +504,12 @@ swift test --skip-build --filter 'PromptTokenCacheTests|ChatTemplateLoopRewrites
 `PromptTokenCacheTests` loads synthetic tokenizers through the production
 `LocalTokenizerLoader` for the Qwen split, GPT-2 byte-level and Gemma metaspace
 pre-tokenizer families, with no download, and requires piecewise, cached and
-cross-turn token IDs to equal the unchanged path. A marker template that only
-the served loop renders, or raises for, checks that a background comparison
+cross-turn token IDs to equal the unchanged path. Cache-generation regressions
+require hits present at batch-lookup entry to be returned in request order,
+including duplicate keys and genuine misses across multiple rotations. They
+check exact byte accounting and subsequent eviction, and ensure batches without
+old-generation hits preserve cached entries. A marker template that only the
+served loop renders, or raises for, checks that a background comparison
 disables reuse. `ChatTemplateLoopRewritesTests`
 renders random agent histories through skeleton templates built from each loop
 rewrite's matched blocks and requires the rewritten render to equal the
@@ -1266,6 +1281,19 @@ with verbatim annotations, including multiline opening paragraphs, extra blank
 lines, CRLFs and synthetic SSH/PGP signature armor. It checks exact retained note
 text and payload/provenance digest guards without invoking signing or live
 publication.
+
+`scripts/test-provider-release-pipeline.py` and
+`scripts/test-provider-release-resolution.py` pin the routing of
+`.github/workflows/release-swift.yml`. A master push publishes staging only, and
+only when `STAGING_ENABLED` is `true`. A tag publishes prod. No master path
+publishes dev: the dispatch has no `dev` choice, the `dev` lane runs only as an
+unpublished signed validation build, and the resolver refuses a dev publication
+from master and a master push routed to dev. A push to `dev` resolves to
+`X.Y.Z-dev.branch.N` for `dev` only; `staging`, `prod` and other branches are
+refused. `scripts/test-provider-release-resume.py` pins the source gate: a dev
+push needs environment `dev` and a verified commit on `dev` ancestry, and the
+tag, master push and dispatch rows keep the master checks. The pipeline test
+pins the final-app check against the self-updater's designated requirement.
 
 `scripts/test-darkbloom-route.py` runs the actual
 [CI runner routing](build.md#ci-runner-routing) shell step against a loopback

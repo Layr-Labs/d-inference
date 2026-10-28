@@ -4,9 +4,10 @@
 /// leaves a crashed job loaded). `darkbloom stop` unloads it (`bootout` +
 /// persistent `launchctl disable`), so `providerLoaded == false` means the user
 /// disabled it — never restarted.
-/// `auto_restart = false` opts out. An isolated crash restarts on the tick after
+/// `auto_restart = false` opts out. An exited provider restarts on the tick after
 /// the outage is first seen (the self-updater's kill+relaunch is back by then);
-/// one that would continue a crash-loop chain waits `defaultGraceSeconds`.
+/// a live but stale one, or one that would continue a crash-loop chain, waits
+/// `defaultGraceSeconds`.
 
 import Foundation
 
@@ -24,10 +25,15 @@ public enum WatchdogPolicy {
     /// Grace before a crash-loop-shaped outage is restarted: 5 minutes.
     public static let defaultGraceSeconds: Double = 300
 
-    /// Grace for this outage: none after a long run, the full grace when the
-    /// restart would continue a crash-loop chain (`crashLoopCount` > 1).
-    public static func graceSeconds(current: WatchdogState, effectiveDownSince: Double?) -> Double {
-        crashLoopCount(current: current, effectiveDownSince: effectiveDownSince) > 1 ? defaultGraceSeconds : 0
+    /// Grace for this outage: none when the process has exited after a long
+    /// run; the full grace for a live process with a stale state file (it may
+    /// be busy, e.g. loading a large model) or a restart that would continue a
+    /// crash-loop chain (`crashLoopCount` > 1).
+    public static func graceSeconds(
+        current: WatchdogState, effectiveDownSince: Double?, processRunning: Bool
+    ) -> Double {
+        processRunning || crashLoopCount(current: current, effectiveDownSince: effectiveDownSince) > 1
+            ? defaultGraceSeconds : 0
     }
 
     /// Crash-loop shape bound: a restart counts as CONSECUTIVE with the

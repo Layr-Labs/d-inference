@@ -61,7 +61,8 @@ struct Watchdog: AsyncParsableCommand {
         // Ignore a downSince left over from a previous boot (fresh window per outage).
         let bootTime = now - ProcessInfo.processInfo.systemUptime
         let downSince = WatchdogPolicy.effectiveDownSince(state.downSince, bootTime: bootTime)
-        let graceSeconds = WatchdogPolicy.graceSeconds(current: state, effectiveDownSince: downSince)
+        let graceSeconds = WatchdogPolicy.graceSeconds(
+            current: state, effectiveDownSince: downSince, processRunning: liveness.running)
 
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,

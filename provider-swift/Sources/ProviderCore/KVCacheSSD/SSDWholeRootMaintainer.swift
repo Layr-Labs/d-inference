@@ -39,7 +39,25 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         var tempFiles: [OwnedTempFile] = []
     }
 
+    /// `lstat` identity of a block file. A write, a replacement or a recency
+    /// touch changes it, so an unchanged identity means unchanged header bytes.
+    private struct FileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+    }
+
     private let maintenanceLock = NSLock()
+    /// Per root: each readable file seen by the last pass, with the `lstat`
+    /// identity at which its header read succeeded. Failures are never kept:
+    /// a read can fail outside the file (directory chain, EIO, EMFILE), and a
+    /// kept failure would hold an owned block past its TTL. Guarded by
+    /// `maintenanceLock`.
+    private var readableHeaderIdentities: [String: [String: FileIdentity]] = [:]
     // Heartbeat snapshots must not wait for filesystem traversal or epoch I/O.
     private let statsLock = NSLock()
     private var totals = Stats()
@@ -204,6 +222,25 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
         else { return OwnedContents() }
 
+        let rootKey = root.standardizedFileURL.path
+        let previouslyReadable = readableHeaderIdentities[rootKey] ?? [:]
+        var readable: [String: FileIdentity] = [:]
+        defer { readableHeaderIdentities[rootKey] = readable }
+        func isHeaderReadable(_ url: URL, fanoutPassesReadChecks: () -> Bool) -> Bool {
+            // Take the identity before the read: a file that changes during it
+            // gets another identity and is read again by the next pass.
+            let identity = Self.identity(of: url)
+            if let identity, previouslyReadable[url.path] == identity, fanoutPassesReadChecks() {
+                readable[url.path] = identity
+                return true
+            }
+            guard (try? SSDBlockStore.readMetadataOnly(
+                from: url, maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60)) != nil
+            else { return false }
+            if let identity { readable[url.path] = identity }
+            return true
+        }
+
         var contents = OwnedContents()
         for modelDir in modelDirs {
             guard SSDBlockStore.isLowerHex(modelDir.lastPathComponent, count: 12),
@@ -225,6 +262,16 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         includingPropertiesForKeys: Array(keys),
                         options: [.skipsHiddenFiles])
                 else { continue }
+                // Checked once per pass, and only when a remembered header is
+                // about to be reused: a first pass or a fanout of changed files
+                // makes no walk that the header reads do not make themselves.
+                var fanoutCheck: Bool?
+                func fanoutPassesReadChecks() -> Bool {
+                    if let fanoutCheck { return fanoutCheck }
+                    let passes = Self.fanoutPassesReadChecks(fanout)
+                    fanoutCheck = passes
+                    return passes
+                }
                 for url in entries {
                     guard let values = try? url.resourceValues(forKeys: keys),
                         values.isRegularFile == true, values.isSymbolicLink != true
@@ -250,12 +297,38 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         modelRoot: modelDir,
                         bytes: max(0, values.fileSize ?? 0),
                         modifiedAt: Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0),
-                        metadataReadable: (try? SSDBlockStore.readMetadataOnly(
-                            from: url, maximumMetadataBytes: 1 << 20,
-                            maximumWrappedDEKBytes: 60)) != nil))
+                        metadataReadable: isHeaderReadable(
+                            url, fanoutPassesReadChecks: fanoutPassesReadChecks)))
                 }
             }
         }
         return contents
+    }
+
+    /// The directory checks a header read makes before it opens a block
+    /// (`isSafeBlockURL`, then the no-follow `openDirectoryChain` walk). They
+    /// depend only on the fanout and its ancestors, so a pass makes them once
+    /// per fanout before it reuses a remembered file there; a file that fails
+    /// them is read again, and fails, exactly as without the memory.
+    private static func fanoutPassesReadChecks(_ fanout: URL) -> Bool {
+        let fanout = fanout.standardizedFileURL
+        let modelRoot = fanout.deletingLastPathComponent()
+        guard SSDBlockStore.isSafeModelRoot(modelRoot, dedicatedRoot: modelRoot.deletingLastPathComponent()),
+            SSDBlockStore.pathResolvesToItself(fanout), SSDBlockStore.isRealDirectory(fanout),
+            let descriptor = try? SSDNoFollowIO.openDirectoryChain(fanout)
+        else { return false }
+        Darwin.close(descriptor)
+        return true
+    }
+
+    private static func identity(of url: URL) -> FileIdentity? {
+        var value = stat()
+        guard lstat(url.path, &value) == 0 else { return nil }
+        return FileIdentity(
+            device: value.st_dev, inode: value.st_ino, size: value.st_size,
+            modifiedSeconds: value.st_mtimespec.tv_sec,
+            modifiedNanoseconds: value.st_mtimespec.tv_nsec,
+            changedSeconds: value.st_ctimespec.tv_sec,
+            changedNanoseconds: value.st_ctimespec.tv_nsec)
     }
 }

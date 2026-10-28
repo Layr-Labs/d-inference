@@ -5,8 +5,10 @@ import Foundation
 ///
 /// Package.swift defines DARKBLOOM_ENV_DEV for this target when the release
 /// workflow builds with DARKBLOOM_RELEASE_ENVIRONMENT=dev, and
-/// DARKBLOOM_ENV_STAGING for DARKBLOOM_RELEASE_ENVIRONMENT=staging. Every other
-/// build, including local `swift build` and all tests, uses production values.
+/// DARKBLOOM_ENV_STAGING for DARKBLOOM_RELEASE_ENVIRONMENT=staging. With the
+/// variable unset, Package.swift picks its branch default: production on
+/// master, dev on the dev branch. CI and the release qualification set prod,
+/// so the tests see production values on every branch.
 /// provider.toml, CLI flags and DARKBLOOM_R2_CDN_URL still override the
 /// coordinator and CDN defaults.
 ///

@@ -79,66 +79,23 @@ extension SSDBlockStore {
         consumeChunk: (Int, Data) throws -> Void
     ) throws -> SSDBlockMetadata {
         try checkCancellation()
-        guard isSafeBlockURL(url), isRealRegularFile(url) else {
-            throw SSDBlockStoreError.ioFailure("unsafe block path")
-        }
-        let handle = try SSDNoFollowIO.openRegularFileForReading(
-            at: url, beforeOperation: beforeOperation)
-        defer { try? handle.close() }
-        let initialIdentity = try onAuthenticatedFile.map { _ in try SSDAuthenticatedFileIdentity(handle: handle) }
-        let header = try readHeader(from: handle, maximumMetadataBytes: maximumMetadataBytes,
-                                    maximumWrappedDEKBytes: maximumWrappedDEKBytes, beforeRead: beforeRead)
-        onBytesRead(Int(header.bodyOffset))
-        let dek = try unwrapDEK(wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
-        try validateChunkSizes(header.metadata, maximumChunkBytes: maximumChunkBytes,
-                               maximumPlaintextBytes: maximumPlaintextBytes)
-        try validateMetadata(header.metadata)
-        let count = readUInt32LE(try readExactly(4, from: handle, what: "chunk count", beforeRead: beforeRead), at: 0)
-        onBytesRead(4)
-        guard Int(count) == header.metadata.chunkPlaintextSizes.count else {
-            throw SSDBlockStoreError.malformedHeader("streamed chunk count mismatch")
-        }
-        for index in 0..<Int(count) {
-            try checkCancellation()
-            let length = Int(readUInt32LE(
-                try readExactly(4, from: handle, what: "chunk length", beforeRead: beforeRead), at: 0))
-            let expected = header.metadata.chunkPlaintextSizes[index]
-            guard length == expected + gcmTagLength else {
-                throw SSDBlockStoreError.malformedHeader("streamed ciphertext size mismatch")
+        return try withoutActuallyEscaping(onBytesRead) { onBytesRead in
+            let cursor = try SSDBlockChunkCursor(
+                url: url, kekKey: kekKey, maximumChunkBytes: maximumChunkBytes,
+                maximumPlaintextBytes: maximumPlaintextBytes, maximumMetadataBytes: maximumMetadataBytes,
+                maximumWrappedDEKBytes: maximumWrappedDEKBytes, tracksIdentity: onAuthenticatedFile != nil,
+                beforeRead: beforeRead, onBytesRead: onBytesRead, beforeOperation: beforeOperation,
+                validateMetadata: validateMetadata)
+            for index in 0..<cursor.chunkCount {
+                try checkCancellation()
+                try consumeChunk(index, try cursor.next() ?? Data())
             }
-            let ciphertext = try readExactly(expected, from: handle, what: "chunk ciphertext", beforeRead: beforeRead)
-            let tag = try readExactly(gcmTagLength, from: handle, what: "chunk tag", beforeRead: beforeRead)
-            onBytesRead(length + 4)
-            let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(index))
-            let plaintext: Data
-            do {
-                let box = try AES.GCM.SealedBox(
-                    nonce: AES.GCM.Nonce(data: nonce), ciphertext: ciphertext, tag: tag)
-                plaintext = try AES.GCM.open(box, using: dek, authenticating: header.metadataBytes)
-            } catch {
-                throw SSDBlockStoreError.authenticationFailed("streamed chunk \(index): \(error)")
-            }
-            guard plaintext.count == expected else {
-                throw SSDBlockStoreError.authenticationFailed("streamed plaintext size mismatch")
-            }
-            try consumeChunk(index, plaintext)
+            if let identity = try cursor.finish(requireEOF: requireEOF) { onAuthenticatedFile?(identity) }
+            return cursor.metadata
         }
-        if requireEOF {
-            try beforeRead?(1)
-            if !(try handle.read(upToCount: 1) ?? Data()).isEmpty {
-                throw SSDBlockStoreError.malformedHeader("unexpected trailing encrypted data")
-            }
-        }
-        if let initialIdentity, let onAuthenticatedFile {
-            guard try SSDAuthenticatedFileIdentity(handle: handle) == initialIdentity else {
-                throw SSDAuthenticatedFileChange.changedDuringRead
-            }
-            onAuthenticatedFile(initialIdentity)
-        }
-        return header.metadata
     }
 
-    private static func validateChunkSizes(
+    static func validateChunkSizes(
         _ metadata: SSDBlockMetadata, maximumChunkBytes: Int, maximumPlaintextBytes: Int
     ) throws {
         guard maximumChunkBytes >= 0, maximumPlaintextBytes >= 0,

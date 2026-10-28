@@ -75,8 +75,10 @@ public struct LifecycleMailbox: Sendable {
         read(type, at: path(suffix))
     }
 
+    /// Never blocks: a FIFO at the path is opened without waiting for a
+    /// writer, then refused with every other non-regular file.
     private func read<T: Decodable>(_ type: T.Type, at path: URL) -> T? {
-        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { return nil }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }

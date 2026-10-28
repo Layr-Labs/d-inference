@@ -3,7 +3,8 @@
 // Production bridge from a normalized OpenAI request to native CBv2 token
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
-// boundary and opaque framed arguments; Gemma keeps its own schema automaton.
+// boundary and opaque framed arguments; Gemma keeps its own schema automaton;
+// tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
 
 import Foundation
 import ProviderCoreFoundation
@@ -48,6 +49,13 @@ enum ToolConstraintFactory {
             } catch let error as ToolConstraintSchemaError {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
             }
+        }
+        // A tool-free Qwen JSON answer is constrained when everything it needs
+        // verifies; otherwise it keeps prompt-only steering, never a refusal.
+        if let answer = QwenJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+            modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
+            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
+            return answer
         }
         guard prepared.mode.requiresInferenceConstraint else { return nil }
         // `.none` keeps Gemma's sampler guard when its prompt contract is

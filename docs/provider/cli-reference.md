@@ -324,7 +324,8 @@ With neither selection flag, this command reuses the `start` catalog picker and
 downloader. It checks fresh daemon identity and switch capability before opening
 the picker, and uses the running daemon's runtime capabilities rather than
 initializing a second inference runtime. There is no `--force` or `--config`:
-the daemon's own resolved config path, including a custom path, is authoritative.
+the daemon's own resolved config path, including a custom path, is authoritative,
+and the command scans local models in that config's `model_cache_directory`.
 
 The provider validates local artifacts before fencing new coordinator and
 unified-local admissions, finishes accepted requests and terminal usage, and
@@ -441,7 +442,11 @@ With no accepted work left, a graceful drain retries native MiMo owner
 retirement until the owners retire or its deadline passes: after served
 requests, the first attempt only starts joining their finished consumers
 (`provider-swift/Sources/ProviderCore/ProviderLoop+Lifecycle.swift`,
-`performLifecycleDrain`).
+`performLifecycleDrain`). A drain completes without the coordinator
+acknowledgement only when no work is left and the provider has no registered
+coordinator session, for example while it is reconnecting; the command then
+reports the acknowledgement as `not needed (no coordinator connection)`. A
+registered session must acknowledge before the deadline.
 Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
 existing job must be restarted to load that allowance. OS logout/shutdown may
 impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
@@ -1017,6 +1022,18 @@ Output includes:
   GLM-5.3-Flash error that reports a Metal command buffer out of memory adds
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
+- `Requests served since the daemon started (… ago)`: coordinator requests
+  this daemon finished since it started, with output tokens only. The count
+  restarts at zero when the daemon restarts or a scheduled availability window
+  opens. It includes requests that ended early on a coordinator cancel or a
+  dropped connection after output had been delivered (the next line counts
+  them when there are any; the coordinator may not pay for them) and free
+  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
+  the console's Earnings page; the console's machine card adds these counters
+  up across restarts
+  ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
+  `cumulativeDelta`)
+  (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
   changed `enabled_models` only at its next start. `Serving outside the enabled
   model filter` names each warm or advertised model the filter omits and why it
@@ -1025,6 +1042,29 @@ Output includes:
   holds with each hold's UTC expiry and time left. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
+- `Traffic:` whether the coordinator can route work to this connection, judged
+  from current evidence only; the provider re-registers on the same verdict.
+  `eligible for coordinator work` names the App Attest lease or legacy
+  verification, or a request the coordinator routed after its latest status
+  (`received a coordinator request … ago`; state field
+  `coordinator_connection.last_request_at`). `not yet eligible` covers the first
+  90 seconds after connecting (`statusGraceSeconds`) while the coordinator has
+  sent no status or one that does not authorize the connection yet.
+  `NOT receiving coordinator work:` names the cause with a `→ fix:` line:
+  disconnected, with how long the connection has been down across failed
+  reconnect attempts; no coordinator status 90 seconds after connecting; an
+  `untrusted` or `offline` status; an expired lease; or a refusal received in the
+  last 60 seconds (`refusalMaxAge`) with the coordinator's reason, such as a
+  locked login keychain, a stalled Apple call, App Attest unavailable on macOS 26
+  or outside a logged-in GUI session, or a connection without a linked account.
+  An older refusal reads `unconfirmed`, with its age and reason and no fix: the
+  current coordinator sends no status when legacy verification authorizes a
+  connection after the refusal it sends at registration. Omitted while a drain line
+  is shown, while an add-on holds a connected Mac (its
+  `Not serving: held by add-on` line says why no work arrives), for a stale
+  snapshot, and for daemons that predate the `coordinator_connection` state field
+  (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`,
+  `provider-swift/Sources/darkbloom/StatusCommand+Traffic.swift`).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it
@@ -1927,6 +1967,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
+| `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
@@ -1969,6 +2010,7 @@ automatic updates with `darkbloom autoupdate disable`.
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
 | Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
 | WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
+| Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |

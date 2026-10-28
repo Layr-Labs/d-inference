@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -80,11 +80,12 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
+| `coordinator traffic` | Whether the coordinator can route work to this connection: connected, a coordinator verdict received, and an App Attest lease, legacy authorization or a request routed since the latest status. ✗ names the cause from current evidence only: disconnected, no verdict minutes after connecting, an `untrusted` or `offline` status, an expired lease, or a refusal received in the last minute with the coordinator's reason. ℹ `unconfirmed`: the last refusal is older than that, so it does not show an exclusion; the current coordinator sends no status when legacy verification authorizes a connection after its registration refusal. Skipped while an add-on holds the connected Mac on purpose: `darkbloom status` prints `Not serving: held by add-on …` and `darkbloom addon` shows the hold (`provider-swift/Sources/ProviderCore/Diagnostics/ServingReadiness.swift`) | Follow the printed fix. A locked login keychain, a stalled Apple call or a provider started outside the logged-in GUI session clears after logging in at the console or `darkbloom restart`; `app_attest_identity_required` needs `darkbloom login`; macOS 26 needs macOS 27 unless the Mac is in the legacy MDM cohort. `unconfirmed` prints no fix: its reason is the coordinator's last, which may no longer apply. See [connected but no traffic](#coordinator-connection) |
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
 | `glm wired limit` | Shown only when GLM-5.3-Flash is downloaded, selected or served on a 256 GB M5 Mac: the GPU wired-memory limit (`iogpu.wired_limit_mb`, or Metal's working set while it is `0`) and both user wire limits against the production values (`provider-swift/Sources/darkbloom/Diagnostics/GLMWiredLimitAdvice.swift`) | ⚠ only; follow [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit) |
-| `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
+| `usage reporting` | Requests completed since the daemon started whose usage chunk was missing (`usageGaps > 0`); the pass line counts this daemon's completions, not paid jobs | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set, except the doctor-only `glm wired limit`,
@@ -139,8 +140,9 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 |---|---|---|
 | `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`CoordinatorReconnectPolicy`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
-| Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
+| Heartbeats arrive but requests do not ("no traffic until restart") | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability. The coordinator routes only a connection it authorizes (an App Attest lease or legacy verification) | `darkbloom status` → `Traffic:` and `darkbloom doctor` → `coordinator traffic` name the cause and fix. The provider re-registers a connection while that verdict stays `NOT receiving` for 15–30 minutes, then after 30 minutes, 1 hour, 2 hours and every 4 hours, only while it is idle: no accepted or local requests, model loads, Autopilot operation, drain or update (`provider-swift/Sources/ProviderCore/Coordinator/UnauthorizedConnectionRecovery.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+ServingAuthorizationRecovery.swift`). A refusal counts only while the coordinator keeps repeating it, so a refusal sent once at registration never triggers a re-registration. `darkbloom logs` records when the coordinator starts refusing the connection, when it authorizes it, and when its refusal is no longer current. The routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
+| `Requests served` in `status` is higher than the jobs in the console's Earnings | The status count covers only the time since the daemon started (the `… ago` on the line) and includes requests that ended early on a coordinator cancel or a dropped connection, which the coordinator may not pay for, and free [self-route](./self-route.md) requests to your own machine. Earnings lists only paid jobs (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`) | Compare Earnings over the same period; the machine card's Tokens/reqs add the status counters up across restarts |
 
 ## Updates
 
@@ -237,6 +239,13 @@ SSD caching remains enabled by default with no resident retention; use
 `DARKBLOOM_PREFIX_CACHE=0` to disable local reuse independently
 ([prefix-cache defaults](../architecture/prefix-cache.md#invariants)).
 
+## Missing base reward
+
+`doctor` billing is local usage reporting, not a coordinator
+`model=base_reward` grant. If last-1000 earnings show no `base_reward` rows
+(or amounts that match a smaller RAM class) while `doctor` is green, follow
+[Check a missing base reward](base-rewards.md).
+
 ## Collect a report
 
 ```bash
@@ -262,4 +271,5 @@ provider logs or `devicecheckd` evidence.
 - [CLI reference](./cli-reference.md) — flags, paths, runtime constants.
 - [Installation](./installation.md) · [Quickstart](./quickstart.md).
 - [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
+- [Check a missing base reward](./base-rewards.md) — green `doctor` vs missing `model=base_reward`.
 - [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

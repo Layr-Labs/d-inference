@@ -31,6 +31,8 @@ final class SSDBlockIndex: @unchecked Sendable {
         var fileBytes: Int
         /// Unix seconds of the last hit (or write). Sliding-TTL anchor.
         var lastAccess: Int64
+        /// A delta's parent entry; empty until the scan resolves it.
+        var parent: Data?
     }
 
     private let lock = NSLock()
@@ -49,10 +51,10 @@ final class SSDBlockIndex: @unchecked Sendable {
         lock.withLock { (entries.count, _totalBytes) }
     }
 
-    func insert(tag16: Data, fileBytes: Int, lastAccess: Int64) {
+    func insert(tag16: Data, fileBytes: Int, lastAccess: Int64, parent: Data? = nil) {
         lock.withLock {
             if let old = entries[tag16] { _totalBytes -= old.fileBytes }
-            entries[tag16] = Entry(fileBytes: fileBytes, lastAccess: lastAccess)
+            entries[tag16] = Entry(fileBytes: fileBytes, lastAccess: lastAccess, parent: parent)
             _totalBytes += fileBytes
         }
     }
@@ -65,13 +67,30 @@ final class SSDBlockIndex: @unchecked Sendable {
     /// size and recency together; eviction or replacement is validated again
     /// when the caller authenticates the file. A probe does not extend its TTL.
     func freshFileBytes(tag16: Data, now: Int64, ttlSeconds: Int64) -> Int? {
+        lock.withLock { entries[tag16].flatMap { Self.freshBytes($0, now: now, ttlSeconds: ttlSeconds) } }
+    }
+
+    private static func freshBytes(_ entry: Entry, now: Int64, ttlSeconds: Int64) -> Int? {
+        if ttlSeconds > 0, now >= entry.lastAccess {
+            let (age, overflow) = now.subtractingReportingOverflow(entry.lastAccess)
+            guard !overflow, age < ttlSeconds else { return nil }
+        }
+        return entry.fileBytes
+    }
+
+    func setParent(tag16: Data, parent: Data) { lock.withLock { entries[tag16]?.parent = parent } }
+
+    /// The chain ending at `tag16`, root first, with its bytes, if every link
+    /// is present and fresh (`ttlSeconds` 0 never expires).
+    func chain(tag16: Data, now: Int64 = 0, ttlSeconds: Int64 = 0) -> (tags: [Data], bytes: Int)? {
         lock.withLock {
-            guard let entry = entries[tag16] else { return nil }
-            if ttlSeconds > 0, now >= entry.lastAccess {
-                let (age, overflow) = now.subtractingReportingOverflow(entry.lastAccess)
-                guard !overflow, age < ttlSeconds else { return nil }
+            var tags: [Data] = [], bytes = 0, next: Data? = tag16
+            while let tag = next {
+                guard tags.count < SSDCheckpointDeltaLayout.maximumChainFiles, let entry = entries[tag],
+                    let size = Self.freshBytes(entry, now: now, ttlSeconds: ttlSeconds) else { return nil }
+                (tags, bytes, next) = ([tag] + tags, bytes + size, entry.parent)
             }
-            return entry.fileBytes
+            return (tags, bytes)
         }
     }
 

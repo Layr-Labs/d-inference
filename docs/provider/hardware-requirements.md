@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-25
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -60,6 +60,10 @@ Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).
 Immutable external citations below preserve evidence snapshots, not current
 source or proof of deployed policy.
+
+A serving Mac can still receive $0 of `model=base_reward` for a 5-minute
+period. `doctor` does not name the reason.
+[Check a missing base reward](base-rewards.md).
 
 ## Registering interest for unsupported hardware
 

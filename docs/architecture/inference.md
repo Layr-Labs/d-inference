@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-27
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1838,7 +1838,7 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0` |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -1861,7 +1861,14 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. This request
+is absent from the artifact and is not injected as a default. The catalog
+`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
+(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
+ship no `generation_config.json`; omitted knobs take their model cards'
+thinking-mode values
+(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
+`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
+made them repeat themselves until `max_tokens` (#1530). This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -1957,6 +1964,22 @@ probe before forwarding model output. This matters for media because
 caller supplied a thinking control: the template already closes the block,
 and generated answers need not emit another marker.
 
+The same default applies to a JSON `response_format` (`json_object` or
+`json_schema`) on the Qwen template family (`Qwen35TemplateFix.applies`).
+The answer follows the reasoning block, and Qwen's default thinking regularly
+spends the caller's `max_tokens` before any JSON is written. A nested
+`reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
+switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
+keeps the caller's choice. The family predicate also matches Qwen3.8
+Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
+the closed block. Other families keep their thinking defaults because the
+predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
+own template context, and Flint's template ignores the switch.
+The coordinator prompt sidecar mirrors the rule so cache planning renders the
+same prompt; the public prompt vectors pin it for the Qwen-family JSON cases.
+On `qwen3_5` and `qwen3_5_moe` text requests the answer itself is then
+grammar-constrained ([constrained Qwen JSON answers](#constrained-qwen-json-answers)).
+
 A Qwen3-VL (`qwen3_vl_moe`) request on the `qwen3` parser whose tail carries
 no think marker also receives the empty closed block
 (`ReasoningPromptProbe.plainTailContentModelTypes`). Qwen3-VL Instruct
@@ -1992,6 +2015,80 @@ not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
+### Constrained Qwen JSON answers
+
+The format instruction alone leaves some Qwen answers outside the requested
+schema: a near-miss key, a string for an integer, or prose. On the Qwen text
+path the answer is therefore sampled under a grammar, as on
+[exact Flint](#native-flint). `ToolConstraintFactory.make` asks
+`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
+`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
+The prompt is unchanged (the service's format instruction and the no-thinking
+default above), so the coordinator prompt sidecar needs no rule.
+
+The rendered prompt's tail selects the first phase
+(`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
+After `</think>` output starts in the answer. After `<think>` it starts in
+reasoning, which stays free except that every EOS is masked, the spellings
+`<|im_end|>`, `<|endoftext|>` and `<|im_start|>` cannot complete, and the first
+`</think>`, as its token or spelled from ordinary pieces, ends it. The answer is
+one JSON value of the grammar compiled from the schema (`JSONAnswerFormat`: the
+shared fail-closed subset and the byte-level `FlintJSONGrammar` automaton), so
+declared properties are the only keys generated. `<think>`, `</think>`,
+`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and
+`<|endoftext|>` cannot complete anywhere in it, strings included, and
+`<|im_end|>` or `<|endoftext|>` is allowed only once the value is complete.
+
+`JSONAnswerVocabulary` admits the byte-level BPE ids below `<|endoftext|>`
+(248044) and the `<think>`/`</think>` tokens only. Other added and special tokens
+and the model's padding up to 248,320 ids are never allowed. Before constraining,
+it checks `<think>` 248068, `</think>` 248069, `<|im_end|>` 248046 and
+`<|endoftext|>` 248044 by id, spelling, encoding and decoding, that every base
+id decodes as a byte-level piece, and that both terminators are engine stop
+tokens. It is built on the first such request per loaded tokenizer and stop set
+and cached like Flint's (`TokenizerVocabularyCache`, four entries).
+
+A constraint's budget must equal the engine request's `maxTokens`, or the engine
+refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
+resolves an omitted `max_tokens` with its own default (`EngineV2Bridge`
+`defaultMaxTokens`, from the model's sizing), so the text path builds every token
+constraint, Qwen's and Flint's, from that same default.
+
+The request streams through the native reasoning split (`NativeToolStreamRouter`
+seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
+only the answer when generation ends: content that is not one JSON value of the
+schema, or a budget that ends first, is a 422
+`MLXOpenAIServiceError.invalidResponseFormatOutput` (`tool_noncompliance`) after
+the content has streamed. Engine `stop` strings still apply as for the other
+Qwen requests; a stop that cuts the value short fails the same check.
+
+Every other case keeps prompt-only steering and gains no refusal. A schema
+outside the subset (including an enum value containing a forbidden spelling), a
+tokenizer that fails the checks, a prompt tail without a think marker or a
+nonpositive budget logs one content-free private line (category `json-answer`).
+Tools or `tool_choice` beside the format keep today's behavior; Flint's
+format-over-tools precedence does not apply. Image and video requests take the
+media path, which installs no token constraint.
+
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Qwen 3.5
+targets do not declare the row-exact recurrent fallback
+(`CBv2RecurrentMTPRequestScopedMediaFallback`), so
+`ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
+`EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
+row is in a decode step, no row in that step speculates. A `stop`,
+`logit_bias`, penalty or logprob row has the same effect on these engines.
+Decoding such rows beside speculation needs that SDK capability and row-exactness
+evidence for the Qwen target.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
+`provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
 ### Tool-call parsers
 
 `ServerToolParser.resolve(requested:modelType:)` honours an explicit
@@ -2014,9 +2111,30 @@ Resolution happens before submit so a bad parser name never orphans a request.
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
-inferred `.qwen35` parser or `.xmlFunction`. Both concrete Qwen3.8-27B builds,
-including the embedded-MTP one, advertise forced tools
-(`ToolChoiceEnforcementPolicy.swift`).
+inferred `.qwen35` parser or `.xmlFunction`. The coordinator routes those
+requests only to builds listed in `tool_constraint_models`, which
+`ToolChoiceEnforcementPolicy.advertisesCapability` fills per exact build
+(`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
+Both concrete Qwen3.8-27B builds, including the embedded-MTP one, are listed.
+So are the `structuredForcedToolModelTypes` catalog builds, each only with
+its own `model_type`:
+
+| Build | `model_type` | Parser |
+|---|---|---|
+| `Qwen3.5-9B` | `qwen3_5` | `.qwen35` |
+| `qwen3.5-35b-a3b` | `qwen3_5_moe` | `.qwen35` |
+| `qwen3.6-35b-a3b-vl-mtp-mxfp8` | `qwen3_5_moe` | `.qwen35` |
+| `mimo-v2.6-flash-mopd` | `mimo_v2` | `.mimoV2` |
+
+These calls are prompt-forced, withheld and schema-validated
+(`ToolChoiceEnforcementPolicy.forcedStrategy` `.structuredPostValidation`).
+GPT-OSS (`gpt_oss`, `.harmony`) has no forced strategy and is not listed. In
+forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
+tab, CR and LF; `ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and
+between call frames on every path, including legacy Qwen text without native
+channels. Whitespace alone is still a missing call
+(`ToolConstraintValidation.validate`), and any other visible text, including
+other Unicode whitespace, is a `tool_choice` violation (422).
 
 ### Streamed auto tool calls
 
@@ -2552,6 +2670,7 @@ or change consumer/OpenRouter routing.
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
+| Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10` | `WedgeMonitor.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 
@@ -2591,6 +2710,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint
@@ -2675,9 +2795,11 @@ in Recursive's guide. `FlintJSONContentAutomaton` replaces the boundary's
 content phase: reasoning is unconstrained, and visible content must be one JSON
 value of the compiled grammar; declared object properties are the only keys
 generated. A schema outside the subset is a 400 before generation.
-`FlintResponseFormat.validate` decodes and checks the completed content again;
-a failure, including an output budget that ends before the value completes, is
-a typed 422 rather than a successful completion. Tools plus a response format
+`JSONAnswerFormat.validate`, shared with
+[constrained Qwen answers](#constrained-qwen-json-answers), decodes and checks
+the completed content again; a failure, including an output budget that ends
+before the value completes, is a typed 422 rather than a successful completion.
+Tools plus a response format
 get only the response format, whatever `tool_choice` asked: the prompt renders
 as it would without the format, so the coordinator prompt sidecar needs no
 format rule, and no call may be generated or returned.
@@ -2784,6 +2906,7 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/FlintAnswerStopConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/FlintJSONContentAutomaton.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/FlintResponseFormat.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`),

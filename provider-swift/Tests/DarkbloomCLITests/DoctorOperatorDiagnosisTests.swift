@@ -74,7 +74,7 @@ struct DoctorOperatorDiagnosisTests {
             #expect(runtime.level == .pass)
             #expect(runtime.message.hasPrefix("up 1h"))
             #expect(runtime.message.contains("acme/Warm-4bit"))
-            #expect(runtime.message.hasSuffix("7 requests served."))
+            #expect(runtime.message.hasSuffix("7 requests served since the daemon started."))
 
             let load = try #require(diagnosis.first { $0.name == "recent model load" })
             #expect(load.level == .warn)
@@ -83,12 +83,68 @@ struct DoctorOperatorDiagnosisTests {
             let billing = try #require(diagnosis.first { $0.name == "usage reporting" })
             #expect(billing.section == .billing)
             #expect(billing.level == .pass)
-            #expect(billing.message == "7 requests / 900 tokens reported this session.")
+            #expect(billing.message == "7 requests / 900 output tokens completed since the daemon started, "
+                + "all with usage; the console's Earnings page lists the paid ones.")
 
             let version = try #require(diagnosis.first { $0.section == .version })
             #expect(version.level == .warn)
             #expect(version.message == "running \(ProviderCore.version); latest is 99.0.0.")
             #expect(CoordinatorStub.requests.contains { $0.url?.path == "/v1/releases/latest" })
+        }
+    }
+
+    /// A connected daemon the coordinator does not authorize looks healthy in
+    /// every other check; `coordinator traffic` fails with the cause and fix.
+    @Test("coordinator traffic fails for a connected but unauthorized daemon and passes when authorized")
+    func coordinatorTraffic() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            try sandbox.makeModel("acme/Warm-4bit")
+            ModelScanner.configureCacheDirectory(sandbox.cache.path)
+            CoordinatorStub.install([
+                "/v1/releases/latest": .init(
+                    status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
+            ])
+            func diagnose(_ authorization: ProviderAuthorizationStatus,
+                          receivedAgo: Double = 30) async throws -> Diagnostic {
+                let now = Date().timeIntervalSince1970
+                var state = try CLICommandSandbox.runningState(
+                    now: now,
+                    trust: .init(trustLevel: "self_signed", status: "online",
+                                 reason: "Provider authorization updated", receivedAt: now - receivedAgo,
+                                 authorization: authorization),
+                    currentModel: "acme/Warm-4bit", warmModels: ["acme/Warm-4bit"],
+                    advertisedModels: ["acme/Warm-4bit"])
+                state.coordinatorConnection = .init(connected: true, since: now - 1_200, connections: 1)
+                sandbox.writeState(state)
+                let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
+                    snapshot: try sandbox.snapshot(hardware: CLICommandSandbox.hardware),
+                    coordinatorURL: CLICommandSandbox.coordinatorURL)
+                return try #require(diagnosis.first { $0.name == "coordinator traffic" })
+            }
+
+            let blocked = try await diagnose(ProviderAuthorizationStatus(
+                appAttestAvailable: true, path: "none", reason: "app_attest_keychain_error",
+                sessionID: "session", machineID: ""))
+            #expect(blocked.section == .traffic)
+            #expect(blocked.level == .fail)
+            #expect(blocked.message.hasPrefix("NOT receiving coordinator work: the coordinator is not routing work here: the login keychain"))
+            #expect(blocked.fix?.hasPrefix("log in at this Mac's console to unlock the login keychain") == true)
+
+            // The coordinator refused the connection at registration and has
+            // said nothing since, as it does for a legacy-verified Mac.
+            let unconfirmed = try await diagnose(ProviderAuthorizationStatus(
+                appAttestAvailable: true, path: "none", reason: "app_attest_qualification_required",
+                sessionID: "session", machineID: ""), receivedAgo: 1_150)
+            #expect(unconfirmed.level == .info)
+            #expect(unconfirmed.message == "unconfirmed (no current coordinator verdict; the last one, 19m ago, "
+                + "did not authorize this connection: app_attest_qualification_required)")
+            #expect(unconfirmed.fix == nil)
+
+            let eligible = try await diagnose(CLICommandSandbox.appAttestAuthorization(now: Date().timeIntervalSince1970))
+            #expect(eligible.level == .pass)
+            #expect(eligible.message.hasPrefix("eligible for coordinator work (App Attest authorized until "))
         }
     }
 
@@ -134,7 +190,8 @@ struct DoctorOperatorDiagnosisTests {
             #expect(diagnosis.first { $0.name == "daemon connected" }?.level == .pass)
             #expect(!diagnosis.contains { $0.name == "recent model load" })
             #expect(diagnosis.first { $0.name == "usage reporting" }?.message
-                == "2 requests / 40 tokens reported this session.")
+                == "2 requests / 40 output tokens completed since the daemon started, "
+                + "all with usage; the console's Earnings page lists the paid ones.")
 
             let version = try #require(diagnosis.first { $0.section == .version })
             #expect(version.level == .pass)

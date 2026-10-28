@@ -229,4 +229,31 @@ struct SSDBlockStreamingTests {
         #expect(try Data(contentsOf: f.file) == original)
     }
 
+    @Test("a cursor skips a chunk unread, authenticates what it returns and enforces its bounds")
+    func cursor() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        try f.write()
+        var bytes = try Data(contentsOf: f.file)
+        bytes[bytes.count - (4 + f.chunks[1].count + 16) - 17] ^= 1 // last ciphertext byte of chunk 0
+        try bytes.write(to: f.file)
+        var counted = 0
+        func open() throws -> SSDBlockChunkCursor {
+            try SSDBlockChunkCursor(url: f.file, kekKey: f.key, maximumChunkBytes: 4096, maximumPlaintextBytes: 4353,
+                                    tracksIdentity: true, onBytesRead: { counted += $0 }, validateMetadata: { _ in })
+        }
+        let cursor = try open()
+        let header = counted
+        #expect(try cursor.next(skip: true) == Data())
+        #expect(counted == header)
+        #expect(throws: SSDBlockStoreError.self) { try cursor.finish(requireEOF: false) }
+        #expect(try cursor.next() == f.chunks[1])
+        #expect(counted == header + 4 + f.chunks[1].count + 16)
+        #expect(try cursor.next() == nil && (try cursor.finish(requireEOF: true)) != nil)
+        #expect(throws: SSDBlockStoreError.self) { try open().next() }
+        try bytes.dropLast(8).write(to: f.file)
+        let truncated = try open()
+        _ = try truncated.next(skip: true)
+        #expect(throws: SSDBlockStoreError.self) { try truncated.next() }
+    }
 }

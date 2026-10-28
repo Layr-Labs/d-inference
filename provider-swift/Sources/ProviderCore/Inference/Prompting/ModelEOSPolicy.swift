@@ -6,6 +6,7 @@
 // slot construction has one scheduler-independent stop-token policy.
 
 import Foundation
+import MLXLMCommon
 
 public enum ModelEOSPolicy {
     /// Return model-specific EOS tokens at the engine boundary. Most models
@@ -23,5 +24,14 @@ public enum ModelEOSPolicy {
             base: base,
             tokenToId: tokenToId
         )
+    }
+
+    /// Where client stop strings apply; nil keeps whole-output matching.
+    public static func stopStringScope(
+        modelId: String,
+        modelType: String? = nil
+    ) -> CBv2StopStringScope? {
+        ChatTemplateFixes.stopStringScope(
+            context: ChatTemplateFixContext(modelId: modelId, modelType: modelType))
     }
 }

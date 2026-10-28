@@ -5,6 +5,7 @@
 // templates without changing other model families.
 
 import Foundation
+import MLXLMCommon
 
 enum GPTOSSHarmonyTemplateFix {
     static func applies(to context: ChatTemplateFixContext) -> Bool {
@@ -36,6 +37,14 @@ enum GPTOSSHarmonyTemplateFix {
     static func extraEOSTokenIds(tokenToId: (String) -> Int?) -> Set<Int> {
         Set(["<|return|>", "<|endoftext|>", "<|call|>"].compactMap(tokenToId))
     }
+
+    /// Client stop strings apply to the final channel, the text clients
+    /// receive as `content`. Matching them in analysis ended requests before
+    /// any answer existed (finish_reason "stop", reasoning only); tool-call
+    /// arguments are not answer text either.
+    static let finalChannelStopScope = CBv2StopStringScope(
+        opener: "<|channel|>final", openerEnd: "<|message|>",
+        closers: ["<|end|>", "<|return|>", "<|call|>", "<|start|>"])
 
     private static func isHarmonyModelHint(_ value: String?) -> Bool {
         guard let value else { return false }

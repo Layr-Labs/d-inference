@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1283,6 +1283,20 @@ sequenceDiagram
     B-->>S: detokenised GenerationEvent stream
     S-->>C: SSE chunks / final response
 ```
+
+For coordinator requests, `ProviderLoop+InferenceHandler.swift` encrypts each
+SSE frame and sends it through `SendHandle.sendChunk`. The serial queue in
+`provider-swift/Sources/ProviderCore/Coordinator/ChunkBatcher.swift` coalesces
+frames for `ChunkFrameWriter`, while `SendHandle.send` flushes queued frames
+before sending a terminal message. On that queue, `ChunkBatcher.enqueue`
+drops a frame immediately if no session sink is bound. It cannot leave that
+frame pending for a deferred flush after a replacement session binds.
+`CoordinatorClient+Connection.swift` unbinds the old session during teardown;
+`ProviderLoop+Cancellation.swift` cancels its in-flight requests separately.
+The sink check occurs when the enqueue closure runs, not when its caller
+submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
+so an old request's frame processed after a replacement sink binds still
+passes this check; it does not enforce request-to-session identity.
 
 The chat template is rendered on every request. When caching is enabled for
 the request, `LocalTokenizerBridge` encodes the rendered prompt through

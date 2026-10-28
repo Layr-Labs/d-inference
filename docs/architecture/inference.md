@@ -1838,7 +1838,7 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (Qwen3.5-9B) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -1862,11 +1862,13 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
 is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B` build (`model_type == qwen3_5`) ships no `generation_config.json`;
-omitted knobs take its model card's thinking-mode values
+`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
+(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
+ship no `generation_config.json`; omitted knobs take their model cards'
+thinking-mode values
 (`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
 `top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made it repeat itself until `max_tokens` (#1530). This request
+made them repeat themselves until `max_tokens` (#1530). This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability

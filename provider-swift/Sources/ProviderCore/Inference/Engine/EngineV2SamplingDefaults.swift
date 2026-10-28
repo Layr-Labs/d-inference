@@ -22,9 +22,9 @@
 //   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
-//   The catalog Qwen3.5-9B build ships no `generation_config.json`; it takes
-//   its model card's thinking-mode values (`qwen35CardDefaults`), whose
-//   presence penalty stops greedy decoding repeating itself to `max_tokens`.
+//   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
+//   take their model cards' thinking-mode values (`qwen35CardDefaults`),
+//   whose presence penalty stops greedy decoding looping to `max_tokens`.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -63,9 +63,15 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// produced before artifact defaults existed.
     public static let legacy = EngineV2SamplingDefaults()
 
-    /// Qwen3.5-9B's model-card values for thinking mode, the template default.
+    /// The model cards' thinking-mode values (the template default), shared by
+    /// these exact catalog builds and their `model_type`.
     static let qwen35CardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+    static let qwen35CardModelTypes = [
+        "Qwen3.5-9B": "qwen3_5",
+        "qwen3.5-35b-a3b": "qwen3_5_moe",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
+    ]
 
     public var isLegacy: Bool { self == .legacy }
 
@@ -93,7 +99,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static func resolve(
         modelId: String, modelType: String?, modelDirectory: URL?
     ) -> EngineV2SamplingDefaults {
-        if modelId == "Qwen3.5-9B", modelType == "qwen3_5" { return qwen35CardDefaults }
+        if let type = qwen35CardModelTypes[modelId], type == modelType { return qwen35CardDefaults }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory
         else { return .legacy }

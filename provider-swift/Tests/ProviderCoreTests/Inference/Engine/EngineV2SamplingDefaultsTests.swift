@@ -82,6 +82,27 @@ struct EngineV2SamplingDefaultsTests {
         #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: "flint", modelType: "unknown"))
     }
 
+    /// The catalog Qwen 3.5/3.6 builds have no generation_config.json: omitted
+    /// knobs take the model cards' thinking-mode values, explicit ones win.
+    @Test func qwen35CatalogBuildsUseTheirModelCardDefaults() throws {
+        for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
+            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
+                == EngineV2SamplingDefaults.qwen35CardDefaults)
+        }
+        let defaults = EngineV2SamplingDefaults.resolve(
+            modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil)
+        let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
+        #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
+        #expect(omitted.presencePenalty == 1.5 && omitted.repetitionPenalty == 1)
+        let explicit = EngineV2Translation.samplingParams(
+            from: try request(#"{"model":"m","messages":[],"temperature":0,"presence_penalty":0}"#),
+            defaults: defaults)
+        #expect(explicit.temperature == 0 && explicit.presencePenalty == 0)
+        for (id, type) in [("Qwen3.5-9B", "qwen3_5_moe"), ("qwen3.5-35b-a3b", "qwen3_5"), ("mlx-community/Qwen3.5-397B", "qwen3_5")] {
+            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil) == .legacy)
+        }
+    }
+
     /// The exact locally qualified GLM artifact declares temperature 1.0 and
     /// top_p 0.95 without `do_sample`; other GLM IDs or types stay legacy.
     @Test func gateAdmitsOnlyTheQualifiedGLMArtifact() throws {

@@ -78,12 +78,13 @@ def without_comments(text):
 
 
 def secret_references(text):
-    """Yield (expression, offset) for every `secrets` word inside `${{ }}`.
+    """Yield (expression, offset of the `secrets` word) for every `secrets`
+    word inside `${{ }}`.
     Expressions are case-insensitive, so the search is too."""
     for expression in re.finditer(r"\$\{\{(.*?)\}\}", text, re.S):
         for match in re.finditer(r"(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])",
                                  expression.group(1), re.I):
-            yield expression.group(1), expression.start()
+            yield expression.group(1), expression.start(1) + match.start()
 
 
 class ReleaseDevBranchCallerTests(unittest.TestCase):

@@ -973,6 +973,30 @@ with an optional `nativeMember` object and runs `darkbloom start
 selector matches the two registrations itself (see
 [pair formation](cluster-control-protocol.md#pair-formation)).
 
+**Automatic (guided setup).** `darkbloom cluster` saves the object by itself
+when the provider configuration's coordinator approves this release's cluster
+runtime (DevNet only). The cluster service then runs each Mac's part as
+`darkbloom start --foreground --cluster-member`
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`,
+`memberArguments`).
+
+| Step | Rule | Source |
+|---|---|---|
+| Fetch | `GET <coordinator>/v1/cluster/approvals?version=<ProviderCore.version>&platform=macos-arm64`, no credential; HTTPS only (plain HTTP only to this Mac's loopback); no redirect; at most `maximumBytes = 512 * 1024` bytes and `maximumApprovals = 128` entries; `timeoutSeconds = 10`. The body is `darkbloom_cluster_catalog_v2` with `cluster_approvals`; one unknown, missing or malformed field refuses the whole answer. 404 and every failure mean no approval | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApprovalFetch.swift` (`ClusterApprovalFetch`) |
+| Select | The entry whose `model` is the setup's `publicModelID` and whose `schedule` is its prefill schedule (`1` serial, `2` one-chunk lookahead), still current, latest `not_after` first | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApprovalLifetime.swift` (`select`) |
+| Check | On each Mac, against its own files: every digest of the release's cluster runtime facts (`ClusterRuntimeApprovalFacts`, computed from the helpers beside the setup's worker and the setup's model folder); the member's own start refusals (`requireLocalRankGranted`); the roster of this Mac's pairing (S17); `validate` below | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApprovalAttachment.swift` (`attachment`) |
+| Save | The leader checks the entry, sends it to the other Mac over the cable (service command `approval`), and saves it only after the other Mac checked and saved it. A refusal on either Mac saves it on neither | `provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterApprovalSync.swift` (`run`, `receive`) |
+| When | After the guided setup's Start stage saved both setups and after an update re-adopted them (`OnboardingLive.syncApproval`), and once at each start of the control leader's cluster service (`ClusterService.checkApproval`) | as named |
+| Lifetime | A saved approval with more than `renewWithinSeconds = 86_400` left is kept. Within that day a later entry replaces it. An ended one is removed: each Mac saves its setup without it before its part starts, and its part then serves on the leader's local API (`ClusterService.supervise`) | `ClusterApprovalLifetime.decide` |
+
+A coordinator that answers 404 (pairing off, production, staging) leaves both
+saved setups byte for byte as they were, and nothing is sent over the cable.
+`darkbloom cluster local` saves the setups without the object, because a local
+session cannot run with it (below).
+
+**By hand.** The steps below stay available for an approval file the
+coordinator operator keeps:
+
 1. The coordinator operator adds one entry to the approval file named by
    [`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](#experimental-cluster-pairs) and
    gives both Mac operators that same entry.
@@ -991,6 +1015,14 @@ selector matches the two registrations itself (see
 | `ownerSHA256` | string | 64 lowercase hex: SHA-256 of this Mac's `peers[local].ownerExecutable` |
 | `metallibPath`, `resourceLibraryPath` | string | absolute shell-safe paths of the installed files whose digests the approval pins; distinct from each other and from the owner and worker executables |
 | `approval` | object | the coordinator's approval entry, field for field ([fields](#experimental-cluster-pairs)); unknown or missing fields are refused |
+
+The automatic path saves `schema` `darkbloom_cluster_native_member_v2` (the
+roster registration) instead: `ownerSHA256`, `metallibPath` and
+`resourceLibraryPath` as above (the setup worker's `mlx.metallib` and
+`pagedattention.metal`), `clusterApproval` (one `cluster_approvals` entry,
+field for field), `roster` (the roster both Macs countersigned when they
+paired), `memberPins` (the members' pins in rank order) and `edges` (the link
+the serving leader last measured, as `rdma`; omitted when none was measured).
 
 The object is validated when the setup is saved and again whenever it is
 loaded (`provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift`,
@@ -1017,10 +1049,11 @@ A setup with `nativeMember` cannot run `darkbloom start --local --distributed`
 both owners itself over SSH and would contend with a coordinator-formed pair
 for the same device. Save a setup without the object for a local session.
 
-In this build a paired member declines the coordinator's preparation and no
-pair serves a request; see [provider member
-control](cluster-control-protocol.md#provider-member-control) for the reason
-and for what the member answers.
+A member whose setup reaches the other Mac over the cable (`linkControl`)
+serves the pair's committed starts: the leader hosts the link listener and the
+pair's slot, the follower dials it. A member without `linkControl` declines the
+coordinator's preparation; see [provider member
+control](cluster-control-protocol.md#provider-member-control).
 
 ### Guided link setup
 

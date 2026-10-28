@@ -466,8 +466,13 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public var notice: String? = nil
     /// The API also listens on the serving Mac's network addresses (local-only serving's default); nil from an older build.
     public var network: Bool? = nil
-    public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil) {
+    /// Both Macs' members are registered and the pair is offered to the coordinator for pairing: the one line that
+    /// says so (approval and its end). Such a pair has no local API; nil for every other way of serving.
+    public var offered: String? = nil
+    public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil,
+                offered: String? = nil) {
         self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice; self.network = network
+        self.offered = offered
     }
 
     /// "API at http://localhost:8000 on this Mac": the serving API listens on loopback on the Mac that runs rank 0, so
@@ -491,9 +496,15 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         return servesHere ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
     }
 
-    /// The deployment line, then where the API is, then (serving locally only) the plain local-serving line.
+    /// Said instead of the test request when the pair is offered for pairing (and the answer of `t` then).
+    public static let offeredTestLine = "This pair has no local API while it is offered for pairing: requests from your own account reach it through Darkbloom."
+
+    /// The deployment line, then where the API is, then (serving locally only) the plain local-serving line. Offered
+    /// for pairing: the deployment line, then the offered line (there is no local API).
     public func lines(model: String) -> [String] {
-        [deployment ?? "Serving \(model) across both Macs", apiLine] + (noticeLine.map { [$0] } ?? [])
+        let first = deployment ?? "Serving \(model) across both Macs"
+        if let offered { return [first, offered] }
+        return [first, apiLine] + (noticeLine.map { [$0] } ?? [])
     }
 }
 
@@ -979,7 +990,7 @@ public enum ClusterOnboardingDriver {
             console.say("Not serving now: the next start serves this way. Press m in `darkbloom cluster` to choose a model.")
             return 0
         }
-        return awaitReady(title: resume.modelName ?? "the model", operations, console) ? 0 : 1
+        return awaitReady(title: resume.modelName ?? "the model", operations, console) != nil ? 0 : 1
     }
 
     /// How long the start waits for n after the model is chosen (the choice is the start).
@@ -1159,8 +1170,10 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         console.say("Starting both Macs' parts and loading the model…")
-        guard awaitReady(title: choice.title, operations, console) else { return 1 }
-        let tested = test(operations, console, setup: true)
+        guard let ready = awaitReady(title: choice.title, operations, console) else { return 1 }
+        // A pair offered for pairing has no local API to test: its requests come through Darkbloom.
+        if ready.offered != nil { console.say(ClusterOnboardingReady.offeredTestLine) }
+        let tested = ready.offered != nil || test(operations, console, setup: true)
         console.say("")
         if tested {
             console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
@@ -1172,9 +1185,10 @@ public enum ClusterOnboardingDriver {
         return tested ? 0 : 1
     }
 
-    /// Waits for the started cluster with its progress, then says where it serves; false (with the last errors and the
+    /// Waits for the started cluster with its progress, then says where it serves; nil (with the last errors and the
     /// diagnostics offer) when it did not become ready.
-    static func awaitReady(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {
+    static func awaitReady(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
+        -> ClusterOnboardingReady? {
         let progress = ClusterOnboardingMailbox<String>()
         let finished = ClusterOnboardingMailbox<Result<ClusterOnboardingReady, ClusterOnboardingFailure>>()
         Thread.detachNewThread { finished.post(operations.waitReady { progress.post($0) }) }
@@ -1190,12 +1204,12 @@ public enum ClusterOnboardingDriver {
         switch ready! {
         case .success(let where_):
             for line in where_.lines(model: title) { console.say(line + ".") }
-            return true
+            return where_
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
             offerDiagnostics(operations, console)
             console.say("Both Macs keep trying by themselves; run `darkbloom cluster` here to see how it is going.")
-            return false
+            return nil
         }
     }
 

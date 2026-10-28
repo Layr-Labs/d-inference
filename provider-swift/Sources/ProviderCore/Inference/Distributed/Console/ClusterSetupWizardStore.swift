@@ -90,6 +90,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var aloneHolders: [String]? = nil
     /// The plan (the saved setup's selected plan SHA-256) `aloneHolders` is for: verdicts for any other plan never count.
     public var aloneHoldersPlan: String? = nil
+    /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
+    /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
+    public var approvalNote: String? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 

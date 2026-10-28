@@ -224,7 +224,14 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice, startup
 and a test response as five stages. Completion requires the test response to
-succeed; a failed response retains the saved setup for a later retry.
+succeed; a failed response retains the saved setup for a later retry. A pair
+whose saved setups carry a current cluster approval is offered to the
+coordinator instead: the cluster service runs both parts as coordinator-paired
+members (`ClusterService.Settings.memberArguments`), which have no local API,
+so the Test stage is replaced by the offered line
+(`ClusterOnboardingReady.offered`, `OnboardingLive.offeredReadiness`). How the
+approval is fetched, checked on each Mac and saved:
+[coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 `OnboardingLive` uses fresh peer display facts only while their authenticated
 member identity matches the current pairing. These labels do not rewrite saved
 serving intent or change model eligibility and placement. See the

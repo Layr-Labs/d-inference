@@ -32,6 +32,12 @@ public enum ClusterLocalServing {
     public static let localOnlyNotice = "Serving locally only on this Mac's API: no coordinator, no public traffic"
     public static var localOnlyLogLine: String { logPrefix + localOnlyNotice }
 
+    /// A part of a setup saved with a current cluster approval (`start --cluster-member`), once its member is
+    /// registered: the coordinator may form the pair, which then serves its owner's own requests through Darkbloom.
+    /// There is no local API in this mode.
+    public static let offeredNotice = "Offered to the coordinator for pairing"
+    public static var offeredLogLine: String { logPrefix + offeredNotice }
+
     /// The leader part's start option that skips the coordinator entirely (`darkbloom start --distributed`).
     public static let noCoordinatorFlag = "--no-coordinator"
 
@@ -43,12 +49,14 @@ public enum ClusterLocalServing {
     }
 
     /// The notice when the latest serving start in `log` (the part's log tail) serves locally only (by choice, or
-    /// because the coordinator cannot take the member role), nil when it registered or there is none.
+    /// because the coordinator cannot take the member role) or is offered for pairing, nil when it registered as a
+    /// control-only member or there is none.
     public static func notice(inLog log: String) -> String? {
         guard let last = log.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix(logPrefix) }) else { return nil }
         switch last.trimmingCharacters(in: .whitespaces) {
         case logLine: return notice
         case localOnlyLogLine: return localOnlyNotice
+        case offeredLogLine: return offeredNotice
         default: return nil
         }
     }

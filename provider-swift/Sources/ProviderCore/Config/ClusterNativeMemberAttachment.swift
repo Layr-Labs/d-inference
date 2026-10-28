@@ -41,6 +41,14 @@ public struct ClusterNativeMemberAttachment: Codable, Sendable, Equatable {
         clusterApproval = nil; roster = nil; memberPins = nil; edges = nil
     }
 
+    /// The roster registration (v2 attachment) a Mac saves for a cluster approval it verified against its own files.
+    init(ownerSHA256: String, metallibPath: String, resourceLibraryPath: String, clusterApproval: ClusterRuntimeApproval,
+         roster: ClusterRoster, memberPins: [String], edges: [ClusterEdge]?) {
+        schema = Self.rosterSchemaName; self.ownerSHA256 = ownerSHA256; self.metallibPath = metallibPath
+        self.resourceLibraryPath = resourceLibraryPath; approval = nil; self.clusterApproval = clusterApproval
+        self.roster = roster; self.memberPins = memberPins; self.edges = edges
+    }
+
     /// Whether this setup registers the roster registration (v3).
     var isRoster: Bool { schema == Self.rosterSchemaName }
 

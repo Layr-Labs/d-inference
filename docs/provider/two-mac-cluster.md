@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-28
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -108,6 +108,36 @@ Nothing to do: the next start registers with the coordinator once it supports
 clusters. A coordinator that refuses this pair is not treated this way; the
 start fails and says why. To serve without any coordinator, use
 [`darkbloom cluster local`](#serving-locally-only).
+
+## Offered to the coordinator for pairing (DevNet)
+
+On a coordinator that approves cluster runtimes (DevNet only), the pair is
+offered to the coordinator by itself. Nothing is typed and no file is copied.
+Production and staging answer that they have no approval, and the pair serves
+as described above.
+
+1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
+   After the Start stage saves the setup, the leader asks the coordinator for
+   the approval of this Darkbloom version (`GET /v1/cluster/approvals`). Each
+   Mac checks the approval against its own installed app and model, and both
+   Macs save it, or neither does.
+2. Read the ready screen. Instead of the API line it says:
+
+   ```
+   Offered to the coordinator for pairing: approval release/<version>/<model>/s1, until <date>.
+   This pair has no local API while it is offered for pairing: requests from your own account reach it through Darkbloom.
+   ```
+
+   There is no test request in this mode. `darkbloom cluster` status shows the
+   same line.
+
+An approval ends 14 days after its release. The leader asks again at each start
+of its cluster service and after each Darkbloom update, and takes a later
+approval when the saved one ends within a day. A Mac whose approval ended
+saves its setup without it before its part starts, and the pair serves on the
+leader's local API again; the status says why in one line. `darkbloom cluster
+local` also serves without the approval. Approval sources, checks and saved
+fields: [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
 
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.
@@ -486,7 +516,8 @@ and they must match.
 
 - The login agent and macOS's one Local Network approval need the signed
   Darkbloom.app ([always on](cluster-always-on.md)).
-- Public serving through Darkbloom is not offered by the onboarding yet.
+- Public serving through Darkbloom is not offered by the onboarding. A pair
+  offered for pairing serves only its owner's own requests.
 - A member cannot yet download a catalog model itself (the leader downloads and
   copies), and a model change typed on a Mac that does not lead cannot copy a
   model (run it on the leader).

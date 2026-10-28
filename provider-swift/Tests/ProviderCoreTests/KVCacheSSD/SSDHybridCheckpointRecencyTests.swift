@@ -13,8 +13,8 @@ struct SSDHybridCheckpointRecencyTests {
         func advance(to value: Int64) { lock.withLock { seconds = value } }
     }
 
-    private func makeStore(_ fixture: SSDHybridCheckpointTestFixture, clock: Clock,
-                           ttlSeconds: Int64 = 60) throws -> SSDHybridCheckpointStore {
+    private func makeStore(_ fixture: SSDHybridCheckpointTestFixture, clock: Clock, ttlSeconds: Int64 = 60,
+                           diskBudget: SSDDiskBudget = SSDDiskBudget()) throws -> SSDHybridCheckpointStore {
         let epoch = try SSDCacheEpochStore(root: fixture.modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: fixture.identity.modelAggregateHash,
             promptContractId: fixture.identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
@@ -26,7 +26,7 @@ struct SSDHybridCheckpointRecencyTests {
             maxReadBytes: 16 << 20, maxStageMillis: 1000, minEffectiveTokens: 256,
             ttlSeconds: ttlSeconds, strictFsync: false, nowSeconds: { clock.now },
             diskBudgetBytes: { 1 << 30 }, maintainWholeRoot: {}),
-            kekKey: fixture.key, kvBudget: fixture.budget, diskBudget: SSDDiskBudget(), maxWriteBytesPerDay: 1 << 30)
+            kekKey: fixture.key, kvBudget: fixture.budget, diskBudget: diskBudget, maxWriteBytesPerDay: 1 << 30)
         store.scanOnDisk()
         return store
     }
@@ -111,6 +111,69 @@ struct SSDHybridCheckpointRecencyTests {
         #expect(try await fixture.donate(store, receipt: 602) == [256])
         #expect(store.stats().donationReadBytes > 0, "603's refresh outdated 602's receipt")
         for identifier: UInt64 in [601, 602, 603] { await store.abandonStaging(requestID: .init(identifier)) }
+        await store.closeAndWait()
+        #expect(store.stats().stagedBytesInUse == 0)
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("whole-root TTL expiry keeps a file whose hits overlapped other reads and persists the last hit")
+    func overlappedHitsSurviveWholeRootExpiry() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let clock = Clock()
+        let ttl = SSDPrefixCachePolicy.defaultTTLSeconds
+        // Registered with the shared budget, as production stores are, so
+        // whole-root maintenance removes its files through it.
+        let store = try makeStore(fixture, clock: clock, ttlSeconds: ttl, diskBudget: .shared)
+        defer { store.close() }
+        #expect(try await fixture.donate(store) == [256])
+        let file = fixture.file(store)
+        func modified() throws -> Date? {
+            try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        }
+        func stage(_ identifier: UInt64) async -> SSDPrefixCacheStageResult {
+            await store.stage(requestID: .init(identifier), request: fixture.request(),
+                              reserveReadScratch: fixture.reserveReadScratch, makeImportPlan: fixture.plan)
+        }
+        func sweep(at seconds: Int64) -> SSDWholeRootMaintainer.Result {
+            defer { SSDDiskBudget.shared.reconcileAll() }
+            return SSDWholeRootMaintainer().maintain(root: fixture.root, ttlSeconds: ttl,
+                                                     nowSeconds: seconds, budgetBytes: 1 << 40)
+        }
+        // A lone hit persists its recency (the new file's wall-clock mtime is ahead of this clock).
+        #expect(await stage(701).staged)
+        #expect(try modified() == Date(timeIntervalSince1970: 1000))
+        // The next hit overlaps another read of the file, which is then cancelled: no read touches it.
+        clock.advance(to: 2000)
+        let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release() }
+        let overlapping = Task.detached {
+            await store.stage(requestID: .init(702), request: fixture.request(), reserveReadScratch: fixture.reserveReadScratch) { manifest in
+                try barrier.block()
+                return try fixture.plan(manifest)
+            }
+        }
+        defer { overlapping.cancel(); barrier.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
+        #expect(await stage(703).staged)
+        overlapping.cancel()
+        barrier.release()
+        #expect(await overlapping.value.disposition == .skippedPolicy)
+        #expect(try modified() == Date(timeIntervalSince1970: 1000))
+        #expect(store.index.oldest()?.lastAccess == 2000)
+        // One TTL after the persisted hit, 801 s after the real one: the file stays and records 2000.
+        clock.advance(to: 1000 + ttl + 1)
+        #expect(sweep(at: 1000 + ttl + 1).ttlExpired == 0)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(try modified() == Date(timeIntervalSince1970: 2000))
+        // A restart's scan now seeds recency from that hit.
+        let restarted = try makeStore(fixture, clock: clock, ttlSeconds: ttl)
+        #expect(restarted.stats().entries == 1 && restarted.index.oldest()?.lastAccess == 2000)
+        await restarted.closeAndWait()
+        // Expiry still follows the last hit: one TTL after it, the sweep removes the file.
+        #expect(sweep(at: 2000 + ttl).ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        for identifier: UInt64 in [701, 703] { await store.abandonStaging(requestID: .init(identifier)) }
         await store.closeAndWait()
         #expect(store.stats().stagedBytesInUse == 0)
         #expect(await fixture.budget.outstandingReservedBytes() == 0)

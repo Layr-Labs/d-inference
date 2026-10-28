@@ -47,8 +47,13 @@ enum SSDOwnedEntryRetirement {
         return total
     }
 
+    /// Maintenance chooses TTL victims by mtime, which can trail the index: a
+    /// complete-checkpoint reader rewrites it only while it holds the file
+    /// alone. With `unusedSince`, an entry the index saw hit after that time
+    /// stays, and its last hit is persisted for restart scans and later sweeps.
     static func remove(
-        urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?
+        urls: [URL], root: URL, index: SSDBlockIndex, epochStore: SSDCacheEpochStore?,
+        unusedSince: Int64? = nil
     ) -> Result? {
         let body = {
             var result = Result()
@@ -67,6 +72,10 @@ enum SSDOwnedEntryRetirement {
                     result.externalChange = result.externalChange || index.contains(tag16: tag)
                     continue
                 }
+                if let unusedSince, let lastAccess = index.lastAccess(tag16: tag), lastAccess > unusedSince {
+                    persistHit(lastAccess, at: url, under: root)
+                    continue
+                }
                 if SSDBlockStore.removeItemIfSafe(at: url, under: root) {
                     result.indexedBytesFreed += index.remove(tag16: tag)
                     result.removed.insert(url.standardizedFileURL.path)
@@ -78,5 +87,14 @@ enum SSDOwnedEntryRetirement {
         }
         if let epochStore { return epochStore.performOwnedRetirement(body) }
         return body()
+    }
+
+    /// Never moves an mtime back, and skips a rewrite that would only change
+    /// ctime and so the identity that authenticated receipts pin.
+    private static func persistHit(_ lastAccess: Int64, at url: URL, under root: URL) {
+        let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        guard modified.map({ Int64($0.timeIntervalSince1970) < lastAccess }) ?? true else { return }
+        SSDBlockStore.setAttributesIfSafe([.modificationDate: Date(timeIntervalSince1970: Double(lastAccess))],
+                                        at: url, under: root)
     }
 }

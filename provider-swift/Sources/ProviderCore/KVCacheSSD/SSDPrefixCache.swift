@@ -1787,16 +1787,17 @@ public final class SSDPrefixCache:
         return 0
     }
 
-    func retireOwnedEntries(_ urls: [URL]) -> Set<String> {
-        retireIndexedEntries(urls).removed
+    func retireOwnedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> Set<String> {
+        retireIndexedEntries(urls, unusedSince: unusedSince).removed
     }
 
-    private func retireIndexedEntries(_ urls: [URL]) -> SSDOwnedEntryRetirement.Result {
+    private func retireIndexedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> SSDOwnedEntryRetirement.Result {
         let result = SSDOwnedEntryRetirement.removeInSlices(urls) { slice in
             removalLock.withLock {
                 guard hasSafeRoot, ownsEvictionRoot else { return nil }
                 return SSDOwnedEntryRetirement.remove(
-                    urls: slice, root: config.root, index: index, epochStore: config.epochStore)
+                    urls: slice, root: config.root, index: index, epochStore: config.epochStore,
+                    unusedSince: unusedSince)
             }
         }
         if result.externalChange { reconcileExternalRemovals() }

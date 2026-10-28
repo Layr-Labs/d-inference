@@ -168,6 +168,35 @@ struct SSDCheckpointFileCoordinatorTests {
         #expect(coordinator.trackedFileCount == 0)
     }
 
+    @Test("a writer that queued during an upgrade keeps its place when the holder downgrades")
+    func downgradeKeepsQueuedWriterFirst() async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let grants = Grants()
+        let owner = coordinator.makeAccess(to: file, mode: .shared)
+        try await owner.acquire()
+        defer { owner.release() }
+        #expect(owner.tryUpgrade())
+        let writer = coordinator.makeAccess(to: file)
+        let writerTask = acquire(writer, as: "writer", into: grants)
+        defer { writerTask.cancel(); writer.cancel(); writer.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 1 }
+        let reader = coordinator.makeAccess(to: file, mode: .shared)
+        let readerTask = acquire(reader, as: "reader", into: grants)
+        defer { readerTask.cancel(); reader.cancel(); reader.release() }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { coordinator.pendingCount(for: file) == 2 }
+        owner.downgrade()
+        #expect(coordinator.pendingCount(for: file) == 2, "the reader must not pass the queued writer")
+        #expect(grants.order.isEmpty)
+        owner.release()
+        try await writerTask.value
+        #expect(grants.order == ["writer"] && coordinator.pendingCount(for: file) == 1)
+        writer.release()
+        try await readerTask.value
+        #expect(grants.order == ["writer", "reader"])
+        reader.release()
+        #expect(coordinator.trackedFileCount == 0)
+    }
+
     @Test("a withdrawn queued writer readmits readers behind it; a withdrawn reader holds nothing")
     func cancelledSharedWaiters() async throws {
         let coordinator = SSDCheckpointFileCoordinator()
@@ -268,5 +297,110 @@ struct SSDCheckpointFileCoordinatorTests {
             do { try await task.value } catch is CancellationError { }
             #expect(coordinator.trackedFileCount == 0)
         }
+    }
+
+    /// Modes inside each file between a grant and its release, recorded
+    /// independently of the coordinator.
+    private final class Occupancy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var held: [String: (shared: Int, exclusive: Int)] = [:]
+        private var conflicts: [String] = []
+        var violations: [String] { lock.withLock { conflicts } }
+
+        func enter(_ path: String, _ mode: SSDCheckpointFileCoordinator.Mode) {
+            lock.withLock {
+                var inside = held[path, default: (0, 0)]
+                if inside.exclusive > 0 || (mode == .exclusive && inside.shared > 0) {
+                    conflicts.append("\(mode) entered \(path) beside \(inside)")
+                }
+                if mode == .shared { inside.shared += 1 } else { inside.exclusive += 1 }
+                held[path] = inside
+            }
+        }
+
+        func leave(_ path: String, _ mode: SSDCheckpointFileCoordinator.Mode) {
+            lock.withLock {
+                if mode == .shared { held[path]?.shared -= 1 } else { held[path]?.exclusive -= 1 }
+            }
+        }
+    }
+
+    private struct SplitMix64: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var mixed = state
+            mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
+            return mixed ^ (mixed >> 31)
+        }
+    }
+
+    @Test("random grants, cancellations, upgrades and releases never share a file with an exclusive holder and drain",
+          arguments: [UInt64(1), 2, 3, 4])
+    func randomizedSchedules(seed: UInt64) async throws {
+        let coordinator = SSDCheckpointFileCoordinator()
+        let occupancy = Occupancy()
+        let urls = (0..<3).map { file.appendingPathComponent(String($0)) }
+        let workers = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for worker in 0..<32 {
+                    group.addTask {
+                        var random = SplitMix64(state: seed << 8 | UInt64(worker))
+                        for _ in 0..<100 {
+                            let url = urls[Int.random(in: 0..<urls.count, using: &random)]
+                            let roll = Int.random(in: 0..<10, using: &random)
+                            if roll == 0 {
+                                guard let maintenance = coordinator.tryAcquire(to: url) else { continue }
+                                occupancy.enter(url.path, .exclusive)
+                                await Task.yield()
+                                occupancy.leave(url.path, .exclusive)
+                                maintenance.release()
+                                continue
+                            }
+                            let mode: SSDCheckpointFileCoordinator.Mode = roll < 7 ? .shared : .exclusive
+                            let access = coordinator.makeAccess(to: url, mode: mode)
+                            let attempt = Task { try await access.acquire() }
+                            if Int.random(in: 0..<5, using: &random) == 0 { attempt.cancel() }
+                            do {
+                                try await withTaskCancellationHandler {
+                                    try await attempt.value
+                                } onCancel: {
+                                    attempt.cancel()
+                                }
+                            } catch {
+                                #expect(!access.tryUpgrade(), "a withdrawn request holds nothing")
+                                continue
+                            }
+                            occupancy.enter(url.path, mode)
+                            if mode == .shared, Bool.random(using: &random), access.tryUpgrade() {
+                                occupancy.leave(url.path, .shared)
+                                occupancy.enter(url.path, .exclusive)
+                                await Task.yield()
+                                occupancy.leave(url.path, .exclusive)
+                                occupancy.enter(url.path, .shared)
+                                access.downgrade()
+                            }
+                            await Task.yield()
+                            // Lifecycle cancellation of an active holder keeps its lease.
+                            if Int.random(in: 0..<4, using: &random) == 0 { access.cancel() }
+                            await Task.yield()
+                            occupancy.leave(url.path, mode)
+                            access.release()
+                        }
+                    }
+                }
+            }
+        }
+        let watchdog = Task { () -> Bool in
+            do { try await Task.sleep(for: .seconds(10)) } catch { return false }
+            workers.cancel()
+            return true
+        }
+        await workers.value
+        watchdog.cancel()
+        #expect(await !watchdog.value, "a queued request was never granted")
+        #expect(occupancy.violations.isEmpty, "\(occupancy.violations.prefix(3))")
+        #expect(coordinator.trackedFileCount == 0)
     }
 }

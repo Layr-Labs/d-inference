@@ -10,10 +10,12 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
 
     enum Mode { case shared, exclusive }
 
+    fileprivate typealias Continuation = CheckedContinuation<Void, any Error>
+
     final class Access: @unchecked Sendable {
         fileprivate enum State {
             case idle
-            case waiting(CheckedContinuation<Void, any Error>)
+            case waiting(Continuation)
             case active
             case finished
         }
@@ -123,8 +125,8 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
 
     /// Grants queued requests in order until one conflicts with the holders;
     /// that one keeps everything behind it waiting. Caller holds `lock`.
-    private static func admitWaiters(_ leases: inout FileLeases) -> [CheckedContinuation<Void, any Error>] {
-        var admitted: [CheckedContinuation<Void, any Error>] = []
+    private static func admitWaiters(_ leases: inout FileLeases) -> [Continuation] {
+        var admitted: [Continuation] = []
         while let next = leases.waiters.first, admits(next.mode, holders: leases.holders) {
             guard case .waiting(let continuation) = next.state else { preconditionFailure() }
             leases.waiters.removeFirst()
@@ -139,7 +141,7 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
         files[path] = leases.holders.isEmpty && leases.waiters.isEmpty ? nil : leases
     }
 
-    private func enqueue(_ access: Access, continuation: CheckedContinuation<Void, any Error>) {
+    private func enqueue(_ access: Access, continuation: Continuation) {
         let immediate = lock.withLock { () -> Result<Void, any Error>? in
             guard case .idle = access.state else { return .failure(CancellationError()) }
             var leases = files[access.path] ?? FileLeases()
@@ -157,7 +159,6 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
     }
 
     private func cancel(_ access: Access) {
-        typealias Continuation = CheckedContinuation<Void, any Error>
         let (cancelled, admitted) = lock.withLock { () -> (Continuation?, [Continuation]) in
             switch access.state {
             case .idle:
@@ -181,7 +182,7 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
     }
 
     private func release(_ access: Access) {
-        let admitted = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
+        let admitted = lock.withLock { () -> [Continuation] in
             guard case .active = access.state else { return [] }
             access.state = .finished
             guard var leases = files[access.path],
@@ -207,12 +208,12 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
     }
 
     private func downgrade(_ access: Access) {
-        let admitted = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
+        let admitted = lock.withLock { () -> [Continuation] in
             guard case .active = access.state, access.mode == .exclusive,
                 var leases = files[access.path] else { return [] }
             access.mode = .shared
             let admitted = Self.admitWaiters(&leases)
-            files[access.path] = leases
+            store(leases, at: access.path)
             return admitted
         }
         for continuation in admitted { continuation.resume() }

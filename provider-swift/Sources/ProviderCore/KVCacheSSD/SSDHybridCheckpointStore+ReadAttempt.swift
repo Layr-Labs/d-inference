@@ -93,8 +93,9 @@ extension SSDHybridCheckpointStore {
                 statsBox.update { $0.misses += 1 }
                 return .init(.missAbsent)
             }
-            // Another reader may still be streaming these bytes. The last one
-            // to fail, the next writer or maintenance removes them instead.
+            // Another request may still be reading these bytes. A busy file
+            // stays indexed and fails every later read until one finds it
+            // alone, a same-tag writer's validation removes it, or it expires.
             whileSoleHolder(of: failing, in: candidate, access: access) { removeCorrupt(failing) }
             return .init(.missCorrupt)
         }
@@ -124,7 +125,10 @@ extension SSDHybridCheckpointStore {
     /// A touch also moves ctime, failing a concurrent reader's identity proof
     /// and every receipt pinned to the file, so it needs the file alone and
     /// waits until the mtime is `recencyRefreshSeconds` old. The in-memory
-    /// index records every hit regardless.
+    /// index records every hit regardless. A file whose hits always overlap
+    /// keeps its old mtime: whole-root TTL expiry checks this index first and
+    /// persists the last hit (`SSDOwnedEntryRetirement.remove`), but a restart
+    /// scan before that sweep ages the file from the old mtime.
     private func persistRecency(of candidate: ReadCandidate, access: SSDCheckpointFileCoordinator.Access) {
         let now = config.nowSeconds()
         for tag in candidate.chain where !recencyIsCurrent(at: fileURL(tag), now: now) {

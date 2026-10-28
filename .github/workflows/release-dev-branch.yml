@@ -1,8 +1,15 @@
 name: Release Dev-Branch Provider (self-signed)
 
-# Experimental dev-only provider lane: build a provider from ANY d-inference
-# branch or SHA and publish it to the dev coordinator as a self-signed release,
-# without merging to master.
+# Dev-branch provider lane: a push to the d-inference `dev` branch builds a
+# provider from the pushed dev commit and publishes it to the dev coordinator as
+# a self-signed release.
+#
+# Branch rule: dev builds dev, and master builds master. A master push builds and
+# publishes through release-swift.yml; a dev push builds and publishes through
+# this file. No workflow dispatches a build of another branch. Each job builds or
+# publishes github.sha, the pushed commit, so the shared build action's
+# "Verify checked-out source" check (HEAD equals GITHUB_SHA) holds by design. To
+# build the same commit again, re-run the push run.
 #
 # Why this is a separate workflow from release-swift.yml:
 #   release-swift.yml holds the production Apple signing certificate and the
@@ -14,37 +21,73 @@ name: Release Dev-Branch Provider (self-signed)
 #   (codesign -s -) and publishes with DEV_RELEASE_KEY and the dev R2 keys only.
 #
 # Trust model:
-#   - This file is dispatched on master, so the credentialed publication logic
-#     (job `publish`) runs the REVIEWED master copy of every script.
-#   - Branch code is only COMPILED and ad-hoc signed in job `build-sign`, which
-#     holds no secret. It is never executed in a step that holds a credential.
-#   - Job `publish` holds DEV_RELEASE_KEY and the dev R2 keys. It only uploads
-#     bytes and makes one HTTP registration call; it never runs the branch
-#     binary.
+#   - Only a push to `dev` starts this file, and each job also checks that
+#     github.ref is refs/heads/dev. Code reaches `dev` only through review, so
+#     both jobs run reviewed dev source.
+#   - Job `build-sign` compiles and ad-hoc signs the pushed commit. It holds no
+#     secret.
+#   - Job `publish` holds DEV_RELEASE_KEY and the dev R2 keys (repository
+#     secrets, no GitHub environment) and nothing else. It runs dev's copy of the
+#     publication scripts. It only uploads bytes and makes the registration
+#     calls; it never runs the built binary.
 #
 # Signature model (option B):
 #   The installer accepts an ad-hoc / non-Apple-anchored signature for versions
 #   that carry a pre-release marker (-dev. or -staging.), while prod keeps the
 #   full Apple-team requirement unchanged (scripts/install.sh
-#   select_provider_identity and verify_staged_app_signature). A -dev.branch.N
-#   build is therefore installable once the dev coordinator serves the relaxed
-#   installer. The installer is a pinned provider-contract snapshot, so the
-#   darkbloom-platform served copy (scripts/install.sh and
-#   coordinator/api/install.sh) must be re-snapshotted from the merged
-#   d-inference commit in a separate darkbloom-platform PR before the dev
-#   coordinator serves it. Until that re-snapshot lands, the dev coordinator
-#   still serves the old installer and installs via it are rejected.
+#   select_provider_identity and verify_staged_app_signature). The installer is
+#   a pinned provider-contract snapshot: the dev coordinator serves the
+#   darkbloom-platform copy, which must be re-snapshotted from the merged
+#   d-inference commit in a separate darkbloom-platform PR. The relaxed clause
+#   applies only to the app. The installer still pins the bundled fan helper to
+#   the Apple-team requirement for every version (scripts/install.sh
+#   FAN_HELPER_REQUIREMENT, verify_fan_helper_capability), so it rejects this
+#   lane's ad-hoc signed fan helper until a separate change relaxes that check
+#   for pre-release versions.
 
 run-name: >-
-  dev-branch provider build of ${{ inputs.ref }} (-dev.branch.${{ github.run_number }})
+  dev-branch provider build of ${{ github.sha }} (-dev.branch.${{ github.run_number }})
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: 'Branch or commit SHA to build (any d-inference ref)'
-        required: true
-        type: string
+  push:
+    # A dev push publishes a dev-branch build. These paths are release-swift.yml's
+    # master push paths, with this file in place of release-swift.yml: the
+    # provider sources, the submodule pins, and every script the shared build
+    # action and the publication run.
+    branches: [dev]
+    paths:
+      - 'provider-swift/**'
+      - 'libs/**'
+      - '.gitmodules'
+      - '.github/workflows/release-dev-branch.yml'
+      - '.github/workflows/release-provider.yml'
+      - '.github/actions/provider-release-build/**'
+      - 'scripts/check-release-version.sh'
+      - 'scripts/resolve-provider-release.sh'
+      - 'scripts/provider-release-resume.py'
+      - 'scripts/provider_release_resume/**'
+      - 'scripts/provider-release-cache.py'
+      - 'scripts/provider_release_cache/**'
+      - 'scripts/provider-release-publication.py'
+      - 'scripts/provider_release_artifact.py'
+      - 'scripts/provider_release_github.py'
+      - 'scripts/provider_release_identity.py'
+      - 'scripts/provider-signing-validation.py'
+      - 'scripts/build-cluster-helpers.sh'
+      - 'scripts/sign-cluster-helpers.sh'
+      - 'scripts/stage-swiftpm-resource-bundles.sh'
+      - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/prepare-metal-toolchain.py'
+      - 'scripts/prepare-app-attest-entitlements.py'
+      - 'scripts/install-macos-github-cli.sh'
+      - 'scripts/install-release-cmake.sh'
+      - 'scripts/fetch-metallib.sh'
+      - 'scripts/test-qwen4-packaged-resources.py'
+      - 'scripts/verify-prompt-parity.sh'
+      - 'scripts/prepare-mimo-*-fixtures.py'
+      - 'scripts/run-provider-tests.sh'
+      - 'scripts/run-nested-suite.sh'
+      - 'scripts/run-provider-test-watchdog.py'
 
 # One dev-branch publication at a time, serialized with itself. This never joins
 # the release-dev group that release-swift.yml uses for the master dev lane.
@@ -57,7 +100,8 @@ permissions:
 
 jobs:
   build-sign:
-    name: Build and ad-hoc self-sign the branch provider
+    name: Build and ad-hoc self-sign the dev provider
+    if: github.ref == 'refs/heads/dev'
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
@@ -75,10 +119,10 @@ jobs:
       # coordinator URL from this; the version marker selects the dev identity.
       DARKBLOOM_RELEASE_ENVIRONMENT: dev
     steps:
-      # Build only the chosen ref. No secret is referenced in this job.
+      # Build only the pushed dev commit (github.sha). No secret is referenced in
+      # this job.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ inputs.ref }}
           submodules: recursive
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -217,6 +261,7 @@ jobs:
   publish:
     name: Register the dev build on the dev coordinator
     needs: build-sign
+    if: github.ref == 'refs/heads/dev'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
@@ -237,11 +282,11 @@ jobs:
       METALLIB_HASH: ${{ needs.build-sign.outputs.metallib_hash }}
       CODE_DIRECTORY_HASH: ${{ needs.build-sign.outputs.code_directory_hash }}
     steps:
-      # The reviewed master copy of every publication script runs here, never
-      # the branch copy. Branch bytes arrive only as the downloaded bundle.
+      # Dev's reviewed copy of every publication script runs here, at the same
+      # pushed commit (github.sha) that build-sign compiled. The built bytes
+      # arrive only as the downloaded bundle and are never executed.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: master
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

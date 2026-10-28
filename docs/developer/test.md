@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1248,11 +1248,14 @@ Release tests cover provider-only version/tag/binary parity even when backend
 source is absent, signed tags and trusted `master` before secrets, exact artifact
 registration, immutable producing attempts and retry-safe publication. Archive
 checks reject unsafe members, changed inventories, wrong source and entitlements.
-`scripts/test-release-dev-branch.py` pins the experimental dev-branch lane
-(`.github/workflows/release-dev-branch.yml`) to dev scope: dispatch-only with a
-`ref` input, no tag path, no production environment, signing identity or secret,
-and publication only with `DEV_RELEASE_KEY`. These CPU-only checks do not prove
-Apple runtime behavior.
+`scripts/test-release-dev-branch.py` pins the dev-branch lane
+(`.github/workflows/release-dev-branch.yml`) to dev scope. The only trigger is a
+push to `dev`, with the `paths:` list of the `release-swift.yml` master push.
+The lane has no dispatch and no input, and no checkout sets `ref:`. Both jobs
+check `refs/heads/dev`. The lane has no tag path, no GitHub environment, no
+production signing identity and no production secret. Job `build-sign` uses no
+secret, and job `publish` uses only `DEV_*` secrets and never runs the built
+binary. These CPU-only checks do not prove Apple runtime behavior.
 
 `scripts/test-provider-release-publication.py` creates isolated local Git tags
 with verbatim annotations, including multiline opening paragraphs, extra blank

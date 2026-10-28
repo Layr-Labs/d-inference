@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-26
+> Last updated: 2026-10-28
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -461,22 +461,30 @@ the environment line plus all four runtime-smoke markers. Retention is 14 days.
 Verify artifact identity before isolated model/restart tests; build success does
 not establish persistence, real Apple functionality or fleet readiness.
 
-#### Experimental Dev-Branch Lane (Dev Only, Self-Signed)
+#### Dev-Branch Lane (Dev Only, Self-Signed)
 
-`.github/workflows/release-dev-branch.yml` builds a provider from any branch or
-commit and publishes it to the dev coordinator without merging to master. It is
-dispatch-only on `master`, so the credentialed publication logic runs the
-reviewed master copy of every script; it checks out the chosen `ref` only to
-compile and ad-hoc sign (`codesign -s -`), never reading a production secret or
-the production Apple signing identity. The branch binary is compiled and signed
-in a job that holds no secret, and is never run in a step that holds a
-credential. The version is `X.Y.Z-dev.branch.<run>`, which
-`scripts/check-release-version.sh` accepts and which stays distinct from the
-master dev lane's `X.Y.Z-dev.<run>`.
+Dev builds dev, and master builds master. A push to the d-inference `dev` branch
+starts `.github/workflows/release-dev-branch.yml`, which builds a provider from
+the pushed commit and publishes it to the dev coordinator. A master push builds
+and publishes through `release-swift.yml`. No workflow dispatches a build of
+another branch. The lane has no `workflow_dispatch`. To build the same commit
+again, re-run the push run.
 
-```bash
-gh workflow run release-dev-branch.yml --ref master -f ref=<branch>
-```
+The push trigger uses the same `paths:` list as the master push trigger of
+`release-swift.yml`, with `release-dev-branch.yml` in place of
+`release-swift.yml`. Both jobs check `github.ref == 'refs/heads/dev'`. Both jobs
+check out the pushed commit (`github.sha`) with no `ref:` override, so the
+"Verify checked-out source" step of `.github/actions/provider-release-build`
+(`HEAD` equals `GITHUB_SHA`) holds.
+
+Job `build-sign` compiles the pushed commit and signs it ad-hoc
+(`codesign -s -`). It holds no secret. It never reads a production secret or the
+production Apple signing identity. Job `publish` runs the publication scripts of
+the same dev commit. It holds only `DEV_RELEASE_KEY` and the `DEV_R2_*` and
+`DEV_COORDINATOR_URL` repository secrets, and attaches no GitHub environment. It
+only uploads the bundle and registers it; it never runs the built binary. The
+version is `X.Y.Z-dev.branch.<run>`, which `scripts/check-release-version.sh`
+accepts and which stays distinct from the master dev lane's `X.Y.Z-dev.<run>`.
 
 The installer accepts an ad-hoc signature for pre-release versions: for a
 version carrying `-dev.` or `-staging.`, `select_provider_identity` chooses a
@@ -493,12 +501,34 @@ device-attestation tier, not a code-signature tier.
 
 The installer is a pinned provider-contract snapshot, so the dev coordinator
 serves the relaxed installer only after the `darkbloom-platform` served copy is
-re-snapshotted from the merged commit in a separate platform PR. Until that
-re-snapshot lands, a fresh `darkbloom-dev` install still runs the old installer
-and rejects the self-signed build. Because `/v1/releases/latest` orders by
-`created_at`, publishing makes the branch build the latest dev release; an
-existing install's self-updater may not downgrade to a lower run number, while a
-fresh install takes the newest.
+re-snapshotted from the merged commit in a separate platform PR. The relaxed
+requirement applies only to the app. The installer pins the bundled fan helper
+to the Apple-team requirement for every version (`scripts/install.sh`,
+`FAN_HELPER_REQUIREMENT` and `verify_fan_helper_capability`). Thus the installer
+rejects the ad-hoc signed fan helper of a dev-branch build until a separate
+change relaxes that check for pre-release versions.
+
+Both the master dev lane and this lane publish to the dev coordinator and can
+advance the dev `releases/latest/` aliases. `/v1/releases/latest` does not order
+by `created_at`. The coordinator compares the dot-separated numeric parts of the
+version and uses `created_at` only to break a tie on the same version. A
+non-numeric part such as `branch` counts as 0
+([`ReleaseVersionGreater` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/internal/store/shared/release_version.go);
+[`GetLatestRelease` at `fb6aaa9e`](https://github.com/Layr-Labs/darkbloom-platform/blob/fb6aaa9e58c8795987dd832ecb5b98925c9ffbae/coordinator/store/postgres/releases.go)).
+Thus:
+
+- When the dev-branch base version is lower than the master base version, the
+  master dev build stays latest. The dev-branch build is registered, but the
+  publication does not advance the latest aliases.
+- When the two base versions are equal, `X.Y.Z-dev.<run>` ranks above
+  `X.Y.Z-dev.branch.<run>`, and the master dev build stays latest. The
+  publication script then waits for a latest version that does not come, and the
+  `publish` job fails after it registers the release.
+- When the dev-branch base version is higher, the newest dev-branch build is
+  latest until a master dev build with a higher base version is published.
+
+An existing install's self-updater may not downgrade to a lower version, while a
+fresh install takes the latest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 

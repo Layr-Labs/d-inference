@@ -28,6 +28,19 @@ final class WeightHasherStreamParityTests: XCTestCase {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `fill` bytes with each 4 KiB page's offset written at its start. With a
+    /// short repeating pattern every full chunk is identical, so a skipped,
+    /// repeated or reordered chunk would not change the digest.
+    private func pageStampedPayload(size: Int, fill: UInt8) -> Data {
+        var data = Data(repeating: fill, count: size)
+        for page in stride(from: 0, to: size, by: 4096) {
+            let stamp = withUnsafeBytes(of: UInt64(page).littleEndian) { Data($0) }
+            let end = min(page + stamp.count, size)
+            data.replaceSubrange(page..<end, with: stamp.prefix(end - page))
+        }
+        return data
+    }
+
     func testEmptyAndStreamingChunkBoundariesMatchIndependentDigest() throws {
         try withDirectory { root in
             for size in [0, 1, 63, 64, 65535, 65536, 65537, 131071, 131072, 1048579] {
@@ -46,7 +59,7 @@ final class WeightHasherStreamParityTests: XCTestCase {
             let chunk = WeightHasher.uncachedChunkBytes
             for size in [0, 1, 16383, 16384, chunk - 1, chunk, chunk + 1, 2 * chunk - 1, 2 * chunk,
                          2 * chunk + 1, 3 * chunk + 4097] {
-                let data = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 5) })
+                let data = pageStampedPayload(size: size, fill: 0x5d)
                 let file = root.appendingPathComponent("payload")
                 try data.write(to: file)
                 let uncached = try XCTUnwrap(WeightHasher.hashSingleFileUncached(at: file), "size \(size)")
@@ -63,7 +76,7 @@ final class WeightHasherStreamParityTests: XCTestCase {
             let sizes = [3 * chunk + 1, 2 * chunk, chunk - 7, 5 * chunk + 4097, 1, 0, 4 * chunk, 2 * chunk + 3]
             var files: [(url: URL, expected: String)] = []
             for (index, size) in sizes.enumerated() {
-                let data = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 17 &+ index) })
+                let data = pageStampedPayload(size: size, fill: UInt8(index))
                 let file = root.appendingPathComponent("payload-\(index)")
                 try data.write(to: file)
                 files.append((file, hex(SHA256.hash(data: data))))

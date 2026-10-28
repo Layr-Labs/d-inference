@@ -78,7 +78,9 @@ struct SSDCheckpointWriteRecoveryTests {
         let donation = try f.startDonation(store)
         try await SSDCheckpointCoordinationTestSupport.waitUntil { published.isEntered }
         published.release()
-        try await Task.sleep(for: .milliseconds(100))  // reach the held lock
+        // Let the donation reach the held lock before maintenance ends, or a
+        // donation refused as busy at that lock would go unnoticed.
+        try await Task.sleep(for: .milliseconds(100))
         barrier.release()
         #expect(await maintenance.value)
         #expect(await donation.value == [256])

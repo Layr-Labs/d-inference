@@ -1,11 +1,10 @@
-# Build The Provider, Retained Console And Landing
+# Build The Provider And Landing
 
 > Last updated: 2026-10-27
 
 Build the provider, its source-matched native resources, and the independent
-landing site from this repository. The existing console snapshot and its build,
-lint, test and hosting configuration remain here; new console development belongs
-to the platform. Backend, sidecar and admin builds belong to that sibling repository.
+landing site from this repository. Backend, sidecar, console and admin builds
+belong to the sibling platform repository.
 
 ## Prerequisites
 
@@ -276,11 +275,6 @@ to match the release environment, plus all four markers:
 installer/updater launches. Callback completion and expiry use no Apple service
 or Keychain item; this linked-binary smoke is not physical Apple qualification.
 
-## Console
-
-The web console is built and hosted from the platform repository, not here. See
-[console](../architecture/components/console-ui.md).
-
 ## Verify
 
 For changes to the trusted PR reviewer, no provider build is required. Run the
@@ -328,7 +322,7 @@ That pinned reference is historical context, not current backend source authorit
 
 Use source-matched submodules, the documented Xcode SDK and fresh resources when
 diagnosing native failures. Preserve cache identity checks; do not bypass them
-to reuse incompatible artifacts. Run `make clean` only when its provider/console/landing
+to reuse incompatible artifacts. Run `make clean` only when its provider/landing
 artifact removal is intended. Never erase live provider state as build cleanup.
 
 Do not repair an old backend trigger by reintroducing backend build targets here.

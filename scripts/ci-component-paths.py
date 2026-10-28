@@ -17,7 +17,8 @@ COMMON = (
     "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py",
 )
 PROVIDER = (
-    "provider-swift/**", "libs/**", "fixtures/**", ".github/actions/provider-ci-build/**",
+    "provider-swift/**", "libs/**", "fixtures/**",
+    ".github/workflows/ci.yml", ".github/actions/provider-ci-build/**",
     "scripts/provider-ci-cache.py", "scripts/provider_ci_cache/**",
     "scripts/provider-release-cache.py", "scripts/provider_release_cache/**",
     "scripts/provider-release-swift.sh", "scripts/prepare-provider-release-toolchain.sh",
@@ -47,9 +48,7 @@ def classify(paths):
             continue
         if matches(path, COMMON):
             return dict.fromkeys(COMPONENTS, True)
-        ci = path == ".github/workflows/ci.yml"
-        provider = matches(path, PROVIDER)
-        selected["provider"] |= ci or provider
+        selected["provider"] |= matches(path, PROVIDER)
     return selected
 
 

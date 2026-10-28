@@ -34,11 +34,11 @@ MACOS_FALLBACK = "blacksmith-12vcpu-macos-27"
 LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}\n"
          f"test-provider macos_arm64 {MACOS_FALLBACK}\n"
          f"warm macos_arm64 {MACOS_FALLBACK} 2\n"
-         f"optional-linux linux_arm64 {LINUX_FALLBACK} 0\n")
+         f"docs linux_arm64 {LINUX_FALLBACK} 0\n")
 FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBACK,
-             "warm": MACOS_FALLBACK, "optional-linux": LINUX_FALLBACK}
+             "warm": MACOS_FALLBACK, "docs": LINUX_FALLBACK}
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
-           "warm": MACOS, "optional-linux": LINUX_FALLBACK}
+           "warm": MACOS, "docs": LINUX_FALLBACK}
 PROVIDER = "${{ needs.changes.outputs.provider == 'true' && 1 || 0 }}"
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
 # Every routed job: (profile, fallback label, count expression or None for 1).
@@ -157,7 +157,7 @@ def reply(**decisions):
 GRANT_ALL = reply(**{"release-integrity": {"target": "darkbloom", "runs_on": LINUX},
                      "test-provider": {"target": "darkbloom", "runs_on": MACOS},
                      "warm": {"target": "darkbloom", "runs_on": MACOS},
-                     "optional-linux": {"target": "darkbloom", "runs_on": LINUX}})
+                     "docs": {"target": "darkbloom", "runs_on": LINUX}})
 
 
 class Plane:

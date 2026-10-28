@@ -7,7 +7,7 @@ Rules for anyone — human or agent — who reads, writes, or checks a file unde
 a bug in the doc. Read this page before editing docs; read
 [`README.md`](README.md) to find a doc.
 
-Local documentation covers provider/native behavior and the landing site. New backend,
+Local documentation covers provider/native behavior and the landing site. Backend,
 console and admin development belongs to the sibling platform. For current
 platform behavior, inspect the latest source on the platform's default branch
 (`master`); do not treat a historical revision as the current contract. Cite
@@ -179,7 +179,6 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 |---|---|
 | WebSocket message, provider JSON or public protocol fixture | `reference/protocol-messages.md`; coordinate the external platform mirror |
 | Provider telemetry wire type or field | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
-| Shared protocol JSON fixtures | `developer/test.md`, `reference/protocol-messages.md`; check the provider resource readers |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Native inference, memory, admission or resource lifetime | `architecture/inference.md`, `architecture/hardware-support.md`; external capacity compatibility review |
 | Cache evidence, generation fences, restoration or persistence | `architecture/prefix-cache.md`, `reference/ssd-kv-cache.md`; retain protocol/privacy mappings |

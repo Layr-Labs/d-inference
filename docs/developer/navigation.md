@@ -9,9 +9,7 @@ backend and web-application development belongs to a different repository.
 
 Keep sibling `Darkbloom/d-inference` and `Darkbloom/darkbloom-platform`
 checkouts. Never nest them. Check remotes, branch and the full diff before pushing.
-New backend, Rust sidecar, console and admin code must never be uploaded here.
-The web console lives in darkbloom-platform (`console-ui`); this repository no
-longer keeps a console snapshot.
+Backend, Rust sidecar, console and admin code must never be uploaded here.
 
 For coordinator diagnosis or changes, fetch the platform's current default
 branch and read its `AGENTS.md` and relevant implementation. Old d-inference
@@ -24,8 +22,6 @@ copies and immutable evidence links do not describe the latest coordinator.
 | Native execution, kernels and model families | `libs/mlx-swift/`, `libs/mlx-swift-lm/`, `libs/mlx/` |
 | Provider and native regression coverage | `provider-swift/Tests/`, SDK test targets |
 | Marketing app, including local API routes | `landing/` |
-| Web console | Platform repository; see [console](../architecture/components/console-ui.md) |
-| Shared protocol JSON fixtures | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
 | Coordinator, private integration, consumer console and admin | [Current platform source](https://github.com/Layr-Labs/darkbloom-platform) |
 | Backend contracts and deployment runbooks | [Current platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/master/docs) |
 
@@ -45,11 +41,11 @@ and traffic changes require specific human approval. Registering an approved
 release/model through an external API remains supported; building, testing or
 deploying the backend here does not.
 
-Before removal, local docs mixed provider and backend instructions. After
-removal, native/provider and retained-console docs stay local and platform details have immutable
-external references. Frozen records are retained unchanged or retired with
-their inbound dependency closure; [historical references](historical-references.md)
-explain their original source.
+Before removal, local docs mixed provider, backend and console instructions.
+After removal, native/provider docs stay local and platform details, including
+the console, have immutable external references. Frozen records are retained
+unchanged or retired with their inbound dependency closure;
+[historical references](historical-references.md) explain their original source.
 
 ## Related
 

@@ -84,11 +84,6 @@
       "docs_any_of": ["landing/README.md", "docs/developer/build.md", "docs/developer/test.md"]
     },
     {
-      "name": "console protocol fixtures",
-      "source_patterns": ["coordinator/tests/protocol/testdata/paged_footprint_wire.json", "coordinator/tests/protocol/testdata/process_memory_wire.json"],
-      "docs_any_of": ["docs/developer/test.md", "docs/reference/protocol-messages.md"]
-    },
-    {
       "name": "repository ownership",
       "source_patterns": ["AGENTS.md", "CONTRIBUTING.md", ".agents/skills/darkbloom-contributor/**"],
       "docs_any_of": ["docs/developer/navigation.md"]

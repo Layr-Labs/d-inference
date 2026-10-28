@@ -17,8 +17,8 @@ Darkbloom/
 Centralized backend, console and admin code belongs exclusively in
 [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d).
 Never implement, commit, push or upload new backend, console or admin code here.
-The web console lives in darkbloom-platform (`console-ui`). Device-local Swift APIs
-remain provider code. Check `git remote -v` and the intended diff before pushing.
+Device-local Swift APIs remain provider code. Check `git remote -v` and the
+intended diff before pushing.
 
 Source ownership does not grant deployment authority. Infrastructure, hosting
 and traffic changes require specific human approval. Release/model registration
@@ -64,13 +64,12 @@ evidence.
 | `provider-swift/` | CLI, on-device services, inference, security and tests |
 | `libs/` | Pinned native MLX dependencies |
 | `landing/` | Independent Next.js marketing site and its API routes |
-| `coordinator/tests/protocol/testdata/` | Shared protocol JSON fixtures only |
 | `fixtures/` | Public, revision-bound test inputs |
 | `scripts/` | Provider builds, native qualification, install and publication helpers |
 | `docs/` | Provider/native explanations, references, operations and historical evidence |
 
-See the [documentation index](docs/README.md). Platform API and consumer guides
-are maintained in the [platform documentation](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
+See the [documentation index](docs/README.md). Console architecture, platform API
+and consumer guides are maintained in the [platform documentation](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs).
 Existing [changelog history](CHANGELOG.md) remains a record of work before and
 after the ownership split, not evidence of a new release or deployment.
 

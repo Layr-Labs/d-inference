@@ -45,8 +45,6 @@ class ComponentPathsTests(unittest.TestCase):
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
-            "coordinator/tests/protocol/testdata/paged_footprint_wire.json": set(),
-            "coordinator/tests/protocol/testdata/process_memory_wire.json": set(),
             "go.sum": set(),
             "scripts/run-coordinator-tests.py": set(),
             ".github/workflows/integration.yml": set(),
@@ -65,16 +63,6 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertTrue((ROOT / path).is_file(), path)
                 selected = routing.classify([path])
                 self.assertEqual({name for name, value in selected.items() if value}, {"provider"})
-
-    def test_shared_protocol_fixtures_match_provider_contracts(self):
-        for name in ("paged_footprint_wire.json", "process_memory_wire.json"):
-            with self.subTest(name=name):
-                relative = "coordinator/tests/protocol/testdata/" + name
-                fixture = ROOT / relative
-                provider_fixture = ROOT / "provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol" / name
-                self.assertEqual(fixture.read_bytes(), provider_fixture.read_bytes())
-                self.assertIsInstance(json.loads(fixture.read_text()), dict)
-                self.assertEqual(routing.classify([relative]), {"provider": False})
 
     def test_selected_executable_dependencies_are_classified(self):
         # Explicitly pin the executable dependencies, not every scripts/** file.
@@ -165,7 +153,6 @@ class GitDiffTests(unittest.TestCase):
         base = self.commit()
         (self.repo / "docs").mkdir()
         self.git("mv", "provider-swift/original.swift", "docs/moved.md")
-        self.write("console-ui/file with\nnewline.ts")
         self.write("coordinator/new.go")
         head = self.commit()
         selected = self.pr(base, head)
@@ -176,7 +163,15 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         self.assertTrue(self.pr(base, head)["provider"], "rename destination must be considered")
         self.git("rm", "provider-swift/new.swift")
-        self.assertTrue(self.pr(head, self.commit())["provider"], "deletions must be considered")
+        deleted = self.commit()
+        self.assertTrue(self.pr(head, deleted)["provider"], "deletions must be considered")
+        # Names are read verbatim: a newline must neither split a docs name into
+        # a provider path nor hide a provider name behind Git's path quoting.
+        self.write("docs/notes\nprovider-swift/new.swift")
+        head = self.commit()
+        self.assertFalse(self.pr(deleted, head)["provider"], "names must stay NUL-delimited")
+        self.write("provider-swift/file with\nnewline.swift")
+        self.assertTrue(self.pr(head, self.commit())["provider"], "names must stay unquoted")
 
     def test_submodule_pointer_change_selects_provider(self):
         self.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},libs/mlx-swift-lm")
@@ -191,8 +186,7 @@ class GitDiffTests(unittest.TestCase):
         self.write("landing/new.ts")
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
-        selected = self.run_detector("push", event)
-        self.assertFalse(selected["provider"])
+        self.assertFalse(any(self.run_detector("push", event).values()))
         for ref in ("refs/heads/master", "refs/heads/main"):
             self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
@@ -212,10 +206,9 @@ class WorkflowRoutingTests(unittest.TestCase):
                          "release-provider.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             with self.subTest(filename=filename):
-                for forbidden in ("actions/setup-go@", "go.mod", "coordinator/",
-                                  "admin-ui/", "e2e/", "install-release-rust.sh", "cargo "):
+                for forbidden in ("actions/setup-go@", "go.mod", "coordinator/", "admin-ui/",
+                                  "console-ui/", "e2e/", "install-release-rust.sh", "cargo "):
                     self.assertNotIn(forbidden, text)
-                self.assertNotIn("console-ui/", text)
                 self.assertNotRegex(text, r"(?m)^\s+repository:")
         for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
@@ -244,11 +237,6 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertNotIn("    if:", ci[policy])
         self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
         self.assertIn("if: github.event_name == 'push'", ci["cache-swift"])
-
-    def test_removed_console_has_no_ci_lane_or_hooks(self):
-        ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
-        self.assertNotIn("lint-console", ci)
-        self.assertFalse((ROOT / ".githooks").exists())
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()

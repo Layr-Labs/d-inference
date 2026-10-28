@@ -16,10 +16,10 @@ git clone https://github.com/Layr-Labs/darkbloom-platform.git Darkbloom/darkbloo
 
 The coordinator/backend, Rust prompt sidecar, consumer console and internal admin
 development belongs exclusively in the platform repository. Never implement,
-commit, push or upload new backend, console or admin code here. The web console
-lives in darkbloom-platform (`console-ui`). Device-local Swift HTTP APIs are provider code, not
-the centralized backend. Check your remote, branch and intended diff before
-editing or pushing. See the [owner map](docs/developer/navigation.md).
+commit, push or upload new backend, console or admin code here. Device-local
+Swift HTTP APIs are provider code, not the centralized backend. Check your
+remote, branch and intended diff before editing or pushing. See the
+[owner map](docs/developer/navigation.md).
 
 The latest coordinator source is the default branch of
 https://github.com/Layr-Labs/darkbloom-platform. For coordinator diagnosis, agents

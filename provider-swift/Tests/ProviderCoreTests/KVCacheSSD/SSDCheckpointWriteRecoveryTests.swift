@@ -63,19 +63,29 @@ struct SSDCheckpointWriteRecoveryTests {
         let telemetry = PrefixCacheDonationTelemetry()
         let store = try f.makeStore(donationRecorder: telemetry)
         let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
-        defer { barrier.release() }
+        let published = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release(); published.release() }
         // Hold the store inside a maintenance removal. Per-file maintenance
         // keeps the epoch and the capability, so it no longer fences writes.
         let maintenance = Task.detached {
             store.performExternalDestructiveChange { try? barrier.block() }
         }
         try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
-        #expect(try await f.donate(store) == [256])
-        #expect(count(.donated, in: telemetry) == 1)
-        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 0)
+        // The donation writes and publishes its file during maintenance, then
+        // waits for the removal lock that maintenance holds before indexing.
+        // Awaiting it before the release would wait out the barrier's timeout.
+        store.afterPublishBeforeIndexForTesting = { try? published.block() }
+        let donation = try f.startDonation(store)
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { published.isEntered }
+        published.release()
+        try await Task.sleep(for: .milliseconds(100))  // reach the held lock
         barrier.release()
         #expect(await maintenance.value)
-        #expect(store.index.count == 1, "reconciliation keeps a checkpoint whose file exists")
+        #expect(await donation.value == [256])
+        store.afterPublishBeforeIndexForTesting = nil
+        #expect(count(.donated, in: telemetry) == 1)
+        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 0)
+        #expect(store.index.count == 1, "the file published during maintenance is indexed after it")
         #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)
         await store.closeAndWait()
     }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-28
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1290,7 +1290,12 @@ the request, `LocalTokenizerBridge` encodes the rendered prompt through
 it cuts the text where an added token begins, under the conditions in which the
 swift-transformers encoder already encodes those pieces independently, and
 reuses the token IDs of pieces seen before in the same prefix-cache scope. New
-long prompts encode their pieces on up to four cores. The cache renders Gemma 4
+long prompts encode their pieces on up to four cores. `PromptPieceTokenStore.lookup`
+snapshots all of a request's hits before promoting them between its two bounded
+generations: a promotion that rotates the cache cannot turn a later piece in
+the same lookup into a miss. Token arrays share storage during that snapshot;
+the existing admission and byte bounds still apply. Batches with no old-generation
+hits return the snapshot without a promotion pass. The cache renders Gemma 4
 and GPT-OSS templates through `ChatTemplateLoopRewrites`, linear-time forms of
 their per-message history scans that render the same text, so render time no
 longer grows with the square of the history length. The IDs equal the unchanged

@@ -46,22 +46,36 @@ def verify_tag(api, tag, source):
         raise ValueError("Release tag no longer identifies the retained build")
 
 
-def verify_source(api, source):
+# The branches whose ancestry can carry a release source. Only master is
+# reviewed; a dev source signs a dev release only (verify_workflow_source).
+SOURCE_BRANCHES = {"master": "reviewed master", "dev": "dev"}
+
+
+def verify_source(api, source, branch="master"):
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("Invalid release source commit")
     commit = api.get("commits/" + source)
     if commit.get("commit", {}).get("verification", {}).get("verified") is not True:
         raise ValueError("Release source commit is not verified")
-    master = api.get("git/ref/heads/master")["object"]["sha"]
-    comparison = api.get(f"compare/{source}...{master}")
+    head = api.get("git/ref/heads/" + branch)["object"]["sha"]
+    comparison = api.get(f"compare/{source}...{head}")
     if (comparison.get("status") not in {"ahead", "identical"}
             or comparison.get("merge_base_commit", {}).get("sha") != source):
-        raise ValueError("Release source is not on reviewed master ancestry")
-    return master
+        raise ValueError(f"Release source is not on {SOURCE_BRANCHES[branch]} ancestry")
+    return head
 
 
 def verify_workflow_source(api, env):
     source = env["GITHUB_SHA"]
+    if (env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "branch"
+            and env.get("GITHUB_REF") == "refs/heads/dev"):
+        # A dev push signs and publishes a dev release only, never staging or
+        # prod. The commit must be GitHub-verified and on dev ancestry; dev may
+        # already have moved on.
+        if env.get("RELEASE_ENVIRONMENT") != "dev":
+            raise ValueError("Dev branch push releases require environment dev")
+        verify_source(api, source, "dev")
+        return source
     master = verify_source(api, source)
     if env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "tag":
         tag = env["GITHUB_REF_NAME"]

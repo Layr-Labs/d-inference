@@ -278,9 +278,24 @@ the newest waiting run continues.
 A master push does not publish a dev release, and the dispatch has no `dev`
 environment choice. The caller's `dev` job runs only for a dispatched signed
 validation build (below), and `scripts/resolve-provider-release.sh` refuses a
-dev publication and a branch push routed to dev. DevNet gets its provider
-releases from the d-inference `dev` branch through
+dev publication from master and a master push routed to dev. DevNet gets its
+provider releases from the d-inference `dev` branch through
 `.github/workflows/release-dev-branch.yml`.
+
+The source gate on `master` admits a push to `dev` for the `dev` environment
+only. `verify_workflow_source` (`scripts/provider_release_resume/api.py`)
+requires a GitHub-verified commit on `dev` ancestry and refuses `staging`, `prod`
+and a missing environment. The resolver stamps `X.Y.Z-dev.branch.N` (`N` is the
+run number) and refuses a dev push routed to another environment and a push from
+any other branch. `resolve-env` still runs the gate from `master`. A dev build
+signs with the same Developer ID as staging and prod.
+
+Before upload, `build-and-release` checks the final archived app against the
+designated requirement of the provider self-updater
+(`DarkbloomCodeSignature.designatedRequirement`): Apple anchor, identifier
+`io.darkbloom.provider`, team `SLDQ2GJ6TL`. A dev build meets the same
+requirement as a production build, so only the production registration and the
+production release key keep a dev build out of production.
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery

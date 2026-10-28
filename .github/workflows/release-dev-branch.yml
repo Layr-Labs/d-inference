@@ -216,9 +216,9 @@ jobs:
     permissions:
       contents: read
       actions: read
-    # The dev publication group, named like release-provider.yml's
-    # provider-publication-<environment> groups. release-swift.yml publishes no
-    # dev release, so this lane is the only one that registers dev builds.
+    # Join the dev publication group that release-provider.yml's
+    # publish-release job uses for environment=dev, so two dev publications
+    # never register against the dev coordinator at once.
     concurrency:
       group: provider-publication-dev
       cancel-in-progress: false

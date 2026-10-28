@@ -31,8 +31,10 @@ name: Provider Release Lane (reusable)
 #   - tag vX.Y.Z       -> prod release of ProviderCore.version (signed tag on
 #                         reviewed master). Path filters do not apply to tags.
 #   - push to master   -> staging release X.Y.Z-staging.<run number>. No
-#                         master path publishes a dev release; DevNet's dev
-#                         releases come from release-dev-branch.yml on dev.
+#                         master path publishes a dev release.
+#   - push to dev      -> dev release X.Y.Z-dev.branch.<run number>, through
+#                         the dev branch's caller (release-dev-branch.yml).
+#                         The master gate admits it for environment dev only.
 #   - workflow_dispatch -> the chosen environment: a staging release or prod
 #                         recovery; or a signed dev validation build that is
 #                         never published.
@@ -135,6 +137,9 @@ jobs:
         id: trust
         env:
           GH_TOKEN: ${{ github.token }}
+          # master's gate admits a dev push (refs/heads/dev) for environment dev
+          # only; every other trigger is checked as before.
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
         run: python3 scripts/provider-release-resume.py verify-source
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -147,8 +152,9 @@ jobs:
           RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
           # The caller always passes the environment (one lane per environment).
           # The script still validates it against GITHUB_EVENT_NAME and
-          # GITHUB_REF: a branch push accepts only staging, dev runs only as a
-          # signed validation build, and prod needs a source-matching tag.
+          # GITHUB_REF: a master push accepts only staging, a dev push only dev,
+          # a master dev lane runs only as a signed validation build, and prod
+          # needs a source-matching tag.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
@@ -817,8 +823,12 @@ jobs:
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
+          # The provider self-updater accepts only this designated requirement
+          # (DarkbloomCodeSignature.designatedRequirement, policy
+          # .darkbloomProduction), for every environment.
+          APP_REQUIREMENT="anchor apple generic and identifier \"io.darkbloom.provider\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --deep --strict --verbose=2 \
-            "$SMOKE_ROOT/$APP_NAME"
+            "-R=$APP_REQUIREMENT" "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
             DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
             MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \

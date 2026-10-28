@@ -313,6 +313,34 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('provider-signing-validation.py stage', WARM)
         self.assertIn('provider-signing-validation.py unpack', WARM)
 
+    def test_final_app_meets_the_self_updater_designated_requirement(self):
+        # The provider self-updater (DarkbloomCodeSignature, policy
+        # .darkbloomProduction) accepts only this requirement, so every
+        # environment's final archived app must meet it before upload.
+        sign = job(RELEASE, 'build-and-release')
+        swift = (ROOT / 'provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift').read_text()
+        self.assertIn('static let teamID = "SLDQ2GJ6TL"', swift)
+        self.assertIn('static let bundleIdentifier = "io.darkbloom.provider"', swift)
+        self.assertIn("APPLE_TEAM_ID: 'SLDQ2GJ6TL'", RELEASE)
+        requirement = ('APP_REQUIREMENT="anchor apple generic and identifier \\"io.darkbloom.provider\\" '
+                       'and certificate leaf[subject.OU] = \\"$APPLE_TEAM_ID\\""')
+        self.assertIn(requirement, sign)
+        verify = sign.split(requirement, 1)[1]
+        self.assertIn('codesign --verify --deep --strict --verbose=2 \\\n'
+                      '            "-R=$APP_REQUIREMENT" "$SMOKE_ROOT/$APP_NAME"', verify)
+        self.assertLess(sign.index('tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"'),
+                        sign.index(requirement))
+
+    def test_source_gate_receives_the_lane_environment(self):
+        # master's gate admits a dev push for environment dev only, so the trust
+        # step must see the lane's environment; it still runs master's scripts.
+        resolve = job(RELEASE, 'resolve-env')
+        trust = resolve.split('- name: Verify reviewed workflow source before any release credentials\n', 1)[1] \
+            .split('\n      - ', 1)[0]
+        self.assertIn('RELEASE_ENVIRONMENT: ${{ inputs.environment }}', trust)
+        self.assertIn('run: python3 scripts/provider-release-resume.py verify-source', trust)
+        self.assertLess(resolve.index('ref: master'), resolve.index('verify-source'))
+
     def test_signing_and_runtime_qualification_are_retained(self):
         for expected in ['app-attest-callback-runtime-smoke: ok',
                          'qwen4-metal-resources-runtime-smoke: ok',

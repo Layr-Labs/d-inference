@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
-      "release/0.9.0-validation": false
+      "release/0.9.0-validation": false,
+      "codex/threat-review-state": false
     }
   }
 }

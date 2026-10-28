@@ -50,7 +50,7 @@ enum QwenTensorParallelStopRule {
     }
 
     /// A rank's stop slot when its KV pages could not grow
-    /// (`QwenTensorParallelPagedKV`): keep `keep` tokens and end at the
+    /// (`GLM5NextTensorParallelPagedKV`): keep `keep` tokens and end at the
     /// request's length, not as a client stop. The offset tells the peer which
     /// it is (exact in float32: counts stay far below 2^22); a client stop's
     /// smaller slot wins when both ranks stop after the same step.

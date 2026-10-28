@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import MLXVLM
 import DarkbloomClusterProtocol
 
 /// Explicit opt-in only. The caller starts and verifies its owner and supplies
@@ -20,9 +21,11 @@ public enum DistributedEngineFactory {
         residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
         modelType: String? = nil,
         modelDirectory: URL? = nil,
-        pairTelemetry: DistributedPairTelemetryContext? = nil
+        pairTelemetry: DistributedPairTelemetryContext? = nil,
+        mediaHostBudget: GlobalKVCacheBudget? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
+        try ClusterModelFeaturePolicy.requireReady(owner.readiness(), identity: expectedIdentity, profile: profile)
         if profile.id == ClusterMiMoImageCandidate.profileID {
             guard modelType == "mimo_v2",expectedIdentity.modelID == ClusterMiMoImageCandidate.runtimeModelID,
                   expectedIdentity.artifactSHA256 == ClusterMiMoImageCandidate.artifactSHA256,
@@ -98,6 +101,32 @@ public enum DistributedEngineFactory {
                 processorConfiguration: read("processor_config.json"),
                 expectedSHA256: expectedIdentity.configurationSHA256)
         }
+        var clusterQwenMediaIngress: DistributedQwenMediaIngress?
+        if owner.readiness()?.media == ClusterQwenMedia.contract {
+            guard modelType == "qwen3_5", expectedIdentity.modelID == "registered_qwen38_27b",
+                profile.id == "registered_qwen38_27b_greedy_generation_v1",
+                let modelDirectory else {
+                throw DistributedEngineError.invalidConfiguration("Qwen media readiness belongs to another model")
+            }
+            func boundedRead(_ name: String, optional: Bool = false) throws -> Data? {
+                let url = modelDirectory.appendingPathComponent(name)
+                if optional && !FileManager.default.fileExists(atPath: url.path) { return nil }
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let bytes = try handle.read(upToCount: (1 << 20) + 1) ?? Data()
+                guard !bytes.isEmpty, bytes.count <= 1 << 20 else {
+                    throw DistributedEngineError.invalidConfiguration("Qwen media metadata exceeds bound")
+                }
+                return bytes
+            }
+            let resolved = try Qwen3VLMediaProcessor.resolvedConfiguration(
+                preprocessor: boundedRead("preprocessor_config.json", optional: true),
+                processor: boundedRead("processor_config.json", optional: true))
+            clusterQwenMediaIngress = try DistributedQwenMediaIngress(configuration: boundedRead("config.json")!,
+                processorConfiguration: resolved, artifactSHA256: expectedIdentity.artifactSHA256,
+                expectedConfigurationSHA256: expectedIdentity.configurationSHA256,
+                maximumPromptTokens: profile.maxPromptTokens)
+        }
         return EngineV2Bridge(
             engine: engine, modelId: modelID, tokenizer: tokenizer,
             eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
@@ -108,7 +137,10 @@ public enum DistributedEngineFactory {
             maxConcurrentRequests: max(1, owner.concurrentRequests), residentPrefixCacheEvidence: residentPrefixEvidence,
             kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy,
             draftMiMoImageConfiguration:draftMiMoImageConfiguration, clusterGLMImageConfiguration:clusterGLMImageConfiguration,
-            clusterGLMMediaIngress: clusterGLMMediaIngress)
+            clusterGLMMediaIngress: clusterGLMMediaIngress,
+            clusterQwenMediaIngress: clusterQwenMediaIngress,
+            clusterQwenMediaHostBudget: clusterQwenMediaIngress == nil ? nil
+                : (mediaHostBudget ?? DistributedQwenMediaHostBudget.shared))
     }
 
     /// Registry construction for a successfully started installed

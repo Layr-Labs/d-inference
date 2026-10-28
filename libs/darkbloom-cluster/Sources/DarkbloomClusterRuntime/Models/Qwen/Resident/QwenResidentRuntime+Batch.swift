@@ -8,8 +8,10 @@ final class QwenBatchLane {
     let slot: Int
     let order: Int
     let reserved: QwenResidentReservation
-    /// The prefix cache's key scope, the one the one-request path uses.
-    let scope: String
+    /// The prefix cache's key scope, the one the one-request path uses; nil
+    /// when the request's cache is off: the lane offers, restores, captures
+    /// and stores nothing, and still splits as the batch does.
+    let scope: String?
     /// The planned request both ranks run: from the agreed reused prefix, the
     /// last prompt token split off exactly when both prefix caches are on.
     var request: QwenLayerStageGenerationRequest
@@ -25,13 +27,17 @@ final class QwenBatchLane {
     /// confirms it.
     var confirmPending = false
 
-    init(id: UUID, slot: Int, order: Int, reserved: QwenResidentReservation, scope: String) {
+    init(id: UUID, slot: Int, order: Int, reserved: QwenResidentReservation, scope: String?) {
         self.id = id; self.slot = slot; self.order = order; self.reserved = reserved; self.scope = scope
         self.request = reserved.request
     }
 
     var fingerprintWords: [Int32] { QwenBatchWire.fingerprintWords(reserved.request.fingerprint) }
     var committedTokens: Int { session?.committedTokens ?? 0 }
+    var recordLane: QwenBatchRecordBinding.Lane {
+        .init(slot: slot, requestID: id, requestFingerprint: reserved.request.fingerprint,
+            committedTokens: committedTokens, selectedTokens: selected.count)
+    }
     var nextPhase: QwenLayerStageFrame.Phase? { session?.nextFrame?.phase }
 
     /// How the request finishes after its latest token, or nil to go on.
@@ -73,14 +79,11 @@ final class QwenBatchLaneTable {
 /// Prefill frames keep the arithmetic of the request run alone: they end on
 /// the request's own chunk grid (one frame per step, earliest joined lane
 /// first) and the last prompt token is split off exactly when the one-request
-/// path splits it. Decode rows attend only their own KV, but two or more rows
-/// share each quantized projection, which MLX runs as `qmv_wide` instead of a
-/// lone row's `qmv_fast`: a batched row's rounding differs from the same
-/// request alone (identically for every batch size from two up), as the MTP
-/// verify window's rows already do. The lanes are therefore lossless under
-/// the near-tie rule, not bit for bit (exact rows need the batched one-row
-/// product layout: see `handoff/PAGED-BATCH-PAIR.md`). Greedy selection on
-/// rank 1, as for one request.
+/// path splits it. Decode rows attend only their own KV. Each model adapter
+/// owns its arithmetic-preserving batch forward; unscoped multi-row matmul
+/// can select a different reduction kernel from singleton decode. Exact output
+/// agreement therefore requires separate artifact/pair qualification. Request-local selection
+/// runs on rank 1, as for one request; each sampled lane keeps its own state.
 extension QwenResidentRuntime {
     /// Lane reservation: the same request allowance a single request gets,
     /// gated live together with every lane already charged. A full set of
@@ -91,6 +94,7 @@ extension QwenResidentRuntime {
                 throw ProbeError("Batch lanes are not configured for this resident owner")
             }
             let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
+            try admission.requireWithinMemoryProfile(value)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: collective.rank,
                 maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
@@ -124,14 +128,21 @@ extension QwenResidentRuntime {
     public func serveBatch(host: QwenBatchServingHost) throws {
         try withExclusiveOperation {
             guard batch.batching, generationMode == .pipeline, let stage = stageForBatch,
-                  stage.loaded.kvHost.host != nil else {
+                  let kvHost = stage.loaded.kvHost.host else {
                 throw ProbeError("Batch lanes are not configured for this resident owner")
             }
             batchServing = true
             defer { batchServing = false }
             let lanes = QwenBatchLaneTable()
             let scope = UUID()
+            var observation: StageBatchObservation?
             do {
+                batchRecordOrdinal = try QwenBatchRecordBinding.nextOrdinal(after: batchRecordOrdinal)
+                let records = try QwenBatchRecordBinding(epoch: admission.configuration.identity.membershipEpoch,
+                    planFingerprint: admission.plan.fingerprint, ordinal: batchRecordOrdinal, lanes: batch.lanes)
+                let observed = StageBatchObservation(rank: collective.rank, scope: records.requestID, capacity: batch.lanes)
+                observation = observed
+                observed.started(memory: kvHost.batchMemory).forEach { log($0) }
                 try lifecycle.withRequest(identity: .init(requestID: scope, epoch: scope,
                         recordedRequestFingerprint: sha256(Data("qwen-batch-scope-v1|\(scope.uuidString)".utf8)))) {
                     try autoreleasepool {
@@ -140,9 +151,8 @@ extension QwenResidentRuntime {
                             func checked() throws {
                                 try nativeError.check(); try control.check()
                                 let now = DispatchTime.now().uptimeNanoseconds
-                                guard !laneBook.anyCancelled, lanes.values.allSatisfy({ now < $0.reserved.deadline }) else {
-                                    throw ProbeError("A batch lane was cancelled or passed its deadline")
-                                }
+                                // Request cancellation waits for a shared step boundary.
+                                // An announced collective must complete on both ranks.
                                 if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
                                     // Kept prefixes give way to the lanes' own admission.
                                     let allowances = laneBook.allowances()
@@ -154,16 +164,17 @@ extension QwenResidentRuntime {
                                 }
                                 try nativeError.check()
                             }
-                            let opening = try openBatch(stage: stage, check: checked)
+                            let opening = try openBatch(stage: stage, records: records, check: checked)
                             let split = opening
                             if collective.rank == 0 {
-                                try leadBatch(stage: stage, split: split, lanes: lanes, host: host, check: checked)
+                                try leadBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed, check: checked)
                             } else {
-                                try followBatch(stage: stage, split: split, lanes: lanes, host: host, check: checked)
+                                try followBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed, check: checked)
                             }
                         }
                     }
                 }
+                observed.finished(success: true, memory: kvHost.batchMemory).forEach { log($0) }
             } catch {
                 var primary: Error = error
                 for lane in lanes.values {
@@ -172,6 +183,7 @@ extension QwenResidentRuntime {
                 }
                 lanes.slots.removeAll(); laneBook.clear()
                 prefixCache.sweep(); control.fail()
+                observation?.finished(success: false, memory: kvHost.batchMemory).forEach { log($0) }
                 throw primary
             }
         }
@@ -179,11 +191,12 @@ extension QwenResidentRuntime {
 
     /// The loop's first exchange. Returns whether the last prompt token is
     /// split off (both prefix caches on).
-    private func openBatch(stage: any LayerStageResidentStage, check: () throws -> Void) throws -> Bool {
+    private func openBatch(stage: any LayerStageResidentStage, records: QwenBatchRecordBinding,
+                           check: () throws -> Void) throws -> Bool {
         let local = QwenBatchWire.Opening(lanes: batch.lanes, pagedKV: stage.loaded.kvHost.host?.kind == .paged,
             prefixCacheEnabled: prefixCache.enabled, vocabularySize: admission.profile.vocabularySize,
             hiddenSize: admission.profile.hiddenSize)
-        let peer = try QwenBatchWire.Opening(words: exchangeBatchWords(local.words, check: check))
+        let peer = try QwenBatchWire.Opening(words: exchangeBatchWords(local.words, records: records, check: check))
         guard peer.lanes == local.lanes, peer.pagedKV == local.pagedKV,
               peer.vocabularySize == local.vocabularySize, peer.hiddenSize == local.hiddenSize else {
             throw ProbeError("Batch peers differ in lanes, KV storage or model geometry")
@@ -195,7 +208,7 @@ extension QwenResidentRuntime {
 
     /// The prefix scope of a lane: the one-request path's agreement for this
     /// request (pipeline, serial prefill), so both paths share cache entries.
-    private func laneScope(stage: any LayerStageResidentStage, reserved: QwenResidentReservation) throws -> String {
+    private func laneScope(stage: any LayerStageResidentStage, reserved: QwenResidentReservation) throws -> String? {
         let receipt = stage.loaded.receipt
         let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
@@ -223,14 +236,14 @@ extension QwenResidentRuntime {
             let planned = try lane.reserved.request.planned(reusedPrefix: reusedPrefix, splitFinalToken: split)
             let session: QwenLayerStageSession
             if reusedPrefix > 0 {
-                guard let state = prefixCache.state(scope: lane.scope, tokens: planned.promptTokenIDs,
+                guard let scope = lane.scope, let state = prefixCache.state(scope: scope, tokens: planned.promptTokenIDs,
                                                     frontier: reusedPrefix) else { return nil }
                 session = try QwenLayerStageSession(stage: stage.loaded, plan: admission.plan,
                     generationRequest: planned, adopting: state.adopted)
             } else {
                 session = try QwenLayerStageSession(stage: stage.loaded, plan: admission.plan, generationRequest: planned)
             }
-            if split, prefixCache.enabled {
+            if split, prefixCache.enabled, lane.scope != nil {
                 session.prefixCaptureFrontiers = planned.prefixCaptureFrontiers(
                     stride: prefixCache.stride(chunkSize: planned.chunkSize))
             }
@@ -261,9 +274,9 @@ extension QwenResidentRuntime {
         try session.finishGeneration(reason, selectedTokenCount: lane.selected.count, lastTokenID: lane.selected.last!)
         guard session.isClosed, !session.isFailed else { throw ProbeError("Batch lane native state failed retirement") }
         var stored: [Int] = []
-        if prefixCache.enabled {
+        if prefixCache.enabled, let scope = lane.scope {
             let states = session.capturedPrefixStates()
-            prefixCache.insert(scope: lane.scope, tokens: lane.request.promptTokenIDs, states: states)
+            prefixCache.insert(scope: scope, tokens: lane.request.promptTokenIDs, states: states)
             stored = states.map(\.committedTokens)
         }
         session.discardCapturedPrefix()
@@ -275,24 +288,64 @@ extension QwenResidentRuntime {
         laneBook.finish(lane.id)
     }
 
+    private func cancellationRequested(_ lane: QwenBatchLane) -> Bool {
+        QwenBatchCancellation.requested(ownerCancelled: laneBook.isCancelled(lane.id),
+            deadline: lane.reserved.deadline, now: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    /// A cancelled lane keeps its charge until all native sessions retired.
+    /// Captured prefixes are discarded, never inserted into the prompt cache.
+    private func cancelLane(_ lane: QwenBatchLane, host: QwenBatchServingHost) throws {
+        var sessions: [any QwenBatchCancellableSession] = []
+        if let session = lane.session { sessions.append(session) }
+        if let restored = lane.restored { sessions.append(restored.session) }
+        try QwenBatchCancellation.retire(sessions: sessions, release: {
+            lane.session = nil; lane.restored = nil
+            laneBook.finish(lane.id)
+        }, publish: { try host.publishLeft(requestID: lane.id) })
+    }
+
     // MARK: Rank 0
 
     private func leadBatch(stage: any LayerStageResidentStage, split: Bool, lanes: QwenBatchLaneTable,
-                           host: QwenBatchServingHost, check: () throws -> Void) throws {
+                           host: QwenBatchServingHost, records: QwenBatchRecordBinding,
+                           observation: StageBatchObservation, check: () throws -> Void) throws {
         var step = 0, order = 0
-        var leaving: [Int: (id: UUID, reason: QwenLayerStageGenerationFinishReason, selected: Int)] = [:]
+        let trace = try QwenBatchRowCapture.traceRequested()
+        var summary = QwenBatchStepSummary()
+        defer { if trace { log(summary.line) } }
+        var decisions = QwenBatchDecisionProgress()
+        var coalescing = QwenBatchDecodeCoalescing()
+        var peerCancelled = Set<UUID>()
+        var leaving: [Int: (id: UUID, reason: QwenLayerStageGenerationFinishReason?, cancelled: Bool, selected: Int)] = [:]
         // One autorelease scope per step, as the one-request loop has per frame.
         while try !autoreleasepool(invoking: { () throws -> Bool in
-            try host.serviceControl()
+            let pendingCredits = decisions.pendingCount
+            let answered = try decisions.serviceAndPoll(host)
             try check()
+            for slot in lanes.keys.sorted() {
+                let lane = lanes[slot]!
+                if cancellationRequested(lane) || peerCancelled.contains(lane.id) {
+                    try cancelLane(lane, host: host)
+                    decisions.retired(lane.id)
+                    peerCancelled.remove(lane.id)
+                    leaving[slot] = (lane.id, nil, true, lane.selected.count)
+                    lanes[slot] = nil
+                } else if let proceed = answered[lane.id], let reason = lane.finish(continueRequested: proceed) {
+                    try finishLane(lane, reason: reason, host: host)
+                    leaving[slot] = (lane.id, reason, false, lane.selected.count)
+                    lanes[slot] = nil
+                }
+            }
             var joining = Set<Int>()
             while lanes.count + leaving.count < batch.lanes, let (id, reserved) = laneBook.takeStarted() {
                 guard let slot = (0..<batch.lanes).first(where: { lanes[$0] == nil && leaving[$0] == nil }) else { break }
                 let lane = try newLane(stage: stage, id: id, reserved: reserved, slot: slot, order: order)
                 if split {
                     // The agreement runs in this step; frames start in the next.
-                    lane.offers = Array(prefixCache.frontiers(scope: lane.scope, tokens: reserved.request.promptTokenIDs,
-                        maximumFrontier: reserved.request.promptCount - 1).prefix(QwenBatchWire.maximumOffers))
+                    lane.offers = Array(reserved.request.admittedPrefixFrontiers(lane.scope.map { prefixCache.frontiers(scope: $0,
+                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1) } ?? [])
+                        .prefix(QwenBatchWire.maximumOffers))
                 } else {
                     try coldSession(stage: stage, lane: lane, split: false)
                 }
@@ -301,11 +354,24 @@ extension QwenResidentRuntime {
             }
             let stop = lanes.isEmpty
             // The step's plan: every decoding lane together, one prefill frame.
-            let decodeSlots = lanes.keys.sorted().filter { lanes[$0]!.nextPhase == .decode }
-            let prefillSlot = lanes.values.filter { $0.nextPhase == .prefill }.min(by: { $0.order < $1.order })?.slot
+            let decodeLanes = lanes.keys.sorted().filter {
+                lanes[$0]!.nextPhase == .decode && !cancellationRequested(lanes[$0]!)
+            }
+            var decodeSlots = decodeLanes.filter { decisions.canForward(lanes[$0]!.id) }
+            let prefillSlot = lanes.values.filter {
+                $0.nextPhase == .prefill && decisions.canForward($0.id) && !cancellationRequested($0)
+            }.min(by: { $0.order < $1.order })?.slot
+            // Keep control exchanges moving while nearby token credits arrive.
+            // The absolute window cannot be extended by additional answers.
+            if coalescing.shouldDefer(ready: decodeSlots.count, pending: decodeLanes.count - decodeSlots.count,
+                hasOtherWork: prefillSlot != nil || !joining.isEmpty || !leaving.isEmpty,
+                now: { DispatchTime.now().uptimeNanoseconds }) {
+                decodeSlots.removeAll(keepingCapacity: true)
+            }
             var slots = [QwenBatchWire.Slot](repeating: .init(), count: batch.lanes)
             for (slot, left) in leaving {
-                slots[slot] = .init(state: .leaving, requestID: left.id, selectedTokens: left.selected, leaveReason: left.reason)
+                slots[slot] = .init(state: .leaving, requestID: left.id, selectedTokens: left.selected,
+                    leaveReason: left.reason, leaveCancelled: left.cancelled)
             }
             for (slot, lane) in lanes.slots {
                 var value = QwenBatchWire.Slot(state: joining.contains(slot) ? .joining : .active, requestID: lane.id)
@@ -321,28 +387,41 @@ extension QwenResidentRuntime {
                 }
                 slots[slot] = value
             }
-            try sendBatchWords(QwenBatchWire.Header(step: step, stop: stop, slots: slots).words, check: check)
+            if trace {
+                summary.record(width: decodeSlots.count, pending: pendingCredits, answered: answered.count,
+                    prefill: prefillSlot != nil, joining: joining.count, leaving: leaving.count)
+            }
+            try sendBatchWords(QwenBatchWire.Header(step: step, stop: stop, slots: slots).words,
+                scope: records.header(step: step), check: check)
             leaving.removeAll()
             for lane in lanes.values { lane.confirmPending = false }
             if stop { return true }
 
             if !decodeSlots.isEmpty {
+                let record = try records.residual(step: step, kind: .decode,
+                    lanes: decodeSlots.map { lanes[$0]!.recordLane })
                 let residual = try QwenLayerStageSession.decodeBatch(decodeSlots.map { lanes[$0]!.session! },
                     tokens: decodeSlots.map { lanes[$0]!.selected.last! }, residual: nil, check: check)
-                try sendBatchResidual(residual, digest: sha256(residual.asData().data), check: check)
+                observation.completedDecode(width: decodeSlots.count, memory: stage.loaded.kvHost.host!.batchMemory).forEach { log($0) }
+                try sendBatchResidual(residual, digest: sha256(residual.asData().data), records: record, check: check)
             }
             var finalPrefill = false
             if let slot = prefillSlot, let lane = lanes[slot], let session = lane.session, let frame = session.nextFrame {
+                let record = try records.residual(step: step,
+                    kind: .prefill(offset: frame.tokenOffset, count: frame.tokenCount, final: frame.finalPromptChunk),
+                    lanes: [lane.recordLane])
                 let tokens = Array(lane.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
                 guard case .hidden(let boundary) = try session.prefillChunk(tokens, offset: frame.tokenOffset,
                         final: frame.finalPromptChunk, check: check) else {
                     throw ProbeError("Batch producer prefill did not return a residual")
                 }
-                try sendBatchResidual(boundary.array, digest: boundary.payloadSHA256, check: check)
+                observation.completedPrefill(memory: stage.loaded.kvHost.host!.batchMemory).forEach { log($0) }
+                try sendBatchResidual(boundary.array, digest: boundary.payloadSHA256, records: record, check: check)
                 finalPrefill = frame.finalPromptChunk
             }
-            let reply = try QwenBatchWire.Reply(words: receiveBatchWords(QwenBatchWire.replyWords, check: check),
+            let reply = try QwenBatchWire.Reply(words: receiveBatchWords(QwenBatchWire.replyWords, scope: records.reply(step: step), check: check),
                 expectedStep: step, lanes: batch.lanes)
+            peerCancelled.formUnion(try QwenBatchCancellation.peerRequests(mask: reply.cancelledMask, slots: slots))
             // Prefix agreements of this step's joins: rank 1 restored what it
             // could of what was offered; rank 0 restores the same frontier or
             // both start cold (the next header says which).
@@ -352,6 +431,9 @@ extension QwenResidentRuntime {
                 guard peer == 0 || lane.offers.contains(peer) else {
                     throw ProbeError("Batch peer restored a frontier that was not offered")
                 }
+                // A cancelled accepted start still joins on both ranks. Its
+                // next header retires that matched identity without a forward.
+                if cancellationRequested(lane) || peerCancelled.contains(lane.id) { continue }
                 if peer > 0, let value = laneSession(stage: stage, lane: lane, reusedPrefix: peer, split: split) {
                     installSession(lane, value, reusedPrefix: peer)
                 } else {
@@ -365,7 +447,6 @@ extension QwenResidentRuntime {
             for slot in joining where reply.restored[slot] != 0 && !split {
                 throw ProbeError("Batch peer restored a prefix with the caches off")
             }
-            var published: [Int] = []
             for slot in 0..<batch.lanes {
                 let expected = decodeSlots.contains(slot) || (slot == prefillSlot && finalPrefill)
                 guard (reply.tokens[slot] >= 0) == expected else {
@@ -377,21 +458,18 @@ extension QwenResidentRuntime {
                 }
                 lane.selected.append(reply.tokens[slot])
                 try check()
+                // Both ranks keep the selected frontier for the next leave,
+                // but a known cancelled lane publishes no additional output.
+                if cancellationRequested(lane) || peerCancelled.contains(lane.id) { continue }
+                try decisions.published(lane.id)
                 try host.publishToken(requestID: lane.id, ordinal: lane.selected.count - 1, tokenID: reply.tokens[slot],
                     committedTokens: lane.request.promptCount + lane.selected.count - 1)
-                published.append(slot)
             }
-            if !published.isEmpty {
-                let decisions = try host.awaitDecisions(published.map { lanes[$0]!.id })
-                try check()
-                for slot in published {
-                    let lane = lanes[slot]!
-                    guard let proceed = decisions[lane.id] else { throw ProbeError("Batch lane decision missing") }
-                    guard let reason = lane.finish(continueRequested: proceed) else { continue }
-                    try finishLane(lane, reason: reason, host: host)
-                    leaving[slot] = (lane.id, reason, lane.selected.count)
-                    lanes[slot] = nil
-                }
+            // An unanswered token must not stop control on either rank. A
+            // role.none step carries no model forward, but lets the follower
+            // admit reservations before the provider can answer older tokens.
+            if decodeSlots.isEmpty && prefillSlot == nil && joining.isEmpty {
+                Thread.sleep(forTimeInterval: 0.0005)
             }
             step += 1
             return false
@@ -401,18 +479,28 @@ extension QwenResidentRuntime {
     // MARK: Rank 1
 
     private func followBatch(stage: any LayerStageResidentStage, split: Bool, lanes: QwenBatchLaneTable,
-                             host: QwenBatchServingHost, check: () throws -> Void) throws {
+                             host: QwenBatchServingHost, records: QwenBatchRecordBinding,
+                             observation: StageBatchObservation, check: () throws -> Void) throws {
         var step = 0, order = 0
+        let capture = try QwenBatchRowCapture.fromEnvironment()
         while try !autoreleasepool(invoking: { () throws -> Bool in
-            let header = try QwenBatchWire.Header(words: receiveBatchWords(QwenBatchWire.headerWords, check: check),
+            let header = try QwenBatchWire.Header(words: receiveBatchWords(QwenBatchWire.headerWords, scope: records.header(step: step), check: check),
                 expectedStep: step, lanes: batch.lanes)
             for (slot, value) in header.slots.enumerated() where value.state == .leaving {
-                guard let lane = lanes[slot], lane.id == value.requestID, let reason = value.leaveReason,
-                      value.selectedTokens == lane.selected.count,
-                      lane.finish(continueRequested: reason != .clientStop) == reason else {
-                    throw ProbeError("Batch header ends a lane this rank does not hold, or for another reason")
+                guard let lane = lanes[slot], lane.id == value.requestID,
+                      value.selectedTokens == lane.selected.count else {
+                    throw ProbeError("Batch header ends a lane this rank does not hold, or at another frontier")
                 }
-                try finishLane(lane, reason: reason, host: host)
+                if value.leaveCancelled {
+                    try cancelLane(lane, host: host)
+                } else {
+                    guard let reason = value.leaveReason,
+                          lane.finish(continueRequested: reason != .clientStop) == reason else {
+                        throw ProbeError("Batch header ends a lane for another reason")
+                    }
+                    if cancellationRequested(lane) { try cancelLane(lane, host: host) }
+                    else { try finishLane(lane, reason: reason, host: host) }
+                }
                 lanes[slot] = nil
             }
             // The previous step's joins: rank 0's decision on the prefix.
@@ -450,8 +538,8 @@ extension QwenResidentRuntime {
                 }
                 if split {
                     // The deepest frontier both hold; restored now, kept only if rank 0 confirms it.
-                    let local = Set(prefixCache.frontiers(scope: lane.scope, tokens: reserved.request.promptTokenIDs,
-                        maximumFrontier: reserved.request.promptCount - 1))
+                    let local = Set(reserved.request.admittedPrefixFrontiers(lane.scope.map { prefixCache.frontiers(scope: $0,
+                        tokens: reserved.request.promptTokenIDs, maximumFrontier: reserved.request.promptCount - 1) } ?? []))
                     if let frontier = value.offers.filter({ local.contains($0) }).max(),
                        let restored = laneSession(stage: stage, lane: lane, reusedPrefix: frontier, split: split) {
                         lane.restored = (frontier, restored.1); restoredNow[slot] = frontier
@@ -489,13 +577,21 @@ extension QwenResidentRuntime {
                         throw ProbeError("Batch decode row differs from this rank's lane")
                     }
                 }
+                let record = try records.residual(step: step, kind: .decode,
+                    lanes: decodeSlots.map { lanes[$0]!.recordLane })
                 let residual = try receiveBatchResidual(shape: [decodeSlots.count, 1, admission.profile.hiddenSize],
-                    dtype: stage.loaded.activationDType, check: check)
+                    dtype: stage.loaded.activationDType, records: record, check: check)
                 let logits = try QwenLayerStageSession.decodeBatch(decodeSlots.map { lanes[$0]!.session! },
                     tokens: decodeSlots.map { lanes[$0]!.selected.last! }, residual: residual.array, check: check)
-                let selected = try Self.selectBatchTokens(logits, rows: decodeSlots.count,
-                    request: lanes[decodeSlots[0]]!.request, check: check)
+                observation.completedDecode(width: decodeSlots.count, memory: stage.loaded.kvHost.host!.batchMemory).forEach { log($0) }
+                let selected = try Self.selectBatchTokens(logits,
+                    requests: decodeSlots.map { lanes[$0]!.request }, check: check)
                 for (row, slot) in decodeSlots.enumerated() {
+                    if let capture, QwenBatchRowCapture.ordinals.contains(lanes[slot]!.selected.count) {
+                        try captureBatchRow(capture, lane: lanes[slot]!, step: step, row: row,
+                            width: decodeSlots.count, phase: "decode", token: selected[row],
+                            logits: logits[row..<(row + 1)], check: check)
+                    }
                     tokens[slot] = selected[row]; lanes[slot]!.selected.append(selected[row])
                 }
             }
@@ -506,8 +602,11 @@ extension QwenResidentRuntime {
                       frame.tokenCount == value.frameCount, frame.finalPromptChunk == value.finalChunk else {
                     throw ProbeError("Batch prefill frame differs from this rank's lane")
                 }
+                let record = try records.residual(step: step,
+                    kind: .prefill(offset: frame.tokenOffset, count: frame.tokenCount, final: frame.finalPromptChunk),
+                    lanes: [lane.recordLane])
                 let received = try receiveBatchResidual(shape: [1, frame.tokenCount, admission.profile.hiddenSize],
-                    dtype: stage.loaded.activationDType, check: check)
+                    dtype: stage.loaded.activationDType, records: record, check: check)
                 let ids = Array(lane.request.promptTokenIDs[frame.tokenOffset..<(frame.tokenOffset + frame.tokenCount)])
                 let identity = session.identity
                 let boundary = QwenLayerStageBoundary(requestFingerprint: identity.requestFingerprint,
@@ -519,27 +618,70 @@ extension QwenResidentRuntime {
                     payloadSHA256: received.digest, array: received.array)
                 let output = try session.prefillChunk(ids, offset: frame.tokenOffset, final: frame.finalPromptChunk,
                     incoming: boundary, check: check)
+                observation.completedPrefill(memory: stage.loaded.kvHost.host!.batchMemory).forEach { log($0) }
                 switch output {
                 case .evaluationHandle where !frame.finalPromptChunk: break
                 case .logits(let row) where frame.finalPromptChunk:
                     let token = try QwenLayerStageGenerationSelection.token(row, request: lane.request, check: check)
+                    if let capture {
+                        try captureBatchRow(capture, lane: lane, step: step, row: 0, width: 1,
+                            phase: "prefill", token: token, logits: row, check: check)
+                    }
                     tokens[slot] = token; lane.selected.append(token)
                 default: throw ProbeError("Batch consumer prefill output does not match its frame")
                 }
             }
-            try sendBatchWords(QwenBatchWire.Reply(step: step, tokens: tokens, restored: restoredNow).words, check: check)
+            // An owner cancel may have arrived during this announced forward.
+            // Finish the collective, then ask rank 0 for a common leave step.
+            try host.serviceControl()
+            let cancelledMask = lanes.values.reduce(0) {
+                $0 | (cancellationRequested($1) ? (1 << $1.slot) : 0)
+            }
+            try sendBatchWords(QwenBatchWire.Reply(step: step, tokens: tokens, restored: restoredNow,
+                cancelledMask: cancelledMask).words,
+                scope: records.reply(step: step), check: check)
             step += 1
             return false
         }) {}
     }
 
-    /// Greedy selection of every row at once: the same finite argmax as one
-    /// request's selection, per row.
-    static func selectBatchTokens(_ logits: MLXArray, rows: Int, request: QwenLayerStageGenerationRequest,
+    private func captureBatchRow(_ capture: QwenBatchRowCapture, lane: QwenBatchLane, step: Int,
+                                 row: Int, width: Int, phase: String, token: Int,
+                                 logits: MLXArray, check: () throws -> Void) throws {
+        try capture.capture(.init(batchOrdinal: batchRecordOrdinal, step: step, slot: lane.slot, row: row,
+            decodeWidth: width, phase: phase, requestID: lane.id,
+            requestFingerprint: lane.reserved.request.fingerprint, promptTokens: lane.request.promptTokenIDs,
+            priorSelectedTokens: lane.selected, selectedToken: token),
+            shape: logits.shape, dtype: String(describing: logits.dtype)) {
+                let bytes = logits.asData(access: .copy).data
+                try check()
+                return bytes
+            }
+    }
+
+    /// Each row uses its own request's sampler and committed history. Plain
+    /// greedy batches keep the existing vectorized finite argmax path.
+    static func selectBatchTokens(_ logits: MLXArray, requests: [QwenLayerStageGenerationRequest],
                                   check: () throws -> Void) throws -> [Int] {
-        guard logits.shape == [rows, request.profile.vocabularySize],
+        let rows = requests.count
+        guard let request = requests.first,
+              requests.allSatisfy({ $0.profile.vocabularySize == request.profile.vocabularySize
+                  && $0.profile.selectedRowDType == request.profile.selectedRowDType }),
+              logits.shape == [rows, request.profile.vocabularySize],
               String(describing: logits.dtype) == request.profile.selectedRowDType else {
             throw ProbeError("Batch selected rows differ from the admitted native shape/dtype")
+        }
+        if requests.contains(where: { $0.sampler != nil }) {
+            // Reject the whole matrix before any sampler advances its output
+            // index or penalties; an invalid later row must not commit earlier ones.
+            let finite = all(isFinite(logits), axes: [-1])
+            eval(logits, finite); try check()
+            guard finite.shape == [rows], finite.asArray(Bool.self).allSatisfy({ $0 }) else {
+                throw ProbeError("Batch target logits are not finite")
+            }
+            return try requests.enumerated().map { row, request in
+                try QwenLayerStageGenerationSelection.token(logits[row..<(row + 1)], request: request, check: check)
+            }
         }
         let selected = argMax(logits, axis: -1), finite = all(isFinite(logits), axes: [-1])
         eval(logits, selected, finite); try check()
@@ -557,40 +699,47 @@ extension QwenResidentRuntime {
 
     // MARK: Transfers
 
-    private func exchangeBatchWords(_ words: [Int32], check: () throws -> Void) throws -> [Int32] {
+    private func exchangeBatchWords(_ words: [Int32], records: QwenBatchRecordBinding,
+                                    check: () throws -> Void) throws -> [Int32] {
+        let sending = try records.opening(fromRank: collective.rank)
+        let receiving = try records.opening(fromRank: 1 - collective.rank)
         if collective.rank == 0 {
-            try sendBatchWords(words, check: check)
-            return try receiveBatchWords(words.count, check: check)
+            try sendBatchWords(words, scope: sending, check: check)
+            return try receiveBatchWords(words.count, scope: receiving, check: check)
         }
-        let peer = try receiveBatchWords(words.count, check: check)
-        try sendBatchWords(words, check: check)
+        let peer = try receiveBatchWords(words.count, scope: receiving, check: check)
+        try sendBatchWords(words, scope: sending, check: check)
         return peer
     }
 
-    private func sendBatchWords(_ words: [Int32], check: () throws -> Void) throws {
+    private func sendBatchWords(_ words: [Int32], scope: CollectiveRecordScope, check: () throws -> Void) throws {
         let array = MLXArray(words)
-        _ = try collective.sendCompleted(array, to: 1 - collective.rank, maximumBytes: words.count * 4, check: check)
+        _ = try collective.sendCompleted(array, to: 1 - collective.rank, maximumBytes: words.count * 4,
+            scope: scope, check: check)
     }
 
-    private func receiveBatchWords(_ count: Int, check: () throws -> Void) throws -> [Int32] {
+    private func receiveBatchWords(_ count: Int, scope: CollectiveRecordScope, check: () throws -> Void) throws -> [Int32] {
         let words = try collective.receiveCompleted(shape: [count], dtype: .int32, from: 1 - collective.rank,
-            maximumBytes: count * 4, check: check).asArray(Int32.self)
+            maximumBytes: count * 4, scope: scope, check: check).asArray(Int32.self)
         try check()
         return words
     }
 
     /// A residual, then its SHA-256 as eight words: the receiver verifies the
     /// bytes it got against the digest, as the one-request boundary does.
-    private func sendBatchResidual(_ array: MLXArray, digest: String, check: () throws -> Void) throws {
-        _ = try collective.sendCompleted(array, to: 1, maximumBytes: array.nbytes, check: check)
-        try sendBatchWords(Self.digestWords(digest), check: check)
+    private func sendBatchResidual(_ array: MLXArray, digest: String,
+                                   records: QwenBatchRecordBinding.ResidualRecords, check: () throws -> Void) throws {
+        _ = try collective.sendCompleted(array, to: 1, maximumBytes: array.nbytes, scope: records.payload, check: check)
+        try sendBatchWords(Self.digestWords(digest), scope: records.digest, check: check)
     }
 
-    private func receiveBatchResidual(shape: [Int], dtype: DType, check: () throws -> Void) throws
+    private func receiveBatchResidual(shape: [Int], dtype: DType,
+                                      records: QwenBatchRecordBinding.ResidualRecords, check: () throws -> Void) throws
         -> (array: MLXArray, digest: String) {
         let bytes = shape.reduce(1, *) * dtype.size
-        let array = try collective.receiveCompleted(shape: shape, dtype: dtype, from: 0, maximumBytes: bytes, check: check)
-        let digest = Self.digestHex(try receiveBatchWords(8, check: check))
+        let array = try collective.receiveCompleted(shape: shape, dtype: dtype, from: 0, maximumBytes: bytes,
+            scope: records.payload, check: check)
+        let digest = Self.digestHex(try receiveBatchWords(8, scope: records.digest, check: check))
         guard sha256(array.asData().data) == digest else {
             throw ProbeError("Batch residual bytes differ from the producer's digest")
         }

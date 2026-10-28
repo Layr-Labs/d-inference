@@ -15,8 +15,8 @@ import MLXNN
 /// passes that residual as input embeddings and applies the model's own head:
 /// to the last position of the final prompt chunk and to every decode step,
 /// in the shapes the product uses for each. State is the class's ordinary
-/// caches, one per local layer: a growing cache for a full-attention layer and
-/// a rotating one of the window's size for a sliding-window layer. There is no
+/// caches, one per local layer: demand-grown 64-token pages for full and
+/// sliding attention, preserving the SDK's rotating row order. There is no
 /// recurrent state. Positions come from each cache's own offset, which both
 /// stages advance by the same token counts.
 final class GPTOSSLayerStageSession {
@@ -32,6 +32,10 @@ final class GPTOSSLayerStageSession {
     private(set) var isFailed = false
 
     var committedTokens: Int { schedule.committedTokens }
+    var nextFrame: QwenLayerStageFrame? {
+        guard !schedule.complete, schedule.nextSequence < request.forwardCount else { return nil }
+        return try? request.frame(sequence: schedule.nextSequence)
+    }
 
     init(stage: LoadedGPTOSSLayerStage, plan: GPTOSSLayerStagePlan,
          generationRequest request: QwenLayerStageGenerationRequest) throws {
@@ -48,7 +52,7 @@ final class GPTOSSLayerStageSession {
               modelParameterLayout(stage.model) == receipt.parameterLayoutSHA256,
               stage.model.trainableParameters().flattened().isEmpty,
               (stage.head != nil) == (stage.stageIndex == 1),
-              stage.activationDType == .bfloat16, stage.residualDType == .float32,
+              stage.activationDType == .bfloat16, stage.residualDType == stage.activationDType,
               String(describing: stage.residualDType) == GPTOSSRegisteredSpecification.residualDType,
               String(describing: stage.activationDType) == receipt.embeddingActivationDType else {
             throw ProbeError("GPT-OSS stage model identity, native dtype or frozen ownership differs")
@@ -60,7 +64,10 @@ final class GPTOSSLayerStageSession {
               request.maximumTokens <= spec.maximumPositions else {
             throw ProbeError("Generation profile differs from the actual loaded GPT-OSS stage geometry/dtype")
         }
-        let caches = try stage.model.newCache(parameters: nil)
+        let caches: [any KVCache] = descriptor.layers.map { layer in
+            GPTOSSPagedKVCache(window: layer.kind == GPTOSSRegisteredSpecification.slidingAttention
+                ? spec.slidingWindow : nil)
+        }
         guard caches.count == descriptor.layers.count,
               zip(caches, descriptor.layers).allSatisfy({ cache, layer in
                   cache.offset == 0 && (cache.maxSize == nil
@@ -254,4 +261,54 @@ final class GPTOSSLayerStageSession {
     }
 
     deinit { caches = nil }
+}
+
+extension GPTOSSLayerStageSession {
+    /// The native prerequisite for continuous pipeline batching. Each session
+    /// keeps its own cache and schedule, including unequal absolute positions.
+    /// This does not enable resident lanes: their admission, common wire step,
+    /// sampling and acknowledged retirement must be supplied by the owner.
+    static func decodeBatch(_ sessions: [GPTOSSLayerStageSession], tokens: [Int], residual: MLXArray?,
+                            check: () throws -> Void) throws -> MLXArray {
+        guard let first = sessions.first, sessions.count == tokens.count,
+              Set(sessions.map(ObjectIdentifier.init)).count == sessions.count,
+              sessions.allSatisfy({ $0.stage.model === first.stage.model
+                  && $0.stage.stageIndex == first.stage.stageIndex
+                  && $0.identity.planFingerprint == first.identity.planFingerprint }) else {
+            throw ProbeError("GPT-OSS batch decode requires distinct sessions of one loaded stage")
+        }
+        do {
+            var frames: [QwenLayerStageFrame] = []
+            var histories: [[GPTOSSPagedKVCache]] = []
+            for session in sessions {
+                try session.requireOpen()
+                guard let caches = session.caches,
+                      caches.allSatisfy({ $0.offset == session.schedule.committedTokens }),
+                      let pages = caches as? [GPTOSSPagedKVCache] else {
+                    throw ProbeError("GPT-OSS batch session cache frontier or ownership differs")
+                }
+                frames.append(try session.schedule.admitDecode(offset: session.schedule.committedTokens))
+                histories.append(pages)
+            }
+            let frontiers = sessions.map { $0.schedule.committedTokens }
+            let output = try GPTOSSBatchForward.decode(model: first.stage.model, head: first.stage.head,
+                stageIndex: first.stage.stageIndex, hiddenSize: first.hiddenSize,
+                vocabularySize: first.stage.vocabularySize, dtype: first.stage.residualDType,
+                tokens: tokens, residual: residual, histories: histories, check: check)
+            for (session, frontier) in zip(sessions, frontiers) { try session.requireFrontier(after: frontier + 1) }
+            for (session, frame) in zip(sessions, frames) { try session.schedule.commit(frame) }
+            if first.stage.stageIndex == 0 {
+                // Preserve the one-request sender's exclusive-buffer fence.
+                try MLX.withError { error in Stream.gpu.synchronize(); try error.check(); try check() }
+            }
+            return output
+        } catch {
+            var failure: Error = error
+            for session in sessions {
+                do { try session.retire(failed: true) }
+                catch { failure = ProbeError("\(failure); batch session cleanup failed (\(error))") }
+            }
+            throw failure
+        }
+    }
 }

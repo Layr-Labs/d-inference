@@ -79,6 +79,24 @@ struct GLMPairForcedOutputTests {
         #expect(DistributedSampling.wire(for: reserved, vocabularySize: 200)?.minP == 0.05)
     }
 
+    /// The request's prefix-cache fields reach the pair's owner as the
+    /// single-Mac engine gets them: an authenticated scope as its salt, a
+    /// remote request without one with its cache off, a local one with its
+    /// cache on and no salt. The owner gives both ranks their partition
+    /// (`DistributedPrefixPartitionTests`).
+    @Test func thePrefixCacheFieldsReachThePairReservation() async throws {
+        let cases: [(scope: String, enabled: Bool, salt: String?)] = [
+            ("authenticated-tenant-scope", true, "authenticated-tenant-scope"), ("", false, nil), ("", true, nil),
+        ]
+        for value in cases {
+            let pair = try GLMPairFixture(cacheScope: value.scope, cacheEnabled: value.enabled)
+            _ = try await pair.complete(pair.request(), tokens: [11, 14])
+            let reserved = try #require(pair.owner.lastRequest)
+            #expect(reserved.cacheSalt == value.salt && reserved.prefixCacheEnabled == value.enabled,
+                "scope \(value.scope.isEmpty ? "none" : "set"), cache \(value.enabled ? "on" : "off")")
+        }
+    }
+
     @Test func reasoningExclusionWithholdsTheReasoningOnThePair() async throws {
         var controls = ChatTemplateControls()
         controls.rawGLM5Controls.excludesReasoning = true
@@ -237,7 +255,7 @@ private struct GLMPairFixture {
     let bridge: EngineV2Bridge
     var renderedPrompts: [String] { tokenizer.rendered }
 
-    init(controls: ChatTemplateControls = .init()) throws {
+    init(controls: ChatTemplateControls = .init(), cacheScope: String = "", cacheEnabled: Bool = true) throws {
         let profile = try DistributedResidentExecutionProfile(id: GLMPairOwner.profileID, vocabularySize: 200,
             maxPromptTokens: 2048, maxOutputTokens: 128, maxContextTokens: 4096, requestTimeout: .seconds(30))
         let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity, profile: profile,
@@ -248,7 +266,7 @@ private struct GLMPairFixture {
         let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(tokenizer: handle, modelType: "glm5_next",
             engineV2Bridge: bridge)
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [Self.model: entry] },
-            templateControls: controls)
+            templateControls: controls, cacheScope: cacheScope, cacheEnabled: cacheEnabled)
         service = MLXOpenAIService(engine: scheduler, responseStore: InMemoryResponseStore(), metrics: ServerMetrics())
     }
 
@@ -306,6 +324,12 @@ extension GLMPairForcedOutputTests {
         #expect(idle.contains(#"mtp_enabled{model="fixture/glm-pair"} 0"#))
         #expect(idle.contains(#"mtp_rounds_total{model="fixture/glm-pair"} 0"#))
         #expect(idle.contains(#"kv_active_requests{model="fixture/glm-pair"} 0"#))
+        // A placement that decodes with its head (GLM tensor parallel) says so before any request ran.
+        let placed = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 0,
+                                                                      placementDecodesWithHead: true))
+        let configured = MTPPrometheusRenderer.render([placed])
+        #expect(configured.contains(#"mtp_enabled{model="fixture/glm-pair"} 1"#))
+        #expect(configured.contains(#"mtp_active{model="fixture/glm-pair"} 0"#))
         _ = try await pair.complete(pair.request(), tokens: [10, 11, 14], telemetry: .init(handoffMilliseconds: nil,
             handoffBytes: nil, mtpDrafted: 6, mtpAccepted: 4, mtpRounds: 3))
         let sample = try #require(await pair.bridge.pairMetricsSample(model: GLMPairFixture.model, waitingRequests: 2))

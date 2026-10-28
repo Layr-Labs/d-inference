@@ -19,11 +19,14 @@ public struct CBv2Request: Sendable {
     public var stopTokens = Set<Int>()
     public var stopStrings: [String] = []
     public var priority = 0
+    public var cacheSalt: String?
+    public var prefixCacheEnabled = true
     public var prefixCacheReceiptID: CBv2RequestID?
     public var multimodal: Int?, positionState: Int?, tokenConstraint: Int?
     public var mimoClusterImages: Data? = nil
     public var clusterStillImages: Data? = nil
     public var clusterGLMMedia: Data? = nil
+    public var clusterQwenMedia: Data? = nil
     public init(id: CBv2RequestID, promptTokens: [Int], sampling: CBv2SamplingParams, maxTokens: Int) {
         self.id = id; self.promptTokens = promptTokens; self.sampling = sampling; self.maxTokens = maxTokens
     }

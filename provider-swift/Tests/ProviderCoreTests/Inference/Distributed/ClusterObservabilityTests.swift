@@ -72,12 +72,22 @@ struct ClusterObservabilityTests {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "epoch-1")
+        // Each rank's worker build, rank order, as the pair's admission identity names it: the speed record carries it.
+        let builds = [String(repeating: "c", count: 64), String(repeating: "d", count: 64)]
         let context = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
-                                                      cut: "0-16|16-32", log: log)
+                                                      cut: "0-16|16-32", log: log, ranks: ["leader", "follower"],
+                                                      rankBuildSHA256: builds)
         #expect(context.record(capture.values[0]) == nil)          // only retired requests become records
         let made = context.record(retired, now: { 1_000 })
         let record = try #require(made)
         log.record(record)
+        #expect(record.ranks == ["leader", "follower"] && record.rankBuildSHA256 == builds)
+        // A context that knows no build writes a record as an earlier build did: the planner counts it as another build's.
+        let unbuilt = DistributedPairTelemetryContext(modelID: "fabricated-qwen-9b", mode: "phase_split_mtp_v1",
+                                                      cut: "0-16|16-32", log: log)
+        let unbuiltMade = unbuilt.record(retired, now: { 1_000 })
+        let unbuiltRecord = try #require(unbuiltMade)
+        #expect(unbuiltRecord.rankBuildSHA256 == nil && unbuiltRecord.ranks == nil)
         #expect(record.mode == "phase_split_mtp_v1" && record.cut == "0-16|16-32" && record.outcome == "length")
         #expect(record.promptTokens == 3 && record.cachedTokens == 2 && record.completionTokens == 3)
         #expect(record.firstTokenMilliseconds == 400 && record.decodeTokensPerSecond == 10)
@@ -111,6 +121,35 @@ struct ClusterObservabilityTests {
             decodeTokensPerSecond: 12, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
             outcome: "length", concurrentRequests: 7)
         #expect(!shared.isSpeedRecord && ClusterServedSpeedFile.adding(shared, to: []).isEmpty)
+    }
+
+    /// Probe-sized requests never steer a plan (`ClusterServedSpeedRule`): every request Darkbloom sends to check a
+    /// pair asks for fewer answer tokens than a speed record has (the warm-up canary, the setup's check and the
+    /// onboarding's test answer), and a record of one, written by an earlier build, is no speed record when the
+    /// leader's history is read back for a plan or a route.
+    @Test func darkbloomsOwnProbesAreNeverSpeedRecords() throws {
+        let minimum = ClusterServedSpeedRule.minimumCompletionTokens
+        let probes = [ProviderLoop.clusterWarmupMaxTokens, ClusterSetupState.checkTokens, ClusterService.testAnswerTokens]
+        #expect(minimum == 64 && probes == [8, 8, 48] && probes.allSatisfy { $0 < minimum })
+        func record(_ id: String, _ tokens: Int) -> ClusterPairRequestTelemetry {
+            .init(requestID: id, finishedAt: Date().timeIntervalSince1970, modelID: "fixture-model", mode: "tensor_parallel_v1",
+                cut: "0-45|0-45", promptTokens: 30, cachedTokens: 0, completionTokens: tokens, firstTokenMilliseconds: 200,
+                decodeTokensPerSecond: 40, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
+                outcome: "length", ranks: ["a", "b"], concurrentRequests: 0,
+                rankBuildSHA256: [String(repeating: "a", count: 64), String(repeating: "a", count: 64)])
+        }
+        #expect(probes.allSatisfy { !record("p", $0).isSpeedRecord } && record("f", minimum).isSpeedRecord)
+        // A file an earlier build kept, with its probes among the speed records: read back, only the full answer counts.
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let kept = [record("canary", 8), record("probe", 16), record("test", 48), record("chat", 128)]
+        let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
+            "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(kept))]
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        let entries = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        #expect(entries.map(\.sample.outputTokens) == [128])
     }
 
     /// A request whose end was lost (an overflowing sink drops observations) stops counting against later ones.

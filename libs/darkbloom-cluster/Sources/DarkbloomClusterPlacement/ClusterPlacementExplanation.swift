@@ -17,6 +17,13 @@ public enum ClusterPlacementExplanation {
 
     static func number(_ value: Double, _ digits: Int) -> String { String(format: "%.\(digits)f", value) }
     static func seconds(_ value: Double) -> String { String(format: value < 10 ? "%.2f s" : "%.1f s", value) }
+    /// A short time in the unit that shows it: "2.47 ms", "38.0 µs" (a link's
+    /// reductions, which `seconds` would print as 0.00 s).
+    static func duration(_ value: Double) -> String {
+        if value >= 1 { return seconds(value) }
+        if value >= 1e-3 { return String(format: value < 0.1 ? "%.2f ms" : "%.0f ms", value * 1e3) }
+        return String(format: value < 1e-4 ? "%.1f µs" : "%.0f µs", value * 1e6)
+    }
     static func rate(_ value: Double) -> String { String(format: value < 100 ? "%.1f" : "%.0f", value) }
 
     public static func describe(_ fit: ClusterPlacementFit) -> String {
@@ -100,6 +107,11 @@ public enum ClusterPlacementExplanation {
             + (layout.structuralCuts == layout.admittedCuts ? "." : "; its stage plan could cut at \(cuts(layout.structuralCuts))."))
         lines.append("  Modes: \(layout.generationModes.map(\.rawValue).joined(separator: ", ")). "
             + "Largest request: \(layout.maximumPromptTokens) prompt and \(layout.maximumOutputTokens) output tokens.")
+        if let head = layout.tensorParallel?.speculativeHead(mode: .tensorParallel, layout: layout) {
+            lines.append("  Tensor parallel decodes in speculative rounds of up to \(head.plan.depth) proposals: every rank holds the model's head "
+                + "whole (\(gibText(head.part.loadedBytes))) and \(gibText(head.plan.requestBytes)) of its request state, and decode is credited "
+                + "\(number(head.plan.decodeSpeedup, 2))x one token per step, as the rounds measured.")
+        }
         return lines
     }
 
@@ -167,13 +179,21 @@ public enum ClusterPlacementExplanation {
                                       regime: ClusterPlacementPolicy.Regime) -> [String] {
         var lines = ["\(tp.verdict.rawValue): \(tp.reason)."]
         for d in tp.devices {
+            // Share probes: the steps measured, which the line through them extends (`ClusterDecodeSplit`).
+            if let steps = d.split.measuredSteps {
+                let measured = steps.map { "\(Int(($0.fraction * 100).rounded()))% in \(duration($0.seconds))" }.joined(separator: ", ")
+                lines.append("\(d.device): decode step \(seconds(d.split.wholeStepSeconds)) whole; measured shares step "
+                    + "\(measured); a half steps in \(duration(d.split.shareStepSeconds(ranks: 2))).")
+                continue
+            }
             lines.append(d.split.measured
                 ? "\(d.device): decode step \(seconds(d.split.wholeStepSeconds)) whole = floor \(seconds(d.split.floorSeconds)) + weights \(seconds(d.split.weightSeconds)); a half steps in \(seconds(d.split.shareStepSeconds(ranks: 2)))."
                 : "\(d.device): decode step \(seconds(d.split.wholeStepSeconds)) whole; no shard probe, so a half is assumed to step as slowly.")
         }
         if let perStep = tp.reductionSecondsPerStep {
             let path = (tp.reductionKeyed ?? false) ? "keyed data plane" : "native all-sum, not the product's path"
-            lines.append("\(tp.reductionsPerStep) reductions per decode step cost \(seconds(perStep)) over the link (\(path)).")
+            let each = tp.reductionsPerStep > 0 ? ", \(duration(perStep / Double(tp.reductionsPerStep))) each" : ""
+            lines.append("\(tp.reductionsPerStep) reductions per decode step cost \(duration(perStep)) over the link (\(path)\(each)).")
         }
         for (label, candidate) in [("Tensor parallel", tp.tensorParallel), ("Pipeline prefill, tensor decode", tp.hybrid)] {
             guard let candidate, basis.absolute else { continue }

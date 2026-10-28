@@ -80,6 +80,11 @@ public enum DistributedInstalledOwner {
         try features.requireProgressGuard()
         try features.requireMiMoImageCandidate(required:plan.capability.media != nil)
         try features.requireGLMImageCandidate(required: plan.capability.glmImages != nil)
+        try features.requireTensorAssistantPolicy(required: plan.configuration.tensorAssistant != nil,
+            cohortRequired: plan.configuration.tensorAssistant?.verification == .admittedCohort)
+        let expectedAssistant = try plan.configuration.tensorAssistant.map {
+            try ClusterQwenTensorAssistantReady(policy: $0, capacity: plan.batchLanes() ?? 1)
+        }
         // The prefix-SSD tier's key goes to the rank only on its input; a
         // worker that cannot take it there is refused before anything starts.
         let prefixSSDKey = plan.nativePrefixSSDKey()
@@ -126,6 +131,7 @@ public enum DistributedInstalledOwner {
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, initialLeaseDeadline: deadline,
+                    expectedTensorAssistant: expectedAssistant,
                     // A worker that was told its startup deadline ends itself
                     // there; only then may this owner treat it as final. Its
                     // SIGTERM-to-SIGKILL margin is sized to the artifact's

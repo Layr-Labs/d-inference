@@ -7,3 +7,14 @@ The two fixtures are byte-exact configuration/manifest metadata decoded from the
 The pure producer must match the shared Protocol fixture's profile, four Plan/stage/construction identities and arithmetic receipt. Refusal cases exercise altered/oversized/unknown metadata, invalid binary binding, bounded regular-file reads, symlink/directory/FIFO refusal and exact command arguments. Five actual CPU fixture children exercise executable-file hashing and output; a wrong binary pin must fail before metadata files are opened. The installed executable in those tests is the CPU fixture itself, not the native worker.
 
 The runner needs the sibling shared package and Python 3.9+. It has no dependency on a private research directory, external weights or a running service. All temporary build/input files are removed on exit. A full native worker metadata invocation remains a separate integration check.
+
+The `registered-ternary-bonsai-2-9b` fixtures retain the exact configuration,
+manifest, Hadamard metadata and safetensors header of the catalog's
+`EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` revision `2026-10-15-base-r2` (aggregate
+`3bfbed188a821cb7b16321b6be54245c6b162fc7d0ea064d5f663d0b07ee713d`). The header
+SHA-256 is `3ac34a22f409632a5db6984373649c03a2ec463152a9d7965ce588df24ddc3e0`;
+its source weight file is the manifest-pinned `model.safetensors` with SHA-256
+`b8ebd13459dcd53504432a4a0a797287c3a4c00d80835466dbb499f05b7512bb`.
+`Bonsai9Fixture` derives the 831 canonical text descriptors from that header,
+excluding vision and separately verified transform signs. These files contain
+no model weight payload; the runtime tests use lazy shells, not loaded weights.

@@ -36,10 +36,12 @@ private func checkShareProbes(_ checks: PlacementChecks) {
         tensorShareRates: [.init(sharePerMille: 250, decodeTokensPerSecond: 1 / 0.01634, prefillTokensPerSecond: 1152)]))
     checks.require("share probes: without them a quarter is extrapolated on the line (floor 23.18 ms + weights x 1/4 = 23.92 ms)",
         abs(line.shareStepSeconds(fraction: 0.25) - 0.023920) < 2e-5 && line.measuredSteps == nil)
-    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them on the measured segment",
+    // Past the half the measured segment goes on (41.30 ms at the whole), not to the whole model's 26.14 ms step:
+    // that step is no tensor-parallel figure.
+    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them and past them on the measured segment",
         abs(probed.shareStepSeconds(fraction: 0.25) - 0.01634) < 1e-9 && abs(probed.shareStepSeconds(fraction: 0.5) - 0.02466) < 1e-9
-            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.02614) < 1e-9
-            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5, 1])
+            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.0413) < 1e-9
+            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5])
     checks.require("share probes: below the smallest probe the line is used but never above that probe's own step",
         probed.shareStepSeconds(fraction: 0.1) <= 0.01634)
     let rates = ClusterSpeedRates(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,
@@ -527,9 +529,11 @@ private func checkTensorParallelOlderMacs(_ big: ClusterModelLayout, _ checks: P
                  try SyntheticMac.idle(16).device("b", speed: modelled(floorMs: 25, bandwidthGBs: 200, weightBytes: weights, prefill: 60),
                      chip: "Apple M1 Pro")]
     let tight = try ClusterPlacementPlanner.plan(devices: small, layout: layout, policy: policy(), link: linkCosts(reductionMicroseconds: 45))
-    checks.require("tensor parallel: two 16 GB Macs that cannot hold the 27B alone (nor a phase split) choose tensor parallel over the pipeline when it fits and is faster",
-        tight.alone.allSatisfy { !$0.fit.possible || $0.fit.tier > 0 }
-            && (tight.chosen.map { $0.mode.usesTensorParallelDecode || $0.tier > 0 } ?? true))
+    checks.require("tensor parallel: two 16 GB Macs use the fitting pipeline when neither a whole model nor the tensor-parallel envelope fits",
+        tight.alone.allSatisfy { !$0.fit.possible }
+            && tight.tensorParallel?.verdict == .doesNotFit
+            && tight.chosen?.mode == .pipeline && tight.chosen?.tier == 0
+            && tight.chosen?.ranks.allSatisfy { $0.fit == .now } == true)
 }
 
 // MARK: - Served requests correct the prediction

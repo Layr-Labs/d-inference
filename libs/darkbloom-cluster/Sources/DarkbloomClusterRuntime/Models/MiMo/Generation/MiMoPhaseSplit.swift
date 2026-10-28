@@ -126,7 +126,19 @@ enum MiMoPhaseSplitState {
                 throw ProbeError("Producer layer \(local) state differs from the agreed hand-off manifest")
             }
             let geometry = try configuration.attentionGeometry(at: local)
-            if let rotating = cache as? RotatingKVCache {
+            if let pages = cache as? MiMoV26IndependentHistoryCache {
+                guard pages.maxSize == geometry.slidingWindow else {
+                    throw ProbeError("Producer page window differs from its attention")
+                }
+                if let window = geometry.slidingWindow {
+                    let step = defaultStep(window: window)
+                    let expected = try slidingState(window: window, step: step, frames: frames)
+                    guard expected.length == keys.shape[2],
+                        pages.metaState == slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step) else {
+                        throw ProbeError("Producer page rotation differs from the request frame grid")
+                    }
+                }
+            } else if let rotating = cache as? RotatingKVCache {
                 guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
                       let expected = try? slidingState(window: window, step: step, frames: frames),
                       expected.length == keys.shape[2],
@@ -153,6 +165,9 @@ enum MiMoPhaseSplitState {
               state.committedTokens == prompt, caches.allSatisfy({ $0.offset == 0 }) else {
             throw ProbeError("Adopted state names other layers or another frontier than the producer stage holds")
         }
+        // Preflight every destination and incoming array before changing the
+        // first cache. A malformed later layer never leaves a partial adoption.
+        var install: [() throws -> Void] = []
         for (local, cache) in caches.enumerated() {
             let keys = shapes[2 * local], values = shapes[2 * local + 1]
             guard keys.globalLayerIndex == local, values.globalLayerIndex == local,
@@ -162,22 +177,38 @@ enum MiMoPhaseSplitState {
                 throw ProbeError("Adopted layer \(local) differs from the agreed hand-off manifest")
             }
             let geometry = try configuration.attentionGeometry(at: local)
-            if let rotating = cache as? RotatingKVCache {
+            if let pages = cache as? MiMoV26IndependentHistoryCache {
+                guard pages.maxSize == geometry.slidingWindow else {
+                    throw ProbeError("Adopted page window differs from its attention")
+                }
+                let index: Int
+                if let window = geometry.slidingWindow {
+                    let expected = try slidingState(window: window, step: defaultStep(window: window), frames: frames)
+                    guard expected.length == keys.shape[2] else { throw ProbeError("Adopted page length differs from frame grid") }
+                    index = expected.index
+                } else { index = prompt }
+                try pages.validateRestore(keys: arrays.keys, values: arrays.values, offset: prompt, index: index)
+                install.append { try pages.restore(keys: arrays.keys, values: arrays.values, offset: prompt, index: index) }
+            } else if let rotating = cache as? RotatingKVCache {
                 guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
                       let expected = try? slidingState(window: window, step: step, frames: frames),
                       expected.length == keys.shape[2] else {
                     throw ProbeError("Adopted layer \(local) is not the sliding-window layer the frame grid describes")
                 }
-                rotating.metaState = slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step)
-                rotating.state = [arrays.keys, arrays.values]
+                let metadata = slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step)
+                install.append {
+                    rotating.metaState = metadata
+                    rotating.state = [arrays.keys, arrays.values]
+                }
             } else {
                 guard geometry.slidingWindow == nil, let simple = cache as? KVCacheSimple else {
                     throw ProbeError("Adopted layer \(local) is not a full-attention layer")
                 }
-                simple.state = [arrays.keys, arrays.values]
+                install.append { simple.state = [arrays.keys, arrays.values] }
             }
-            guard cache.offset == prompt else { throw ProbeError("Adopted layer \(local) frontier differs") }
         }
+        for apply in install { try apply() }
+        guard caches.allSatisfy({ $0.offset == prompt }) else { throw ProbeError("Adopted frontier differs") }
     }
 }
 

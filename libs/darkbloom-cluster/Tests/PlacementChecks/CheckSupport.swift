@@ -43,6 +43,7 @@ struct SyntheticMac {
     var compressorGiB: Double = 0
     var pressure = 1
     var swapGiB: Double = 0
+    var compressionPages = 0, swapoutPages = 0, liveCompressionPages = 0
 
     static func pages(_ gibibytes: Double) -> Int { Int((gibibytes * Double(gib) / Double(page)).rounded()) }
 
@@ -63,7 +64,8 @@ struct SyntheticMac {
             swapUsedBytes: Int(swapGiB * Double(gib)), activePages: active, fileBackedPages: inactiveFile + activeFile,
             anonymousPages: anonymous, wiredPages: wired, purgeablePages: 0, compressorPages: compressor,
             kernelFileCacheMinimumPages: nil, inactiveFileBackedPages: inactiveFile,
-            inactiveAnonymousPages: inactiveAnonymous, compressionPages: 0, swapoutPages: 0, liveCompressionPages: 0)
+            inactiveAnonymousPages: inactiveAnonymous, compressionPages: compressionPages, swapoutPages: swapoutPages,
+            liveCompressionPages: liveCompressionPages)
     }
 
     static let now: UInt64 = 1_100

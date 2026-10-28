@@ -90,7 +90,7 @@ struct ResidentAdmissionA3BTests {
         let row = try QwenResidentModelDefinition(model: .qwen35ThirtyFiveBA3B)
         #expect(row.profileID == Self.profileID && row.specification.layers == 40 && row.supportedCuts == Self.cuts)
         #expect(row.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
+        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP])
         #expect(row.adapter == .qwen35RoutedExperts && row.arithmetic == .routedExperts)
         #expect(row.specification.kvHeads == 2 && row.specification.rootModelType == "qwen3_5_moe")
         #expect(row.specification.routedExperts == .init(experts: 256, expertsPerToken: 8,
@@ -229,7 +229,7 @@ struct ResidentAdmissionA3BTests {
         #expect(plans.count == Self.cuts.count)
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: Self.now).maximumTokens == 8320)
     }
 
@@ -415,7 +415,7 @@ struct ResidentAdmissionA3BTests {
         #expect(value.manifestSHA256 == spec.manifestSHA256)
         #expect(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1")
         #expect(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP])
         #expect(value.speculation == ClusterRuntimeCapability.decodingRankSpeculation)
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == Self.cuts)
         for partition in value.partitions {

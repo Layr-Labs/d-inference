@@ -179,9 +179,9 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 // request's does. Exactness never depends on it.
                 decoder.keepsHistory = prefix.splitFinalToken
                 let reused = prefix.reusedPromptTokens
-                if reused > 0 {
+                if reused > 0, let scope = qwenStagePrefixScope(agreement) {
                     let tokens = Array(unplannedAgreement.request.promptTokenIDs[0..<reused])
-                    let history = prefixCache.state(scope: qwenStagePrefixScope(agreement),
+                    let history = prefixCache.state(scope: scope,
                         tokens: unplannedAgreement.request.promptTokenIDs, frontier: reused)?.speculativeHistory
                     let adopted = history.map { decoder.adopt($0, prefixTokens: tokens) } ?? false
                     log("darkbloom-prefix-v1 rank=\(collective.rank) mtp-history=\(adopted ? "restored" : "absent")"
@@ -361,13 +361,12 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 // Both ranks retired cleanly: only now do this rank's captured
                 // frontiers become reusable. A failed request stores nothing.
                 var stored: [Int] = []
-                if let prefixCache, prefixCache.enabled {
+                if let prefixCache, prefixCache.enabled, let scope = qwenStagePrefixScope(agreement) {
                     var states = owned.capturedPrefixStates()
                     if let histories {
                         for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
                     }
                     let historyBytes = states.isEmpty ? 0 : decoder?.keptHistoryBytes ?? 0
-                    let scope = qwenStagePrefixScope(agreement)
                     prefixCache.insert(scope: scope, tokens: agreement.request.promptTokenIDs,
                         states: states, sharedBytes: owned.capturedSharedBytes + historyBytes)
                     // The SSD record (stage state and the head's history) is
@@ -638,28 +637,31 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
     hiddenTap: QwenLayerStageHiddenTap? = nil, check: () throws -> Void
 ) throws -> QwenStagePrefixPlanOutcome {
+    // Nil for a request whose cache is off: it offers, restores and captures
+    // nothing on either rank, and still splits as the caches decide.
     let request = agreement.request, scope = qwenStagePrefixScope(agreement)
     let enabled = (cache?.enabled ?? false) && qwenStageAdmitsPrefixCapture(loaded)
     // Both tiers: the resident entries and the SSD records this rank holds.
     var resident: [Int] = [], onDisk: [Int] = []
-    if enabled, let cache {
+    if enabled, let cache, let scope {
         resident = cache.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1)
         onDisk = cache.disk?.frontiers(scope: scope, tokens: request.promptTokenIDs,
             maximumFrontier: request.promptCount - 1) ?? []
     }
-    let offered = Array(Set(resident).union(onDisk).sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
+    let offered = Array(request.admittedPrefixFrontiers(Array(Set(resident).union(onDisk)))
+        .sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
     let local = QwenStagePrefixOffer(enabled: enabled, frontiers: offered, onDisk: Set(onDisk).subtracting(resident))
     let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,
         agreementFingerprint: agreement.fingerprint, "prefix")
     let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
         words: local.words, scope: record.part("offer"), check: check), promptCount: request.promptCount)
-    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
+    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount, request: request)
     var restoredSession: QwenLayerStageSession?
     var key: String?
     var tier: String?
     var fromDisk: QwenStagePrefixState?
     var restoredState: QwenStagePrefixState?
-    if choice.reusedPrefix > 0, let cache {
+    if choice.reusedPrefix > 0, let cache, let scope {
         if let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
             restoredState = state; tier = "resident"
             cache.disk?.touch(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix)
@@ -669,7 +671,7 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
             restoredState = state; fromDisk = state; tier = "ssd"
         }
     }
-    if let state = restoredState {
+    if let state = restoredState, let scope {
         key = QwenStagePrefixCache.key(scope: scope, tokens: request.promptTokenIDs[0..<choice.reusedPrefix])
         do {
             let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
@@ -697,11 +699,11 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
         // record again (oMLX U#3327: no duplicate restore work).
         let ownRestoreHeld = restoredSession != nil
         try restoredSession?.cancel(); restoredSession = nil; tier = nil
-        if ownRestoreHeld, let fromDisk, let cache {
+        if ownRestoreHeld, let fromDisk, let cache, let scope {
             cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
             log("darkbloom-prefix-v1 rank=\(collective.rank) event=restore-kept frontier=\(choice.reusedPrefix) reason=peer_cold")
         }
-    } else if let fromDisk, let cache {
+    } else if let fromDisk, let cache, let scope {
         // Both ranks restored the same frontier from what each holds; a state
         // read from disk becomes resident too, on both ranks alike, so the
         // next repeat is a memory hit (it gives way under pressure as any entry).
@@ -712,7 +714,7 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     let plannedAgreement = try agreement.planned(plannedRequest)
     let session = try restoredSession
         ?? QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: plannedRequest, hiddenTap: hiddenTap)
-    if enabled, let cache, settled.splitFinalToken {
+    if enabled, peer.enabled, let cache, scope != nil, settled.splitFinalToken || request.preservesPrefixChunkGrid {
         session.prefixCaptureFrontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
     }
     if settled.reusedPrefix > 0 || choice.reusedPrefix > 0 {

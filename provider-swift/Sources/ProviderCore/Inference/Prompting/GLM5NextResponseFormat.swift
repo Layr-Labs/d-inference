@@ -98,7 +98,7 @@ struct GLM5NextResponseFormatOutput {
             content += parsed.content
             guard let reasoning = parsed.reasoningContent, !reasoning.isEmpty else { return nil }
             return .parsed(.init(content: "", reasoningContent: reasoning))
-        case .toolCall, .toolCallDelta, .info:
+        case .toolCall, .toolCallDelta, .logprobs, .info:
             return event
         }
     }

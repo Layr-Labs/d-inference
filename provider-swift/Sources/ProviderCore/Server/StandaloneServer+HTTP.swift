@@ -145,10 +145,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
         } catch let error as MLXOpenAIServiceError {
             // Keep the upstream service's generic message policy distinct from
             // provider engine/media failures, which have bounded public codes.
+            // A response_format answer cut off by max_tokens says so: its text
+            // is fixed and names no request content.
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
-                message: InferenceFailureCode.internalFailure.message)
+                message: error == .responseFormatCutOffByMaxTokens
+                    ? error.localizedDescription : InferenceFailureCode.internalFailure.message)
         } catch let error as PreContentDeadlineFailure {
             // A distributed first-token budget that is already spent refuses
             // before any SSE header or content, with the existing mapping.

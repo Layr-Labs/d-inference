@@ -18,6 +18,115 @@ struct ClusterAPIParityTests {
         #expect(mismatches.isEmpty, "\(mismatches.count) differences:\n\(mismatches.joined(separator: "\n\n"))")
     }
 
+    /// Every captured value in this three-token visible script must survive,
+    /// in order, on both JSON and SSE paths. It ends by length, without an EOS
+    /// or parser-only token whose metadata has no visible attachment boundary.
+    @Test(arguments: ParityFamily.all.map(\.name))
+    func capturedResponsesRetainEveryVisibleTokenValue(_ name: String) async throws {
+        let family = try #require(ParityFamily.all.first { $0.name == name })
+        let tokens = ParityScriptKind.capturedContent.tokens(family)
+        for stream in [false, true] {
+            for answer in try await parityCapturedResponses(family, contentOnly: true, stream: stream) {
+                #expect(answer.status == 200)
+                if stream { #expect(answer.body.last == "data: [DONE]") }
+                #expect(try capturedEntries(answer) == expectedEntries(tokens, family: family),
+                        "\(name), stream=\(stream): capture lost or reordered visible values")
+            }
+        }
+    }
+
+    /// Preserve the original mixed reasoning/EOS exercise. Collected JSON owns
+    /// the complete capture; streaming must never move a trailing non-content
+    /// EOS backward onto an earlier answer. Reasoning source-span classification
+    /// remains a separate limitation; entries before visible content stay ordered.
+    @Test(arguments: ParityFamily.all.map(\.name))
+    func trailingStopMetadataCannotMoveBackwardIntoStreamedContent(_ name: String) async throws {
+        let family = try #require(ParityFamily.all.first { $0.name == name })
+        let directory = try family.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenizer = family.tokenizer
+        let stops = EngineV2Translation.stopTokenIds(
+            eosTokenIds: ModelEOSPolicy.effectiveEOSTokenIds(
+                modelId: family.modelID, modelType: family.modelType, base: try family.loaderEOS(directory),
+                tokenToId: { tokenizer.convertTokenToId($0) }),
+            tokenizerEOSTokenId: tokenizer.eosTokenId, extraEOSTokens: [],
+            convertTokenToId: { tokenizer.convertTokenToId($0) })
+        var contentBound: [Int] = []
+        var trailingStop: Int?
+        for token in family.plain {
+            if stops.contains(token) { trailingStop = token; break }
+            contentBound.append(token)
+        }
+        let stop = try #require(trailingStop)
+        for stream in [false, true] {
+            let expected = stream ? contentBound : contentBound + [stop]
+            for answer in try await parityCapturedResponses(family, contentOnly: false, stream: stream) {
+                #expect(answer.status == 200)
+                if stream { #expect(answer.body.last == "data: [DONE]") }
+                #expect(try capturedEntries(answer) == expectedEntries(expected, family: family),
+                        "\(name), stream=\(stream): captured ordering or trailing-stop boundary changed")
+            }
+        }
+    }
+
+    private func expectedEntries(_ tokens: [Int], family: ParityFamily) throws -> Data {
+        let entries: [[String: Any]] = tokens.map { token in
+            let text = family.tokenizer.decode(tokenIds: [token], skipSpecialTokens: false)
+            return ["token": text, "logprob": -0.25, "bytes": Array(text.utf8), "top_logprobs": [
+                ["token": text, "logprob": -0.25, "bytes": Array(text.utf8)],
+                ["token": "", "logprob": -2.0, "bytes": [UInt8]()]]]
+        }
+        return try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
+    }
+
+    private func capturedEntries(_ answer: ParityAnswer) throws -> Data {
+        var entries: [[String: Any]] = []
+        for frame in answer.body where frame != "data: [DONE]" {
+            let text = frame.hasPrefix("data: ") ? String(frame.dropFirst(6)) : frame
+            let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            for choice in object["choices"] as? [[String: Any]] ?? [] {
+                if let logprobs = choice["logprobs"] as? [String: Any] {
+                    entries += try #require(logprobs["content"] as? [[String: Any]])
+                }
+            }
+        }
+        return try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
+    }
+
+    /// The comparable fixture above explicitly supplies captured values. A
+    /// real selected mode without capture support must refuse before reserve,
+    /// then remain available for ordinary text. Neither test qualifies a GPU.
+    @Test func unsupportedLogprobsRefuseWithoutPoisoningTheEndpoint() async throws {
+        let family = try #require(ParityFamily.all.first)
+        let directory = try family.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cluster = try await ParityClusterServer.start(
+            family: family, directory: directory, supportsLogprobs: false)
+        let client = URLSession(configuration: .ephemeral)
+        do {
+            for stream in [false, true] {
+                let request = ParityCase("unsupported-logprobs", body: ParityCase.chat(
+                    family.modelID, #","logprobs":true,"top_logprobs":2"#, stream: stream))
+                let answer = try await paritySend(port: cluster.port, request, session: client)
+                #expect(answer.status == 400)
+                #expect(answer.body.contains { $0.contains("logprob_capture_unsupported") })
+                #expect(cluster.session.base.reserveCount == 0)
+            }
+            let stop = ParityStopFlag()
+            let driver = Task { await cluster.drive(after: 0, script: family.plain, failure: false, stop: stop) }
+            do {
+                let answer = try await paritySend(port: cluster.port,
+                    .init("plain", body: ParityCase.chat(family.modelID)), session: client)
+                #expect(answer.status == 200)
+                #expect(cluster.session.base.reserveCount == 1)
+            } catch { stop.set(); await driver.value; throw error }
+            stop.set(); await driver.value
+        } catch {
+            client.invalidateAndCancel(); await cluster.stop(); throw error
+        }
+        client.invalidateAndCancel(); await cluster.stop()
+    }
+
     /// GPT-OSS ends a tool call with `<|call|>`: the single-Mac slot stops
     /// there (its generation config and the Harmony EOS policy), so the
     /// call is answered with `finish_reason: tool_calls` and nothing after.

@@ -54,8 +54,8 @@ import Foundation
         }
         let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
             runtimeModelID: "registered_qwen35_9b", artifactSHA256: hash("b"), configurationSHA256: hash("c"), manifestSHA256: hash("d"),
-            profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 8192,
-                maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320),
+            profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 32768,
+                maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536),
             profileFingerprint: hash("e"), partitions: [partition(4, "6"), partition(8, "7"), partition(12, "8"), partition(16, "9")],
             arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"))
         let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
@@ -64,11 +64,19 @@ import Foundation
         // The stand-in for the installed tool prints this Mac's profile and the layout, as the real one does.
         _ = try write("local-profile.json", try profile(physicalGiB: 256, freeGiB: 200).encoded())
         _ = try write("layout.json", try layout.encoded())
+        for (prompt, output) in [(1024, 2048), (16384, 128)] {
+            let scope = try ClusterPlacementRequestScope(runtimeModelID: layout.runtimeModelID,
+                artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+                promptTokens: prompt, outputTokens: output, maximumPromptTokens: 32768,
+                maximumOutputTokens: 32768, maximumContextTokens: 65536, requestChargeEveryRankBytes: 900_000_000)
+            _ = try write("scope-\(prompt)-\(output).json", JSONEncoder().encode(scope))
+        }
         let tool = """
             #!/bin/sh
             case "$1" in
-              device) exec /bin/cat "\(root.path)/local-profile.json" ;;
+              device) echo "$*" >> "\(root.path)/device-calls.txt"; exec /bin/cat "\(root.path)/local-profile.json" ;;
               layout) [ "$3" = /Users/fixture/model ] && exec /bin/cat "\(root.path)/layout.json" ;;
+              request-scope) [ "$3" = /Users/fixture/model ] && [ "$4" = --prompt-tokens ] && [ "$6" = --output-tokens ] && exec /bin/cat "\(root.path)/scope-$5-$7.json" ;;
             esac
             exit 9
 
@@ -107,10 +115,111 @@ import Foundation
         require("the printed lines say what was detected, what each Mac holds and what happens next",
             outcome.lines.contains("What each Mac detected") && outcome.lines.contains { $0.contains("While the session is up") }
                 && outcome.lines.contains("What happens next") && outcome.lines.contains { $0.contains("Wrote a setup for each Mac") })
+        func deviceCalls() -> [String] {
+            ((try? String(contentsOf: root.appendingPathComponent("device-calls.txt"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        }
+        require("with no model loaded here, this Mac's profile measures its speed index", deviceCalls() == ["device --json --index"])
+        var beside = ClusterPlacementFlow.Inputs(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+            localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent("beside-out"))
+        beside.modelLoaded = true
+        let besideOutcome = try ClusterPlacementFlow.run(beside, deadline: deadline())
+        require("beside a loaded model the step plans the same and runs no GPU benchmark",
+            besideOutcome.setup != nil && besideOutcome.result.chosen?.cuts == outcome.result.chosen?.cuts
+                && deviceCalls() == ["device --json --index", "device --json"])
+
+        // The leader's served-speed file, as the product writes it: records of this pair and model from before builds
+        // were recorded (no `rankBuildSHA256`), from another worker build, and from the build the pair description
+        // names (hash "a", the capability's). Only the last are calibrated; the plan counts the others in one line.
+        // What clients sent is no build's: every record's lengths make the plan's request.
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let cluster = home.appendingPathComponent(".darkbloom/cluster", isDirectory: true)
+        try FileManager.default.createDirectory(at: cluster, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        func served(_ id: String, prompt: Int, output: Int, builds: [String]?) -> [String: Any] {
+            var record: [String: Any] = ["requestID": id, "finishedAt": 1_792_900_000, "modelID": "fixture/qwen", "mode": "pipeline_v1",
+                "cut": "0-8|8-32", "promptTokens": prompt, "cachedTokens": 0, "completionTokens": output, "firstTokenMilliseconds": 500,
+                "decodeTokensPerSecond": 40, "outcome": "length", "ranks": ["mac-one", "mac-two"], "concurrentRequests": 0]
+            if let builds { record["rankBuildSHA256"] = builds }
+            return record
+        }
+        let stale = (0..<3).map { served("old-\($0)", prompt: 4_000, output: 64, builds: nil) }
+            + (0..<2).map { served("other-\($0)", prompt: 4_000, output: 64, builds: [hash("9"), hash("9")]) }
+        let current = [(64, 100), (128, 120), (96, 110)].enumerated().map { served("now-\($0.offset)", prompt: $0.element.0,
+            output: $0.element.1, builds: [hash("a"), hash("a")]) }
+        // Darkbloom's own checks of the pair (the warm-up canary's 8 tokens, the onboarding's 48-token test answer), as
+        // an earlier build kept them: probe-sized (`ClusterServedSpeedRule`), so neither a speed nor a request length.
+        let probes = [8, 48].map { served("probe-\($0)", prompt: 30, output: $0, builds: [hash("a"), hash("a")]) }
+        let servedFile = cluster.appendingPathComponent("served-speed.json")
+        func writeServed(_ records: [[String: Any]]) throws {
+            try JSONSerialization.data(withJSONObject: ["schema": "darkbloom_served_speed_v1", "updatedAt": 1_792_900_001,
+                "records": records], options: [.sortedKeys]).write(to: servedFile)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: servedFile.path)
+        }
+        func planned(_ name: String) throws -> ClusterPlacementFlow.Outcome {
+            try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+                localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent(name)), deadline: deadline())
+        }
+        try writeServed(stale + current + probes)
+        let scoped = try planned("served-out")
+        let ignoredLine = "  5 record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build aaaaaaaaaaaa)"
+        require("the step reads the leader's served-speed file and calibrates this build's three records only",
+            scoped.lines.contains { $0.contains("pipeline_v1 cut 0-8|8-32 (mac-one, mac-two): 3 pair and 0 alone request(s) ->") }
+                && !scoped.lines.contains { $0.contains("8 pair and 0 alone request(s)") })
+        require("the plan says in one line that the records of other worker builds (and from before builds were recorded) were ignored, and writes it to plan.txt",
+            scoped.lines.contains("Speed records from served requests") && scoped.lines.contains(ignoredLine)
+                && (try? String(contentsOf: root.appendingPathComponent("served-out/plan.txt"), encoding: .utf8))?.contains(ignoredLine) == true)
+        require("every build's records make the plan's request, what clients sent (median 4000-token prompt, 64-token answer; got \(scoped.result.promptTokens)/\(scoped.result.outputTokens), \(outcome.result.promptTokens)/\(outcome.result.outputTokens) unserved)",
+            scoped.result.promptTokens == 4_000 && scoped.result.outputTokens == 64 && outcome.result.promptTokens == layout.maximumPromptTokens)
+        try writeServed(stale)
+        let staleOnly = try planned("stale-out")
+        require("with only other builds' records nothing is calibrated, the request is still theirs, and the plan says why",
+            !staleOnly.lines.contains { $0.contains("request(s) ->") } && staleOnly.lines.contains { $0.hasPrefix("  5 record(s) from other worker builds ignored") }
+                && staleOnly.result.promptTokens == 4_000 && staleOnly.result.outputTokens == 64)
+        try FileManager.default.removeItem(at: servedFile)
         func refused(_ name: String, because reason: String, _ body: () throws -> Void) {
             do { try body(); failures.append("accepted: " + name) } catch {
                 if String(describing: error).contains(reason) { passed += 1 } else { failures.append("\(name): \(error)") }
             }
+        }
+        let pairValue = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: description))
+        for (prompt, generated) in [(1024, 2048), (16384, 128)] {
+            var inputs = ClusterPlacementFlow.Inputs(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,
+                localMemberID: "mac-one", peerProfile: peerProfile, output: root.appendingPathComponent("extended-\(prompt)-\(generated)"))
+            inputs.promptTokens = prompt; inputs.outputTokens = generated
+            let extended = try ClusterPlacementFlow.run(inputs, deadline: deadline())
+            require("run requests and applies exact family quote for \(prompt)/\(generated)", extended.setup != nil
+                && extended.result.chosen?.ranks.allSatisfy { $0.requestNeedBytes >= 900_000_000 } == true)
+            let quoteURL = root.appendingPathComponent("scope-\(prompt)-\(generated).json")
+            let quote = try ClusterPlacementRequestScope.decode(Data(contentsOf: quoteURL))
+            let local = try profile(physicalGiB: 256, freeGiB: 200), peer = try profile(physicalGiB: 16, freeGiB: 9)
+            refused("pure decision cannot extend an unquoted layout", because: "profile's limits") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated)
+            }
+            let direct = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated, requestScope: quote)
+            require("pure decision and installed helper flow agree on the quote", direct.result.chosen?.cuts == extended.result.chosen?.cuts
+                && direct.result.chosen?.ranks.map(\.requestNeedBytes) == extended.result.chosen?.ranks.map(\.requestNeedBytes))
+            refused("quote for another output shape is refused before writing setup", because: "another model or request") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated + 1, requestScope: quote)
+            }
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(quote)) as! [String: Any]
+            object["maximumOutputTokens"] = 16384
+            let mismatched = try ClusterPlacementRequestScope.decode(JSONSerialization.data(withJSONObject: object))
+            refused("helper quote must match pinned worker family bounds", because: "different profile limits") {
+                _ = try ClusterPlacementFlow.decide(description: pairValue, capability: capability, localMemberID: "mac-one",
+                    localProfile: local, peerProfile: peer, layout: layout, promptTokens: prompt, outputTokens: generated, requestScope: mismatched)
+            }
+            // Prove the whole child-process route also refuses mismatched metadata
+            // before creating output, rather than trusting a helper's bounds.
+            try JSONEncoder().encode(mismatched).write(to: quoteURL)
+            inputs.output = root.appendingPathComponent("mismatched-\(prompt)")
+            refused("run rejects a mismatched quote", because: "different profile limits") {
+                _ = try ClusterPlacementFlow.run(inputs, deadline: deadline())
+            }
+            require("refused quote produces no output directory", !FileManager.default.fileExists(atPath: inputs.output.path))
+            try JSONEncoder().encode(quote).write(to: quoteURL)
         }
         refused("an output directory that exists is not written into", because: "must not exist yet") {
             _ = try ClusterPlacementFlow.run(.init(pairDescription: pair, capability: capabilityURL, capabilitySHA256: capabilityHash,

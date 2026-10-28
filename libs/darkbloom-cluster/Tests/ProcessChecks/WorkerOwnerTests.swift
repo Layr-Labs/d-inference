@@ -38,7 +38,7 @@ private struct Harness: Sendable {
     func reservation(outputs: Int = 2, stops: [Int] = [], seconds: UInt64 = 10, capacity: Int = 1800) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
             outputCount: outputs, chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000,
-            capacityLimitBytes: capacity, sampling: nil)
+            capacityLimitBytes: capacity, sampling: nil, prefixCache: nil)
     }
     func awaitRetirement(_ request: ClusterWorkerRequest, seconds: Double = 8) async throws {
         let end = ProcessInfo.processInfo.systemUptime + seconds
@@ -55,6 +55,7 @@ private struct Harness: Sendable {
     static func main() async throws {
         let executable = URL(fileURLWithPath: CommandLine.arguments[1])
         try progress("normal"); try await normal(executable)
+        try progress("qwenMediaRetirement"); try await qwenMediaRetirement(executable)
         try progress("cleanStop"); try await cleanStop(executable)
         try progress("cancellation"); try await cancellation(executable)
         try progress("faults"); try await faults(executable)
@@ -65,7 +66,7 @@ private struct Harness: Sendable {
         try progress("blockedFailureCallback"); try await blockedFailureCallback(executable)
         try progress("slowInvalidation"); try await slowInvalidation(executable)
         try progress("telemetryAndDiagnostics"); try await telemetryAndDiagnostics(executable)
-        print("{\"passed\":true,\"groups\":11,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
+        print("{\"passed\":true,\"groups\":12,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
     }
     static func progress(_ group: String) throws {
         try FileHandle.standardOutput.write(contentsOf: Data(("{\"testing\":\"\(group)\"}\n").utf8))
@@ -86,6 +87,38 @@ private struct Harness: Sendable {
         try require(second.tokens == [9, 10, 11] && h.pair.readiness != nil, "Fresh request on resident workers")
         try rejects { _ = try h.pair.reserve(requestID: id, reservation: h.reservation()) }
         try await h.finish(); await h.pair.shutdown()
+    }
+    static func qwenMediaRetirement(_ executable: URL) async throws {
+        for cancelBeforeStart in [false, true] {
+            let h = try Harness(executable, behaviors: ["qwen-media", "qwen-media"])
+            defer { for worker in h.workers { worker.fence() } }
+            let bytes = Data(repeating: 42, count: 64), base = h.reservation()
+            let media = ClusterQwenMedia(artifactSHA256: fixtureIdentity.artifactSHA256,
+                configurationSHA256: fixtureIdentity.configurationSHA256,
+                processorSHA256: String(repeating: "a", count: 64), processorPolicy: .qwen35,
+                promptLength: 3, promptSHA256: ClusterQwenMedia.int32SHA256([1, 2, 3]),
+                positionIDsSHA256: String(repeating: "b", count: 64), decodeDeltas: [0],
+                items: [.init(kind: .image, sha256: ClusterQwenMedia.sha256(bytes), byteCount: bytes.count,
+                    decodedPixels: 1, encoded: bytes, temporal: 1, height: 2, width: 2,
+                    tokenOffset: 1, tokenCount: 1, patchesSHA256: String(repeating: "c", count: 64))])
+            let lease = try h.pair.reserve(requestID: UUID(), reservation: .init(
+                profileID: base.profileID, promptTokenIDs: base.promptTokenIDs, stopTokenIDs: base.stopTokenIDs,
+                outputCount: base.outputCount, chunkSize: base.chunkSize,
+                deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes, sampling: nil,
+                prefixCache: nil, qwenMedia: media))
+            try require(lease.reservation.qwenMedia?.carriesEncodedBytes == true, "Owner retains encoded source through admission")
+            lease.releaseResources()
+            try require(lease.reservation.qwenMedia?.carriesEncodedBytes == true, "Early release cannot drop media")
+            if cancelBeforeStart { lease.cancel() }
+            else { try lease.start { _ in true } }
+            try await h.awaitRetirement(lease)
+            lease.releaseResources(); lease.releaseResources()
+            try require(lease.reservation.qwenMedia?.carriesEncodedBytes == false,
+                "Native release must drop encoded aliases before provider acknowledgement")
+            try require(lease.reservation.qwenMedia?.fingerprint == media.fingerprint,
+                "Media retirement preserves immutable reservation identity")
+            try await h.finish()
+        }
     }
     static func cleanStop(_ executable: URL) async throws {
         for eos in [false, true] {

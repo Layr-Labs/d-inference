@@ -1,6 +1,9 @@
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
+#if canImport(MLX)
+import MLX
+#endif
 
 /// The Qwen resident runtime's answers to the planner's questions for its
 /// interval-phased hybrid models: the dense models, the routed-expert models
@@ -11,6 +14,11 @@ import Foundation
 struct QwenDensePlacementFamily: ClusterPlacementFamily {
     let definition: QwenResidentModelDefinition
     let geometry: QwenLongPrefillBudgetGeometry
+    /// The memory plan's request (`QwenResidentAdapterDefinition.memoryProfile`),
+    /// which the planner, every quote and every LOAD gate size the pair for:
+    /// the row's limits, or the standard request for a row that serves its
+    /// native context (the capability advertises that; a longer request is
+    /// charged at its own context when a rank reserves it).
     let profile: QwenLayerStageGenerationProfile
     let pack: QwenRegisteredPack
     let layerPrefix: String
@@ -28,6 +36,11 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// Unequal share weights the plan accepts for this artifact (tried from
     /// `QwenTensorParallelPlan.candidateShares`; each part in whole units).
     let tensorParallelShareOptions: [[Int]]
+    /// The plan of each accepted unequal split, in `tensorParallelShareOptions`
+    /// order; what each rank of that split loads and reserves.
+    let tensorParallelSharePlans: [QwenTensorParallelPlan]
+    var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
+    var tensorParallelAdditionalResidentBytes: Int?
 
     init(configuration: Data) throws {
         definition = try QwenResidentModelDefinition(configuration: configuration)
@@ -46,7 +59,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             headDimension: n("head_dim"), linearKeyHeads: n("linear_num_key_heads"),
             linearValueHeads: n("linear_num_value_heads"), linearKeyDimension: n("linear_key_head_dim"),
             linearValueDimension: n("linear_value_head_dim"), convolutionKernel: n("linear_conv_kernel_dim"))
-        profile = try QwenResidentAdapterDefinition.profile(specification: definition.specification)
+        profile = try QwenResidentAdapterDefinition.memoryProfile(specification: definition.specification)
         pack = definition.specification.model.pack
         // The wrapper types (the dense and routed-expert wrappers, a Prism
         // pack) construct the text model under `language_model.`.
@@ -66,22 +79,30 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         } catch {
             tensorParallel = nil; tensorParallelRefusal = "\(error)"
         }
-        tensorParallelShareOptions = tensorParallel == nil ? [] : QwenTensorParallelPlan.candidateShares.filter { shares in
-            (try? QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)) != nil
+        let sharePlans = tensorParallel == nil ? [] : QwenTensorParallelPlan.candidateShares.compactMap { shares in
+            try? QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)
         }
+        tensorParallelSharePlans = sharePlans
+        tensorParallelShareOptions = sharePlans.map(\.shares)
     }
 
     var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
         tensorParallel.map { plan in
-            // One reduction per row-parallel module of a layer (the mixer's
-            // output and the MLP's down projection), float32 partials of the
-            // residual width, and the head's distributed selection per step.
+            // A routed-expert layer's MoE collective packs top-K expert rows
+            // and the shared expert's row (the largest payload, which sizes
+            // the collective scratch); its mixer collective carries one row.
+            // The per-layer bytes charge the top-K rows once per layer, not
+            // the largest payload to every collective. A dense layer's two
+            // collectives are equal, so it keeps the scalar charge.
             ClusterTensorParallelFamilyPlan(
                 plan: plan.routedExperts ? "qwen_moe_heads_and_expert_channels_v1" : "qwen_dense_heads_and_channels_v1",
                 ranks: [plan.size],
                 reductionsPerLayer: plan.reductionsPerForward / plan.layerCount, reductionsPerStep: 1,
-                partialBytesPerToken: plan.hiddenSize * 4, stateDividesByHeads: true,
-                shareOptions: tensorParallelShareOptions)
+                partialBytesPerToken: plan.maximumPartialBytesPerToken,
+                layerPartialBytesPerToken: plan.routedExperts ? plan.layerPartialBytesPerToken : nil,
+                stateDividesByHeads: true,
+                shareOptions: tensorParallelShareOptions, requestAllowance: tensorParallelRequestAllowance,
+                additionalResidentBytes: tensorParallelAdditionalResidentBytes)
         }
     }
 
@@ -92,7 +113,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         switch disposition {
         case .skip: return nil
         case .load(.replicate): return .replicated
-        case .load(.rows), .load(.inputColumns), .load(.expertRows), .load(.expertInputColumns): return .divided
+        case .load(.rows), .load(.inputColumns), .load(.expertRows), .load(.expertRowRanges), .load(.expertInputColumns): return .divided
         }
     }
 
@@ -127,8 +148,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
         QwenPlacementCharge.wholeModelStateBytesPerToken(geometry: geometry, profile: profile)
     }
 
-    /// The model's largest context (`QwenResidentContextLimits`), which ranks
-    /// admit at load when memory allows; a placement may be planned for it.
+    /// The memory plan's largest context (`QwenResidentContextLimits`), which
+    /// ranks admit at load when memory allows; a placement may be planned for it.
     var largestContextTokens: Int { profile.maximumContextTokens }
 
     /// The same charge at another context: what a placement planned for that
@@ -207,7 +228,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 
     /// The tensors a stage loads, as the loader composes them, against the
     /// registered inventory: the same names, shapes, dtypes and bytes.
-    func requireRegisteredInventory(_ tensors: [ClusterPlacementStoredTensor]) throws {
+    @discardableResult
+    func requireRegisteredInventory(_ tensors: [ClusterPlacementStoredTensor]) throws -> [QwenDenseCanonicalTensor] {
         guard let cut = structuralCuts.first else { throw ProbeError("The model has no cut") }
         var canonical: [String: QwenDenseCanonicalTensor] = [:]
         for tensor in tensors.sorted(by: { $0.name < $1.name }) where try stage(ofStoredTensor: tensor.name, cut: cut) != nil {
@@ -232,6 +254,7 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
               QwenDenseProfileIdentity.fingerprint(loaded.map(\.identity)) == specification.inventorySHA256 else {
             throw ProbeError("The artifact's tensor headers are not the registered model's inventory")
         }
+        return loaded
     }
 }
 
@@ -306,7 +329,16 @@ public enum ClusterPlacementLayouts {
     /// exactly the registered inventory. `manifest` picks between catalog
     /// entries that share a configuration (Gemma 4 26B and its 8-bit entry).
     public static func layout(configuration: Data, tensors: [ClusterPlacementStoredTensor],
-                              manifest: Data? = nil, runtimeProfile: String? = nil) throws -> ClusterModelLayout {
+                              manifest: Data? = nil, runtimeProfile: String? = nil,
+                              tensorParallelAllocationBound: ((Int) throws -> Int)? = nil) throws -> ClusterModelLayout {
+        // Native product layouts use the real allocator policy without
+        // allocating. Model-free metadata tests may inject an explicit bound;
+        // omission preserves the historical metadata-only layout contract.
+        #if canImport(MLX)
+        let allocationBound = tensorParallelAllocationBound ?? Memory.allocationFootprintUpperBound(byteCount:)
+        #else
+        let allocationBound = tensorParallelAllocationBound
+        #endif
         guard runtimeProfile == nil || runtimeProfile == ClusterMiMoImageCandidate.profileID || runtimeProfile == ClusterGLMImageCandidate.profileID else {
             throw ProbeError("Unknown placement runtime profile")
         }
@@ -361,8 +393,29 @@ public enum ClusterPlacementLayouts {
                 artifactSHA256: definition.specification.artifactSHA256,
                 configurationSHA256: definition.specification.configurationSHA256)
         }
-        let family = try QwenDensePlacementFamily(configuration: configuration)
-        try family.requireRegisteredInventory(tensors)
+        var family = try QwenDensePlacementFamily(configuration: configuration)
+        let canonical = try family.requireRegisteredInventory(tensors)
+        if let plan = family.tensorParallel {
+            #if canImport(MLX)
+            let bound: ((Int) throws -> Int)? = allocationBound
+            #else
+            let bound = allocationBound
+            #endif
+            if let bound {
+                if family.definition.specification.model == .qwen38TwentySevenB {
+                    let visual = tensors.filter { $0.name.hasPrefix("vision_tower.") }.map {
+                        QwenDenseCanonicalTensor(name: $0.name, shape: $0.shape, sourceDType: $0.dtype, byteCount: $0.byteCount)
+                    }
+                    family.tensorParallelAdditionalResidentBytes = try QwenVisionResidentBudget(
+                        configurationSHA256: family.definition.specification.configurationSHA256,
+                        tensors: visual, allocationBound: bound).allocationBytes
+                }
+                family.tensorParallelRequestAllowance = try QwenTensorParallelRequestBudget.derive(
+                    geometry: family.geometry, plan: plan, tensors: canonical,
+                    maximumTokens: family.largestContextTokens, chunkSize: family.maximumChunkTokens,
+                    allocationBound: bound).allowance
+            }
+        }
         let specification = family.definition.specification
         return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
             artifactSHA256: specification.artifactSHA256, configurationSHA256: specification.configurationSHA256)

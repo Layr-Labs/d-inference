@@ -5,7 +5,8 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 
 /// The device profiles of a pair's members as the last plan read them (each
-/// Mac's `darkbloom-cluster-plan device --json --index`), by member ID, in
+/// Mac's `darkbloom-cluster-plan device --json` with its speed index,
+/// `ClusterLocalDeviceProfile`), by member ID, in
 /// `~/.darkbloom/cluster/member-profiles.json` (owner-only). Planning writes
 /// it, whichever way it ran (the guided flow, `darkbloom cluster plan`); the
 /// serving leader reads it to price each request's route. System facts only:
@@ -58,7 +59,11 @@ public struct ClusterMemberProfiles: Codable, Sendable, Equatable {
 /// planner and the router take them.
 public enum ClusterServedSpeedHistory {
     /// Every usable record of the leader's file, each with the setup it was
-    /// served on (model, mode, cut, members in rank order when recorded).
+    /// served on (model, mode, cut, members in rank order and each rank's
+    /// worker build, when recorded). Not yet scoped to a build: what this Mac
+    /// shares with the other Mac's plan (`ClusterSetupReport.served`); every
+    /// plan keeps only the records its own worker builds served
+    /// (`ClusterPlacementFlow.decide`), and the router only its setup's.
     public static func entries(homeDirectory: URL) -> [ClusterServedSpeedRecords.Entry] {
         guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)) else { return [] }
         return file.records.compactMap { record in
@@ -66,15 +71,27 @@ public enum ClusterServedSpeedHistory {
                 cachedTokens: record.cachedTokens, completionTokens: record.completionTokens,
                 firstTokenMilliseconds: record.firstTokenMilliseconds, decodeTokensPerSecond: record.decodeTokensPerSecond,
                 outcome: record.outcome, finishedAt: record.finishedAt) else { return nil }
-            return .init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks), sample: sample)
+            return .init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks,
+                                      rankBuildSHA256: record.rankBuildSHA256), sample: sample)
         }
     }
 
-    /// The entries served on this pair of members (in either order) for this model.
-    public static func entries(homeDirectory: URL, modelID: String, members: Set<String>) -> [ClusterServedSpeedRecords.Entry] {
-        entries(homeDirectory: homeDirectory).filter {
+    /// Each member's worker build as a saved setup pins it (`runtimeBinarySHA256`), by member ID: the build the
+    /// capability names and the installed worker is checked against before a session starts.
+    public static func builds(_ peers: [ClusterConfiguration.Peer]) -> [String: String] {
+        Dictionary(peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// This model's entries served on the members `builds` names (in either order) by exactly those builds
+    /// (`ClusterServedSpeedRecords.servedBy`), and how many of that pair's records of the model another build
+    /// served (or were written before builds were recorded).
+    public static func entries(homeDirectory: URL, modelID: String, builds: [String: String])
+        -> (current: [ClusterServedSpeedRecords.Entry], otherBuilds: Int) {
+        let members = Set(builds.keys)
+        let pair = entries(homeDirectory: homeDirectory).filter {
             $0.setup.modelID == modelID && ($0.setup.ranks.map { Set($0) == members } ?? false)
         }
+        return ClusterServedSpeedRecords.servedBy(builds, pair)
     }
 }
 
@@ -85,7 +102,8 @@ public enum ClusterServedSpeedHistory {
 /// what was detected and served, never from a table: the members' profiles
 /// the last plan recorded, the model's layout read by the plan tool installed
 /// beside the worker, the speed estimates from the profiles' indices
-/// corrected by the speed records of requests this pair served.
+/// corrected by the speed records of requests this pair served with the
+/// worker builds the setup runs (never another build's).
 public enum ClusterRequestRoutingBasis {
     public struct Outcome: Sendable {
         /// Nil: every request runs as placed.
@@ -139,11 +157,16 @@ public enum ClusterRequestRoutingBasis {
             return zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
         }
         let modelID = configuration.publicModelID
+        // Only what the worker builds this setup runs served (each member's as the setup pins it): a speed served by
+        // another build says nothing of this one. The setup key names the builds, so the live samples are this build's too.
+        let builds = ClusterServedSpeedHistory.builds(configuration.peers)
         let setupKey = ClusterServedSpeedRecords.Setup(modelID: modelID, mode: mode.rawValue,
-            cut: ClusterServedSpeedRecords.Setup.cut(cuts, layerCount: layout.layerCount), ranks: ranks)
+            cut: ClusterServedSpeedRecords.Setup.cut(cuts, layerCount: layout.layerCount), ranks: ranks,
+            rankBuildSHA256: configuration.peers.sorted { $0.rank < $1.rank }.map(\.runtimeBinarySHA256))
         // The estimates start from what this pair served, as the next plan does.
         var placed = devices([])
-        let served = ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory, modelID: modelID, members: Set(ranks))
+        let scoped = ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory, modelID: modelID, builds: builds)
+        let served = scoped.current
         if let derived = try? ClusterServedCalibration.measurements(entries: served, devices: placed, layout: layout,
                                                                     link: .unmeasured, measuredUTC: "served"),
            !derived.measurements.isEmpty {
@@ -166,7 +189,8 @@ public enum ClusterRequestRoutingBasis {
             case nil: note = "every request is served by \(alone) alone: the pair is never predicted faster"
             }
         } catch { note = "routes are decided per request" }
-        return .init(routing: routing, note: note + " (\(samples.count) speed record(s) of this setup; "
+        return .init(routing: routing, note: note + " (\(samples.count) speed record(s) of this setup and worker build; "
+            + (scoped.otherBuilds > 0 ? "\(scoped.otherBuilds) from other worker builds ignored; " : "")
             + (placed.allSatisfy(\.speed.absolute) ? "measured speeds" : "speed index ratios") + ")")
     }
 }

@@ -311,7 +311,7 @@ struct MiMoResidentAdmissionTests {
         func reservation(profile: String? = nil, prompt: [Int] = [1, 2, 3], stops: [Int] = [151_643, 151_645, 151_672],
                          output: Int = 4, chunk: Int = 512, deadline: UInt64 = Self.now + 10) -> ClusterWorkerReservation {
             .init(profileID: profile ?? admission.profile.identifier, promptTokenIDs: prompt, stopTokenIDs: stops,
-                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 40, sampling: nil)
+                  outputCount: output, chunkSize: chunk, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1 << 40, sampling: nil, prefixCache: nil)
         }
         let request = try admission.request(reservation(), id: UUID(), now: Self.now)
         #expect(request.promptCount == 3 && request.outputCount == 4 && request.stopTokenIDs == [151_643, 151_645, 151_672])
@@ -382,11 +382,11 @@ struct MiMoResidentAdmissionTests {
     @Test func theCatalogListsEveryAdaptersModelsFromTheirOwnRows() throws {
         let all = ClusterResidentModelCatalog.all
         #expect(all.map(\.runtimeModelID) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
-            "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
+            "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_9b", "registered_nemotron35_lightning",
             "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
             "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit",
             "registered_glm53_flash"])
-        #expect(all.map(\.family) == Array(repeating: .qwenDense, count: 6) + [.gptoss, .mimoV26]
+        #expect(all.map(\.family) == Array(repeating: .qwenDense, count: 7) + [.gptoss, .mimoV26]
             + Array(repeating: .qwenDense, count: 3) + [.glm5Next])
         // Every entry is a pair the protocol admits for that adapter.
         for entry in all {

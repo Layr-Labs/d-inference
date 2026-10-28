@@ -217,7 +217,8 @@ struct DistributedCBv2EngineTests {
     /// token's logprobs reach the client's delta with that token.
     @Test func logprobsReachTheRankAndComeBackWithTheirToken() async throws {
         let owner = DistributedTestOwner()
-        let engine = try distributedTestEngine(owner)
+        let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity,
+            profile: distributedTestProfile(supportsLogprobs: true), detokenizers: DistributedTestDetokenizers())
         var request = distributedTestRequest(maxTokens: 2)
         request.sampling.topLogprobs = 2
         let stream = try engine.submit(request)
@@ -416,6 +417,7 @@ struct DistributedCBv2EngineTests {
         var terminals = 0
         for await event in stream {
             switch event {
+            case .logprobs: break
             case .chunk(let chunk): text += chunk
             case .info(let prompt, let completion, _, let reason):
                 #expect(prompt == 3 && completion == 1 && reason == "length")

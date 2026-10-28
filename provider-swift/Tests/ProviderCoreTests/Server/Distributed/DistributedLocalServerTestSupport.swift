@@ -6,7 +6,15 @@ import MLXLMCommon
 /// evaluation. Actual HTTP tests use the real application and loopback listener.
 final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Sendable {
     let base = DistributedTestOwner()
-    let profile = try! distributedTestProfile()
+    let profile: DistributedResidentExecutionProfile
+    var concurrentRequests = 1
+    var failStart = false
+
+    init(requestTimeout: Duration = .seconds(315), maxPromptTokens: Int = 8192) {
+        profile = try! .init(id: "fabricated-greedy", vocabularySize: 100,
+            maxPromptTokens: maxPromptTokens, maxOutputTokens: 128,
+            maxContextTokens: maxPromptTokens + 128, requestTimeout: requestTimeout)
+    }
     let model = DistributedInstalledModel(publicModelID: "public/example", directory: URL(fileURLWithPath: "/fabricated"),
         modelType: "qwen3_5", eosTokenIDs: [99], vocabularySize: 100)
     let lock = NSLock()
@@ -46,6 +54,7 @@ final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Send
         lock.withLock { starts += 1; phase = .starting }
         if startDelay > .zero { try await Task.sleep(for: startDelay) }
         try Task.checkCancellation()
+        if failStart { throw DistributedEngineError.unavailable }
         lock.withLock { lifetime = DispatchTime.now().uptimeNanoseconds + lifetimeNanoseconds; phase = .ready }
     }
     func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus {

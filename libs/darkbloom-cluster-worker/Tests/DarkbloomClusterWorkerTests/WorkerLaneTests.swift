@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
 import XCTest
 @testable import DarkbloomClusterWorker
@@ -154,6 +155,73 @@ final class WorkerLaneTests: XCTestCase {
         try expect(h, .retired(.clean), id: b)
         try h.send(.cancel(.deadline), id: a)
         try expect(h, .retired(.cancelled), id: a)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+    }
+
+    /// A lane the runtime's live memory gate refuses (a request longer than
+    /// fits now, as Qwen tensor parallel's `reserveLane` refuses one past its
+    /// serving context) is refused alone, `capacity`, while the held lane
+    /// runs to its end; the worker stays up, and a keep-warm answer with no
+    /// lane held carries the serving context the runtime re-derived between
+    /// batches (`refreshLaneServingContext`).
+    func testALaneTheGateRefusesIsRefusedAloneAndKeepWarmCarriesTheServingContext() throws {
+        let h = try LanePipeHarness(), short = UUID(), long = UUID(), next = UUID()
+        h.runtime.refusesContextAbove = 20
+        h.runtime.laneServingContext = 20
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        try h.send(.reserve(h.reservation), id: short)
+        try expect(h, .admitted(reservedBytes: 1024), id: short)
+        try h.send(.reserve(h.reservation(prompt: 30, output: 4)), id: long)
+        try expect(h, .refused(.capacity), id: long)
+        try h.send(.start, id: short)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: short)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: short)
+        try expect(h, .finished(.length), id: short)
+        try expect(h, .retired(.clean), id: short)
+        try h.send(.keepWarm(ordinal: 1))
+        try expect(h, .keptWarm(ordinal: 1, microseconds: 0, servingContextTokens: 20), id: nil)
+        // A lane runtime that keeps readiness's serving context answers none.
+        h.runtime.laneServingContext = nil
+        try h.send(.keepWarm(ordinal: 2))
+        try expect(h, .keptWarm(ordinal: 2, microseconds: 0, servingContextTokens: nil), id: nil)
+        // The next request within it is served.
+        try h.send(.reserve(h.reservation(prompt: 16, output: 1)), id: next)
+        try expect(h, .admitted(reservedBytes: 1024), id: next)
+        try h.send(.start, id: next)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 16), id: next)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: next)
+        try expect(h, .finished(.length), id: next)
+        try expect(h, .retired(.clean), id: next)
+        try h.send(.shutdown)
+        try expect(h, .shutdownComplete, id: nil)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.result.exitReasons, [])
+    }
+
+    /// A lane the runtime refuses for a reason of its own (rank 0's Qwen media
+    /// preparation that cannot reproduce the leader's patches) is refused
+    /// alone with that reason, not `capacity`; the worker stays up and the
+    /// next request is admitted and served.
+    func testALaneRefusedWithItsOwnReasonKeepsTheWorkerServing() throws {
+        let h = try LanePipeHarness(), refused = UUID(), next = UUID()
+        h.runtime.refusesNextReservation = ClusterResidentRequestRefusal(reason: .unsupported,
+            message: "Qwen media preparation refused this request: fixture")
+        try expect(h, .ready(h.runtime.ready), id: nil)
+        try h.send(.reserve(h.reservation), id: refused)
+        try expect(h, .refused(.unsupported), id: refused)
+        try h.send(.reserve(h.reservation), id: next)
+        try expect(h, .admitted(reservedBytes: 1024), id: next)
+        try h.send(.start, id: next)
+        try expect(h, .committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), id: next)
+        try h.send(.tokenDecision(ordinal: 0, decision: .proceed), id: next)
+        try expect(h, .finished(.length), id: next)
+        try expect(h, .retired(.clean), id: next)
+        XCTAssertEqual(h.runtime.heldRequests, [])
         try h.send(.shutdown)
         try expect(h, .shutdownComplete, id: nil)
         XCTAssertEqual(h.done.wait(timeout: .now() + 3), .success)

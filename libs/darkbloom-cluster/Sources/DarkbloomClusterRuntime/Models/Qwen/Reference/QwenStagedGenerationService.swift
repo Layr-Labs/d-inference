@@ -1,6 +1,7 @@
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 /// One Mac, both stages, no collective and no capture: the staged request as a
@@ -127,10 +128,11 @@ extension QwenStagedGenerationReference {
                     throw ProbeError("Staged service stages did not load matching verified commitments")
                 }
                 let kvKind = try ClusterStageKVBackendKind.fromEnvironment(ProcessInfo.processInfo.environment)
+                let kvQuantization = try PagedKVQuantizationSelection.clusterLive(ProcessInfo.processInfo.environment)
                 for (rank, stage) in stages.enumerated() {
                     try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 1,
                         maximumTokensPerRequest: admissions[rank].profile.maximumContextTokens,
-                        maximumChunkTokens: admissions[rank].profile.maximumChunkTokens)
+                        maximumChunkTokens: admissions[rank].profile.maximumChunkTokens, quantization: kvQuantization)
                 }
                 try ready(.init(stageLoadSeconds: loadSeconds, activeBytesBefore: before,
                                 activeBytesLoaded: Memory.snapshot().activeMemory))
@@ -142,7 +144,7 @@ extension QwenStagedGenerationReference {
                     let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                             promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                             outputCount: value.outputCount, chunkSize: value.chunkSize,
-                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
+                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil, prefixCache: nil),
                         id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
                     // Each rank's named request allowance, checked live as the worker does.
                     let allowances = try (0...1).map {

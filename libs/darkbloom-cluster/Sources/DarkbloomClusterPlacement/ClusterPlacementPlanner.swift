@@ -26,6 +26,11 @@ public struct ClusterPlacementPolicy: Sendable {
     /// Nil means every mode and schedule the layout lists.
     public var modes: [ClusterGenerationMode]?
     public var schedules: [ClusterPrefillSchedule]?
+    /// Why `modes` leaves out modes the layout lists, in plain words (a model
+    /// feature only tensor parallel keeps, a quote priced for one mode): the
+    /// plan's reason line says it instead of comparing with a mode it never
+    /// placed. Nil, the default, says nothing.
+    public var modesReason: String?
     /// A Mac alone is reported "as fast" when its predicted request time is
     /// within this share of the chosen placement's.
     public var tieTolerance = 0.03
@@ -38,6 +43,9 @@ public struct ClusterPlacementPolicy: Sendable {
     /// rank 0's Mac, so a Mac that cannot reach the other one cannot lead.
     /// Each Mac alone is still evaluated, and nothing else changes.
     public var leader: String?
+    /// A capacity-only replacement preserves the current TP arithmetic partition.
+    /// This restricts candidates; all current LOAD/request memory gates still apply.
+    public var requiredTensorShares: [Int]?
     /// A request longer than the layout's planned one (its maximum prompt
     /// plus output), up to this context: the family's own largest, which
     /// its ranks admit at load when memory allows. Nil plans within the
@@ -47,6 +55,15 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
+    /// A validated concurrent scope or explicit singleton assistant quote
+    /// sets this complete native TP LOAD floor. Nil preserves existing families.
+    public internal(set) var tensorParallelBatchQuote: ClusterPlacementTensorBatchQuote?
+    /// For a request-owned singleton whose capacity changes keep its tensor
+    /// shares: the complete quote of the widest capacity it may widen to.
+    /// Splits whose replacement could load beside the running owner on every
+    /// rank now are preferred; when none can, every split stays. Nil keeps
+    /// the existing speed-only share choice.
+    public var tensorParallelWideningQuote: ClusterPlacementTensorBatchQuote?
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -93,6 +110,21 @@ public struct ClusterPlacementPolicy: Sendable {
     /// first. Nil, the default, keeps nothing.
     public var keptMode: ClusterGenerationMode?
     public var keptModeMargin = 0.10
+    /// Tensor parallel goes first wherever it fits (owner, 2026-10-24: "if tensor parallel fits it will and
+    /// should always be faster"; the provider's placement step sets it): within each hardware group a
+    /// tensor-parallel candidate ranks ahead of every other mode, fastest split first, whatever the predictions
+    /// say, and neither `tensorParallelMargin` nor `keptMode` holds it back; a better group (one that loads now
+    /// while tensor parallel would not) still goes first. Predictions are still made and reported. False, the
+    /// default here: the speed comparison decides (the plan tool without `--tensor-parallel-first`, and the
+    /// checks of that comparison).
+    public var tensorParallelFirst = false
+    /// With `tensorParallelFirst`: before a load has measured the link, plan tensor parallel on the keyed
+    /// reduction a forced plan assumes (`ClusterForcedMode.assumedReduction`, labelled as assumed), so the first
+    /// plan of a new pair is tensor parallel too. Only a first placement sets it (the provider's placement step,
+    /// the request router pricing what it chose); an automatic replacement never does, because it prices only the
+    /// pair's own recorded keyed link and invents no rate (`DistributedAutomaticBatchPlanner`): without one it
+    /// keeps the running setup.
+    public var tensorParallelAssumesUnmeasuredLink = false
     /// Why the mode is kept, in plain words: the plan's reason line when the hold decides the choice.
     public var keptModeReason: String?
     public init() {}
@@ -297,6 +329,11 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     /// why it was or was not chosen. Nil under the hand-off opt-in, whose plan
     /// is the earlier planner's byte for byte.
     public var shards: ClusterShardAssessment? = nil
+    /// `ClusterPlacementPolicy.modesReason` when the policy's modes left out
+    /// every pipeline mode or every tensor-parallel mode the layout lists;
+    /// nil otherwise (omitted then, so every other plan is byte for byte what
+    /// it was).
+    public var modesReason: String? = nil
 }
 
 /// Decides how a model is divided between devices from what the devices
@@ -309,6 +346,27 @@ public enum ClusterPlacementPlanner {
                             policy: ClusterPlacementPolicy = .init(),
                             link: ClusterLinkCosts = .unmeasured) throws -> ClusterPlacementResult {
         try layout.validate()
+        try policy.tensorParallelBatchQuote?.validate(layout: layout)
+        if let widening = policy.tensorParallelWideningQuote {
+            try widening.validate(layout: layout)
+            guard let current = policy.tensorParallelBatchQuote, current.lanes < widening.lanes,
+                  current.request == widening.request, current.assistant?.policy == widening.assistant?.policy else {
+                throw ClusterPlacementError("A widening quote needs the same request and assistant as a narrower tensor quote")
+            }
+        }
+        if let shares = policy.requiredTensorShares {
+            guard devices.count == 2, shares.count == 2, shares.allSatisfy({ (1...64).contains($0) }),
+                  policy.modes == [.tensorParallel], policy.leader != nil,
+                  Set(shares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(shares) else {
+                throw ClusterPlacementError("A retained tensor partition needs its exact ordered, supported two-rank shares")
+            }
+        }
+        if policy.tensorParallelBatchQuote?.assistant != nil {
+            guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
+                  policy.forcedMode == nil, !policy.handOffModes else {
+                throw ClusterPlacementError("Tensor assistant quotation requires its exact two-rank tensor placement")
+            }
+        }
         guard devices.count >= 2, Set(devices.map(\.label)).count == devices.count,
               devices.allSatisfy({ !$0.label.isEmpty && $0.label.utf8.count <= 64 }) else {
             throw ClusterPlacementError("Placement needs two or more devices with distinct labels")
@@ -323,9 +381,11 @@ public enum ClusterPlacementPlanner {
         if let largest = policy.largestContextTokens {
             // A requested context beyond the layout's planned request, within
             // the family's own largest; the family's charge at it comes with it.
-            guard policy.requestChargeEveryRankBytes != nil, largest <= ClusterWorkerLimits.contextTokens,
-                  prompt >= 1, outputs >= 1, prompt + outputs <= largest,
-                  prompt <= ClusterWorkerLimits.promptTokens, outputs <= ClusterWorkerLimits.outputTokens else {
+            guard let charge = policy.requestChargeEveryRankBytes,
+                  (0...ClusterWorkerLimits.capacityBytes).contains(charge),
+                  (1...ClusterWorkerLimits.contextTokens).contains(largest),
+                  (1...ClusterWorkerLimits.promptTokens).contains(prompt),
+                  (1...ClusterWorkerLimits.outputTokens).contains(outputs), prompt <= largest - outputs else {
                 throw ClusterPlacementError("The requested context is outside the model's largest context")
             }
         } else {
@@ -360,6 +420,12 @@ public enum ClusterPlacementPlanner {
                 link = link.assumingForcedReduction()
             }
         }
+        if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
+           modes.contains(.tensorParallel),
+           let tp = layout.tensorParallel, tp.family.ranks.contains(min(policy.maximumRanges, devices.count)) {
+            // Tensor parallel goes first where it fits: before a load measured the link, an assumed keyed reduction.
+            link = link.assumingForcedReduction()
+        }
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
@@ -371,9 +437,10 @@ public enum ClusterPlacementPlanner {
                        candidate.cuts, candidate.mode)
             }
         } ?? admitted
-        let unheld = context.holdingTensorParallelToItsMargin(
-            context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime)
-        let ranked = context.holdingKeptMode(unheld, regime: policy.regime)
+        let byTime = context.ordered(qualified.filter(\.possible), regime: policy.regime)
+        let unheld = policy.tensorParallelFirst ? context.tensorParallelFirst(byTime)
+            : context.holdingTensorParallelToItsMargin(byTime, regime: policy.regime)
+        let ranked = policy.tensorParallelFirst ? unheld : context.holdingKeptMode(unheld, regime: policy.regime)
         if let forced = policy.forcedMode, ranked.isEmpty {
             throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
                 + (admitted.contains(where: \.possible)
@@ -432,6 +499,14 @@ public enum ClusterPlacementPlanner {
         if let kept = policy.keptMode, ranked.first?.mode == kept, unheld.first?.mode != kept {
             result.keptModeReason = policy.keptModeReason ?? "kept \(kept.rawValue), the mode this pair keeps"
         }
+        // A family the policy left out entirely (every pipeline mode, or tensor parallel) is said with the
+        // policy's reason, never as one that does not fit (2026-10-24: Qwen3.8 27B, whose images, video and
+        // logprobs only tensor parallel keeps, read "no pipeline placement fits these Macs").
+        if let reason = policy.modesReason, let allowed = policy.modes {
+            let sharded = layout.generationModes.filter(\.isSharded)
+            let families = [sharded.filter { !$0.usesTensorParallelDecode }, sharded.filter(\.usesTensorParallelDecode)]
+            if families.contains(where: { !$0.isEmpty && !$0.contains(where: allowed.contains) }) { result.modesReason = reason }
+        }
         if layout.tensorParallel != nil {
             result.tensorParallel = try assessTensorParallel(devices: devices, layout: layout, policy: policy, link: link,
                 prompt: prompt, outputs: outputs, schedules: schedules, ranked: ranked, alone: alone)
@@ -478,7 +553,8 @@ public enum ClusterPlacementPlanner {
             (policy.modes?.contains(mode) ?? true) && (policy.forcedMode?.admits(mode) ?? true)
         }
         guard !modes.isEmpty else {
-            return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes; using pipeline candidates")
+            let why = implemented.contains(where: { policy.modes?.contains($0) == false }) ? policy.modesReason.map { " (\($0))" } ?? "" : ""
+            return unavailable(.notQualified, "the placement policy excludes the model's tensor-parallel modes\(why); using pipeline candidates")
         }
         let most = min(policy.maximumRanges, devices.count)
         guard tp.family.ranks.contains(where: { $0 <= most }) else {
@@ -496,7 +572,7 @@ public enum ClusterPlacementPlanner {
         let possible = try context.candidates(.admitted).filter(\.possible)
         let best = context.ordered(possible.filter { $0.mode == .tensorParallel }, regime: regime).first
         let hybrid = context.ordered(possible.filter { $0.mode == .pipelinePrefillTensorDecode }, regime: regime).first
-        let perStep = Double(steps) * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+        let perStep = tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true, reduction: reduction)
         func make(_ verdict: ClusterTensorParallelAssessment.Verdict, _ reason: String) -> ClusterTensorParallelAssessment {
             .init(verdict: verdict, reason: reason, tensorParallel: best, hybrid: hybrid, bestOtherSeconds: bestOther,
                   bestAloneSeconds: bestAlone, devices: speeds, reductionsPerStep: steps, reductionSecondsPerStep: perStep,
@@ -549,14 +625,27 @@ public enum ClusterPlacementPlanner {
               cuts == Array(Set(cuts)).sorted(), cuts.allSatisfy({ (1..<layout.layerCount).contains($0) }) else {
             throw ClusterPlacementError("A placement is one device per range and ascending cuts inside the model")
         }
+        var link = link
         if mode.usesTensorParallelDecode {
+            // As `plan` does: tensor parallel goes first wherever it fits, on an assumed keyed reduction until a load measures the link.
+            if policy.tensorParallelFirst, policy.tensorParallelAssumesUnmeasuredLink, policy.forcedMode == nil,
+               mode == .tensorParallel { link = link.assumingForcedReduction() }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(devices.count), link.reduction != nil else {
                 throw ClusterPlacementError("A tensor-parallel placement needs the layout's tensor-parallel facts for this many ranks and a measured reduction")
+            }
+        }
+        if let retained = policy.requiredTensorShares {
+            guard mode == .tensorParallel, devices.first?.label == policy.leader,
+                  (tensorShares ?? [1, 1]) == retained else {
+                throw ClusterPlacementError("Explicit evaluation changed the retained tensor partition")
             }
         }
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
+        if mode.usesTensorParallelDecode, !context.placeable(mode, ranges: devices.count) {
+            throw ClusterPlacementError("Tensor-parallel request allowance does not cover the requested context and chunk")
+        }
         if let tensorShares {
             guard mode == .tensorParallel, tensorShares.count == devices.count,
                   Set(tensorShares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(tensorShares) else {
@@ -605,6 +694,8 @@ public enum ClusterPlacementPlanner {
         func placeable(_ mode: ClusterGenerationMode, ranges: Int) -> Bool {
             guard mode.usesTensorParallelDecode else { return true }
             guard let tp = layout.tensorParallel, tp.family.ranks.contains(ranges), let reduction = link.reduction else { return false }
+            if let allowance = policy.tensorParallelBatchQuote?.allowance ?? tp.family.requestAllowance,
+               !allowance.covers(context: memoryContext, chunk: min(layout.maximumChunkTokens, memoryPrompt)) { return false }
             return reduction.keyed || tensorParallelForAssessment
         }
 
@@ -650,7 +741,7 @@ public enum ClusterPlacementPlanner {
                 guard tensor || pipeline else { continue }
                 let sets = pipeline ? cutSets(available, ranges - 1) : []
                 let permutations = orders(ranges)
-                let shares = tensor ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
+                let shares = tensor && policy.requiredTensorShares == nil ? (layout.tensorParallel?.family.shareOptions ?? []).filter {
                     $0.count == ranges && Set($0).count > 1
                 } : []
                 let perOrder = sets.count * layerModes.count + (tensor ? 1 + shares.count : 0)
@@ -662,10 +753,14 @@ public enum ClusterPlacementPlanner {
                     // TP has no layer cuts. Enumerate it independently, including
                     // when this model has no admitted or structural pipeline cut.
                     if tensor {
-                        result.append(bestTensorShares(order: order, schedule: schedule))
+                        var splits: [ClusterPlacementCandidate] = []
+                        if let weights = policy.requiredTensorShares {
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                        } else { splits.append(bestTensorShares(order: order, schedule: schedule)) }
                         for weights in shares {
-                            result.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                            splits.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
                         }
+                        result += keepingWidenable(splits)
                     }
                     for set in sets {
                         for mode in layerModes {
@@ -753,6 +848,30 @@ public enum ClusterPlacementPlanner {
             return (need, held, largest)
         }
 
+        /// Retained shares bind every later capacity of a request-owned owner.
+        /// The replacement is previewed while the running owner still serves
+        /// (`DistributedAutomaticBatchFactory` credits nothing back), so a
+        /// split is widenable when, on every rank, that owner's weights and
+        /// its own request reservation, plus the widest replacement's need
+        /// (this need grown by that rank's reservation difference under this
+        /// split), fit what that Mac admits now. The live replacement gate
+        /// stays authoritative; this only steers which split serves first.
+        func keepingWidenable(_ splits: [ClusterPlacementCandidate]) -> [ClusterPlacementCandidate] {
+            guard let widening = policy.tensorParallelWideningQuote, let current = policy.tensorParallelBatchQuote else { return splits }
+            func reserved(_ quote: ClusterPlacementTensorBatchQuote, rank: Int, shares: [Int]?) -> Int {
+                quote.rankReservedBytes(rank: rank, shares: shares) ?? quote.allowance.reservedBytes
+            }
+            let widenable = splits.filter { split in
+                split.ranks.enumerated().allSatisfy { index, rank in
+                    let serving = reserved(current, rank: index, shares: split.tensorShares)
+                    let growth = max(0, reserved(widening, rank: index, shares: split.tensorShares) - serving)
+                    return rank.fit == .now
+                        && rank.weightsBytes + serving + rank.needBytes + growth <= rank.admissibleNowBytes
+                }
+            }
+            return widenable.isEmpty ? splits : widenable
+        }
+
         /// The tensor-parallel candidate of this order at its best shares: equal,
         /// or, when the family's plan hands out `shareUnits` groups and two ranks
         /// run it, every split in whole groups, the best by the planner's own order.
@@ -775,7 +894,7 @@ public enum ClusterPlacementPlanner {
         /// than the family's every-rank charge.
         func tensorRequirement(rank: Int, of count: Int, device: ClusterPlacementDevice, own: ClusterModelLayout.Range,
                                mode: ClusterGenerationMode, schedule: ClusterPrefillSchedule,
-                               fraction: Double? = nil) -> ClusterPlacementRank {
+                               fraction: Double? = nil, weights: [Int]? = nil) -> ClusterPlacementRank {
             let tp = layout.tensorParallel!, memory = device.profile.memory, count = max(1, count)
             func shareOf(divided: Int, replicated: Int) -> Int {
                 fraction.map { tp.shareBytes(divided: divided, replicated: replicated, fraction: $0) }
@@ -796,8 +915,20 @@ public enum ClusterPlacementPlanner {
                 shard += shareOf(divided: tp.egressDividedBytes, replicated: tp.egressReplicatedBytes)
                 tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
             }
-            let parts = (pipelined ? [(own.loadedBytes, own.tensorCount, own.largestTensorBytes)] : []) + [(shard, tensors, largest)]
-            let load = loadNeed(parts.map { (loaded: $0.0, tensors: $0.1, largest: $0.2) }, memory: memory)
+            var parts = (pipelined ? [(loaded: own.loadedBytes, tensors: own.tensorCount, largest: own.largestTensorBytes)] : [])
+                + [(loaded: shard, tensors: tensors, largest: largest)]
+            // The model's speculative head, whole on every rank after its share, when the family decodes with it.
+            let head = tp.speculativeHead(mode: mode, layout: layout)
+            if let head { parts.append((loaded: head.part.loadedBytes, tensors: head.part.tensorCount, largest: head.part.largestTensorBytes)) }
+            let textLoad = loadNeed(parts, memory: memory)
+            let additional = tp.family.additionalResidentBytes ?? 0
+            // Resident bytes are additive outside the request maximum. With
+            // no extra tensor geometry, conservatively allow two host copies
+            // and one native allocation as large as the complete supplement.
+            let assistant = policy.tensorParallelBatchQuote?.assistant
+            let load = (need: textLoad.need + 3 * additional + (assistant?.loadBytes ?? 0),
+                        held: textLoad.held + additional + (assistant?.residentBytes ?? 0),
+                        largest: max(textLoad.largest, additional, assistant?.largestAllocationBytes ?? 0))
             let divides = tp.family.stateDividesByHeads
             func share(_ bytes: Int) -> Int {
                 guard divides else { return bytes }
@@ -810,8 +941,17 @@ public enum ClusterPlacementPlanner {
             let transient = pipelined
                 ? max(own.transientBytes(chunk: chunk, context: context), share(whole.transientBytes(chunk: chunk, context: context)))
                 : share(whole.transientBytes(chunk: chunk, context: context))
-            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
-            let work = pipelined ? own.requestWorkBytes + share(whole.requestWorkBytes - own.requestWorkBytes) : share(whole.requestWorkBytes)
+            // A rank-priced native quote is what this rank reserves under this
+            // split: its own heads, rows and input columns. The whole-model
+            // every-rank charge then gives way to this rank's share of every
+            // lane. Only the equal and integer-weighted splits are quoted.
+            let quote = policy.tensorParallelBatchQuote
+            let rankReserved = mode == .tensorParallel && (weights != nil || fraction == nil)
+                ? quote?.rankReservedBytes(rank: rank, shares: weights) : nil
+            let state = rankReserved != nil ? ownState * (quote?.lanes ?? 1)
+                : max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
+            let work = (pipelined ? own.requestWorkBytes + share(whole.requestWorkBytes - own.requestWorkBytes) : share(whole.requestWorkBytes))
+                + (head?.plan.requestBytes ?? 0)
             var extra = 0
             if pipelined {
                 // The share it sends exists until it has gone.
@@ -820,16 +960,31 @@ public enum ClusterPlacementPlanner {
                     extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
                 }
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
-            let need = max(load.need, load.held + requestNeed)
+            // The native quote already includes its full state, workspace and
+            // collective buffers. Keep the larger complete reservation, then
+            // add loading headroom once; adding both quotes double counts KV.
+            let nativeFloor = rankReserved ?? (quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
+            let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
+            let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
+            // Qwen27 batch LOAD reserves its complete future request while
+            // reading the shard. Those bytes coexist with the two whole host
+            // tensors and aligned read scratch; they are not alternate peaks.
+            // A missing batch quote preserves all existing family behavior.
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? 0
+            let loadPeak = load.need + batchLoadReservation
+            // Native shard LOAD keeps the whole future head constructor/read
+            // charge live, not merely its final replicated parameter arrays.
+            let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
+            let allocatorHeld = load.held + batchLoadReservation + assistantTransient
+            let need = max(loadPeak, load.held + requestNeed)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
-                weightsBytes: load.held, loadNeedBytes: load.need, requestNeedBytes: requestNeed, needBytes: need,
+                weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
-                fit: device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest),
-                withinGPUWorkingSet: load.held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                fit: device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest),
+                withinGPUWorkingSet: load.held + max(state + work + extra + transient, nativeFloor) <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
-                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: load.held,
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld,
                     largestTensorBytes: load.largest))
         }
 
@@ -853,6 +1008,18 @@ public enum ClusterPlacementPlanner {
                 }
             }
             return kept + [other] + held + ordered[(otherIndex + 1)...]
+        }
+
+        /// `policy.tensorParallelFirst`: within each hardware group the tensor-parallel candidates go first (in
+        /// their order, fastest first), then the rest in theirs; the groups keep their order.
+        func tensorParallelFirst(_ ordered: [ClusterPlacementCandidate]) -> [ClusterPlacementCandidate] {
+            ordered.enumerated().sorted { a, b in
+                let ga = hardwareGroup(a.element), gb = hardwareGroup(b.element)
+                if ga != gb { return ga < gb }
+                let ta = a.element.mode == .tensorParallel, tb = b.element.mode == .tensorParallel
+                if ta != tb { return ta }
+                return a.offset < b.offset
+            }.map(\.element)
         }
 
         /// `policy.keptMode`: a candidate of another mode ahead of the kept mode's best in the same hardware group
@@ -904,25 +1071,27 @@ public enum ClusterPlacementPlanner {
                 var perToken = 0.0
                 for (index, device) in order.enumerated() {
                     let rate = rates(device, regime).0
-                    // A measured probe at this share wins over scaling the half's.
-                    let probed = rate.shareRate(near: share[index])?.prefillTokensPerSecond.map { 1 / $0 }
+                    // A measured probe at this share wins over scaling the half's, or another share's.
+                    let probed = rate.measuredSharePrefillSeconds(fraction: share[index], ranks: order.count)
                     // Without a probe, a Mac whose split comes from its hardware computes its share of
-                    // every layer (prefill is compute-bound); otherwise no gain is assumed.
-                    let prior = split(device, regime).fromHardware == true ? share[index] / rate.prefillTokensPerSecond : nil
-                    perToken = max(perToken, probed ?? rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
-                        ?? prior ?? 1 / rate.prefillTokensPerSecond)
+                    // every layer (prefill is compute-bound); otherwise no gain is assumed. A share probe that
+                    // timed decode only says nothing of prefill (`prefillSplit`).
+                    let prior = prefillSplit(device, regime).fromHardware == true ? share[index] / rate.prefillTokensPerSecond : nil
+                    perToken = max(perToken, probed ?? prior ?? 1 / rate.prefillTokensPerSecond)
                 }
                 first = Double(prompt) * perToken
-                    + Double(chunks * tp.family.reductionsPerLayer * layout.layerCount)
-                        * reduction.seconds(bytes: chunk * tp.family.partialBytesPerToken)
-                    + Double(tp.family.reductionsPerStep) * reduction.seconds(bytes: 16)
+                    + tp.family.prefillReductionSeconds(chunks: chunks, chunk: chunk, layers: layout.layerCount,
+                        reduction: reduction)
+                    + Double(tp.family.reductionsPerStep)
+                        * reduction.seconds(bytes: ClusterTensorParallelFamilyPlan.selectionReductionBytes)
             } else {
                 // Serial: each chunk passes through every range in turn. Lookahead:
                 // the slowest range sets the pace and one chunk passes through the rest.
+                // Every chunk's rows of the residual cross each cut (`chunkHopSeconds`).
                 first = schedule == .oneChunkLookahead
                     ? Double(prompt) * slowest + Double(chunk) * (sum - slowest)
                     : Double(prompt) * sum
-                first += Double(chunks * (ranges.count - 1)) * link.perChunkSeconds
+                first += Double(chunks * (ranges.count - 1)) * link.chunkHopSeconds(bytes: chunk * layout.boundaryBytesPerToken)
             }
             var step: Double, handoff = 0.0
             if let tp, let reduction {
@@ -933,8 +1102,10 @@ public enum ClusterPlacementPlanner {
                 for (index, device) in order.enumerated() {
                     slowest = max(slowest, split(device, regime).shareStepSeconds(fraction: share[index]))
                 }
-                step = slowest + Double(tp.reductionsPerStep(layerCount: layout.layerCount))
-                    * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+                step = slowest + tp.family.decodeReductionSeconds(layers: layout.layerCount, head: true,
+                    reduction: reduction)
+                // Rounds of the model's speculative head: a token costs the one-token step over their measured speed-up.
+                if let head = tp.speculativeHead(mode: mode, layout: layout) { step /= head.plan.decodeSpeedup }
                 if !mode.usesTensorParallelPrefill {
                     // After a pipeline prefill each rank sends the state of the
                     // heads it does not keep: (k - 1) / k of its range's.
@@ -969,6 +1140,15 @@ public enum ClusterPlacementPlanner {
         /// else no gain.
         func split(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
             ClusterDecodeSplit(rates: rates(device, regime).0, hardwareWeightSeconds: device.speed.absolute
+                ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
+                hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
+        }
+
+        /// The same split without the share probes that timed decode only:
+        /// whether a share's prefill comes from the device's hardware, as it
+        /// did before such a probe.
+        func prefillSplit(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
+            ClusterDecodeSplit(rates: rates(device, regime).0.withoutDecodeOnlyShareRates, hardwareWeightSeconds: device.speed.absolute
                 ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil,
                 hardwareDividedFraction: ClusterHardwarePrior.dividedDecodeFraction(layout))
         }
@@ -1013,7 +1193,7 @@ public enum ClusterPlacementPlanner {
             let ranks = ranges.indices.map { index in
                 mode.usesTensorParallelDecode && layout.tensorParallel != nil
                     ? tensorRequirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
-                        mode: mode, schedule: schedule, fraction: fractions?[index])
+                        mode: mode, schedule: schedule, fraction: fractions?[index], weights: weighted)
                     : requirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
                         earlier: Array(ranges[..<index]), mode: mode, schedule: schedule)
             }

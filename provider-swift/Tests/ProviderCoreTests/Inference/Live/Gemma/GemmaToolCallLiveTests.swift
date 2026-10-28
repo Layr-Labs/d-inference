@@ -258,6 +258,7 @@ struct GemmaToolCallLiveTests {
         var visible = ""
         for try await event in stream {
             switch event {
+            case .logprobs: break
             case .toolCall(let call): calls.append(call)
             case .content(let text): visible += text
             case .parsed(let parsed): visible += parsed.content

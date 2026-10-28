@@ -19,6 +19,162 @@ func checkGLMTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     try checkGLMCoverage(layout, checks)
     try checkGLMActiveBytesPrior(layout, golden: golden, checks)
     try checkGLMChoice(layout, golden: golden, checks)
+    let priced = try withNextN(layout)
+    try checkGLMNextN(layout, priced: priced, golden: golden, checks)
+    try checkGLMTensorParallelFirst(priced, golden: golden, checks)
+    try checkGLMPipelineHop(layout, golden: golden, checks)
+}
+
+/// A GLM pipeline's prefill: each 2,048-token chunk's residual (the 4 x 4,096
+/// stream in bfloat16, 32,768 B a token: 64 MiB) crosses the cut, priced on the
+/// link probe's two record sizes (`ClusterLinkCosts.chunkHopSeconds`), not as
+/// the probe's one 4 MiB record. Recorded inputs and the measured probe only.
+private func checkGLMPipelineHop(_ layout: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
+    let profile = try m5Ultra(golden)
+    let devices = ["mac-a", "mac-b"].map { ClusterPlacementDevice(label: $0, profile: profile, speed: glmAlone()) }
+    let link = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
+    var request = ClusterPlacementPolicy(); request.promptTokens = 32_768; request.outputTokens = 1
+    func first(_ link: ClusterLinkCosts) throws -> Double {
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [22], mode: .pipeline, prefillSchedule: .serial,
+            layout: layout, policy: request, link: link).rested.firstTokenSeconds
+    }
+    let hop = link.chunkHopSeconds(bytes: layout.maximumChunkTokens * layout.boundaryBytesPerToken)
+    let paid = try first(link) - first(.unmeasured)
+    checks.require(String(format: "glm pipeline: a 32K prompt's 16 chunk hops of 64 MiB cost %.0f ms (as one 4 MiB record each: %.0f ms)",
+            paid * 1e3, 16 * link.perChunkSeconds * 1e3),
+        layout.boundaryBytesPerToken == 32_768 && layout.maximumChunkTokens == 2_048
+            && abs(paid - 16 * hop) <= 1e-9 * paid && hop > 14 * link.perChunkSeconds)
+}
+
+/// The layout as this build's GLM family describes it. The retained layout was
+/// read by a build whose plan left out the NextN layer the tensor-parallel
+/// runtime decodes with on every rank; its plan gets the head as
+/// `GLM5NextPlacementFamily.tensorParallelSpeculativeHead` states it: depth 2
+/// (`GLM5NextTensorParallelResidentRuntime.mtpDepth`), the decode the pair
+/// measured at depth 2 over one token per step (76.0 against 62.6 tok/s), and
+/// 2 GiB standing in for the request bytes that function computes from the
+/// real configuration with MLX's allocator, which these checks do not compile
+/// (the NextN history at 65,536 tokens, its work, and 34 linear-attention
+/// layers' captured windows: about 1.5 to 2 GB).
+private let nextNRequestBytes = 2 << 30
+private let nextNSpeedup = 76.0 / 62.6
+
+private func withNextN(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    guard let tp = layout.tensorParallel else { throw ProbeError("the GLM layout carries no tensor-parallel plan") }
+    let f = tp.family
+    let family = ClusterTensorParallelFamilyPlan(plan: f.plan, ranks: f.ranks, reductionsPerLayer: f.reductionsPerLayer,
+        reductionsPerStep: f.reductionsPerStep, partialBytesPerToken: f.partialBytesPerToken,
+        layerPartialBytesPerToken: f.layerPartialBytesPerToken, stateDividesByHeads: f.stateDividesByHeads,
+        shareOptions: f.shareOptions, shareUnits: f.shareUnits, requestAllowance: f.requestAllowance,
+        additionalResidentBytes: f.additionalResidentBytes,
+        speculativeHead: .init(depth: 2, requestBytes: nextNRequestBytes, decodeSpeedup: nextNSpeedup))
+    return try layout.with(tensorParallel: .init(family: family, terms: tp.terms, layerDividedBytes: tp.layerDividedBytes,
+        layerReplicatedBytes: tp.layerReplicatedBytes, ingressDividedBytes: tp.ingressDividedBytes,
+        ingressReplicatedBytes: tp.ingressReplicatedBytes, egressDividedBytes: tp.egressDividedBytes,
+        egressReplicatedBytes: tp.egressReplicatedBytes))
+}
+
+/// The NextN layer in the plan (2026-10-25: the plan priced no NextN bytes and
+/// one token per step, so it could admit a pair the load gate then refused,
+/// and it predicted decode too slow): every tensor-parallel rank holds it
+/// whole, in whole pages, beside its share and carries its request state;
+/// decode is credited the rounds' measured speed-up, and a request the pair
+/// served is taken back to one-token steps before it corrects the shares, so
+/// the next plan predicts what it served. A layout without the head plans as
+/// before. Recorded inputs only.
+private func checkGLMNextN(_ layout: ClusterModelLayout, priced: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
+    guard let head = layout.speculativeHead else {
+        checks.require("glm nextn: the layout carries the NextN layer as the model's speculative head", false)
+        return
+    }
+    checks.require("glm nextn: the head is the NextN layer the worker loads (mtp_bytes=4183320576 stored, 2,641 tensors), in no range",
+        head.storedBytes == 4_183_320_576 && head.tensorCount == 2_641 && priced.tensorParallel?.family.speculativeHead?.depth == 2)
+    let profile = try m5Ultra(golden)
+    let devices = ["mac-a", "mac-b"].map { ClusterPlacementDevice(label: $0, profile: profile, speed: glmAlone()) }
+    let link = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
+    var request = ClusterPlacementPolicy(); request.promptTokens = 1_024; request.outputTokens = 1_024
+    func tensor(_ layout: ClusterModelLayout, _ devices: [ClusterPlacementDevice]) throws -> ClusterPlacementCandidate {
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: request, link: link)
+    }
+    let before = try tensor(layout, devices), after = try tensor(priced, devices)
+    let pages = head.loadedBytes + head.tensorCount * profile.memory.pageSizeBytes
+    checks.require("glm nextn: each rank holds the NextN layer whole beside its share, each tensor in whole pages (+\(pages) bytes)",
+        before.ranks.count == 2 && zip(before.ranks, after.ranks).allSatisfy { $1.weightsBytes == $0.weightsBytes + pages })
+    checks.require("glm nextn: each rank's request need carries the head's request state",
+        zip(before.ranks, after.ranks).allSatisfy { $1.requestNeedBytes == $0.requestNeedBytes + nextNRequestBytes })
+    checks.require("glm nextn: so each rank needs both more before it loads",
+        zip(before.ranks, after.ranks).allSatisfy { $1.needBytes == $0.needBytes + pages + nextNRequestBytes })
+    checks.require("glm nextn: decode is credited the rounds' measured speed-up over one token per step, the first token unchanged",
+        abs(after.rested.decodeTokensPerSecond / before.rested.decodeTokensPerSecond - nextNSpeedup) < 1e-9
+            && after.rested.firstTokenSeconds == before.rested.firstTokenSeconds)
+    checks.require("glm nextn: a pipeline holds no NextN layer and keeps its prediction",
+        try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [22], mode: .pipeline, prefillSchedule: .serial, layout: priced,
+            policy: request, link: link) == ClusterPlacementPlanner.evaluate(devices: devices, cuts: [22], mode: .pipeline,
+                prefillSchedule: .serial, layout: layout, policy: request, link: link))
+    checks.require("glm nextn: the layout's description says so",
+        ClusterPlacementExplanation.layout(priced).contains { $0.contains("speculative rounds of up to 2 proposals") && $0.contains("1.21x") }
+            && !ClusterPlacementExplanation.layout(layout).contains { $0.contains("speculative rounds") })
+
+    // Macs that admit the share without the NextN layer but not with it: the plan no longer admits them now, as the
+    // load gate (which charges the layer, its history and its windows) would not.
+    let between = before.ranks[0].needBytes + (after.ranks[0].needBytes - before.ranks[0].needBytes) / 2
+    let tight = try ["mac-a", "mac-b"].map {
+        ClusterPlacementDevice(label: $0, profile: try profile.cappedForBench(admissibleBytes: between), speed: glmAlone())
+    }
+    checks.require("glm nextn: on Macs that admit the share but not the NextN layer beside it, tensor parallel does not fit now",
+        try tensor(layout, tight).ranks.allSatisfy { $0.fit == .now } && tensor(priced, tight).ranks.allSatisfy { $0.fit != .now })
+    var rule = ClusterPlacementPolicy(); rule.tensorParallelFirst = true; rule.tensorParallelAssumesUnmeasuredLink = true
+    let squeezed = try ClusterPlacementPlanner.plan(devices: tight, layout: priced, policy: rule, link: link)
+    checks.require("glm nextn: there a split that loads now goes first (\(squeezed.chosen?.mode.rawValue ?? "none"))",
+        squeezed.chosen.map { !$0.mode.usesTensorParallelDecode && $0.tier == 0 } ?? true)
+
+    // A request served 10 % faster than predicted: the next plan predicts what it served. The rounds' speed-up comes
+    // out of the served rate as out of the prediction before the shares are corrected; otherwise the reductions, a
+    // one-token step's cost, would be taken from a token's time in rounds.
+    let observed = after.rested.decodeTokensPerSecond * 1.1
+    let sample = ClusterServedSample(route: .pair, member: nil, promptTokens: 1_024, outputTokens: 1_024,
+        firstTokenSeconds: after.rested.firstTokenSeconds, decodeTokensPerSecond: observed, finishedAt: 1)
+    let derived = try ClusterServedCalibration.measurements([sample], placement: .init(devices: devices, cuts: [], mode: .tensorParallel,
+        schedule: .serial, layout: priced, link: link), runtimeBinarySHA256: "served", measuredUTC: "2026-10-25T00:00:00Z")
+    let speeds = ClusterSpeedEstimator.estimate(devices: devices.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
+        artifactSHA256: priced.artifactSHA256, promptTokens: 1_024, measurements: derived)
+    let calibrated = try tensor(priced, zip(devices, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) })
+    checks.require(String(format: "glm nextn: a request served at %.1f tok/s against %.1f predicted makes the next prediction %.1f",
+            observed, after.rested.decodeTokensPerSecond, calibrated.rested.decodeTokensPerSecond),
+        derived.count == 2 && abs(calibrated.rested.decodeTokensPerSecond / observed - 1) < 1e-6)
+}
+
+/// Tensor parallel goes first wherever it fits (`ClusterPlacementPolicy.tensorParallelFirst`, the product's rule),
+/// so two M5 Ultra 256 GB plan GLM-5.3 Flash as tensor parallel on equal shares (1:1) with the NextN layer priced:
+/// on a new pair, before any load measured the link (on the assumed keyed reduction); after its first load's keyed
+/// probe; and as an automatic replacement, which prices only the measured link. Each pair serves it with eight lanes
+/// (`DistributedInstalledPlan.tensorParallelBatchLanes`, pinned in the provider's lane tests).
+private func checkGLMTensorParallelFirst(_ priced: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
+    let profile = try m5Ultra(golden)
+    checks.require("glm tp first: the recorded Mac is an M5 Ultra with 256 GB",
+        profile.chip == "Apple M5 Ultra" && profile.physicalMemoryBytes == 256 << 30)
+    let devices = ["mac-a", "mac-b"].map { ClusterPlacementDevice(label: $0, profile: profile, speed: glmAlone()) }
+    let measured = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
+    var first = ClusterPlacementPolicy(); first.tensorParallelFirst = true; first.tensorParallelAssumesUnmeasuredLink = true
+    var replacement = first; replacement.tensorParallelAssumesUnmeasuredLink = false
+    for (name, policy, link) in [("a new pair, link not measured yet", first, ClusterLinkCosts.unmeasured),
+                                 ("after the first load's keyed probe", first, measured),
+                                 ("an automatic replacement on the measured link", replacement, measured)] {
+        let chosen = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: policy, link: link).chosen
+        checks.require("glm tp first, 2x M5 Ultra 256 GB, \(name): tensor parallel 1:1, both ranks fit now",
+            chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.shares == nil && chosen?.ranks.count == 2
+                && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true)
+    }
+    // The plan's hardware bound: a Mac at rest (`atRestAdmissibleBytes`), not its live free memory. What is left of it
+    // is what the NextN layer's real request bytes (2 GiB stands in here) and any load term the plan does not price
+    // yet may take before the pair stops planning tensor parallel.
+    let ceiling = min(profile.residentCapacityBytes, profile.atRestAdmissibleBytes)
+    let ranks = try ClusterPlacementPlanner.plan(devices: devices, layout: priced, policy: first, link: measured).chosen?.ranks ?? []
+    let need = ranks.map(\.needBytes).max() ?? .max
+    checks.require(String(format: "glm tp first: a rank needs %.1f GB, %.1f GB inside an M5 Ultra 256 GB's at-rest ceiling (%.2f GB)",
+            Double(need) / 1e9, Double(ceiling - need) / 1e9, Double(ceiling) / 1e9),
+        ranks.count == 2 && need <= ceiling && ceiling == profile.atRestAdmissibleBytes)
 }
 
 /// The plan's terms, and every tensor a text stage loads counted once,

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 
@@ -53,10 +54,13 @@ struct QwenStagePrefixChoice: Equatable {
     let reusedPrefix: Int
     let splitFinalToken: Bool
 
-    static func choose(local: QwenStagePrefixOffer, peer: QwenStagePrefixOffer, promptCount: Int) -> Self {
+    static func choose(local: QwenStagePrefixOffer, peer: QwenStagePrefixOffer, promptCount: Int,
+                       request: QwenLayerStageGenerationRequest? = nil) -> Self {
         guard local.enabled, peer.enabled, promptCount >= 2 else { return .init(reusedPrefix: 0, splitFinalToken: false) }
         let common = Set(local.frontiers).intersection(peer.frontiers).filter { (1..<promptCount).contains($0) }
-        return .init(reusedPrefix: common.max() ?? 0, splitFinalToken: true)
+        let admissible = request.map { $0.admittedPrefixFrontiers(Array(common)) } ?? Array(common)
+        return .init(reusedPrefix: admissible.max() ?? 0,
+            splitFinalToken: !(request?.preservesPrefixChunkGrid ?? false))
     }
 }
 
@@ -151,21 +155,28 @@ func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], scope:
     }
 }
 
-/// The scope both ranks key their entries by for one request. Every field is
-/// part of the generation agreement both ranks already proved equal.
-func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> String {
+/// The scope both ranks key their entries by for one request, resident and on
+/// the SSD tier, with its tenant (`ClusterWorkerPrefixCache.scope`); nil when
+/// the request's cache is off. Every field is part of the generation agreement
+/// both ranks already proved equal.
+func qwenStagePrefixScope(_ agreement: QwenLayerStageGenerationAgreement) -> String? {
     let d = agreement.descriptor
-    return [d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256, d.sourceConfigurationSHA256,
-            d.numericalPolicySHA256, d.profileFingerprint, "chunk=\(agreement.request.chunkSize)"].joined(separator: "|")
-        + (agreement.request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
+    return qwenStagePrefixScope(load: [d.planFingerprint, d.artifactAggregateSHA256, d.storageCommitmentSHA256,
+        d.sourceConfigurationSHA256, d.numericalPolicySHA256, d.profileFingerprint], request: agreement.request)
 }
 
 /// The same scope before the agreement exists (at reservation), from the
 /// fields the agreement takes it from.
 func qwenStagePrefixScope(source: QwenLayerStageWireSourceIdentity, numericalPolicySHA256: String,
-                          request: QwenLayerStageGenerationRequest) -> String {
-    [source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
-     source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint,
-     "chunk=\(request.chunkSize)"].joined(separator: "|")
-        + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? "")
+                          request: QwenLayerStageGenerationRequest) -> String? {
+    qwenStagePrefixScope(load: [source.planFingerprint, source.artifactAggregateSHA256, source.storageCommitmentSHA256,
+        source.sourceConfigurationSHA256, numericalPolicySHA256, request.profile.fingerprint], request: request)
+}
+
+/// The scope of `request` after the load's identity fields `load`: its grid
+/// and MiMo images, in its partition. Both forms compose it here, so the
+/// scope a reservation charges captures under is the one its agreement keys.
+private func qwenStagePrefixScope(load: [String], request: QwenLayerStageGenerationRequest) -> String? {
+    ClusterWorkerPrefixCache.scope((load + ["chunk=\(request.chunkSize)"]).joined(separator: "|")
+        + (request.mimoImages.map { "|mimo-images=" + $0.fingerprint } ?? ""), request.prefixCache)
 }

@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// Private-selection native worker facade. Only readiness/cancel cross the
 /// control thread; every native operation is synchronous and exclusive. Retain
@@ -30,6 +31,9 @@ public final class GLM5NextResidentRuntime {
     /// turns it off), its budget set at load and its SSD tier opened with `prefixSSDKey`.
     public let prefixCache = QwenStagePrefixCache.fromEnvironment(ProcessInfo.processInfo.environment)
     private var prefixSSDKey: Data?
+    /// How the SSD tier's records store attention rows (the DSA latents under
+    /// main's checkpoint precision), bound into the load agreement.
+    private var prefixRecords = QwenStagePrefixDiskEncoding.native
     private var resident: GLM5NextResidentStage?
     /// The stage's standing residency (MiMo's): without it every command
     /// buffer makes the stage's weights resident again and decode collapses.
@@ -89,6 +93,9 @@ public final class GLM5NextResidentRuntime {
     public static func serving(_ configuration: QwenResidentLoadConfiguration,
                                qualification: QwenResidentQualificationSwitches = .refused,
                                prefixSSDKey: Data? = nil) throws -> GLM5NextResidentRuntime {
+        // Main serves GLM's payload KV native FP32 only and refuses any other live precision.
+        try PagedKVQuantizationSelection.clusterLive(ProcessInfo.processInfo.environment)
+            .requireNative("GLM, whose payload KV stays native FP32")
         let spec = try GLM5NextRegisteredSpecification.specification(runtimeModelID: configuration.identity.modelID)
         let directory = configuration.modelDirectory
         let config = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"),
@@ -218,8 +225,11 @@ public final class GLM5NextResidentRuntime {
             // pair; bound into the agreement so both ranks measure it.
             let probesLink = collective.transport != .localSocketTest
             let plain = try admission.loadAgreement(jacclFingerprint: topologySHA256, transport: collective.transport)
-            let agreement = probesLink
-                ? sha256(try canonicalJSONData([plain, QwenTensorParallelLinkProbe.loadAgreementField])) : plain
+            prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(ProcessInfo.processInfo.environment,
+                family: .glm5NextDSA)
+            let fields = (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
+                + (prefixCache.enabled ? prefixRecords.loadAgreementFields : [])
+            let agreement = fields.isEmpty ? plain : sha256(try canonicalJSONData([plain] + fields))
             // Metadata/capacity refusal precedes even streamed artifact hashing.
             let d = admission.descriptor, r = admission.resources
             let quote = try r.quote(descriptor: d, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
@@ -314,7 +324,7 @@ public final class GLM5NextResidentRuntime {
                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
                         generationMode: QwenResidentGenerationMode.pipeline.rawValue,
                         prefillSchedule: admission.configuration.prefillSchedule.rawValue),
-                    rank: collective.rank,
+                    rank: collective.rank, encoding: prefixRecords,
                     stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased())
                 log("darkbloom-prefix-v1 rank=\(collective.rank) family=glm budget_bytes=\(prefixCache.budgetBytes)"
                     + " room_bytes=\(room) ssd=\(prefixCache.disk != nil)")
@@ -377,10 +387,12 @@ public final class GLM5NextResidentRuntime {
             requestActiveBaseline = nil
             var reserved = Reservation(request: request, deadline: value.deadlineUptimeNanoseconds)
             // Only what this request's capture adds after the prefix this rank
-            // holds for it, under the scope its agreement will key the cache by.
-            if request.stillImages == nil, prefixCache.enabled, let contract = bound?.value.binding.contract {
-                reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: qwenStagePrefixScope(source: contract.source,
-                    numericalPolicySHA256: contract.numericalPolicySHA256, request: request),
+            // holds for it, under the scope its agreement will key the cache by;
+            // none when its cache is off.
+            if request.stillImages == nil, prefixCache.enabled, let contract = bound?.value.binding.contract,
+               let scope = qwenStagePrefixScope(source: contract.source,
+                   numericalPolicySHA256: contract.numericalPolicySHA256, request: request) {
+                reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: scope,
                     tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
             }
             // Kept prefixes give way before a reservation is refused for memory,

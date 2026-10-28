@@ -32,7 +32,7 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
         guard value.route == nil else { throw ProbeError("This family serves no request on one rank alone") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling)
+            sampling: value.sampling, prefixCache: value.prefixCache)
     }
 
     func loadResidentStage(check: () throws -> Void,

@@ -107,6 +107,9 @@ extension EngineV2Bridge {
     /// Call only at refused pre-submit cleanup or completed engine retirement.
     /// The stream's terminal alone does not prove device resources retired.
     func releaseServiceAllowance(requestID: String) {
+        if let (lifetime, key) = qwenMediaHostResources.removeValue(forKey: requestID) {
+            lifetime.nativeDidRetire(key)
+        }
         prefillEvidenceRecovery.retire(requestID)
         if nativeMediaLearnedRequestIDs.remove(requestID) != nil {
             nextNativeMediaBootstrapAt = nil

@@ -160,7 +160,10 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
             let short = decision.requiredBytes - decision.admissibleBytes
             // The kernel drops the cache the gate already counts first (inactive pages), which frees nothing new:
             // the touch covers that part too, then the shortfall and a margin, so active cache is reached.
+            // Only at normal pressure: above it the gate withdraws all cache on purpose, which is not cache it
+            // leaves uncounted, and the refusal stands on the caller's sample instead of on the reclaim's fresh one.
             if !decision.admitted, !decision.stoppedByCompressionOrSwap, short > 0,
+               decision.pressureLevel == QwenDenseStageLoadPolicy.normalPressureLevel,
                decision.fileCacheAboveReserveBytes - decision.countedReclaimableBytes >= short {
                 let asked = min(decision.fileCacheAboveReserveBytes, decision.countedReclaimableBytes + short + (1 << 30))
                 let touched = QwenDenseStageLoadReclaim.makeRoom(bytes: asked)
@@ -191,6 +194,15 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
         let room = decision.admissibleBytes - decision.requiredBytes
         if room < tightest.map({ $0.admissibleBytes - $0.requiredBytes }) ?? Int.max { tightest = decision }
         return true
+    }
+
+    /// A long-lived owner judges harm per piece of work: the next sample
+    /// becomes the baseline that compression and swap-out are measured from.
+    /// Measured from the first sample of an owner that serves for hours,
+    /// ordinary background compression on a busy Mac eventually withdraws all
+    /// file cache from every later admission. The limits are unchanged.
+    func restartWindow() {
+        lock.lock(); baseline = nil; lock.unlock()
     }
 
     var summary: QwenDenseStageLoadAdmissionSummary {

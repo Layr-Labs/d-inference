@@ -28,6 +28,47 @@ struct ClusterServiceLoginAgentTests {
         #expect(try Darkbloom.parseAsRoot(["stop"]) is darkbloom.Stop)
     }
 
+    @Test func failedPairStopKeepsLoginServiceAndReturnsAnError() throws {
+        for reason in ["local part still releasing", "peer did not acknowledge stop"] {
+            var removals = 0
+            // A runtime failure with the pair's reason (exit 1), never a usage error (exit 64 and a banner).
+            let failure = #expect(throws: Cluster.Stop.Failure.self) {
+                _ = try Cluster.Stop.finishStop(.failure(.init(reason))) { removals += 1; return ["fixture"] }
+            }
+            #expect(failure?.description == reason)
+            #expect(removals == 0, "failed drain must not destroy the supervisor or claim successful removal")
+        }
+    }
+
+    @Test func successfulOrAlreadyIdleStopRemovesTheServiceOnce() throws {
+        let outcomes: [Result<[String], ClusterOnboardingFailure>?] = [.success(["pair drained"]), nil]
+        for stopped in outcomes {
+            var removals = 0
+            let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }
+            #expect(removals == 1)
+            #expect(lines.last?.contains("will not start at login") == true)
+            if stopped != nil { #expect(lines.first == "pair drained") }
+        }
+        #expect(throws: ValidationError.self) {
+            _ = try Cluster.Stop.finishStop(.success([])) { throw ValidationError("fixture uninstall failed") }
+        }
+    }
+
+    /// Review finding (a): a leader whose member is gone for good can still
+    /// stop locally: no pair stop is attempted, the login agent goes, and the
+    /// output says the other Mac was not asked.
+    @Test func localOnlyStopSkipsThePairAndSaysSo() throws {
+        #expect(try Cluster.Stop.parse(["--local-only"]).localOnly)
+        #expect(try !Cluster.Stop.parse([]).localOnly)
+        var removals = 0
+        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
+        #expect(removals == 1)
+        #expect(lines.contains { $0.contains("will not start at login") })
+        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
+        #expect(!ordinary.contains { $0.contains("not asked to stop") })
+    }
+
     @Test func theSupervisedServiceBeatsUntilItFinishes() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-service-beat-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }

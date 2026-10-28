@@ -14,6 +14,25 @@ struct DistributedInstalledLanesTests {
         #expect(Plan.tensorParallelBatchLanes == 8)
     }
 
+    @Test func lightningSupportsExplicitPipelineLanesWithSingletonDefault() {
+        #expect(Plan.laneAdapters.contains(.nemotronH))
+        #expect(Plan.defaultBatchLanes(adapter: .nemotronH, mode: .pipeline, hasPrivateImages: false) == 1)
+        #expect(Plan.defaultBatchLanes(adapter: .nemotronH, mode: .pipeline, hasPrivateImages: true) == nil)
+        for mode in ClusterGenerationMode.allCases where mode != .pipeline {
+            #expect(Plan.defaultBatchLanes(adapter: .nemotronH, mode: mode, hasPrivateImages: false) == nil)
+        }
+    }
+
+    @Test func mimoPagedTextPipelineKeepsSingletonDefaultAndExplicitLaneEligibility() {
+        #expect(Plan.laneAdapters.contains(.mimoV26LayerStage))
+        #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .pipeline, hasPrivateImages: false) == 1)
+        #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .pipeline, hasPrivateImages: true) == nil)
+        #expect(!Plan.laneAdapters.contains(.mimoV26ImageCandidate))
+        for mode in ClusterGenerationMode.allCases where mode != .pipeline {
+            #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: mode, hasPrivateImages: false) == nil)
+        }
+    }
+
     @Test func otherModesAndFamiliesKeepTheirLanes() {
         // GLM's pipeline still serves one request at a time.
         #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .pipeline, hasPrivateImages: false) == nil)
@@ -28,6 +47,6 @@ struct DistributedInstalledLanesTests {
                 #expect(Plan.defaultBatchLanes(adapter: adapter, mode: mode, hasPrivateImages: false) == nil)
             }
         }
-        #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .pipeline, hasPrivateImages: false) == nil)
+        #expect(Plan.defaultBatchLanes(adapter: .mimoV26ImageCandidate, mode: .pipeline, hasPrivateImages: true) == nil)
     }
 }

@@ -97,6 +97,37 @@ struct GLM5NextNativeContextTests {
             profile: profile, depth: 2, executionPolicy: .reference, allocationBound: { $0 }))
     }
 
+    /// The tensor-parallel plan's NextN layer as the placement family states it
+    /// (`GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the runtime's
+    /// depth, the decode the pair measured at that depth over one token per
+    /// step, and the request memory a round adds to a rank's LOAD charge at the
+    /// memory plan's context: the larger of the contiguous charge (the NextN
+    /// history three times at its bound) and the paged one (its pages, and one
+    /// gather of them), since a plan does not know which a worker runs.
+    @Test func thePlanPricesTheNextNLayerAsTheLoadChargesIt() throws {
+        let c = try GLM5NextMetadataTestFixture(layers: 8).configuration.textConfig
+        let profile = try QwenLayerStageGenerationProfile(identifier: "glm-tp-native-fixture",
+            vocabularySize: c.vocabularySize, hiddenSize: c.hiddenSize, activationDType: c.dtype,
+            maximumPromptTokens: 128, maximumChunkTokens: 16, maximumOutputTokens: 8,
+            maximumContextTokens: 256, residualStreams: 4)
+        let depth = GLM5NextTensorParallelResidentRuntime.mtpDepth
+        let head = try #require(try GLM5NextPlacementFamily.tensorParallelSpeculativeHead(configuration: c, profile: profile,
+            executionPolicy: .reference, allocationBound: { $0 }))
+        // The history a request holds: its context and one verification window past its last output.
+        let tokens = 256 + depth + 1
+        func charge(_ history: Budget.HistoryBound) throws -> Int {
+            try GLM5NextTensorParallelResidentRuntime.speculationRequestBytes(configuration: c, profile: profile,
+                depth: depth, executionPolicy: .reference, allocationBound: { $0 }, contextTokens: 256, history: history)
+        }
+        let row = c.kvLoraRank * 4 + 2 * c.indexHeadDim * 4 + 1
+        let page = GLM5NextTensorParallelResidentRuntime.dsaPageTokens
+        let pages = ((tokens + page - 1) / page + 1) * page * row
+        #expect(head.depth == depth && depth == 2 && head.decodeSpeedup == 76.0 / 62.6)
+        #expect(try charge(.reserved(tokens: tokens)) - charge(.paged(tokens: tokens)) == 2 * tokens * row)
+        #expect(try head.requestBytes == max(charge(.reserved(tokens: tokens)), charge(.paged(tokens: tokens)) + pages))
+        #expect(head.requestBytes > 0)
+    }
+
     /// The context-dependent terms of the real model's charge (configuration
     /// only; set `DARKBLOOM_GLM_CONFIG` to its config.json): printed for the
     /// operator's notes, and the 1,048,576-token request's within reach of a

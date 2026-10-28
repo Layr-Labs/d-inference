@@ -24,6 +24,9 @@ import Foundation
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
               [--stop-token-ids A,B] [--request-id UUID] [--model-id REGISTERED_MODEL_ID (default: the tokenizer's model)]
               [--route decoding_rank_alone (the phase split's decoding rank serves it alone; the planner's per-request route)]
+              [--request-prefix-cache off|tenant:SALT (the request's own prompt-prefix partition, as a product request's
+               cache switch and cacheSalt: off reuses and keeps nothing; tenant: keys both ranks' caches by the salt's
+               digest, which alone the request file and the ranks see)]
               [--temperature F [--top-p F] [--top-k N] [--min-p F] --sampling-seed N [--sampling-stream N]
                (a sampled request: the decoding rank draws with the product's sampler, keyed on seed, stream and index)]
           darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
@@ -50,6 +53,12 @@ import Foundation
               [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file;
                                                                      the key reaches the worker on its input)
               [--prefix-ssd off (diagnosis: both workers keep nothing on disk and delete what they kept)]
+              [--worker-environment NAME=DIGITS (repeatable, diagnosis: both workers get a timing or scheduling knob,
+               one of MLX_MAX_OPS_PER_BUFFER, MLX_QMM_STEEL_TILE, DARKBLOOM_QWEN_TP_PREFILL_STRIDE,
+               DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING)]
+              [--prefix-ssd-quantization balanced|k8v4|k8v8|native (how both workers' SSD records store attention
+                                  rows; default the workers' balanced, older rows approximate after a restore;
+                                  native keeps restores bit-exact)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
               [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
@@ -64,6 +73,9 @@ import Foundation
               [--stage-residency yes|no|off (qualification: yes = both workers hold a standing MLX wired limit for
                                              the loaded stage; off = MiMo runs without its standing residency)]
               [--mimo-step-evidence on (qualification, MiMo: rank 1 reports each selected row's digests and top logits)]
+              [--batch-trace yes|no (qualification: content-free decode-width and credit counts)]
+              [--batch-logit-directory /ABS (qualification: bounded private rows on rank 1's Mac;
+                  plain Qwen pipeline lanes 2...8 and --evidence none; off unless explicitly named)]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
@@ -121,7 +133,8 @@ import Foundation
         let fields = try parse(arguments, allowed: ["--output", "--chunk-size", "--output-count", "--model-dir",
             "--user-text-file", "--raw-text-file", "--prompt-tokens", "--synthetic-tokens", "--seed",
             "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id",
-            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream", "--route"])
+            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream", "--route",
+            "--request-prefix-cache"])
         guard let output = fields["--output"]?.first, let chunk = try integer(fields, "--chunk-size"),
               let count = try integer(fields, "--output-count") else { throw Failure(usage) }
         let stops = try (fields["--stop-token-ids"]?.first ?? "").split(separator: ",").map { text -> Int in
@@ -204,6 +217,17 @@ import Foundation
             value.route = route
             try value.validate()
         }
+        if let partition = fields["--request-prefix-cache"]?.first {
+            if partition == "off" {
+                value.prefixCache = "disabled"
+            } else if partition.hasPrefix(QualificationRequest.tenantPrefix) {
+                value.prefixCache = QualificationRequest.prefixCache(
+                    tenantSalt: String(partition.dropFirst(QualificationRequest.tenantPrefix.count)))
+            } else {
+                throw Failure("--request-prefix-cache must be off or tenant:SALT")
+            }
+            try value.validate()
+        }
         try QualificationFiles.writeNew(value.encoded(), to: URL(fileURLWithPath: output))
         print("request \(value.requestID) for \(value.modelID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)"
             + (sampling.map { " sampled (temperature \($0.temperature), top-p \($0.topP), top-k \($0.topK), seed \($0.seed))" } ?? ""))
@@ -220,11 +244,11 @@ import Foundation
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
-            "--kv-backend",
+            "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
-            "--remote-prefix-ssd-key-file"]
+            "--remote-prefix-ssd-key-file", "--worker-environment", "--prefix-ssd-quantization"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
-            "--batch-request", "--batch-wave"])
+            "--batch-request", "--batch-wave", "--worker-environment"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
             return value
@@ -304,10 +328,24 @@ import Foundation
             guard ["on", "off"].contains(cache) else { throw Failure("--prefix-cache takes on or off") }
             configuration.prefixCacheOff = cache == "off"
         }
+        for entry in fields["--worker-environment"] ?? [] {
+            let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2, PairConfiguration.diagnosticWorkerEnvironment.contains(parts[0]),
+                  !parts[1].isEmpty, parts[1].utf8.count <= 12, parts[1].utf8.allSatisfy({ (48...57).contains($0) }) else {
+                throw Failure("--worker-environment takes NAME=DIGITS for "
+                    + PairConfiguration.diagnosticWorkerEnvironment.sorted().joined(separator: ", "))
+            }
+            configuration.workerEnvironment.append((parts[0], parts[1]))
+        }
         if let lanes = try integer(fields, "--batch-lanes") {
             guard (1...8).contains(lanes) else { throw Failure("--batch-lanes takes 1...8") }
             configuration.batchLanes = lanes
         }
+        if let trace = fields["--batch-trace"]?.first {
+            guard ["yes", "no"].contains(trace) else { throw Failure("--batch-trace takes yes or no") }
+            configuration.batchTrace = trace == "yes"
+        }
+        configuration.batchLogitDirectory = fields["--batch-logit-directory"]?.first
         if let backend = fields["--kv-backend"]?.first {
             guard ["paged", "contiguous"].contains(backend) else { throw Failure("--kv-backend takes paged or contiguous") }
             configuration.kvBackend = backend
@@ -333,6 +371,12 @@ import Foundation
         if let ssd = fields["--prefix-ssd"]?.first {
             guard ["on", "off"].contains(ssd) else { throw Failure("--prefix-ssd takes on or off") }
             configuration.prefixSSDOff = ssd == "off"
+        }
+        if let quantization = fields["--prefix-ssd-quantization"]?.first {
+            guard PairConfiguration.prefixSSDQuantizations.contains(quantization) else {
+                throw Failure("--prefix-ssd-quantization takes balanced, k8v4, k8v8 or native")
+            }
+            configuration.prefixSSDQuantization = quantization
         }
         if fields["--local-prefix-ssd-dir"] != nil || fields["--remote-prefix-ssd-dir"] != nil { try configuration.validate() }
         if let follow = fields["--follow-request"] {

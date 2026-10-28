@@ -6,9 +6,11 @@ task_cluster="$task_repo/libs/darkbloom-cluster"
 task_sources="$task_provider/Sources/ProviderCore"
 task_fixtures="$task_provider/Tests/ClusterInstalledSessionChecks"
 task_checks="$task_provider/Tests/ClusterConsoleChecks"
-# The real installed-file policy rejects symlinked path components, including
-# /var aliases. Keep the test-owned binaries and files in the checkout tree.
-task_build="$(mktemp -d "$task_provider/.cluster-console.XXXXXXXX")"
+# The installed-file policy rejects symlinked path components. Resolve the
+# temporary root instead of using the checkout, where file-sync services may
+# change a fixture's metadata after its identity has been verified.
+task_temporary="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+task_build="$(mktemp -d "$task_temporary/cluster-console.XXXXXXXX")"
 trap 'rm -rf "$task_build"' EXIT
 task_target="$(uname -m)-apple-macos14.0"
 task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
@@ -48,6 +50,26 @@ done
 # The setup record keeps the derived control leader (pure, Foundation only).
 task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
+# The automatic batch setup's adoption transaction checks its replacement with
+# the supervisor handoff, which the console never adopts; the installed-session
+# checks build both and exercise them.
+task_installed=()
+for task_source in "$task_sources"/Inference/Distributed/Installed/*.swift; do
+  case "$(basename "$task_source")" in
+    ClusterAutomaticBatchSetupTransaction.swift) ;;
+    *) task_installed+=("$task_source") ;;
+  esac
+done
+# The plan step's run and the embedded tensor assistant's discovery need the
+# whole provider (the provider configuration's MTP mode, the speculative
+# decoding store); the full Provider suite compiles them.
+task_placement=()
+for task_source in "$task_sources"/Inference/Distributed/Placement/*.swift; do
+  case "$(basename "$task_source")" in
+    ClusterPlacementFlow+Run.swift|ClusterPlacementTensorAssistantSelection.swift) ;;
+    *) task_placement+=("$task_source") ;;
+  esac
+done
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
 build_module DarkbloomClusterPlacement "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
@@ -75,12 +97,12 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
-  "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "${task_installed[@]}" \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
-  "$task_sources"/Inference/Distributed/Placement/*.swift \
+  "${task_placement[@]}" \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \

@@ -16,6 +16,7 @@ extension ClusterConsoleCheck {
         bridged.port?.hasIPv4Address = false
         var noProfile = F.mac(F.profileA); noProfile.profile = nil; noProfile.profileError = "darkbloom-cluster-plan beside the worker: not installed"
         var lowDisk = F.mac(F.profileA, disk: 8 * F.gib)
+        var macOS26 = F.mac(F.profileA); macOS26.osVersion = "26.4 (25E246)"; macOS26.osMajor = 26; macOS26.osMinor = 4
         lowDisk.diskTotalBytes = 1_800 * F.gib
         let leaking = ClusterSetupMemoryGuard(decision: .refused, wiredBytes: 92 * F.gib, baselineBytes: Int(25.6 * Double(F.gib)),
             detail: "92 GiB of memory is wired on this Mac and no other Darkbloom process is running; restart this Mac.")
@@ -36,6 +37,7 @@ extension ClusterConsoleCheck {
             ("reading", ClusterSetupState(size: .init(columns: 80, rows: 24))),
             ("1 ready", make(F.snapshot(F.reportA()), step: .thisMac)),
             ("1 rdma off", make(F.snapshot(F.reportA(link: off)), step: .thisMac)),
+            ("1 rdma off, macOS 26", make(F.snapshot(F.reportA(link: off, mac: macOS26)), step: .thisMac)),
             ("1 no plan tool", make(F.snapshot(F.reportA(mac: noProfile)), step: .thisMac)),
             ("1 low disk", make(F.snapshot(F.reportA(mac: lowDisk)), step: .thisMac)),
             ("1 left wired", make(F.snapshot(F.reportA(memoryGuard: leaking)), step: .thisMac)),
@@ -180,7 +182,10 @@ extension ClusterConsoleCheck {
         for word in ["Apple M3 Ultra", "60 GPU cores", "256 GiB", "resident", "on the models volume", "enabled", "Darkbloom", "idle baseline"] {
             expect(ready.contains(word), "step 1 shows \(word): \(ready)")
         }
-        expect(text("1 rdma off").contains("rdma_ctl enable"), "RDMA off gives the Recovery command")
+        let switchedOff = text("1 rdma off")
+        expect(switchedOff.contains("System Settings and choose Privacy & Security") && switchedOff.contains("Turn on RDMA over Thunderbolt")
+            && !switchedOff.contains("rdma_ctl"), "RDMA off on macOS 27 gives the System Settings switch: \(switchedOff)")
+        expect(text("1 rdma off, macOS 26").contains("rdma_ctl enable"), "RDMA off on macOS 26 gives the Recovery command")
         expect(text("1 no plan tool").contains("plan tool beside the worker did not answer"), "a missing plan tool is said")
         expect(text("1 low disk").contains("Little disk space"), "low disk is said")
         expect(text("1 left wired").contains("restart"), "left-wired memory says restart")
@@ -228,9 +233,12 @@ extension ClusterConsoleCheck {
         expect(nine?.plan?.fitsNow == true, "the 9B fits now on the captured memory")
         expect([4, 8, 12, 16].contains(nine?.plan?.cut ?? -1), "the 9B's cut is one the runtime admits: \(nine?.plan?.cut ?? -1)")
         expect(nine?.plan?.absolute == false, "without measurements the figures are relative and say so")
+        // The 27B keeps images, video and committed-token logprobs only in tensor parallel, which its captured worker
+        // does not describe: it is refused in those words, never offered a pipeline mode that would drop them.
         let big = options.first { $0.model.modelID == "EigenLabs/Qwen3.8-27B-4bit-mtp" }
-        expect(big?.blocker == nil && big?.plan?.leaderID == "mac-a", "the 27B is planned with this Mac leading")
-        // Every family the runtime serves is offered: each captured folder is planned with this Mac leading,
+        expect(big?.plan == nil && big?.blocker?.contains(ClusterModelFeaturePolicy.unavailable) == true,
+            "the 27B is refused for its features, not planned in a pipeline: \(big?.blocker ?? "planned")")
+        // Every other family the runtime serves is offered: each captured folder is planned with this Mac leading,
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
@@ -256,6 +264,12 @@ extension ClusterConsoleCheck {
             // A model the pair may not serve with this build is not offered at all (checked below).
             if let described = try? reading.capability.get(),
                ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: reading.model.modelID) { continue }
+            // Nor is a model whose worker describes no mode that keeps its features (the 27B, above).
+            if let described = try? reading.capability.get(), ClusterModelFeaturePolicy.admissibleModes(described.record).isEmpty {
+                expect(option?.plan == nil && option?.blocker?.contains(ClusterModelFeaturePolicy.unavailable) == true,
+                    "\(reading.model.modelID) is refused for its features: \(option?.blocker ?? "planned")")
+                continue
+            }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
@@ -283,8 +297,10 @@ extension ClusterConsoleCheck {
         expect(measuredNine?.absolute == true && measuredNine?.measured == true, "the 9B's figures are measured: \(String(describing: measuredNine))")
         expect((measuredNine?.firstTokenSeconds ?? 0) > 0.5 && (measuredNine?.firstTokenSeconds ?? 99) < 30, "a first-token time in seconds")
         expect((measuredNine?.decodeTokensPerSecond ?? 0) > 20, "a decode rate in tokens per second")
-        expect(measured.first { $0.option.model.modelID == "EigenLabs/Qwen3.8-27B-4bit-mtp" }?.option.plan?.absolute == false,
-            "the 27B, with no measurement of its own, shows no time")
+        // The 9B's measurement is its own: every other planned model, with no measurement of its own, shows no time.
+        let unmeasured = measured.filter { $0.option.model.modelID != "Qwen3.5-9B" }.compactMap(\.option.plan)
+        expect(!unmeasured.isEmpty && unmeasured.allSatisfy { !$0.absolute },
+            "a model with no measurement of its own shows no time: \(unmeasured.map(\.absolute))")
         var withSpeed = ClusterSetupState(size: .init(columns: 100, rows: 60))
         withSpeed.snapshot = F.snapshot(F.reportA(), record: F.confirmed())
         withSpeed.step = .model

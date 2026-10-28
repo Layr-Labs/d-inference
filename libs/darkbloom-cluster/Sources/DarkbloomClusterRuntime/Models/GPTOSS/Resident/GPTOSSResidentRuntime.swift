@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 /// Synchronous, process-local native owner of one rank of a resident GPT-OSS
@@ -21,10 +22,25 @@ public final class GPTOSSResidentRuntime {
     public let generationMode: QwenResidentGenerationMode
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private let lifecycle: QwenLayerStageResidentLifecycle
-    private var stage: LoadedGPTOSSLayerStage?
+    let lifecycle: QwenLayerStageResidentLifecycle
+    var stage: LoadedGPTOSSLayerStage?
     private weak var model: Module?
     private var reservation: Reservation?
+    public let batchLanes: Int
+    let laneBook = ClusterBatchLaneBook<GPTOSSBatchReservation>()
+    var batchServing = false
+    var batchRecordOrdinal: UInt64 = 0
+    // A failed driver retains any session whose retirement failed, and its
+    // lane charge, until shutdown can fence and release it successfully.
+    var batchDriver: GPTOSSBatchDriver<GPTOSSNativeBatchExecutor>?
+
+    func withBatchOperation<T>(_ body: () throws -> T) throws -> T {
+        if batchServing { return try body() }
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        return try body()
+    }
+
     private var processLeaseOwned = true
 
     private struct Reservation {
@@ -47,10 +63,10 @@ public final class GPTOSSResidentRuntime {
 
     private init(admission: GPTOSSResidentAdmission, control: QwenResidentControl, collective: Collective,
                  stage: LoadedGPTOSSLayerStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
-                 generationMode: QwenResidentGenerationMode, linkProbe: ClusterWorkerLinkProbe? = nil) {
+                 generationMode: QwenResidentGenerationMode, batchLanes: Int = 1, linkProbe: ClusterWorkerLinkProbe? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.model; self.lifecycle = lifecycle
-        self.generationMode = generationMode
+        self.generationMode = generationMode; self.batchLanes = batchLanes
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe)
@@ -82,11 +98,11 @@ public final class GPTOSSResidentRuntime {
         return baseReady
     }
 
-    private var servingPolicy: QwenResidentPrefillPolicy {
+    var servingPolicy: QwenResidentPrefillPolicy {
         QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule)
     }
 
-    private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
+    func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
                                   chunkSize: Int) throws -> QwenGenerationPrefillAllowance? {
         try QwenResidentPrefillSelection.allowance(policy, rank: collective.rank,
             promptCount: promptCount, chunkSize: chunkSize, hiddenSize: admission.profile.hiddenSize,
@@ -103,6 +119,7 @@ public final class GPTOSSResidentRuntime {
     /// The recording ceiling: the serving allowance at the largest request
     /// plus the capture terms. Available only while idle; it allocates nothing.
     @_spi(Benchmark) public func recordingReadiness() throws -> ClusterWorkerReady? {
+        guard batchLanes == 1 else { throw ProbeError("GPT-OSS recording requires one batch lane") }
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         guard control.available, (try? control.check()) != nil else { return nil }
@@ -126,6 +143,9 @@ public final class GPTOSSResidentRuntime {
                             dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> GPTOSSResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        // Its rows are not the product's paged pool: main refuses a quantized live precision there.
+        try PagedKVQuantizationSelection.clusterLive(environment).requireNative("the GPT-OSS stage storage", paged: false)
+        let batch = try GPTOSSBatchSettings.fromEnvironment(environment, mode: mode)
         // A keyed data plane (S16); its qualification fault only with the switches.
         let tamper = qualification.permitted ? try CollectiveRecordTamper.admit(environment: environment) : nil
         guard tamper == nil || credential != nil else {
@@ -182,7 +202,7 @@ public final class GPTOSSResidentRuntime {
                 try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                                                        transport: collective.transport)
             }
-            let plainAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport)
+            let plainAgreement = try batch.binding(admission.loadAgreementFingerprint(mode: mode, transport: transport))
             // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`),
             // so the planner can choose tensor parallel for this pair; bound here so both ranks measure it.
             let probesLink = transport != .localSocketTest
@@ -278,7 +298,7 @@ public final class GPTOSSResidentRuntime {
                     let afterLoad = Memory.snapshot()
                     // Sizes and durations only, for whoever launched this worker.
                     log("darkbloom-gptoss-resident-load-v1 rank=\(collective.rank) cut=\(configuration.stageCut)"
-                        + " mode=\(mode.rawValue) loaded_tensor_bytes=\(loaded.receipt.loadedTensorBytes)"
+                        + " mode=\(mode.rawValue) lanes=\(batch.lanes) kv_backend=paged loaded_tensor_bytes=\(loaded.receipt.loadedTensorBytes)"
                         + " active_before=\(beforeLoad.activeMemory) active_loaded=\(afterLoad.activeMemory)"
                         + " cache_loaded=\(afterLoad.cacheMemory)"
                         + " verify_ms=\((verified - started) / 1_000_000) load_ms=\((finished - verified) / 1_000_000)")
@@ -299,7 +319,7 @@ public final class GPTOSSResidentRuntime {
             let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective, stage: stage!,
-                capacity: capacity, lifecycle: lifecycle, generationMode: mode, linkProbe: linkProbe)
+                capacity: capacity, lifecycle: lifecycle, generationMode: mode, batchLanes: batch.lanes, linkProbe: linkProbe)
         } catch {
             let primary = error; control.fail(); stage = nil
             do {
@@ -332,6 +352,7 @@ public final class GPTOSSResidentRuntime {
     private func reserve(requestID: UUID, request value: ClusterWorkerReservation, recording: Bool) throws -> Int {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
+        guard batchLanes == 1 else { throw ProbeError("GPT-OSS multi-lane owner requires lane reservation") }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
         try control.check(); try control.reserve(requestID)
         // Nothing below allocates: a throw is a refusal of this request alone.
@@ -484,10 +505,12 @@ public final class GPTOSSResidentRuntime {
         try control.beginClose()
         collective.logDataPlaneStatus()
         do {
+            try batchDriver?.retireAll()
+            batchDriver = nil
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
-                    reservation = nil; stage = nil
+                    reservation = nil; laneBook.clear(); stage = nil
                     guard model == nil else { throw ProbeError("Resident GPT-OSS model remains retained") }
                     Memory.clearCache(); try error.check()
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()

@@ -82,6 +82,106 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"],
             now: 1_000 + ClusterLinkProbeHistory.maximumAgeSeconds + 1) == nil, "A stale probe was used")
     }
+    /// The share each rank's load timed alone: kept owner-only per model and
+    /// member, read back as that member's share rates for that model only,
+    /// never stale, never another model's; an unusable record keeps nothing.
+    static func shareProbeHistory() throws {
+        let probeHome = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("share-probe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: probeHome) }
+        for path in ["", ".darkbloom", ".darkbloom/cluster"] {
+            try FileManager.default.createDirectory(at: probeHome.appendingPathComponent(path), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let artifact = String(repeating: "a", count: 64), build = String(repeating: "b", count: 64)
+        let leader = ClusterShareProbeHistory.Recorded(member: "a", buildSHA256: build, probe: .init(sharePerMille: 667,
+            plainStepMicroseconds: 32_100, windowColumns: 4, windowStepMicroseconds: 56_600, rounds: 7))
+        let follower = ClusterShareProbeHistory.Recorded(member: "b", buildSHA256: build, probe: .init(sharePerMille: 333,
+            plainStepMicroseconds: 17_400, windowColumns: 4, windowStepMicroseconds: 21_900, rounds: 7))
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"]).isEmpty,
+            "No probe: no share rates")
+        try require(ClusterShareProbeHistory.record([leader, follower], artifactSHA256: artifact, homeDirectory: probeHome, now: 1_000),
+            "Probes not kept")
+        let file = ClusterShareProbeHistory.defaultFile(homeDirectory: probeHome)
+        let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
+        try require(mode == 0o600, "The share probe file is not owner-only")
+        let rates = ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"], now: 2_000)
+        // Both loads served the speculative head, so each rank is rated by its verify window (four positions over the window step).
+        try require(rates["a"] == [ClusterShareRate(sharePerMille: 667, decodeTokensPerSecond: 4e6 / 56_600)]
+            && rates["b"] == [ClusterShareRate(sharePerMille: 333, decodeTokensPerSecond: 4e6 / 21_900)], "Probes not read back per member")
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: String(repeating: "c", count: 64),
+            members: ["a", "b"], now: 2_000).isEmpty, "Another model read this model's probes")
+        try require(ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"],
+            now: 1_000 + ClusterShareProbeHistory.maximumAgeSeconds + 1).isEmpty, "A stale probe was used")
+        try require(!ClusterShareProbeHistory.record([leader, leader], artifactSHA256: artifact, homeDirectory: probeHome, now: 3_000)
+            && !ClusterShareProbeHistory.record([], artifactSHA256: artifact, homeDirectory: probeHome, now: 3_000),
+            "A record of one member twice, or of nothing, was kept")
+        // A later load at 1:1 adds its share ahead of the earlier one.
+        let even = ClusterShareProbeHistory.Recorded(member: "a", buildSHA256: build, probe: .init(sharePerMille: 500,
+            plainStepMicroseconds: 24_900, rounds: 7))
+        try require(ClusterShareProbeHistory.record([even], artifactSHA256: artifact, homeDirectory: probeHome, now: 4_000)
+            && ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a"],
+                now: 5_000)["a"]?.map(\.sharePerMille) == [500, 667], "A later load's share is not kept beside the earlier one")
+        // A file that is not owner-only is not read, and one that is not a history is started again.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        try require(ClusterShareProbeHistory.read(file) == nil, "A share probe file others can read was used")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try Data("{\"schema\":\"other\"}".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try require(ClusterShareProbeHistory.record([even], artifactSHA256: artifact, homeDirectory: probeHome, now: 6_000)
+            && ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"],
+                now: 6_000) == ["a": [ClusterShareRate(sharePerMille: 500, decodeTokensPerSecond: 1e6 / 24_900)]],
+            "A file of another kind was not started again")
+    }
+    /// What the pair served is kept with each rank's worker build, and the
+    /// planner's and the router's reads take back only the records the
+    /// setup's pinned builds served: never another build's, one of two
+    /// builds, or one written before builds were recorded.
+    static func servedSpeedHistory() throws {
+        let home = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("served-speed-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        for path in ["", ".darkbloom", ".darkbloom/cluster"] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(path), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let current = String(repeating: "a", count: 64), earlier = String(repeating: "e", count: 64)
+        func record(_ id: String, _ builds: [String]?, ranks: [String] = ["a", "b"], model: String = "m") -> ClusterPairRequestTelemetry {
+            .init(requestID: id, finishedAt: 1, modelID: model, mode: "phase_split_v1", cut: "0-16|16-32", promptTokens: 100,
+                  cachedTokens: 0, completionTokens: 64, firstTokenMilliseconds: 200, decodeTokensPerSecond: 50, handoffMilliseconds: nil,
+                  handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", ranks: ranks, concurrentRequests: 0,
+                  rankBuildSHA256: builds)
+        }
+        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "served-build")
+        // The session's first request on the route warms it (telemetry only); then one record of each kind.
+        for value in [record("warm", [current, current]), record("now-1", [current, current]), record("now-2", [current, current]),
+                      record("other", [earlier, earlier]), record("mixed", [current, earlier]), record("old", nil),
+                      record("swapped", [current, current], ranks: ["b", "a"]), record("foreign", [current, current], model: "x")] {
+            log.record(value)
+        }
+        try require(log.writeFailures == 0, "speed records were not written")
+        let all = ClusterServedSpeedHistory.entries(homeDirectory: home)
+        try require(all.count == 7 && all.first { $0.sample.finishedAt == 1 && $0.setup.rankBuildSHA256 == nil } != nil,
+            "the history did not read every speed record, the one without builds included")
+        let peers = ["a", "b"].enumerated().map { rank, id in
+            ClusterConfiguration.Peer(id: id, rank: rank, host: "host-\(id)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: current,
+                jacclDevice: "rdma_en\(rank)")
+        }
+        let builds = ClusterServedSpeedHistory.builds(peers)
+        try require(builds == ["a": current, "b": current], "the pinned builds were not read from the setup's peers")
+        let scoped = ClusterServedSpeedHistory.entries(homeDirectory: home, modelID: "m", builds: builds)
+        try require(scoped.current.count == 3 && scoped.current.allSatisfy { $0.setup.rankBuildSHA256 == [current, current] }
+            && scoped.otherBuilds == 3, "the pair's records were not scoped to its builds (\(scoped.current.count) kept, \(scoped.otherBuilds) other)")
+        // The router's live samples: its setup key names the ranks' builds, so only this build's records of the setup count.
+        let key = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_v1", cut: "0-16|16-32", ranks: ["a", "b"],
+            rankBuildSHA256: [current, current])
+        let unbuilt = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_v1", cut: "0-16|16-32", ranks: ["a", "b"])
+        try require(all.filter { $0.setup == key }.count == 2 && all.filter { $0.setup == unbuilt }.count == 1,
+            "the router's setup key did not keep this build's records apart")
+        let rebuilt = ClusterServedSpeedHistory.entries(homeDirectory: home, modelID: "m", builds: ["a": earlier, "b": earlier])
+        try require(rebuilt.current.count == 1 && rebuilt.otherBuilds == 5, "a plan for another build read this build's records")
+    }
     /// A served tensor-parallel request names its setup as the planner reads
     /// it back: every rank 0-<layers> (not the capability plan's stage cut the
     /// shards were read through), with each rank's weight when the shares are
@@ -223,13 +323,22 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try logprobModeAdmission(fixture)
+        try installedDataPlanePolicy(fixture.capability)
+        try await installedDataPlaneReadiness(fixture, prepared)
         try linkProbeHistory()
+        try shareProbeHistory()
+        try servedSpeedHistory()
         try tensorParallelSessionCut()
+        try tensorQualificationShapes(fixture)
         try localOnlyServing()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
+        try installedBatchLanePropagation(fixture)
+        try automaticSetupHandoff(fixture)
+        try automaticSetupTransaction(fixture)
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
         try generationModeSelection(fixture,prepared)
@@ -368,6 +477,17 @@ final class EndpointBox: @unchecked Sendable {
         try require(environment.count==13 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
             && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"]==String(prepared.plan.budgets.stopMarginNanoseconds/1_000_000)
             && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]==nil,"native environment widened")
+        // The decode arithmetic and fusion switches are a developer process's diagnostics: an owner never forwards
+        // them, so no stray environment changes what an installed rank computes (each rank also binds its resolved
+        // decode projections into the TP load agreement).
+        let decodeSwitches=["DARKBLOOM_QWEN_TP_EXACT_VECTORS","DARKBLOOM_RESIDUAL_RMS_NORM","DARKBLOOM_GDN_FUSED_CONV",
+            "DARKBLOOM_GDN_FUSED_QK_NORM","DARKBLOOM_QWEN35_DECODE_FUSIONS_V2","DARKBLOOM_QWEN_TP_MTP_PIPELINED_DRAFT"]
+        let strayDecode=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:Dictionary(uniqueKeysWithValues:decodeSwitches.map{($0,"0")}))
+        try require(strayDecode==environment,"a decode arithmetic switch reached a native rank's environment")
+        let strayWindow=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:["DARKBLOOM_QWEN_TP_WINDOW_LAYER_SUBMISSION":"1"])
+        try require(strayWindow==environment,"the window submission switch reached a native rank's environment")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
         // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
@@ -423,6 +543,18 @@ final class EndpointBox: @unchecked Sendable {
             "prefix cache off must not configure the SSD tier")
         try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])==nil,
             "prefix cache off must send no SSD key")
+        // The records' precision: the owner's resolved checkpoint precision whenever the prefix cache is on (both ranks bind
+        // it into their load agreement), this owner's own override first; nothing with the cache off or without a resolver.
+        let records="DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION"
+        try require(environment[records]==nil,"a rank got a records precision with no resolver installed")
+        DistributedInstalledKVQuantization.installRecords { _,_ in "native" }
+        let resolvedRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])[records]
+        let overriddenRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[records:"K8V8"])[records]
+        let cacheOffRecords=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,
+            ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])[records]
+        DistributedInstalledKVQuantization.installRecords(nil)
+        try require(resolvedRecords=="native" && overriddenRecords=="k8v8" && cacheOffRecords==nil,
+            "the records precision does not reach the rank as the prefix cache says")
         let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
         try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,
@@ -569,7 +701,7 @@ final class EndpointBox: @unchecked Sendable {
     /// A pin names whatever binary was installed. The installed path also
     /// requires that binary to carry the collective progress guard.
     static func progressGuardIsRequired(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,unguarded:URL) throws {
-        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true,acceptsPrefixSSDKeyInput:true),
+        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true,acceptsDataPlane:true,acceptsPrefixSSDKeyInput:true),
             "guarded worker features were not read from its bytes")
         let bare=try InstalledFixture.make(root:f.root.appendingPathComponent("unguarded"),probe:unguarded,owner:f.owner,worker:f.worker)
         var refusal=""
@@ -668,6 +800,44 @@ final class EndpointBox: @unchecked Sendable {
         let foreign=try refusal{try ClusterGenerationSelection.requireSupport(for:.pipeline,peers:[other],capability:split.capability)}
         try require(foreign.contains("member peer-9") && foreign.contains("nothing in the saved record"),"foreign worker refusal: \(foreign)")
     }
+    /// Both installed and member serving derive their profile through the same
+    /// selected-mode initializer; a pipeline must not inherit GLM TP capture.
+    static func logprobModeAdmission(_ f: InstalledFixture) throws {
+        for adapter in [ClusterRuntimeAdapter.qwen35Dense, .glm5NextLayerStage] {
+            let registered = adapter.registeredProfiles[0]
+            for mode in [ClusterGenerationMode.pipeline, .tensorParallel] {
+                let fixture = try InstalledFixture.make(root: f.root.appendingPathComponent("logprobs-\(adapter.rawValue)-\(mode.rawValue)"),
+                    probe: f.probe, owner: f.owner, worker: f.worker, generationMode: mode.rawValue,
+                    advertisedModes: [.pipeline, .tensorParallel],
+                    registered: (registered.runtimeModelID, registered.profileID, "fixture/logprobs"), adapter: adapter)
+                let prepared = try fixture.prepare()
+                let installed = try DistributedInstalledSession(prepared: prepared, keyedEndpointFactory: { _, _, _, _, _, _, _ in
+                    throw CheckFailure(message: "admission check must not launch either owner")
+                }, keysDataPlane: true)
+                let memberProfile = try DistributedResidentExecutionProfile(capability: prepared.plan.capability,
+                    generationMode: prepared.plan.configuration.selectedGenerationMode,
+                    requestTimeout: .seconds(prepared.plan.configuration.requestTimeoutSeconds))
+                // GLM and every Qwen TP row capture logprobs in tensor parallel; no pipeline does.
+                let supported = mode == .tensorParallel && (adapter == .glm5NextLayerStage
+                    || adapter.servesQwenTensorLanes(runtimeModelID: registered.runtimeModelID))
+                try require(installed.profile.supportsLogprobs == supported && memberProfile.supportsLogprobs == supported,
+                    "logprob support did not follow the installed adapter and selected mode")
+                for profile in [installed.profile, memberProfile] {
+                    var request = CBv2Request(id: .init(1), promptTokens: [1], sampling: .init(temperature: 0), maxTokens: 1)
+                    try require(profile.refusal(for: request) == nil, "ordinary request refused by capture policy")
+                    request.sampling.topLogprobs = 1
+                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                        "unsupported capture reached worker admission")
+                    request.sampling.topLogprobs = ClusterWorkerSampling.maximumTopLogprobs
+                    try require(profile.refusal(for: request) == (supported ? nil : .logprobCaptureUnsupported),
+                        "valid upper logprob limit changed")
+                    request.sampling.topLogprobs += 1
+                    try require(profile.refusal(for: request) == .logprobsUnsupported, "numeric logprob limit changed")
+                }
+            }
+        }
+    }
+
     /// The waits come from the setup and the verified artifact, not a per-model
     /// row (owner, 2026-10-14): the request deadline the planner derived, the
     /// longest prompt the worker admits, the artifact's size and the largest
@@ -751,21 +921,39 @@ final class EndpointBox: @unchecked Sendable {
     /// The owner's serving (2026-10-14 08:45): any model a cluster stage
     /// adapter runs is prepared on any Apple silicon, whatever its records; the
     /// records add only its public grant and the shapes that diverged. The 27B
-    /// prepares in every mode, whatever the public name; a model no adapter
-    /// runs is refused; an artifact no record ran is prepared with no public grant.
+    /// prepares in tensor parallel, whatever the public name: no other mode
+    /// keeps its images, video and committed-token logprobs, so a pipeline
+    /// setup is refused when saved and, saved before that rule, when planned.
+    /// A model no adapter runs is refused; an artifact no record ran is
+    /// prepared with no public grant.
     static func pairServingGrant(_ f:InstalledFixture) throws {
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
-        for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
-            let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
-                generationMode:mode,advertisedModes:allModes,registered:model)
-            let prepared=try big.prepare()
-            try require(prepared.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"))
-                && prepared.plan.serving.publicGrant != nil,"the 27B was prepared under another model's public grant")
-            // The fixture is the leader: rank 0 of two. Any Apple silicon runs it; a chip with no class does not.
-            for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
-            let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
-            try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
-                && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
+        let tensor=ClusterGenerationMode.tensorParallel.rawValue,advertised=allModes+[.tensorParallel]
+        let big=try InstalledFixture.make(root:f.root.appendingPathComponent("q27"),probe:f.probe,owner:f.owner,worker:f.worker,
+            generationMode:tensor,advertisedModes:advertised,registered:model)
+        let prepared=try big.prepare()
+        try require(prepared.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"))
+            && prepared.plan.serving.publicGrant != nil,"the 27B was prepared under another model's public grant")
+        // The fixture is the leader: rank 0 of two. Any Apple silicon runs it; a chip with no class does not.
+        for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
+        let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
+        try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
+            && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
+        // Every pipeline mode the worker advertises (the pipeline itself is the absence of the field).
+        let input=try JSONSerialization.jsonObject(with:Data(contentsOf:big.root.appendingPathComponent("input.json"))) as! [String:Any]
+        for mode in allModes {
+            let named:String?=mode == .pipeline ? nil : mode.rawValue
+            let unsaved=try refusal{_ = try InstalledFixture.make(root:f.root.appendingPathComponent("q27-"+mode.rawValue),probe:f.probe,
+                owner:f.owner,worker:f.worker,generationMode:named,advertisedModes:advertised,registered:model)}
+            var object=input
+            if let named { object["generationMode"]=named } else { object.removeValue(forKey:"generationMode") }
+            let configuration=try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:big.capability,
+                capabilitySHA256:big.configuration.capabilitySHA256)
+            let planned=try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:configuration,capability:big.capability),paths:big.paths)}
+            for message in [unsaved,planned] {
+                try require(message.contains("Qwen3.8 27B requires tensor parallel") && message.contains("replan this saved setup"),
+                    "the 27B's \(mode.rawValue) setup was not refused for its features: \(message)")
+            }
         }
         let nine=try f.prepare()
         try require(nine.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p")),"the 9B was prepared under another model's public grant")
@@ -779,7 +967,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(ungranted.contains("not yet qualified for public traffic") && ungranted.contains("registered_future"),"a model without records has no public grant: \(ungranted)")
         // An artifact no record ran (here the fixture's own files) is prepared for its owner, with no public grant.
         let foreign=try InstalledFixture.make(root:f.root.appendingPathComponent("q27-foreign"),probe:f.probe,owner:f.owner,worker:f.worker,
-            advertisedModes:allModes,registered:model,standsForRegisteredArtifact:false)
+            generationMode:tensor,advertisedModes:advertised,registered:model,standsForRegisteredArtifact:false)
         let other=try foreign.prepare()
         try require(other.plan.serving.publicGrant==nil && other.plan.serving.publicTrafficLine==ClusterPairOwnerServing.notYetQualified,
             "a capability whose artifact no record ran: \(other.plan.serving.publicTrafficLine)")
@@ -923,23 +1111,28 @@ final class EndpointBox: @unchecked Sendable {
     }
     typealias RankOne=@Sendable (DistributedInstalledPlan,ClusterWorkerIdentity,UInt64,(any ClusterOwnerBootstrapExchange)?) throws->any ClusterOwnedWorkerEndpoint
     static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false,
-                        rankOne:RankOne?=nil) throws->(DistributedInstalledSession,EndpointBox) {
+                        rankOne:RankOne?=nil, keyed:Bool=false,
+                        dataPlanes:[ClusterWorkerDataPlane?]=[nil,nil]) throws->(DistributedInstalledSession,EndpointBox) {
         let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let box=EndpointBox()
-        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay,_ in
+        let session=try DistributedInstalledSession(prepared:prepared,keyedEndpointFactory:{ plan,id,rank,lifetime,relay,_,trust in
+            if keyed {
+                let value = try ClusterWorkerCodec.decodeDataPlaneTrust(require(trust,"keyed factory received no credential"))
+                try require(value.membershipEpoch == id.membershipEpoch && value.rank == rank,"factory received another rank/epoch credential")
+            } else { try require(trust == nil,"plaintext fixture unexpectedly received a credential") }
             if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
             if rank==1, let rankOne { return try rankOne(plan,id,lifetime,relay) }
             let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
             let ready=base.appendingPathComponent("ready-\(rank).json")
             let frame=ClusterWorkerEventFrame(membershipEpoch:id.membershipEpoch,sequence:0,requestID:nil,
-                event:.ready(.init(identity:id,rank:rank,profile:plan.capability.profile,executionPlanSHA256:plan.partition.planSHA256,requestCapacityBytes:1024)))
+                event:.ready(.init(identity:id,rank:rank,profile:plan.capability.profile,executionPlanSHA256:plan.partition.planSHA256,requestCapacityBytes:1024,dataPlane:dataPlanes[rank])))
             try ClusterWorkerCodec.encode(frame).write(to:ready)
             let endpoint=try ClusterRemoteWorkerEndpoint(transport:.init(executable:f.owner,
                 arguments:[f.worker.path,directory.path,String(rank),behavior],environment:["FIXTURE_READY_PATH":ready.path]),
                 clusterID:plan.configuration.clusterID,expectedIdentity:id,profile:plan.capability.profile,rank:rank,
-                executionPlanSHA256:plan.partition.planSHA256,lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay)
+                executionPlanSHA256:plan.partition.planSHA256,lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay,dataPlaneTrust:trust)
             box.add(endpoint);return endpoint
-        })
+        },keysDataPlane:keyed)
         return(session,box)
     }
     static func request(_ session:DistributedInstalledSession,_ id:UInt64) throws->any DistributedResidentRequestLease {

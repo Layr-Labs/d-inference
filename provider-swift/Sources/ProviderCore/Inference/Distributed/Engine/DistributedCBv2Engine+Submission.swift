@@ -13,6 +13,18 @@ extension DistributedCBv2Engine {
         return try onQueue { try admit(request, deadlineContext: bounded).stream }
     }
 
+    /// Opaque media buffers need the definitive generation acknowledgement,
+    /// even when no timing projection is used for the media request.
+    func submitWithRetirement(_ request: CBv2Request,
+        deadlineContext context: DistributedRequestDeadlineContext
+    ) throws -> (events: AsyncStream<CBv2Event>, retirement: CBv2RequestRetirement) {
+        let bounded = context.restricted(to: deadlineContext(receivedAt: clock.now()))
+        return try onQueue {
+            let value = try admit(request, deadlineContext: bounded)
+            return (value.stream, value.state.retirement)
+        }
+    }
+
     public func submit(
         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {

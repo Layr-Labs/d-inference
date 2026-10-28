@@ -130,6 +130,12 @@ public struct PairConfiguration: Sendable {
     public var followRequests: [QualificationRequest] = []
     /// Diagnosis: both workers keep no prompt prefixes (cold prefill always).
     public var prefixCacheOff = false
+    /// Diagnosis: knobs both workers get in their exact environment
+    /// (`diagnosticWorkerEnvironment` names only, decimal values): scheduling
+    /// and timing switches whose results keep every bit, never a credential.
+    public var workerEnvironment: [(String, String)] = []
+    public static let diagnosticWorkerEnvironment: Set<String> = ["MLX_MAX_OPS_PER_BUFFER", "MLX_QMM_STEEL_TILE",
+        "DARKBLOOM_QWEN_TP_PREFILL_STRIDE", "DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING"]
     /// Whether the pair refuses a request longer than its serving context
     /// before asking either rank (the product's behaviour). Off to qualify a
     /// rank's own gate refusal at reservation (`--serving-context-check off`).
@@ -140,6 +146,10 @@ public struct PairConfiguration: Sendable {
     /// Both workers' stage KV storage (`DARKBLOOM_CLUSTER_KV_BACKEND`); nil
     /// leaves the default (paged).
     public var kvBackend: String?
+    /// Explicit qualification diagnostics: content-free geometry on rank 0;
+    /// bounded private native rows on rank 1's Mac, independent of localRank.
+    public var batchTrace = false
+    public var batchLogitDirectory: String?
     /// Request files of the batching phase, after the repetitions: each runs
     /// alone first (`batchSolo`), then each wave starts its first N together.
     public var batchRequests: [QualificationRequest] = []
@@ -160,6 +170,12 @@ public struct PairConfiguration: Sendable {
     public var remotePrefixSSD: PairPrefixSSD?
     /// Diagnosis: both workers keep nothing on disk and delete what they kept.
     public var prefixSSDOff = false
+    /// How both workers' SSD records store attention rows
+    /// (`DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION`: `balanced`, `k8v4`,
+    /// `k8v8` or `native`); nil keeps the workers' default, balanced. Both
+    /// ranks get the same value: they bind it into their load agreement.
+    public var prefixSSDQuantization: String?
+    public static let prefixSSDQuantizations: Set<String> = ["balanced", "k8v4", "k8v8", "native"]
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
@@ -319,6 +335,13 @@ public struct PairConfiguration: Sendable {
         try require(followRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "follow-up requests must name the same model and profile")
         try require((1...8).contains(batchLanes), "batch lanes are 1...8")
+        try require((!batchTrace && batchLogitDirectory == nil) ||
+            (generationMode == Self.pipelineMode && (2...8).contains(batchLanes) && !recording && lanesRetireAlone
+                && request.modelID != "registered_gpt_oss_20b"),
+            "batch diagnostics require the plain Qwen pipeline lane path and --evidence none")
+        try require(batchLogitDirectory.map { $0.hasPrefix("/") && $0 != "/" && $0.utf8.count <= 768
+            && !$0.utf8.contains(0) && !$0.contains("\n") } ?? true,
+            "batch logits need an absolute bounded directory on rank 1's Mac")
         try require(batchRequests.isEmpty || (!recording && [Self.pipelineMode, Self.tensorParallelMode].contains(generationMode)),
             "batch requests run with --evidence none in the pipeline or tensor-parallel mode")
         try require((0...60_000).contains(batchStaggerMilliseconds) && (batchCancelAfterTokens.map { $0 >= 1 } ?? true),
@@ -501,12 +524,18 @@ public struct PairConfiguration: Sendable {
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
         if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
+        environment += workerEnvironment.filter { Self.diagnosticWorkerEnvironment.contains($0.0) }
         if batchLanes > 1 { environment.append(("DARKBLOOM_CLUSTER_BATCH_LANES", String(batchLanes))) }
         if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
+        if batchTrace { environment.append(("DARKBLOOM_CLUSTER_BATCH_TRACE", "1")) }
+        if rank == 1, let batchLogitDirectory {
+            environment.append(("DARKBLOOM_CLUSTER_BATCH_LOGIT_DIRECTORY", batchLogitDirectory))
+        }
         if let ssd = rank == localRank ? localPrefixSSD : remotePrefixSSD {
             environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR", ssd.directory))
         }
         if prefixSSDOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD", "off")) }
+        if let prefixSSDQuantization { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_QUANTIZATION", prefixSSDQuantization)) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {
@@ -533,7 +562,8 @@ public struct PairConfiguration: Sendable {
         // The prefix-SSD key is the next line of the worker's input (never a variable).
         if prefixSSD(rank) != nil { arguments += ["--prefix-ssd-key", ClusterWorkerPrefixSSDKey.argument] }
         if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
-            || mimoStepEvidence || stageResidency || tamperValue != nil || rekeyRecords != nil {
+            || mimoStepEvidence || stageResidency || tamperValue != nil || rekeyRecords != nil
+            || batchTrace || batchLogitDirectory != nil {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

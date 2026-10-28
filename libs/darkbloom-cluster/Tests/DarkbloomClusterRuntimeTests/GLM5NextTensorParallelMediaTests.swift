@@ -98,7 +98,7 @@ struct GLM5NextTensorParallelMediaTests {
             try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: UUID(), sequence: 3,
                 requestID: UUID(), command: .reserve(.init(profileID: ClusterGLMImageCandidate.textProfileID,
                     promptTokenIDs: p.tokens, stopTokenIDs: [1], outputCount: 8, chunkSize: 16,
-                    deadlineUptimeNanoseconds: 1_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil, glmMedia: media))))
+                    deadlineUptimeNanoseconds: 1_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil, prefixCache: nil, glmMedia: media))))
         }
         // Rank 0's record is above the ordinary command bound and decodes whole.
         let zero = try frame(media)
@@ -125,7 +125,7 @@ struct GLM5NextTensorParallelMediaTests {
             try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: UUID(), sequence: 3,
                 requestID: UUID(), command: .reserve(.init(profileID: "registered_qwen35_9b_greedy_generation_v1",
                     promptTokenIDs: p.tokens, stopTokenIDs: [1], outputCount: 8, chunkSize: 16,
-                    deadlineUptimeNanoseconds: 1_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil,
+                    deadlineUptimeNanoseconds: 1_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil, prefixCache: nil,
                     glmMedia: media.withoutEncodedBytes))))
         }
         // A media contract on READY round-trips; text READY has no field.

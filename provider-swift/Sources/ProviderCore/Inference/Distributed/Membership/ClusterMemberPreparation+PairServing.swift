@@ -39,10 +39,9 @@ extension ClusterMemberPreparation {
         let tokenizer = try TokenizerHandle.pairServing(loaded, modelType: installed.modelType,
             modelDirectory: installed.directory)
         try requireUnchanged()
-        let wire = plan.capability.profile
-        let profile = try DistributedResidentExecutionProfile(id: wire.id, vocabularySize: wire.vocabularySize,
-            maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
-            maxContextTokens: wire.maximumContextTokens, requestTimeout: .seconds(plan.configuration.requestTimeoutSeconds))
+        let profile = try DistributedResidentExecutionProfile(capability: plan.capability,
+            generationMode: plan.configuration.selectedGenerationMode,
+            requestTimeout: .seconds(plan.configuration.requestTimeoutSeconds))
         let budget = try DistributedFirstTokenBudgetPolicy(baseMilliseconds: plan.budgets.firstTokenBaseMilliseconds,
             millisecondsPerInputToken: plan.budgets.firstTokenMillisecondsPerPromptToken)
         try budget.validate(maximumPromptTokens: profile.maxPromptTokens)

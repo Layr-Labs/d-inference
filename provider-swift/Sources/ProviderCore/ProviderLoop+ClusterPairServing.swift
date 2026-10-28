@@ -156,9 +156,11 @@ extension ProviderLoop: NativePairMemberServingHost {
         let identity = DistributedResidentIdentity(membershipEpoch: epoch, modelID: wire.modelID,
             artifactSHA256: wire.artifactSHA256, configurationSHA256: wire.configurationSHA256,
             peers: wire.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) })
+        // Speed records name the worker build each rank serves with (the identity's peers, rank order).
         let telemetry = context.observabilityFacts.map { facts in
             DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
-                log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()), ranks: facts.ranks)
+                log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()), ranks: facts.ranks,
+                rankBuildSHA256: identity.peers.map(\.buildSHA256))
         }
         let specification = ClusterPairSlotSpecification(publicModelID: context.publicModelID,
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,

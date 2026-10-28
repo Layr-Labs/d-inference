@@ -78,18 +78,38 @@ check tensor-shares-reach-the-model 1 "" "tensor-shares" -- --generation-mode te
 check tensor-parallel-turns-fast-synch-on 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=0 source=launcher" "" MLX_METAL_FAST_SYNCH=0 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-fast-synch-alone 1 "" "darkbloom-collective-sync-v1" --
+# Eager commit is a local diagnostic only; absent settings do not enable it.
+check tensor-parallel-eager-default-absent 1 "" "darkbloom-eager-fence-commit-v1" -- --generation-mode tensor_parallel_v1
+for enabled in 0 1; do
+  check tensor-parallel-eager-explicit-$enabled 1 "darkbloom-eager-fence-commit-v1 enabled=$enabled source=launcher" "" MLX_EAGER_FENCE_COMMIT=$enabled -- --generation-mode tensor_parallel_v1
+done
+check pipeline-eager-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=1 --
+check tensor-parallel-eager-malformed-not-reported 1 "" "darkbloom-eager-fence-commit-v1" MLX_EAGER_FENCE_COMMIT=true -- --generation-mode tensor_parallel_v1
+# A fixed Qwen TP batch capacity keeps fast synchronization while retaining native batching.
+for lanes in 2 4 8; do
+  CHECK_MODEL=registered_qwen38_27b check qwen27-batched-fast-synch-$lanes 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=$lanes -- --generation-mode tensor_parallel_v1
+done
+# Every other Qwen TP row serves the same batch lanes, so it widens on the same path.
+check qwen9-batched-fast-synch-2 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=2 -- --generation-mode tensor_parallel_v1
+check qwen9-single-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=1 -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-single-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=worker" "" DARKBLOOM_CLUSTER_BATCH_LANES=1 -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-batch-explicit-fast-synch 1 "darkbloom-collective-sync-v1 fast_synch=1 source=launcher" "" DARKBLOOM_CLUSTER_BATCH_LANES=2 MLX_METAL_FAST_SYNCH=1 -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-batch-invalid-lanes 1 "outside 1...8" "darkbloom-collective-sync-v1" DARKBLOOM_CLUSTER_BATCH_LANES=9 -- --generation-mode tensor_parallel_v1
 # Tensor parallel lifts MLX's per-command-buffer input-size bound (whole expert banks tripped it every MoE launch);
 # the operation bound stays, numerics are unchanged, and a launcher value is kept.
 check tensor-parallel-lifts-the-command-buffer-size-bound 1 "darkbloom-command-buffer-budget-v1 max_mb=1000000 source=worker" "" -- --generation-mode tensor_parallel_v1
 check tensor-parallel-keeps-an-explicit-command-buffer-size 1 "darkbloom-command-buffer-budget-v1 max_mb=50 source=launcher" "" MLX_MAX_MB_PER_BUFFER=50 -- --generation-mode tensor_parallel_v1
 check pipeline-leaves-the-command-buffer-size-alone 1 "" "darkbloom-command-buffer-budget-v1" --
-# GLM tensor parallel waits for its sums in the reading kernel by default;
-# the fused fence update stays a launcher's choice (kept and logged). Qwen
-# tensor parallel and GLM pipelines leave both alone.
+# GLM and Qwen tensor parallel wait for their sums in the reading kernel by
+# default (both families read every sum as a fenced input); the fused fence
+# update stays a launcher's choice (kept and logged). Pipelines leave both alone.
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-opted-in-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=1 MLX_METAL_FENCED_INPUTS=1 -- --generation-mode tensor_parallel_v1
 CHECK_MODEL=registered_glm53_flash check glm-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 source=launcher" "" MLX_METAL_FUSED_FENCE_UPDATE=0 MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
-check qwen-tensor-parallel-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" -- --generation-mode tensor_parallel_v1
+check qwen-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" -- --generation-mode tensor_parallel_v1
+CHECK_MODEL=registered_qwen38_27b check qwen27-tensor-parallel-waits-in-the-reading-kernel 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=1 source=worker" "MLX_METAL_FUSED_FENCE_UPDATE" DARKBLOOM_CLUSTER_BATCH_LANES=2 -- --generation-mode tensor_parallel_v1
+check qwen-tensor-parallel-keeps-explicit-sum-fences 1 "darkbloom-fence-fusion-v1 MLX_METAL_FENCED_INPUTS=0 source=mixed" "MLX_METAL_FUSED_FENCE_UPDATE" MLX_METAL_FENCED_INPUTS=0 -- --generation-mode tensor_parallel_v1
+check qwen-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --
 CHECK_MODEL=registered_glm53_flash check glm-pipeline-leaves-the-sum-fences-alone 1 "" "darkbloom-fence-fusion-v1" --
 check tensor-shares-refused-without-tensor-parallel 1 "--tensor-shares takes two canonical weights" "" -- --tensor-shares 1:3
 check tensor-shares-refused-malformed 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:03

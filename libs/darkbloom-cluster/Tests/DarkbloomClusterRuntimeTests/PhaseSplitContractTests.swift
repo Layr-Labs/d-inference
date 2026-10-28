@@ -33,11 +33,12 @@ private enum PhaseSplitFixture {
 
     static func request(promptCount: Int = 24, chunkSize: Int = 16, outputCount: Int = 8,
                         stopTokenIDs: Set<Int> = [], id: UUID = UUID(),
-                        model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationRequest {
+                        model: QwenRegisteredDenseModel = .qwen35NineB,
+                        prefixCache: ClusterWorkerPrefixCache? = nil) throws -> QwenLayerStageGenerationRequest {
         try QwenLayerStageGenerationRequest(
             profile: try QwenResidentAdapterDefinition.profile(specification: try specification(model)), requestID: id,
             promptTokenIDs: (0..<promptCount).map { 1000 + $0 }, chunkSize: chunkSize, outputCount: outputCount,
-            stopTokenIDs: stopTokenIDs)
+            stopTokenIDs: stopTokenIDs, prefixCache: prefixCache)
     }
 
     static let numericalPolicySHA256 = String(repeating: "3", count: 64)
@@ -218,6 +219,23 @@ struct PhaseSplitContractTests {
         let other = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 8)
         #expect(qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
             numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: other) != reserved)
+        // A request's partition, the same before and after the agreement and
+        // its plan: a tenant's own scope, none when its cache is off.
+        let digests = ["tenant-a", "tenant-b"].map(ClusterWorkerPrefixCache.tenantDigest(salt:))
+        var scopes: [String?] = []
+        for partition in [ClusterWorkerPrefixCache.disabled, .tenant(digests[0]), .tenant(digests[1])] {
+            let partitioned = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 16, prefixCache: partition)
+            let partitionedAgreement = try PhaseSplitFixture.agreement(partitioned, speculativeHead: .standard)
+            let atReservation = qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+                numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: partitioned)
+            #expect(atReservation == qwenStagePrefixScope(partitionedAgreement))
+            #expect(atReservation == ClusterWorkerPrefixCache.scope(try #require(reserved), partition))
+            #expect(qwenStagePrefixScope(try partitionedAgreement.planned(
+                try partitioned.planned(reusedPrefix: 512, splitFinalToken: true))) == atReservation)
+            #expect(partitionedAgreement.fingerprint != agreement.fingerprint)
+            scopes.append(atReservation)
+        }
+        #expect(scopes[0] == nil && scopes[1] != scopes[2] && Set(scopes.compactMap { $0 }).count == 2)
     }
 
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {
@@ -225,9 +243,9 @@ struct PhaseSplitContractTests {
             let definition = try QwenResidentModelDefinition(model: model)
             // The pipeline first; the row is what load, the worker and the capability consult. The 9B,
             // 27B and both 35B A3B artifacts ship the product's speculative head, so their rows also list it.
-            // The dense 9B and 27B also run tensor parallel (`QwenTensorParallelResidentRuntime`, round 6e).
+            // Dense rows and both registered Qwen3.5/3.6 MoE targets also run tensor parallel.
             let head = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
-            let tensor = [.qwen35NineB, .qwen38TwentySevenB].contains(model)
+            let tensor = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
             #expect(definition.supportedGenerationModes
                 == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []) + (tensor ? [.tensorParallel] : [])
                     + (head ? [.pipelineMTP] : []))
@@ -689,10 +707,12 @@ struct PhaseSplitContractTests {
                 #expect(agreement.phaseSplit == nil && !agreement.compactDecode)
             }
         }
-        // The 9B's profile and its cut-4 Plan are the ones the capability
-        // fixture pinned before this work, and the pipeline over JACCL adds
-        // nothing to the load agreement.
-        #expect(try PhaseSplitFixture.request().profile.fingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
+        // The 9B's cut-4 Plan is the one the capability fixture pinned before
+        // this work; its profile is the 32K prompt / 32K output / 64K context
+        // profile that replaced the fixture's 4,096-token output
+        // (`ResidentAdmissionA3BTests` pins the same fingerprint). The pipeline
+        // over JACCL adds nothing to the load agreement.
+        #expect(try PhaseSplitFixture.request().profile.fingerprint == "fc11ff677896ab33897564a8c2aaafe966b0e1414acf73ad15d76ee3dbfeb0d1")
         #expect(try PhaseSplitFixture.plan(cut: 4).fingerprint == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
         #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty && ClusterTransport.jaccl.loadAgreementFields.isEmpty)
     }

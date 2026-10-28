@@ -261,10 +261,10 @@ func telemetryChecks() throws {
     let next = ClusterPairTelemetryLog(file: file, sessionID: "session-2", capacity: 4)
     // The session's first request on the alone route warms that path: telemetry only.
     next.record(.init(requestID: "r6w", finishedAt: 6, modelID: "m", mode: "phase_split_mtp_v1", cut: "0-16|16-32",
-        promptTokens: 40, cachedTokens: 0, completionTokens: 8, firstTokenMilliseconds: 900, decodeTokensPerSecond: 90,
+        promptTokens: 40, cachedTokens: 0, completionTokens: 80, firstTokenMilliseconds: 900, decodeTokensPerSecond: 90,
         handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", route: "alone:second"))
     next.record(.init(requestID: "r6", finishedAt: 6, modelID: "m", mode: "phase_split_mtp_v1", cut: "0-16|16-32",
-        promptTokens: 40, cachedTokens: 0, completionTokens: 8, firstTokenMilliseconds: 30, decodeTokensPerSecond: 90,
+        promptTokens: 40, cachedTokens: 0, completionTokens: 80, firstTokenMilliseconds: 30, decodeTokensPerSecond: 90,
         handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop",
         route: "alone:second", routeReason: "second alone is predicted 30% faster than the pair"))
     let kept = ClusterServedSpeedFile.read(history)
@@ -275,7 +275,7 @@ func telemetryChecks() throws {
     var many: [ClusterPairRequestTelemetry] = []
     for index in 0..<40 {
         many = ClusterServedSpeedFile.adding(.init(requestID: "x\(index)", finishedAt: Double(index), modelID: "m", mode: "pipeline_v1",
-            cut: "0-1|1-2", promptTokens: 10, cachedTokens: 0, completionTokens: 2, firstTokenMilliseconds: 1,
+            cut: "0-1|1-2", promptTokens: 10, cachedTokens: 0, completionTokens: 64, firstTokenMilliseconds: 1,
             decodeTokensPerSecond: 1, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
             outcome: "length"), to: many)
     }
@@ -287,7 +287,7 @@ func telemetryChecks() throws {
     // The members' rank order travels with each record, and a different order is a different setup.
     func ranked(_ id: String, _ ranks: [String]?) -> ClusterPairRequestTelemetry {
         .init(requestID: id, finishedAt: 1, modelID: "m", mode: "phase_split_mtp_v1", cut: "0-4|4-32", promptTokens: 10,
-              cachedTokens: 0, completionTokens: 2, firstTokenMilliseconds: 1, decodeTokensPerSecond: 1, handoffMilliseconds: nil,
+              cachedTokens: 0, completionTokens: 64, firstTokenMilliseconds: 1, decodeTokensPerSecond: 1, handoffMilliseconds: nil,
               handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", ranks: ranks)
     }
     var orders: [ClusterPairRequestTelemetry] = []
@@ -311,6 +311,61 @@ func telemetryChecks() throws {
     check(!shared.isSpeedRecord && alone.isSpeedRecord && older.isSpeedRecord && laneRecords.map(\.requestID) == ["l0", "old"]
             && !olderJSON.contains("concurrentRequests") && sharedRoundTrip?.concurrentRequests == 7,
           "C16 a request that shared the pair with others is no speed record; one alone, or written before the count, is")
+    // Each speed record names the worker build of each rank (the pair's admission identity): the planner and the
+    // router use a record only for the builds that served it. A record written before builds were recorded reads
+    // with none, as another build's; a malformed list is dropped.
+    let buildA = String(repeating: "a", count: 64), buildB = String(repeating: "b", count: 64)
+    func built(_ id: String, _ builds: [String]?, at: Double = 1) -> ClusterPairRequestTelemetry {
+        .init(requestID: id, finishedAt: at, modelID: "m", mode: "tensor_parallel_v1", cut: "0-64|0-64", promptTokens: 30,
+              cachedTokens: 0, completionTokens: 128, firstTokenMilliseconds: 100, decodeTokensPerSecond: 40,
+              handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+              ranks: ["a", "b"], concurrentRequests: 0, rankBuildSHA256: builds)
+    }
+    let current = built("b1", [buildA, buildA])
+    let currentRoundTrip = (try? JSONEncoder().encode(current)).flatMap { try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: $0) }
+    let oldJSON = Data(#"{"cachedTokens":0,"completionTokens":128,"concurrentRequests":0,"cut":"0-64|0-64","decodeTokensPerSecond":40,"finishedAt":1,"firstTokenMilliseconds":100,"mode":"tensor_parallel_v1","modelID":"m","outcome":"length","promptTokens":30,"ranks":["a","b"],"requestID":"old"}"#.utf8)
+    let unbuilt = try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: oldJSON)
+    let unbuiltJSON = (try? JSONEncoder().encode(built("none", nil))).map { String(decoding: $0, as: UTF8.self) } ?? "-"
+    check(currentRoundTrip == current && currentRoundTrip?.rankBuildSHA256 == [buildA, buildA]
+            && unbuilt?.rankBuildSHA256 == nil && unbuilt?.isSpeedRecord == true && !unbuiltJSON.contains("rankBuildSHA256")
+            && built("short", ["c41", buildA]).rankBuildSHA256 == nil && built("upper", [buildA.uppercased(), buildA]).rankBuildSHA256 == nil
+            && built("empty", []).rankBuildSHA256 == nil && built("many", Array(repeating: buildA, count: 9)).rankBuildSHA256 == nil,
+          "C17 a speed record names each rank's worker build; one written before builds were recorded reads with none; a malformed list is dropped")
+    // The bound keeps no build apart: as the current build serves, an earlier build's records leave their route.
+    var aging: [ClusterPairRequestTelemetry] = []
+    for index in 0..<ClusterServedSpeedFile.keptPerRoute { aging = ClusterServedSpeedFile.adding(built("e\(index)", nil, at: Double(index)), to: aging) }
+    for index in 0..<10 { aging = ClusterServedSpeedFile.adding(built("n\(index)", [buildB, buildB], at: Double(100 + index)), to: aging) }
+    check(aging.count == ClusterServedSpeedFile.keptPerRoute && aging.first?.requestID == "e10"
+            && aging.filter({ $0.rankBuildSHA256 == nil }).count == ClusterServedSpeedFile.keptPerRoute - 10
+            && aging.suffix(10).allSatisfy({ $0.rankBuildSHA256 == [buildB, buildB] }),
+          "C18 the file's bound keeps no build apart: the current build's records push an earlier build's out of their setup and route")
+    let third = ClusterPairTelemetryLog(file: file, sessionID: "session-3", capacity: 4)
+    third.record(built("w", [buildA, buildA], at: 7))      // the session's first on the pair route: telemetry only
+    third.record(built("k", [buildA, buildA], at: 8))
+    check(ClusterServedSpeedFile.read(history)?.records.last.map { $0.requestID == "k" && $0.rankBuildSHA256 == [buildA, buildA] } == true
+            && ClusterServedSpeedFile.read(history)?.records.first?.rankBuildSHA256 == nil,
+          "C19 the leader's speed records file keeps each record's builds beside the earlier records without any")
+    // Probe-sized requests (the warm-up canary's 8 tokens, readiness probes' 16, the onboarding's 48-token test answer,
+    // a short chat) are telemetry, never speed records: their answer is mostly the first token.
+    func answered(_ id: String, _ tokens: Int, at: Double) -> ClusterPairRequestTelemetry {
+        .init(requestID: id, finishedAt: at, modelID: "m", mode: "tensor_parallel_v1", cut: "0-64|0-64", promptTokens: 30,
+              cachedTokens: 0, completionTokens: tokens, firstTokenMilliseconds: 100, decodeTokensPerSecond: 40,
+              handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "length",
+              ranks: ["a", "b"], concurrentRequests: 0, rankBuildSHA256: [buildA, buildA])
+    }
+    let minimum = ClusterServedSpeedRule.minimumCompletionTokens
+    check(minimum == 64 && [8, 16, 48, minimum - 1].allSatisfy { !answered("p", $0, at: 1).isSpeedRecord }
+            && answered("f", minimum, at: 1).isSpeedRecord
+            && [8, 16, 48, minimum].reduce(into: [ClusterPairRequestTelemetry]()) { $0 = ClusterServedSpeedFile.adding(answered("a\($1)", $1, at: 1), to: $0) }
+                .map(\.requestID) == ["a\(minimum)"],
+          "C20 a completed, cold request alone is a speed record only with an answer of at least \(minimum) tokens")
+    let fourth = ClusterPairTelemetryLog(file: file, sessionID: "session-4", capacity: 8)
+    fourth.record(answered("canary", 8, at: 20))     // the session's first on the pair route: it warms it
+    fourth.record(answered("probe", 16, at: 21))     // a readiness probe: telemetry only
+    fourth.record(answered("chat", 128, at: 22))     // the first full answer is a speed record, not a second warm-up
+    check(fourth.recent.map(\.requestID) == ["canary", "probe", "chat"]
+            && ClusterServedSpeedFile.read(history)?.records.suffix(2).map(\.requestID) == ["k", "chat"],
+          "C21 a probe-sized first request still warms its route; later probes stay telemetry; the next full answer is a speed record")
 }
 
 // MARK: D. Worker protocol
@@ -335,7 +390,7 @@ struct Conversation {
         try event(.ready(.init(identity: identityD, rank: rank, profile: profileD, executionPlanSHA256: planD,
                                requestCapacityBytes: 1024)), request: nil)
         try command(.reserve(.init(profileID: profileD.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2,
-            chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil)))
+            chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: nil, prefixCache: nil)))
         try event(.admitted(reservedBytes: 100))
         try command(.start)
     }

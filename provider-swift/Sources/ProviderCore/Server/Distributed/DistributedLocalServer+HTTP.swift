@@ -53,16 +53,15 @@ extension DistributedLocalServer {
         }
         // The pipeline takes as many acquisitions as the pair has lanes; further
         // requests wait in arrival order, in a bounded queue (`DistributedRequestQueue`).
-        let target = generation
-        guard servable(target) else {
+        guard acceptsPendingRequests else {
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
         }
         if let response = DistributedHTTPResponseScope.current {
-            guard response.generationID == target.id, !response.isComplete else {
-                throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed response generation is unavailable")
+            guard responses.owns(response), !response.unavailableBeforeAdmission else {
+                throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed response is unavailable")
             }
         }
-        let (id, queued) = try await waitForTurn(target)
+        let (target, id, queued) = try await waitForTurn()
         guard let entry = target.entry else {
             release(id, generation: target)
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
@@ -91,37 +90,54 @@ extension DistributedLocalServer {
         return await bridge.activeRequestCount() < target.capacity
     }
 
-    /// Returns this request's acquisition once it is the oldest waiter and the
-    /// pipeline is idle. The pin is taken here, with no suspension after the
-    /// last check, so no later arrival can pass a waiter.
-    private func waitForTurn(_ target: DistributedLocalServerGeneration) async throws -> (UUID, queued: Bool) {
-        func take() -> UUID { let id = UUID(); target.pins.insert(id); return id }
-        func free() -> Bool { target.pins.count < target.capacity }
-        if waiting.isEmpty, await hasRoom(target), waiting.isEmpty, free(), servable(target) {
-            return (take(), false)
+    /// Pending requests belong to the listener and keep their original queue
+    /// ceiling. Only the successful pin binds them to one native generation.
+    private func waitForTurn() async throws -> (DistributedLocalServerGeneration, UUID, queued: Bool) {
+        func take(_ target: DistributedLocalServerGeneration) throws -> UUID {
+            try Task.checkCancellation()
+            try DistributedHTTPResponseScope.current?.claimGeneration(target.id)
+            let id = UUID(); target.pins.insert(id); return id
+        }
+        let initial = generation
+        if waiting.isEmpty, await hasRoom(initial), waiting.isEmpty, servable(initial), initial.pins.count < initial.capacity {
+            return (initial, try take(initial), false)
         }
         guard waiting.count < queue.maximumWaiting else {
             throw MultiModelBatchSchedulerEngineError.queueFull(DistributedRequestQueue.fullMessage)
         }
         let ticket = UUID()
         waiting.append(ticket)
-        defer { waiting.removeAll { $0 == ticket } }
+        defer {
+            waiting.removeAll { $0 == ticket }
+            if waiting.isEmpty { replacementAttemptedDemand = 0; replacementRetryAt = nil }
+        }
         let ceiling = ContinuousClock.now.advanced(by: queue.waitCeiling(
-            requestTimeout: target.session.profile.requestTimeout, lanes: target.capacity))
+            requestTimeout: binding.requestTimeout, lanes: initial.capacity))
+        considerBatchReplacement()
         while true {
-            // A client that went away leaves the queue.
-            if Task.isCancelled || DistributedHTTPResponseScope.current?.isComplete == true { throw CancellationError() }
-            guard servable(target) else {
+            if Task.isCancelled || DistributedHTTPResponseScope.current?.unavailableBeforeAdmission == true {
+                throw CancellationError()
+            }
+            guard acceptsPendingRequests else {
                 throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
             }
-            if waiting.first == ticket, await hasRoom(target), waiting.first == ticket, free(), servable(target) {
-                return (take(), true)
-            }
+            // Check the original absolute ceiling before every admission,
+            // including the first poll after a slow replacement load.
             guard ContinuousClock.now < ceiling else {
                 throw MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.waitedTooLongMessage)
             }
+            let target = generation
+            if waiting.first == ticket, servable(target), await hasRoom(target),
+               waiting.first == ticket, target.pins.count < target.capacity, servable(target) {
+                return (target, try take(target), true)
+            }
+            considerBatchReplacement()
             try? await Task.sleep(for: DistributedRequestQueue.pollInterval)
         }
+    }
+
+    private var acceptsPendingRequests: Bool {
+        teardownTask == nil && !failed && (phase == .reconfiguring || servable(generation))
     }
 
     func release(_ id: UUID, generation target: DistributedLocalServerGeneration) {
@@ -134,23 +150,26 @@ extension DistributedLocalServer {
         if let modelID, modelID != binding.publicModelID {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID)
         }
-        guard phase == .serving, session.status == .ready, let entry else {
+        guard acceptsPendingRequests, let stableTokenizer else {
             throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed session is unavailable")
         }
-        return .init(tokenizer: entry.tokenizer, modelType: entry.modelType)
+        return stableTokenizer
     }
 
     /// The pair's `/metrics` lines (`EngineV2Bridge.pairMetricsSample`): its
-    /// MTP counts, the requests it runs and the ones waiting for a lane.
+    /// MTP posture as the placed mode decodes (the session's speculation,
+    /// `DistributedInstalledSpeculation`) and its counts, the requests it runs
+    /// and the ones waiting for a lane.
     func metricsSamples() async -> [MTPSlotMetricsSample] {
         guard phase == .serving, let bridge = entry?.engineV2Bridge else { return [] }
         let waitingRequests = waiting.count
+        let decodesWithHead = session.httpDiagnosticObservation?.mtpEnabled ?? false
         guard let sample = await bridge.pairMetricsSample(model: binding.publicModelID,
-            waitingRequests: waitingRequests) else { return [] }
+            waitingRequests: waitingRequests, placementDecodesWithHead: decodesWithHead) else { return [] }
         return [sample]
     }
 
     func catalog() -> [String] {
-        phase == .serving && session.status == .ready ? [session.model.publicModelID] : []
+        acceptsPendingRequests ? [binding.publicModelID] : []
     }
 }

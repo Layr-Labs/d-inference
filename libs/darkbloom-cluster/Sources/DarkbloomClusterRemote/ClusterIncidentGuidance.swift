@@ -294,7 +294,7 @@ extension ClusterGuidance {
         .linkNotReady: .init(code: "link_not_ready", title: "The RDMA link between the Macs is not ready",
             explanation: "A rank could not open its RDMA device or the full connectivity matrix between the Macs.",
             steps: ["Run `darkbloom cluster link` on both Macs and follow what it reports.",
-                    "RDMA over Thunderbolt is turned on only from macOS Recovery (`rdma_ctl enable`); Darkbloom never changes it."],
+                    "RDMA over Thunderbolt is turned on in System Settings, Privacy & Security from macOS 27, and only from macOS Recovery (`rdma_ctl enable`) before that; Darkbloom never changes it."],
             command: "darkbloom cluster link"),
         .rdmaCompletionError: .init(code: "rdma_completion_error", title: "The RDMA link lost a transfer",
             explanation: "The RDMA driver reported a failed work completion; the ranks stopped instead of waiting forever.",

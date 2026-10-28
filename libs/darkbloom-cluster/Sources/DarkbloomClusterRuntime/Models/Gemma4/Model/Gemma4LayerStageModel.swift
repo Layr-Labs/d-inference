@@ -113,6 +113,15 @@ extension Gemma4LayerStageModel: LayerStageFrameForwarding {
 
     func layerStageForward(tokens: MLXArray, residual: MLXArray?,
                            caches: [any CBv2AttendingLayerCache], frame: QwenLayerStageFrame) -> MLXArray {
+        Gemma4BatchDecodeScope.withDecodeFrame(tokens: tokens, enabled: frame.phase == .decode) {
+            Gemma4PrefillProjectionScope.withPrefillFrame(tokens: tokens, enabled: frame.phase == .prefill) {
+                forwardFrame(tokens: tokens, residual: residual, caches: caches, frame: frame)
+            }
+        }
+    }
+
+    private func forwardFrame(tokens: MLXArray, residual: MLXArray?,
+                              caches: [any CBv2AttendingLayerCache], frame: QwenLayerStageFrame) -> MLXArray {
         precondition(caches.count == trunk.layers.count, "Gemma stage needs one cache per local layer")
         precondition((residual == nil) == (rank == 0), "Gemma stage ingress differs from its rank")
         let prefill = frame.phase == .prefill
@@ -141,7 +150,7 @@ extension Gemma4LayerStageModel: LayerStageFrameForwarding {
 
     /// The tied embedding as the output projection, then the final-logit softcap.
     private func logits(_ hidden: MLXArray) -> MLXArray {
-        let projected = trunk.embedTokens.asLinear(hidden)
+        let projected = Gemma4BatchDecodeScope.projectHead(trunk.embedTokens, hidden)
         guard configuration.finalLogitSoftcapping > 0 else { return projected }
         return Gemma4StagePromptPolicy.logitSoftcap(projected, MLXArray(configuration.finalLogitSoftcapping))
     }

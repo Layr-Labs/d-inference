@@ -14,7 +14,16 @@ enum DistributedInstalledGenerationSelection {
         let mode = configuration.selectedGenerationMode
         try ClusterGenerationSelection.requireSupport(for: mode, peers: configuration.peers, capability: capability)
         let shares = configuration.tensorShares.map { ["--tensor-shares", $0.map(String.init).joined(separator: ":")] } ?? []
-        return mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
+        var arguments = mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
+        if let assistant = configuration.tensorAssistant {
+            try assistant.validate()
+            guard mode == .tensorParallel, ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID) else {
+                throw ClusterConfigurationError.invalid("Tensor assistant launch differs from the saved Qwen TP policy")
+            }
+            arguments += ["--mtp-depth", String(assistant.depth),
+                ClusterQwenTensorAssistantPolicy.inventoryArgument, assistant.inventorySHA256] + assistant.verificationArguments
+        }
+        return arguments
     }
 }
 
@@ -52,9 +61,24 @@ struct DistributedInstalledSpeculation: Equatable, Sendable {
     }
 
     init(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability) {
-        self.init(mode: configuration.selectedGenerationMode,
+        self.init(mode: configuration.selectedGenerationMode, runtimeModelID: capability.runtimeModelID,
+            tensorAssistant: configuration.tensorAssistant != nil,
             everyMemberAdvertisesHead: configuration.peers.allSatisfy {
                 ClusterGenerationSelection.supportedModes(for: $0, capability: capability).contains(.phaseSplitMTP)
             })
+    }
+
+    /// Two tensor-parallel placements decode with a head that no generation
+    /// mode names: Qwen27's resident assistant (`tensorAssistant`, saved with
+    /// the setup) and GLM-5.3-Flash's NextN head, which its runtime loads on
+    /// every tensor-parallel load (`ClusterGLMTensorParallel`).
+    init(mode: ClusterGenerationMode, runtimeModelID: String, tensorAssistant: Bool, everyMemberAdvertisesHead: Bool) {
+        let assisted = tensorAssistant && mode == .tensorParallel
+            && ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(runtimeModelID)
+        if assisted || ClusterGLMTensorParallel.decodesWithHead(runtimeModelID: runtimeModelID, mode: mode) {
+            self.init(enabled: true, offReason: Self.enabledReason)
+            return
+        }
+        self.init(mode: mode, everyMemberAdvertisesHead: everyMemberAdvertisesHead)
     }
 }

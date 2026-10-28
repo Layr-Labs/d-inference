@@ -107,6 +107,18 @@ struct QwenDenseRegisteredSpecification {
             manifestBytes: 8_608_670_713, manifestFileCount: 8, sourceBytes: 7_662_073_856,
             tensorCount: 1655, largestTensorBytes: 317_849_600, layers: 64, hidden: 5120,
             queryHeads: 24, linearValueHeads: 48, namedStateBytes: 1_599_082_560),
+        // Ternary Bonsai 2 9B, catalog `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit`
+        // 2026-10-15-base-r2. 831 canonical text tensors, excluding 202 checked
+        // transform-sign tensors (4,358,144 bytes) and the vision tower.
+        // Its transform block is 4096; the 27B pack remains at 1024.
+        .init(model: .ternaryBonsai2NineB,
+            configurationSHA256: "b028784e087316b7ce0fb7ae3d2d6eaeb0b15144dd3f234da4c5d57ef1ffbacb",
+            manifestSHA256: "c226d5cf4ecea1c6f299c2a8ebaa8686a89be12750b45fa6fc910cb078b19c13",
+            artifactSHA256: "3bfbed188a821cb7b16321b6be54245c6b162fc7d0ea064d5f663d0b07ee713d",
+            inventorySHA256: "4ed8b19efb31d218674566fa2b153b808f67f35d47258bb285a43abcccb7e67f",
+            manifestBytes: 3_475_181_460, manifestFileCount: 9, sourceBytes: 2_545_600_512,
+            tensorCount: 831, largestTensorBytes: 254_279_680, layers: 32, hidden: 4096,
+            queryHeads: 16, linearValueHeads: 32, namedStateBytes: 745_345_056),
         // Nemotron 3.5 Lightning, catalog `nvidia-nemotron-3.5-lightning`
         // 2026-09-30-r1. 729 canonical tensors: the 763 stored ones without
         // the 34 of the artifact's `mtp.` head. Its state geometry is
@@ -139,7 +151,20 @@ extension QwenDenseRegisteredSpecification {
         .qwen35ThirtyFiveBA3B: 262_144,
         .qwen36ThirtyFiveBA3B: 262_144,
         .ternaryBonsai2TwentySevenB: 262_144,
+        .ternaryBonsai2NineB: 262_144,
         .nemotron35Lightning: 262_144,
     ]
     var declaredContextTokens: Int? { Self.declaredContextTokensByModel[model] }
+
+    /// The output limit registered for each row that serves its whole declared
+    /// context (catalog `max_output_length`), which the pair advertises as the
+    /// single-Mac product does. Its limits are the native context with this
+    /// output (`QwenResidentContextLimits.Ceiling.native`); every other row
+    /// keeps the protocol's standard request. Tensor parallel charges a request
+    /// beyond the standard one at its own context when a rank reserves it.
+    static let nativeOutputTokensByModel: [QwenRegisteredDenseModel: Int] = [
+        // Catalog `max_context_length` 262,144 and `max_output_length` 32,768.
+        .qwen38TwentySevenB: 32_768,
+    ]
+    var nativeOutputTokens: Int? { Self.nativeOutputTokensByModel[model] }
 }

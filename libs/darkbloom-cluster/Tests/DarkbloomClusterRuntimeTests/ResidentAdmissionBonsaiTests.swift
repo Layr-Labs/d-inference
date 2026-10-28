@@ -46,7 +46,7 @@ struct ResidentAdmissionBonsaiTests {
         #expect(packed.specification.layers == 64 && packed.supportedCuts == F.cuts)
         #expect(packed.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
         #expect(packed.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
-        #expect(packed.adapter == .qwen35PrismHadamard && packed.arithmetic == .prismHadamard)
+        #expect(packed.adapter == .qwen35PrismHadamard && packed.arithmetic == .prismHadamardRows)
         #expect(try QwenResidentModelDefinition(runtimeModelID: F.modelID).specification.model == .ternaryBonsai2TwentySevenB)
         #expect(try QwenResidentModelDefinition(configuration: F.data("configuration")).specification.model == .ternaryBonsai2TwentySevenB)
         for unknown in ["ternary-bonsai-2-27b", F.modelID + " ", "registered_ternary_bonsai_2_27b_v2", "registered_bonsai"] {
@@ -83,12 +83,16 @@ struct ResidentAdmissionBonsaiTests {
         // Above the legacy 8 GiB bound the 9B is admitted under, by 18.7 MiB.
         #expect(packed.maximumManifestPayloadBytes > LocalCorrectnessStorage.maximumManifestPayloadBytes)
         // The 27B's geometry, and a formula that already counts four bytes per state element.
-        // At the earlier reservation the pinned figure; at the derived 65,536-token context the 27B's own ceiling.
+        // At the earlier reservation the pinned figure; at the derived 65,536-token context the
+        // 27B geometry's estimate there (the dense 27B, which serves its native context, has its
+        // ceiling at 262,144 tokens).
         let dense = try QwenResidentResourceCeilings(model: .qwen38TwentySevenB)
         #expect(packed.maximumNamedStateBytes == 1_616_248_896)
-        #expect(packed.namedStateByteCeiling == dense.namedStateByteCeiling)
         let spec = try F.specification()
         #expect(try spec.expectedGeometry() == F.specification(.qwen38TwentySevenB).expectedGeometry())
+        #expect(packed.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(),
+            maximumTokens: 65_536, chunkSize: 512).conservativeStateAndBoundaryBytes))
+        #expect(packed.namedStateByteCeiling < dense.namedStateByteCeiling)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(), maximumTokens: 8193, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
         // The other rows are untouched.
@@ -123,12 +127,12 @@ struct ResidentAdmissionBonsaiTests {
         #expect(!plans.contains(dense.fingerprint))
         let reservation = ClusterWorkerReservation(profileID: leader.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 8192), stopTokenIDs: [], outputCount: 128, chunkSize: 512,
-            deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil)
+            deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         #expect(try leader.request(reservation, id: UUID(), now: F.now).maximumTokens == 8320)
         #expect(throws: (any Error).self, "the 27B's profile ID on a Bonsai admission") {
             _ = try leader.request(.init(profileID: "registered_qwen38_27b_greedy_generation_v1",
                 promptTokenIDs: [1000], stopTokenIDs: [], outputCount: 1, chunkSize: 1,
-                deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil), id: UUID(), now: F.now)
+                deadlineUptimeNanoseconds: F.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: F.now)
         }
     }
 
@@ -226,6 +230,7 @@ struct ResidentAdmissionBonsaiTests {
         #expect(dense == (try QwenLongPrefillArithmeticEnvironment.admit(F.environment())))
         #expect(dense.requiredValues.count == 3 && dense.defaultBindings.count == 5 && receipt.defaultBindings.count == 9)
     }
+
 
     @Test func aStageConfigurationNamesTheDenseConstructorAndCarriesItsOwnPackedModules() throws {
         let root = try #require(try JSONSerialization.jsonObject(with: F.data("configuration")) as? [String: Any])

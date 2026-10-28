@@ -24,7 +24,13 @@ public enum ClusterPlacementFlow {
         public var speedMeasurements: [URL] = []
         public var promptTokens: Int?
         public var outputTokens: Int?
+        /// Explicit typed selection until the full assistant path is qualified.
+        /// The metadata helper must return this exact inventory and depth.
+        public var tensorAssistant: ClusterQwenTensorAssistantPolicy? = nil
         public var regime = ClusterPlacementPolicy.Regime.rested
+        /// A model is loaded or loading on this Mac now (`ClusterService.modelLoaded()`): this Mac's profile then
+        /// carries the speed index it last measured instead of measuring one beside the model (`ClusterLocalDeviceProfile`).
+        public var modelLoaded = false
         /// A new directory for the two setups and the plan, created owner-only.
         public var output: URL
         public init(pairDescription: URL, capability: URL, capabilitySHA256: String, localMemberID: String,
@@ -50,10 +56,17 @@ public enum ClusterPlacementFlow {
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
+                              requestScope: ClusterPlacementRequestScope? = nil,
+                              batchScope: ClusterPlacementBatchScope? = nil,
+                              tensorAssistantQuote: ClusterPlacementTensorBatchQuote? = nil,
+                              tensorWideningQuote: ClusterPlacementTensorBatchQuote? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
                               link: ClusterLinkCosts = .unmeasured,
+                              shareProbes: [String: [ClusterShareRate]] = [:],
                               incumbentMode: ClusterGenerationMode? = nil,
+                              incumbentTensorShares: [Int]? = nil,
+                              assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
@@ -86,6 +99,11 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
+        // Tensor parallel wherever it fits (owner, 2026-10-24: "if tensor fits it will and should always be faster").
+        // A first placement plans it on the assumed keyed reduction until a load measures the link; an automatic
+        // replacement (`assumeUnmeasuredLink: false`) prices only the pair's recorded keyed link.
+        policy.tensorParallelFirst = true
+        policy.tensorParallelAssumesUnmeasuredLink = assumeUnmeasuredLink
         // A model no stage adapter runs is still planned, with the refusal in the plan's words; records never rule a
         // chip, an order or a mode out (owner, 2026-10-14 08:45).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
@@ -110,7 +128,14 @@ public enum ClusterPlacementFlow {
         let recordedRounds = ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: runtimeModelID,
             artifactSHA256: artifactSHA256)
         policy.recordedPipelineSpeculativeFactor = recordedRounds
-        policy.modes = capability.supportedGenerationModes
+        let admissibleModes = ClusterModelFeaturePolicy.admissibleModes(capability)
+        guard !admissibleModes.isEmpty else {
+            throw ClusterConfigurationError.invalid(ClusterModelFeaturePolicy.unavailable)
+        }
+        policy.modes = admissibleModes
+        // Each restriction below says why, so a plan without a pipeline never reads as one where none fits; the
+        // first said stands (the model's features before a quote that follows from them).
+        policy.modesReason = ClusterModelFeaturePolicy.modesReason(capability)
         policy.handOffModes = handOff
         policy.forcedMode = forced
         policy.schedules = capability.supportedPrefillSchedules
@@ -119,16 +144,51 @@ public enum ClusterPlacementFlow {
             artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens, measurements: measurements,
             indices: profiles.compactMap { $0.1.speedIndex })
         // Speeds that are only ratios become each Mac's own index estimate when tensor parallel is open
-        // (`ClusterHardwarePrior`), so a request served in tensor parallel can correct them.
+        // (`ClusterHardwarePrior`), so a request served in tensor parallel can correct them. Each Mac's own share
+        // probes of this model (`ClusterShareProbeHistory`, by member ID) are its share steps, before the served
+        // requests correct them.
         var devices = ClusterHardwarePrior.absolute(zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
-            layout: layout, link: link)
-        // Requests this pair served are measurements too: the next plan starts from them.
+            layout: layout, link: link).map { $0.addingShareRates(shareProbes) }
+        // Requests this pair served are measurements too: the next plan starts from them. Only those every rank of which
+        // ran the worker build this plan is for: each member's in the pair description, which the setups pin and every
+        // start checks the installed worker against. A build changes the kernels a request runs, so a speed an earlier
+        // build served (or a record written before builds were recorded) says nothing of this one's; until this build has
+        // served, the plan rests on the share probes and the link.
         let members = Set(profiles.map { $0.0 })
-        let ours = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
+        let pairServed = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
+        let builds = Dictionary(description.members.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { first, _ in first })
+        let scoped = ClusterServedSpeedRecords.servedBy(builds, pairServed)
+        let ours = scoped.current
         // The request this pair's served requests look like (decode-heavy or prompt-heavy) is the one the
-        // planner chooses tensor parallel or a pipeline for, unless the caller named one.
-        if promptTokens == nil, outputTokens == nil, let mix = ClusterRequestMix.reference(ours.map(\.sample), layout: layout) {
+        // planner chooses tensor parallel or a pipeline for, unless the caller named one. Prompt and answer lengths
+        // are what the pair's clients sent, not a speed, so every build's requests count here: after an update the
+        // plan is made for the same requests as before (not the layout's largest), and only its speeds wait for
+        // this build's own.
+        if promptTokens == nil, outputTokens == nil, let mix = ClusterRequestMix.reference(pairServed.map(\.sample), layout: layout) {
             policy.promptTokens = mix.promptTokens; policy.outputTokens = mix.outputTokens
+        }
+        guard tensorAssistantQuote == nil || batchScope == nil else {
+            throw ClusterConfigurationError.invalid("Placement cannot combine singleton and concurrent assistant quotes")
+        }
+        if let requestScope = batchScope?.request ?? tensorAssistantQuote?.request ?? requestScope {
+            // Scopes and quotes size the memory plan's request: the profile,
+            // or the standard request for a row that serves its native context.
+            let memory = capability.profile.memoryScope
+            guard requestScope.maximumPromptTokens == memory.maximumPromptTokens,
+                  requestScope.maximumOutputTokens == memory.maximumOutputTokens,
+                  requestScope.maximumContextTokens == memory.maximumContextTokens else {
+                throw ClusterConfigurationError.invalid("The request scope and worker capability have different profile limits")
+            }
+            // A singleton tensor quote prices the native profile's complete envelope, which
+            // covers the served or planned reference; other scopes price exactly their request.
+            if batchScope == nil, tensorAssistantQuote != nil { try requestScope.applyCovering(to: &policy, layout: layout) }
+            else { try requestScope.apply(to: &policy, layout: layout) }
+        }
+        if let tensorAssistantQuote, let requestScope, tensorAssistantQuote.request != requestScope {
+            throw ClusterConfigurationError.invalid("Assistant placement carries two different request scopes")
+        }
+        if let batchScope, let requestScope, batchScope.request != requestScope {
+            throw ClusterConfigurationError.invalid("Batch placement carries two different request scopes")
         }
         var servedLines: [String] = []
         if !ours.isEmpty {
@@ -140,9 +200,15 @@ public enum ClusterPlacementFlow {
                 let again = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
                     artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens,
                     measurements: measurements + derived.measurements, indices: profiles.compactMap { $0.1.speedIndex })
+                // What tensor parallel served carries the probes, corrected; anything else served, the probes as measured.
                 devices = ClusterHardwarePrior.absolute(zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
-                    layout: layout, link: link)
+                    layout: layout, link: link).map { $0.addingShareRates(shareProbes) }
             }
+        }
+        // What was left out, in one line, where the plan explains its served speeds.
+        if let line = ClusterServedSpeedRecords.otherBuildsLine(scoped.otherBuilds, builds: builds) {
+            if servedLines.isEmpty { servedLines = ["Speed records from served requests"] }
+            servedLines.append(line)
         }
         // What this pair served in each mode, for the reference request, and the mode the plan keeps because of it
         // (`ClusterServedModes.hold`): after a Darkbloom update (`incumbentMode`, the same model on the same pair)
@@ -154,18 +220,70 @@ public enum ClusterPlacementFlow {
             servedLines += ["Served requests by mode"]
                 + ClusterServedModes.lines(servedModes, promptTokens: reference.prompt, outputTokens: reference.output)
         }
-        let plannable = capability.supportedGenerationModes.filter { layout.generationModes.contains($0) && (handOff || !$0.isHandOff) }
+        let plannable = admissibleModes.filter { layout.generationModes.contains($0) && (handOff || !$0.isHandOff) }
         if forced == nil, let hold = ClusterServedModes.hold(incumbent: incumbentMode, figures: servedModes, plannable: plannable,
                                                               promptTokens: reference.prompt, outputTokens: reference.output) {
             policy.keptMode = hold.mode; policy.keptModeMargin = hold.margin; policy.keptModeReason = hold.reason
         }
-        // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
+        // The link as the pair's recent loads measured it (`ClusterLinkProbeHistory`, their median);
         // unmeasured, no tensor-parallel mode is chosen.
+        if let batchScope {
+            try batchScope.requireChunk(description.chunkTokens, derived: description.derivesRequestLimits)
+            let modes = batchScope.supportedModes.filter(admissibleModes.contains)
+            guard !modes.isEmpty, !capability.hasPrivateImages else {
+                throw ClusterConfigurationError.invalid("Batch placement requires a supported priced native mode")
+            }
+            policy.modes = modes; policy.schedules = [.serial]
+            policy.modesReason = policy.modesReason ?? (modes.contains(.tensorParallel)
+                ? (modes.contains(.pipeline) ? nil : "its concurrent speculative-decoding assistant is quoted for tensor parallel only")
+                : "concurrent requests are quoted for the pipeline only")
+            try batchScope.apply(to: &policy, layout: layout)
+        }
+        if let tensorAssistantQuote {
+            let chunk = description.derivesRequestLimits
+                ? ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: capability.runtimeModelID,
+                    artifactSHA256: capability.artifactSHA256, layoutMaximum: layout.maximumChunkTokens,
+                    capabilityMaximum: capability.profile.maximumChunkTokens).tokens : description.chunkTokens
+            guard admissibleModes.contains(.tensorParallel), !capability.hasPrivateImages,
+                  tensorAssistantQuote.chunkTokens == chunk else {
+                throw ClusterConfigurationError.invalid("Singleton assistant quote differs from the selected native scope")
+            }
+            if tensorAssistantQuote.assistant == nil, admissibleModes != [.tensorParallel] {
+                // A plain target quote prices what the request-owned TP owner
+                // reserves at LOAD; the pipeline modes stay candidates (a
+                // forced pipeline places no tensor-parallel plan to price).
+                if forced != .pipeline {
+                    try tensorAssistantQuote.applySingletonCandidate(to: &policy, layout: layout)
+                    policy.tensorParallelWideningQuote = tensorWideningQuote
+                }
+            } else {
+                policy.modes = [.tensorParallel]; policy.schedules = [.serial]
+                policy.modesReason = policy.modesReason ?? (tensorAssistantQuote.assistant == nil
+                    ? "its request memory is quoted for tensor parallel only" : "its speculative-decoding assistant is quoted for tensor parallel only")
+                policy.keptMode = nil; policy.keptModeReason = nil
+                try tensorAssistantQuote.applySingleton(to: &policy, layout: layout)
+                // Capacity changes keep the shares: steer them to a split that can widen.
+                policy.tensorParallelWideningQuote = tensorWideningQuote
+            }
+        }
+        if let incumbentTensorShares {
+            guard batchScope != nil, ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains(capability.runtimeModelID),
+                  policy.modes?.contains(.tensorParallel) == true, policy.leader != nil else {
+                throw ClusterConfigurationError.invalid("Retained tensor shares require a priced Qwen TP capacity replacement")
+            }
+            policy.modes = [.tensorParallel]; policy.schedules = [.serial]
+            policy.modesReason = policy.modesReason ?? "a capacity change keeps the running tensor-parallel shares"
+            policy.requiredTensorShares = incumbentTensorShares
+        }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if ClusterModelFeaturePolicy.requiresQwenMediaAndLogprobs(capability) {
+            lines += ["Model features", "  " + ClusterModelFeaturePolicy.explanation]
+            if result.chosen == nil { lines.append("  " + ClusterModelFeaturePolicy.unavailable) }
+        }
         if let why = ClusterPlacementExplanation.deploymentReason(result) {
             lines += ["Tensor parallel or pipeline", "  " + why]
         }
@@ -174,13 +292,16 @@ public enum ClusterPlacementFlow {
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
             lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
         }
-        if let recordedRounds, capability.supportedGenerationModes.contains(.pipelineMTP) {
+        if let recordedRounds, batchScope == nil, admissibleModes.contains(.pipelineMTP) {
             lines.append("Speculative rounds")
             lines.append("  " + String(format: "Pipeline speculative rounds are credited %.2fx", recordedRounds)
                 + " over the plain pipeline: the decode speed-up this model's passing qualification records measured. "
                 + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
+        if let batchScope {
+            lines += ["Concurrent request memory", "  \(batchScope.lanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+        }
         if records.restrictsShapes {
             lines.append("Diverged placements")
             lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placements "
@@ -205,7 +326,9 @@ public enum ClusterPlacementFlow {
                 lines.append("  Prefill chunk " + chunk.basis + ".")
                 lines.append("  Request deadline " + deadline.basis + ".")
             }
-            let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability, chosen: chosen)
+            let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability,
+                chosen: chosen, batchLanes: batchScope?.lanes,
+                tensorAssistant: (batchScope?.tensorParallelQuote ?? tensorAssistantQuote)?.assistant?.policy)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

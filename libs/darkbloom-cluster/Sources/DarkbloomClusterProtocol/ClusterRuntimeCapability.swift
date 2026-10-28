@@ -45,7 +45,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1"),
              ("registered_qwen36_35b_a3b", "registered_qwen36_35b_a3b_greedy_generation_v1")]
         case .qwen35PrismHadamard:
-            [("registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_27b_greedy_generation_v1")]
+            [("registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_27b_greedy_generation_v1"),
+             ("registered_ternary_bonsai_2_9b", "registered_ternary_bonsai_2_9b_greedy_generation_v1")]
         case .gptossLayerStage:
             [("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1")]
         case .nemotronH:
@@ -82,6 +83,19 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// The adapter that registers a runtime model, or nil for an unregistered ID.
     public static func registering(runtimeModelID: String) -> ClusterRuntimeAdapter? {
         allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
+    }
+
+    /// The registered Qwen rows a tensor-parallel pair serves through the
+    /// request-owned batch lanes, each priced by its own geometry: the 9B and
+    /// 27B dense rows and the Qwen3.5 and Qwen3.6 35B A3B routed-expert rows.
+    public static let qwenTensorParallelRuntimeModelIDs: Set<String> = [
+        "registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
+    ]
+
+    /// Whether `runtimeModelID` is one of those rows, registered under this adapter.
+    public func servesQwenTensorLanes(runtimeModelID: String) -> Bool {
+        Self.qwenTensorParallelRuntimeModelIDs.contains(runtimeModelID)
+            && Self.registering(runtimeModelID: runtimeModelID) == self
     }
 }
 

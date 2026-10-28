@@ -672,21 +672,32 @@ extension QwenLayerStageSession {
                 let input = MLXArray(tokens.map(Int32.init)).reshaped([rows, 1])
                 let output = try CBv2OwnedRequestState.runBatch(sessions.map(\.state), tokenCount: 1, check: checked,
                     forward: { caches, evaluations in
-                        // A stage that runs its own frames takes the rows as
-                        // one `[B, 1]` decode frame.
-                        if let forwarding = first.stage.model as? any LayerStageFrameForwarding {
-                            return forwarding.layerStageForward(tokens: input, residual: residual, caches: caches,
-                                frame: frames[0])
+                        if let nemotron = first.stage.model as? NemotronH35Model {
+                            let rows = caches.map { $0 as! any KVCache }
+                            if stageIndex == 0 {
+                                return try nemotron.cbv2BatchedStageResidual(input, caches: rows,
+                                    recurrentState: evaluations)
+                            }
+                            return try nemotron.cbv2BatchedStageLogits(input, inputEmbedding: residual!,
+                                caches: rows, recurrentState: evaluations)[0..., -1, 0...]
                         }
-                        if stageIndex == 0 {
-                            let native = first.stage.model as! any CBv2RecurrentMTPForwardable
-                            return native.cbv2ForwardWithHidden(input, caches: caches.map { $0 as! any KVCache },
-                                recurrentState: evaluations, positionIds: nil).lastHidden
+                        return Qwen35BatchDecodeScope.$enabled.withValue(true) {
+                            // A stage that runs its own frames takes the rows as
+                            // one `[B, 1]` decode frame.
+                            if let forwarding = first.stage.model as? any LayerStageFrameForwarding {
+                                return forwarding.layerStageForward(tokens: input, residual: residual, caches: caches,
+                                    frame: frames[0])
+                            }
+                            if stageIndex == 0 {
+                                let native = first.stage.model as! any CBv2RecurrentMTPForwardable
+                                return native.cbv2ForwardWithHidden(input, caches: caches.map { $0 as! any KVCache },
+                                    recurrentState: evaluations, positionIds: nil).lastHidden
+                            }
+                            let native = first.stage.model as! any CBv2PositionedRecurrentEmbeddingForwardable
+                            return native.embeddingForward(input, inputEmbedding: residual!,
+                                cache: caches.map { $0 as! any KVCache }, recurrentState: evaluations,
+                                positionIds: nil)[0..., -1, 0...]
                         }
-                        let native = first.stage.model as! any CBv2PositionedRecurrentEmbeddingForwardable
-                        return native.embeddingForward(input, inputEmbedding: residual!,
-                            cache: caches.map { $0 as! any KVCache }, recurrentState: evaluations,
-                            positionIds: nil)[0..., -1, 0...]
                     }, validateOutput: { array in
                         let expected = stageIndex == 0 ? [rows, 1, first.hiddenSize] : [rows, first.stage.vocabularySize]
                         guard array.shape == expected, [.float16, .bfloat16, .float32].contains(array.dtype),

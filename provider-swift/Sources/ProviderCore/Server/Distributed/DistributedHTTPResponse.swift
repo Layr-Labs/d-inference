@@ -8,7 +8,6 @@ enum DistributedHTTPResponseScope {
 }
 
 final class DistributedHTTPResponse: @unchecked Sendable {
-    let generationID: UUID?
     struct Terminal: Sendable {
         let promptTokens: Int
         let completionTokens: Int
@@ -16,6 +15,7 @@ final class DistributedHTTPResponse: @unchecked Sendable {
     }
     private let lock = NSLock()
     private var bound = false
+    private var acquiredGeneration: UUID?
     private var admissionFinished = false
     private var deadline: ContinuousClock.Instant?
     private var timer: Task<Void, Never>?
@@ -27,9 +27,22 @@ final class DistributedHTTPResponse: @unchecked Sendable {
     private var nativeTerminal: Terminal?
     private let onComplete: @Sendable () -> Void
 
-    init(generationID: UUID? = nil, onComplete: @escaping @Sendable () -> Void = {}) {
-        self.generationID = generationID; self.onComplete = onComplete
+    init(onComplete: @escaping @Sendable () -> Void = {}) {
+        self.onComplete = onComplete
     }
+
+    /// Bind once, when a pending HTTP request actually acquires a generation.
+    /// A queued request has no cancellation hook into a retired native owner.
+    func claimGeneration(_ id: UUID) throws {
+        try lock.withLock {
+            guard acquiredGeneration == nil, !bound, !completed, !disconnected, !expired else {
+                throw CancellationError()
+            }
+            acquiredGeneration = id
+        }
+    }
+
+    var unavailableBeforeAdmission: Bool { lock.withLock { completed || disconnected || expired } }
 
     /// Before native admission. An expired budget is a pre-content refusal;
     /// after admission expiry uses normal cancellation and keeps the lease held.

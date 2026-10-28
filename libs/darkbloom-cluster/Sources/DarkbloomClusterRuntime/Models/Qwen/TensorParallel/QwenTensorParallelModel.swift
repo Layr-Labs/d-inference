@@ -44,7 +44,7 @@ public final class QwenTensorParallelModel {
     public let loadSeconds: Double
     public let loadedActiveBytes: Int
     public let loadedParameterBytes: Int
-    private let model: Qwen35Model
+    let model: Qwen35Model
     private let reduction: QwenTensorParallelReduction?
 
     /// `reduction` is required for `shard` and refused otherwise. Reads the
@@ -114,6 +114,9 @@ public final class QwenTensorParallelModel {
             guard let reduction, reduction.size == size, reduction.rank == rank else {
                 throw ProbeError("Tensor parallel load: a shard needs the reduction of its own rank and group size")
             }
+            guard !plan.routedExperts || partialDType == .float32 else {
+                throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+            }
         } else if reduction != nil {
             throw ProbeError("Tensor parallel load: only a shard takes a reduction")
         }
@@ -152,7 +155,8 @@ public final class QwenTensorParallelModel {
         // fused gate_up the SDK constructs (per rank, after the cut).
         if plan.routedExperts { weights = try model.sanitize(weights: weights) }
         quantize(model: model) { path, _ in
-            weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits, .affine) : nil
+            let packing = plan.affineQuantization(forModule: path)
+            return weights[path + ".scales"] != nil ? (packing.groupSize, packing.bits, .affine) : nil
         }
         if case .shard = role {
             // The constructed head has the whole vocabulary; this rank's has its rows.
@@ -167,18 +171,31 @@ public final class QwenTensorParallelModel {
 
         // Row-parallel projections.
         let leaves = Dictionary(uniqueKeysWithValues: model.leafModules().flattened())
-        let blocks = Dictionary(model.namedModules(), uniquingKeysWith: { first, _ in first })
         var replacements: [(String, Module)] = []
         var extra: [MLXArray] = []
         for path in plan.rowParallelModulePaths() {
-            if plan.routedExperts, path.hasSuffix(".mlp") {
-                // The whole routed-expert block's output is this rank's partial.
-                guard case .shard = role, let block = blocks[path], block is UnaryLayer else {
-                    if case .full = role { continue }
-                    throw ProbeError("Tensor parallel load: \(path) is not a routed-expert block")
+            if plan.routedExperts, path.hasSuffix(".mlp.switch_mlp.down_proj") {
+                guard let source = leaves[path] as? QuantizedSwitchLinear else {
+                    throw ProbeError("Tensor parallel load: \(path) is not a quantized expert projection")
                 }
-                replacements.append((path, QwenTensorParallelBlockReduction(block, reduction: reduction!, timing: timing,
-                                                                            partialDType: partialDType)))
+                switch role {
+                case .full:
+                    break
+                case .simulated:
+                    throw ProbeError("Tensor parallel load: routed-expert split-sum oracle is not implemented")
+                case .shard:
+                    guard partialDType == .float32, let reduction else {
+                        throw ProbeError("Tensor parallel load: expert projections require FP32 partials")
+                    }
+                    let projection = try Qwen35TensorParallelSwitchLinear(source) { partial in
+                        if timing == .explicit {
+                            eval(partial)
+                            Stream.gpu.synchronize()
+                        }
+                        return reduction.allSum(partial)
+                    }
+                    replacements.append((path, projection))
+                }
                 continue
             }
             guard let source = leaves[path] as? QuantizedLinear else {
@@ -354,42 +371,12 @@ public final class QwenTensorParallelModel {
 
     func newCache() throws -> [KVCache] { try model.newCache(parameters: nil) }
 
-    /// Paged attention keys and values (`QwenTensorParallelPagedKV.swift`):
-    /// the request caches `newCache(account:)` makes keep every
-    /// full-attention layer's keys and values in this pool's pages; nil keeps
-    /// `KVCacheSimple`. Set at load, before the first request.
-    var attentionPagePool: PagedAttentionKVPool?
-
-    /// Full-attention layers (each holds one paged history per request).
-    var attentionLayerCount: Int { model.cbv2LayerKinds.count }
-
-    /// A pool for this rank's full-attention layers: its own key/value heads
-    /// and head dims, in the checkpoint's native KV dtype (the dtype the
-    /// layers' projections and rotary produce, as the stage KV host takes it).
-    func makeAttentionPagePool(pageSize: Int) throws -> PagedAttentionKVPool {
-        let kinds = model.cbv2LayerKinds
-        guard let first = kinds.first,
-              kinds.allSatisfy({ $0.kvHeads == first.kvHeads && $0.headDim == first.headDim
-                  && $0.valueHeadDim == first.valueHeadDim && $0.sharesKVWithLayer == nil }),
-              let types = model.cbv2CompleteCheckpointKVDTypes, let dtype = types.first,
-              types.count == kinds.count, types.allSatisfy({ $0 == dtype }) else {
-            throw ProbeError("Tensor-parallel paged attention needs uniform attention layers and a known KV dtype")
-        }
-        return try PagedAttentionKVPool(pageSize: pageSize, kvHeads: first.kvHeads, keyHeadDim: first.headDim,
-            valueHeadDim: first.valueHeadDim, dtype: dtype)
-    }
-
-    /// A request's caches: the Gated DeltaNet layers' state as always and,
-    /// with `attentionPagePool`, every attention layer's keys and values in
-    /// its pages, counted against `account`.
-    func newCache(account: GLM5NextDSAPageBook.Account?) throws -> [KVCache] {
-        let caches = try model.newCache(parameters: nil)
-        guard let pool = attentionPagePool else { return caches }
-        return caches.map { $0 is KVCacheSimple ? PagedAttentionKVCache(pool: pool, account: account) : $0 }
-    }
-
     /// The model over `input` `[1, T]` with `cache`: logits `[1, T, V or V/size]`, not evaluated.
     func forwardForRuntime(_ input: MLXArray, cache: [KVCache]) -> MLXArray { model(input, cache: cache) }
+
+    /// Preserve the replicated text embedding before authenticated rank-zero
+    /// vision features replace the request's placeholder rows.
+    func embeddingsForMedia(_ input: MLXArray) -> MLXArray { model.scaledInputEmbeddings(input) }
 
     /// One decode step's logits `[1, V or V/size]` for `token` (`[1]` int32,
     /// possibly not evaluated), not evaluated.
@@ -425,29 +412,6 @@ public final class QwenTensorParallelModel {
         for r in 0..<size { slots.append(MLXArray([r == rank ? stop : Float(0)])) }
         let all = reduction.allSum(concatenated(slots, axis: 0))
         return (all[0 ..< 1].asType(.int32), all[1 ..< (1 + size)])
-    }
-
-    /// The greedy choice with every rank's stop flag in the same reduction:
-    /// (token `[1]` int32, flags `[size]` float32). Not evaluated.
-    func selectWithFlags(_ logits: MLXArray, stop: Float) -> (MLXArray, MLXArray) {
-        let values = logits.asType(.float32)
-        guard case .shard(let rank, let size) = role, let reduction else {
-            return (argMax(values, axis: -1).asType(.int32), MLXArray([stop]))
-        }
-        let localIndex = argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))
-        let localMax = values.max(axis: -1)
-        let mine = concatenated([localMax, localIndex], axis: 0)
-        let zeros = MLXArray.zeros([2], dtype: .float32)
-        var slots = (0..<size).map { $0 == rank ? mine : zeros }
-        for r in 0..<size { slots.append(MLXArray([r == rank ? stop : Float(0)])) }
-        let all = reduction.allSum(concatenated(slots, axis: 0))
-        var best = all[0], token = all[1]
-        for other in 1..<size {
-            let better = all[2 * other] .> best
-            best = which(better, all[2 * other], best)
-            token = which(better, all[2 * other + 1], token)
-        }
-        return (token.asType(.int32).reshaped(1), all[(2 * size) ..< (3 * size)])
     }
 
     /// Greedy decode from `first` (an `[1]` int32 token, possibly not evaluated

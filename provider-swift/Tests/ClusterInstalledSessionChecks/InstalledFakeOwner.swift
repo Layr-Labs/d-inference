@@ -29,7 +29,7 @@ import DarkbloomClusterProcess
             }
         }
         defer { try? pipe.fileHandleForWriting.close(); if filtered { finished.wait() } }
-        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
+        try ClusterWorkerOwnerService.serveKeyed(input: STDIN_FILENO,
             output: filtered ? pipe.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
             clusterID: "installed-fixture", leaseDirectory: directory,
             // The installed selection: the native key prelude, then the mesh
@@ -43,7 +43,15 @@ import DarkbloomClusterProcess
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fixture epoch differs") }
                 return try .init(clusterID: "installed-fixture", ownerIncarnation: incarnation, leaseID: lease,
                     identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
-            }, native: { binding, deadline, attachment in
+            }, native: { binding, deadline, attachment, trust in
+                // The real owner service has already checked the credential's
+                // epoch/rank. This CPU worker reports only synthetic readiness.
+                if let trust {
+                    let value = try ClusterWorkerCodec.decodeDataPlaneTrust(trust)
+                    guard value.rank == rank, value.membershipEpoch == fixtureIdentity.membershipEpoch else {
+                        throw ClusterOwnerStateError.invalid("Fixture credential differs")
+                    }
+                }
                 // The combined profile's attachment reaches the stand-in worker
                 // exactly as it reaches an installed worker.
                 guard let attachment, attachment.profile == .nativeKeyPreludeMesh2, attachment.nativeStart?.rank == rank else {

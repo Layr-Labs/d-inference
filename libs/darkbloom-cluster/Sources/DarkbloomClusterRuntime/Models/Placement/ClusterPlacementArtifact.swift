@@ -68,6 +68,61 @@ public enum ClusterPlacementArtifact {
         return (family.largestContextTokens, family.requestChargeEveryRankBytes(contextTokens: contextTokens))
     }
 
+    /// The exact conservative charge and actual family bounds for a requested
+    /// shape. Reads registered metadata only; no payload, model or device work.
+    public static func requestedScope(directory: URL, promptTokens: Int, outputTokens: Int) throws -> ClusterPlacementRequestScope {
+        let configuration = try Self.configuration(directory: directory)
+        func scope(model: String, artifact: String, configurationHash: String,
+                   profile: QwenLayerStageGenerationProfile, charge: (Int) throws -> Int) throws -> ClusterPlacementRequestScope {
+            // Bound before adding or estimating memory, including hostile Int inputs.
+            guard promptTokens > 0, outputTokens > 0,
+                  promptTokens <= profile.maximumPromptTokens, outputTokens <= profile.maximumOutputTokens,
+                  promptTokens <= profile.maximumContextTokens - outputTokens else {
+                throw ProbeError("The requested scope is outside the model's request limits")
+            }
+            return try .init(runtimeModelID: model, artifactSHA256: artifact, configurationSHA256: configurationHash,
+                promptTokens: promptTokens, outputTokens: outputTokens,
+                maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+                maximumContextTokens: profile.maximumContextTokens,
+                requestChargeEveryRankBytes: charge(promptTokens + outputTokens))
+        }
+        if GPTOSSRegisteredSpecification.handles(configuration: configuration) {
+            let family = try GPTOSSPlacementFamily(configuration: configuration)
+            return try scope(model: family.runtimeModelID, artifact: family.specification.artifactSHA256,
+                configurationHash: family.specification.configurationSHA256, profile: family.profile) { _ in 0 }
+        }
+        if Gemma4RegisteredSpecification.isRegistered(configuration: configuration) {
+            let manifestURL = directory.appendingPathComponent("manifest.json")
+            let manifest = FileManager.default.fileExists(atPath: manifestURL.path)
+                ? try BoundedProbeInput.data(manifestURL, maximumBytes: 4_194_304) : nil
+            let family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
+            return try scope(model: family.runtimeModelID, artifact: family.specification.artifactSHA256,
+                configurationHash: family.specification.configurationSHA256, profile: family.profile) {
+                try Gemma4StateBudget.estimate(maximumTokens: $0, chunkSize: family.maximumChunkTokens).stateAndBoundaryBytes
+            }
+        }
+        // MiMo reserves its full advertised envelope already, and GLM uses
+        // exact adapter quotations. Neither needs this reference extension.
+        let definition = try QwenResidentModelDefinition(configuration: configuration)
+        if definition.specification.model == .nemotron35Lightning {
+            let family = try NemotronPlacementFamily(configuration: configuration)
+            return try scope(model: family.runtimeModelID, artifact: definition.specification.artifactSHA256,
+                configurationHash: definition.specification.configurationSHA256, profile: family.profile) {
+                let charge = QwenPlacementCharge.wholeModelStateBytes(geometry: family.stateGeometry, contextTokens: $0,
+                    chunk: family.maximumChunkTokens)
+                guard charge > 0 else { throw ProbeError("Cannot price the registered request scope") }
+                return charge
+            }
+        }
+        let family = try QwenDensePlacementFamily(configuration: configuration)
+        return try scope(model: family.runtimeModelID, artifact: definition.specification.artifactSHA256,
+            configurationHash: definition.specification.configurationSHA256, profile: family.profile) {
+            let charge = family.requestChargeEveryRankBytes(contextTokens: $0)
+            guard charge > 0 else { throw ProbeError("Cannot price the registered request scope") }
+            return charge
+        }
+    }
+
     /// The layout of the artifact in a directory, from its `config.json`, its
     /// tensor headers and, when present, its `manifest.json` (which tells two
     /// catalog entries that share a configuration apart).

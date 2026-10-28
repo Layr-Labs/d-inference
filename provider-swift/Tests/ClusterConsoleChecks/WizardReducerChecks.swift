@@ -322,9 +322,15 @@ extension ClusterConsoleCheck {
         rdma.send(.snapshot(F.snapshot(F.reportA(link: off), pair: nil, record: .init())))
         expectEqual(rdma.state.step, .thisMac, "RDMA off opens at step 1")
         let screen = ClusterSetupScreen.frame(withSize(rdma.state, columns: 100, rows: 60)).text
-        expect(screen.contains("rdma_ctl enable"), "the Recovery command shows: \(screen)")
-        expect(screen.contains("Loading startup options"), "the Recovery steps show")
+        expect(screen.contains("Privacy & Security") && screen.contains("Turn on RDMA over Thunderbolt"), "macOS 27's System Settings steps show: \(screen)")
+        expect(!screen.contains("rdma_ctl") && !screen.contains("Loading startup options"), "macOS 27 is not sent to Recovery")
         expectEqual(rdma.key(.enter), [.refresh], "enter reads again after the change")
+        var older = F.mac(F.profileA); older.osVersion = "26.4 (25E246)"; older.osMajor = 26; older.osMinor = 4
+        var recovery = WizardDrive()
+        _ = recovery.state.begin()
+        recovery.send(.snapshot(F.snapshot(F.reportA(link: off, mac: older), pair: nil, record: .init())))
+        let steps = ClusterSetupScreen.frame(withSize(recovery.state, columns: 100, rows: 60)).text
+        expect(steps.contains("rdma_ctl enable") && steps.contains("Loading startup options"), "macOS 26's Recovery steps show: \(steps)")
     }
 
     static func wizardFollower(savedB: ClusterSetupSaved) throws {

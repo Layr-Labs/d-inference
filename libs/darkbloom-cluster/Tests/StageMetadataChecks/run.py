@@ -51,9 +51,13 @@ def prepare_snapshot(output):
     sources = [RUNTIME / path for path in runtime_sources] + sorted(BASE.glob('*.swift'))
     if len(sources) != 29:
         raise ValueError('Unexpected Swift fixture closure')
-    files = sources + [BASE / 'run.py', BASE / 'owned_process.py',
+    protocol_sources = sorted((RUNTIME.parent / 'DarkbloomClusterProtocol').glob('*.swift'))
+    if not protocol_sources:
+        raise ValueError('Protocol sources are missing')
+    files = sources + protocol_sources + [BASE / 'run.py', BASE / 'owned_process.py',
                        BASE / 'fixture-inputs.json'] + sorted((BASE / 'Inputs').glob('*.json'))
     snapshot = {'swiftSources': [str(p) for p in sources],
+                'protocolSources': [str(p) for p in protocol_sources],
                 'files': [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
                            'sizeBytes': p.stat().st_size} for p in files],
                 'manifestSource': 'Checkpoints/CheckpointManifest.swift'}
@@ -103,9 +107,17 @@ def main():
     (output / 'module-cache').mkdir(mode=0o700)
     binary = output / 'gemma-stage-plumbing-check'
     sources = snapshot['swiftSources']
-    command = ['xcrun', 'swiftc', '-j', '2', '-swift-version', '6', '-warnings-as-errors',
-               '-target', platform.machine() + '-apple-macos14.0', '-parse-as-library',
-               '-module-cache-path', str(output / 'module-cache')] + sources + ['-o', str(binary)]
+    flags = ['xcrun', 'swiftc', '-j', '2', '-swift-version', '6', '-warnings-as-errors',
+             '-target', platform.machine() + '-apple-macos14.0',
+             '-module-cache-path', str(output / 'module-cache')]
+    protocol = flags + ['-emit-library', '-emit-module', '-module-name', 'DarkbloomClusterProtocol',
+                        '-emit-module-path', str(output / 'DarkbloomClusterProtocol.swiftmodule')]
+    protocol += snapshot['protocolSources'] + ['-o', str(output / 'libDarkbloomClusterProtocol.dylib')]
+    protocol_receipt = run_owned(protocol, output, 'compile-protocol', 60)
+    verify_snapshot(snapshot)
+    command = flags + ['-parse-as-library', '-I', str(output), '-L', str(output),
+                       '-lDarkbloomClusterProtocol', '-Xlinker', '-rpath', '-Xlinker', str(output)]
+    command += sources + ['-o', str(binary)]
     compile_receipt = run_owned(command, output, 'compile', 60)
     verify_snapshot(snapshot)
     fixture_receipt = run_owned([str(binary), str(BASE / 'Inputs')], output, 'fixture', 10)
@@ -113,7 +125,7 @@ def main():
     result = json.loads((output / 'fixture.stdout').read_text())
     if (output / 'fixture.stderr').stat().st_size != 0 or result['runtimeExecutionAuthorized']:
         raise ValueError('Unexpected fixture stderr or execution claim')
-    summary = {'compile': compile_receipt, 'fixture': fixture_receipt,
+    summary = {'compileProtocol': protocol_receipt, 'compile': compile_receipt, 'fixture': fixture_receipt,
                'acceptedCount': result['acceptedCount'], 'refusedCount': result['refusedCount'],
                'privateSourcesUnchanged': True, 'nativeModelConstructed': False, 'payloadRead': False}
     (output / 'checks.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')

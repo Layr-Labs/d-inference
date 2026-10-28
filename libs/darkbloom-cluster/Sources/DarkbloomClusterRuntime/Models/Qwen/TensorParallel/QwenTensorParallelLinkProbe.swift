@@ -4,12 +4,14 @@ import MLX
 
 /// The link measured at load, the way the sharded modes use it, in a few
 /// hundred milliseconds and before any weight is read: point-to-point records
-/// (a small one, as a pipeline's decode hand-off is, and a large one, as a
-/// prefill chunk's is) and the sealed all-sum at a decode step's width and at
-/// a prefill chunk's. Medians of a few repetitions, both ranks in lockstep.
-/// The ready record carries it; the pair's owner keeps the latest per pair and
-/// the planner turns it into link costs (`ClusterLinkCosts(probe:)`). Each
-/// load measures it again, so a re-plan always uses the link as it is now.
+/// (a small one, as a pipeline's decode hand-off is, and a large one; the two
+/// give a record's fixed part and per-byte cost, which price a prefill chunk's
+/// hop by the bytes it carries) and the sealed all-sum at a decode step's width
+/// and at a prefill chunk's. Medians of a few repetitions, both ranks in lockstep.
+/// The ready record carries it; the pair's owner keeps the pair's recent ones
+/// and the planner turns their median into link costs
+/// (`ClusterLinkCosts(measurements:)`). Each load measures it again, so a
+/// re-plan uses the link as the pair's last loads found it.
 enum QwenTensorParallelLinkProbe {
     static let largePointToPointBytes = 4 << 20
 

@@ -324,7 +324,7 @@ import Foundation
                            slowTwo: [ClusterPlacementDevice]) throws {
         func entry(_ prompt: Int, _ output: Int) -> ClusterServedSpeedRecords.Entry {
             .init(setup: .init(modelID: description.publicModelID, mode: ClusterGenerationMode.pipeline.rawValue, cut: "unknown",
-                               ranks: description.members.map(\.id)),
+                               ranks: description.members.map(\.id), rankBuildSHA256: description.members.map(\.runtimeBinarySHA256)),
                   sample: .init(route: .pair, member: nil, promptTokens: prompt, outputTokens: output, firstTokenSeconds: 0.5,
                                 decodeTokensPerSecond: 40, finishedAt: 1))
         }
@@ -340,6 +340,244 @@ import Foundation
         require("the plan says in one line why it is tensor parallel or a pipeline",
             plain.lines.contains("Tensor parallel or pipeline")
                 && plain.lines.contains { $0.hasPrefix("  Pipeline: ") || $0.hasPrefix("  Tensor parallel: ") })
+    }
+
+    /// A served speed counts only for the worker build that served it (`ClusterServedSpeedRecords.servedBy`): the
+    /// plan calibrates from the pair's records every rank of which ran the build the pair description names for that
+    /// member (the build its setups pin), and says in one line how many others it left out: another build's, a record
+    /// written before builds were recorded, or one whose ranks ran different builds. What clients sent (the prompt and
+    /// answer lengths of the request mix) is no build's: every build's records still make the plan's request.
+    static func servedBuildScope(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                                 slowTwo: [ClusterPlacementDevice]) throws {
+        let current = hash("a"), earlier = hash("9")
+        require("served builds: the description pins one build on both Macs, the capability's",
+            description.members.allSatisfy { $0.runtimeBinarySHA256 == current } && capability.runtimeBinarySHA256 == current)
+        // Served at cut 8 far slower than any estimate (5 tok/s): calibrated, they change the plan's predicted speeds.
+        func entry(_ prompt: Int, _ output: Int, ranks: [String] = ["mac-one", "mac-two"], builds: [String]?,
+                   model: String? = nil) -> ClusterServedSpeedRecords.Entry {
+            .init(setup: .init(modelID: model ?? description.publicModelID, mode: ClusterGenerationMode.pipeline.rawValue,
+                               cut: ClusterServedSpeedRecords.Setup.cut([8], layerCount: layout.layerCount), ranks: ranks, rankBuildSHA256: builds),
+                  sample: .init(route: .pair, member: nil, promptTokens: prompt, outputTokens: output, firstTokenSeconds: 0.5,
+                                decodeTokensPerSecond: 5, finishedAt: 1))
+        }
+        func decide(_ served: [ClusterServedSpeedRecords.Entry], request: (Int, Int)? = nil) throws
+            -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+                promptTokens: request?.0, outputTokens: request?.1, served: served, environment: [:], benchDebugBuild: true)
+        }
+        let plain = try decide([])
+        let stale = (0..<3).map { entry(64 + $0, 100, builds: [earlier, earlier]) } + [entry(96, 110, builds: nil),
+            entry(80, 120, builds: [current, earlier])]
+        let ignored = try decide(stale)
+        let unserved = try decide([], request: (ignored.result.promptTokens, ignored.result.outputTokens))
+        require("served builds: records another build served, written before builds were recorded, or of two builds set no speed: the plan is the one made for the same request without them",
+            ignored.result == unserved.result && ignored.setup != nil && ignored.setup == unserved.setup
+                && !ignored.lines.contains { $0.contains("request(s) ->") })
+        require("served builds: their prompt and answer lengths are still the plan's request (median 66-token prompt, 100-token answer), not the layout's largest",
+            ignored.result.promptTokens == 66 && ignored.result.outputTokens == min(100, layout.maximumOutputTokens)
+                && plain.result.promptTokens == layout.maximumPromptTokens)
+        require("served builds: the plan says in one line how many records other worker builds served, and for which build it is",
+            ignored.lines.contains("Speed records from served requests")
+                && ignored.lines.contains("  5 record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build aaaaaaaaaaaa)")
+                && !plain.lines.contains("Speed records from served requests"))
+        let ownRecords = [entry(64, 100, builds: [current, current]), entry(128, 120, ranks: ["mac-two", "mac-one"], builds: [current, current]),
+                          entry(96, 110, builds: [current, current])]
+        let kept = try decide(stale + ownRecords)
+        let keptUnserved = try decide([], request: (kept.result.promptTokens, kept.result.outputTokens))
+        require("served builds: this build's records, in either rank order, are calibrated (their setup's line) and change the plan's predicted speeds, beside the line for the rest",
+            kept.lines.contains { $0.contains("pipeline_v1 cut 0-8|8-32") && $0.contains("2 pair and 0 alone request(s) ->") }
+                && kept.lines.contains { $0.contains("pipeline_v1 cut 0-8|8-32") && $0.contains("1 pair and 0 alone request(s) ->") }
+                && kept.lines.contains { $0.hasPrefix("  5 record(s) from other worker builds ignored") }
+                && kept.result.chosen.map { chosen in keptUnserved.result.chosen.map { $0.rested != chosen.rested } ?? false } == true)
+        require("served builds: with only this build's records the plan names no other build",
+            !(try decide(ownRecords).lines.contains { $0.contains("other worker builds") }))
+        // Another pair's or another model's records are not this plan's at all: neither used nor counted as another build's.
+        let foreign = try decide([entry(64, 100, ranks: ["mac-one", "mac-nine"], builds: [earlier, earlier]),
+            entry(64, 100, builds: nil, model: "other/model")])
+        require("served builds: another pair's or another model's records are neither used nor counted",
+            !foreign.lines.contains("Speed records from served requests") && foreign.result.promptTokens == plain.result.promptTokens)
+    }
+
+    /// The regression (2026-10-25), through the guided step's own decision: the M3 Ultra + M5 Max pair's leader file
+    /// (`libs/darkbloom-cluster/Tests/PlacementChecks/Golden/served/m3ultra-m5max-leader-2026-10-25.json`: the real
+    /// `served-speed.json`, member and request IDs relabeled, every planned value as served, no build named), planned
+    /// for the 27B as the setup plans it: the 27B's own layout with tensor parallel (`qwen38-27b-tensor-parallel-layout.json`
+    /// beside it, checked against the registered headers by PlacementChecks), both Macs' recorded profiles with the
+    /// indices the leader recorded (2026-10-23), c41's share probes at 3:2 and a measured keyed link, on the build the
+    /// Macs run now. Every record is an earlier build's: the plan takes none of their speeds, only their request.
+    static func servedBuildRegression() throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("libs/darkbloom-cluster/Tests/PlacementChecks/Golden", isDirectory: true)
+        let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("served/qwen38-27b-tensor-parallel-layout.json")))
+        func recorded(_ name: String, prefill: Double, decode: Double) throws -> ClusterDeviceProfile {
+            var profile = try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent(name)))
+            profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: prefill, decodeIndex: decode)
+            try profile.validate()
+            return profile
+        }
+        let m3 = try recorded("profile-mac-a.json", prefill: 480_096.777_008_127_77, decode: 33_304.589_728_785_344)
+        let m5 = try recorded("profile-mac-b.json", prefill: 1_303_482.955_744_106_6, decode: 43_947.553_400_780_285)
+        let build = hash("c")
+        let partitions = layout.admittedCuts.enumerated().map { index, cut in
+            ClusterRuntimePartition(planSHA256: String(format: "%064lx", index + 1), stages: [
+                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(format: "%064lx", 100 + index),
+                      constructionConfigurationSHA256: hash("2")),
+                .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layout.layerCount, stagePlanSHA256: String(format: "%064lx", 200 + index),
+                      constructionConfigurationSHA256: hash("4"))])
+        }
+        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: "qwen35-dense-layer-stage", adapterVersion: 1,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+            manifestSHA256: hash("d"), profile: .init(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248320,
+                maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536),
+            profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
+            arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+            supportedGenerationModes: [.pipeline, .tensorParallel])
+        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
+            publicModelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
+            chunkTokens: 512, requestTimeoutSeconds: 300, coordinatorPort: 5577, members: ["m3", "m5"].enumerated().map { index, id in
+                .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                    workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
+                    jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
+            }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
+            linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 171, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_495,
+            allSumSmallBytes: 20_480, allSumSmallMicroseconds: 73, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 9_550),
+            measuredUTC: "2026-10-25T09:00:00Z")!
+        let now = Date().timeIntervalSince1970
+        let probes = ClusterShareProbeHistory().recording([
+            .init(member: "m3", buildSHA256: build, probe: .init(sharePerMille: 600, plainStepMicroseconds: 18_400, windowColumns: 4,
+                windowStepMicroseconds: 41_000, rounds: 7)),
+            .init(member: "m5", buildSHA256: build, probe: .init(sharePerMille: 400, plainStepMicroseconds: 17_000, windowColumns: 4,
+                windowStepMicroseconds: 25_100, rounds: 7))], artifactSHA256: layout.artifactSHA256, now: now - 60)
+            .shareRates(artifactSHA256: layout.artifactSHA256, members: ["m3", "m5"], now: now)
+        // The file as the leader's history reads it (`ClusterServedSpeedHistory.entries`): speed records, with the builds they name.
+        let file = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            golden.appendingPathComponent("served/m3ultra-m5max-leader-2026-10-25.json"))) as! [String: Any]
+        let records = file["records"] as! [[String: Any]]
+        func entries(_ builds: [String]?) -> [ClusterServedSpeedRecords.Entry] {
+            records.compactMap { r in
+                guard let sample = ClusterServedSample.fromTelemetry(route: r["route"] as? String, promptTokens: r["promptTokens"] as! Int,
+                    cachedTokens: r["cachedTokens"] as! Int, completionTokens: r["completionTokens"] as! Int,
+                    firstTokenMilliseconds: r["firstTokenMilliseconds"] as? Double, decodeTokensPerSecond: r["decodeTokensPerSecond"] as? Double,
+                    outcome: r["outcome"] as! String, finishedAt: r["finishedAt"] as! Double) else { return nil }
+                return .init(setup: .init(modelID: r["modelID"] as! String, mode: r["mode"] as! String, cut: r["cut"] as! String,
+                    ranks: r["ranks"] as? [String], rankBuildSHA256: builds ?? (r["rankBuildSHA256"] as? [String])), sample: sample)
+            }
+        }
+        func decide(_ served: [ClusterServedSpeedRecords.Entry], request: (Int, Int)? = nil, probed: Bool = true) throws
+            -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "m3",
+                localProfile: m3, peerProfile: m5, layout: layout, promptTokens: request?.0, outputTokens: request?.1,
+                served: served, link: link, shareProbes: probed ? probes : [:], environment: [:], benchDebugBuild: false)
+        }
+        func shares(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?)) -> String {
+            guard let chosen = decided.result.chosen else { return "none" }
+            return "\(chosen.mode.rawValue) \(chosen.ranks.map(\.device).joined(separator: ",")) \((chosen.tensorShares ?? [1, 1]).map(String.init).joined(separator: ":"))"
+        }
+        let stale = entries(nil)
+        let pairRecords = stale.filter { $0.setup.modelID == description.publicModelID && $0.setup.ranks == ["m3", "m5"] }.count
+        // Answers shorter than a speed record's (`ClusterServedSpeedRule`: the pair's 7-token prefill probes and short
+        // chats, 87 of this model's 218) are probe-sized: no sample, neither of a speed nor of the request.
+        let speedRecords = records.filter { ($0["completionTokens"] as! Int) >= ClusterServedSpeedRule.minimumCompletionTokens }.count
+        let fixed = try decide(stale)
+        let unserved = try decide([], request: (fixed.result.promptTokens, fixed.result.outputTokens))
+        require("served regression: the leader's file holds \(stale.count) speed records (\(records.count - speedRecords) probe-sized answers are none), \(pairRecords) of this model on this pair, none naming a build",
+            stale.count == speedRecords && speedRecords == 184 && pairRecords == 131 && stale.allSatisfy { $0.setup.rankBuildSHA256 == nil })
+        require("served regression: the plan takes none of their speeds: it is the plan made for the same request without them (\(shares(fixed)))",
+            fixed.result == unserved.result && fixed.setup != nil && fixed.setup == unserved.setup && !fixed.lines.contains { $0.contains("request(s) ->") })
+        require("served regression: it says so in one line, under the served speeds",
+            fixed.lines.contains("Speed records from served requests")
+                && fixed.lines.contains("  131 record(s) from other worker builds ignored: a served speed counts only for the build that served it (this plan is for worker build cccccccccccc)"))
+        require("served regression: the request is still the one the pair's clients sent (median 96-token prompt, 128-token answer), not the layout's largest (\(layout.maximumPromptTokens) + \(layout.maximumOutputTokens))",
+            fixed.result.promptTokens == 96 && fixed.result.outputTokens == 128)
+        let asCurrent = try decide(entries([build, build]))
+        let fixedDecode = fixed.result.chosen?.rested.decodeTokensPerSecond ?? 0
+        let staleDecode = asCurrent.result.chosen?.rested.decodeTokensPerSecond ?? 0
+        require("served regression: the same records as this build's are calibrated, every setup the pair served, as every plan before the fix took them (\(shares(asCurrent)))",
+            asCurrent.lines.contains { $0.contains("tensor_parallel_v1 cut 0-64@3|0-64@2 (m3, m5)") && $0.contains("request(s) ->") }
+                && asCurrent.lines.contains { $0.contains("pipeline_v1 cut 0-60|60-64 (m3, m5)") && $0.contains("request(s) ->") }
+                && asCurrent.result != fixed.result)
+        require("served regression: the fixed plan is c41's probes' 1:1 (\(shares(fixed)), \(String(format: "%.1f", fixedDecode)) tok/s predicted); taken as this build's the earlier builds' speeds cut it to \(String(format: "%.1f", staleDecode)) tok/s",
+            fixed.result.chosen?.mode == .tensorParallel && fixed.result.chosen?.tensorShares == nil
+                && staleDecode > 0 && staleDecode < 0.6 * fixedDecode)
+        // Why the request lengths stay every build's: a plan scoped to this build's records alone would be made for the
+        // layout's largest request, where prefill decides and the M5 Max's faster index pulls the 27B toward it.
+        let largest = try decide([])
+        require("served regression: made for the layout's largest request (\(largest.result.promptTokens) + \(largest.result.outputTokens)) the same plan moves the 27B toward the M5 Max (\(shares(largest))); the pair's own request keeps it 1:1",
+            largest.result.promptTokens == layout.maximumPromptTokens && largest.result.outputTokens == layout.maximumOutputTokens
+                && largest.result.chosen.map { ($0.tensorShares ?? [1, 1]).count == 2 && ($0.tensorShares ?? [1, 1])[1] > ($0.tensorShares ?? [1, 1])[0] } == true)
+    }
+
+    /// GLM-5.3 Flash on two M5 Ultra 256 GB through the guided step's own decision (`ClusterPlacementFlow.decide`:
+    /// tensor parallel first wherever it fits): its layout as PlacementChecks retains it, with the NextN layer in the
+    /// tensor-parallel plan as the family states it (every rank holds it whole; 2 GiB standing in for its request
+    /// bytes, which the family computes with MLX), and the recorded M5 Ultra profile with its measured index on both
+    /// Macs. A new pair plans tensor parallel on equal shares before any load measured the link, and so does every
+    /// plan after the first load's keyed probe; both setups save tensor parallel with no shares, which the
+    /// provider serves with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
+    static func glmTensorParallelPair() throws {
+        let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("libs/darkbloom-cluster/Tests/PlacementChecks/Golden", isDirectory: true)
+        let retained = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/GLM-5.3-Flash-MLX-NVFP4-mtp.json")))
+        guard let tp = retained.tensorParallel else { return require("glm pair: the retained GLM layout has a tensor-parallel plan", false) }
+        let f = tp.family
+        let layout = try retained.with(tensorParallel: .init(family: .init(plan: f.plan, ranks: f.ranks,
+                reductionsPerLayer: f.reductionsPerLayer, reductionsPerStep: f.reductionsPerStep,
+                partialBytesPerToken: f.partialBytesPerToken, stateDividesByHeads: f.stateDividesByHeads,
+                speculativeHead: .init(depth: 2, requestBytes: 2 << 30, decodeSpeedup: 76.0 / 62.6)),
+            terms: tp.terms, layerDividedBytes: tp.layerDividedBytes, layerReplicatedBytes: tp.layerReplicatedBytes,
+            ingressDividedBytes: tp.ingressDividedBytes, ingressReplicatedBytes: tp.ingressReplicatedBytes,
+            egressDividedBytes: tp.egressDividedBytes, egressReplicatedBytes: tp.egressReplicatedBytes))
+        var m5 = try ClusterDeviceProfile.decode(Data(contentsOf: golden.appendingPathComponent("pairs/m3ultra-m5ultra/profile-mac-b.json")))
+        m5.speedIndex = .init(chip: m5.chip, osBuild: m5.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 2_337_768, decodeIndex: 46_409)
+        try m5.validate()
+        let build = hash("c")
+        let partitions = layout.admittedCuts.enumerated().map { index, cut in
+            ClusterRuntimePartition(planSHA256: String(format: "%064lx", index + 1), stages: [
+                .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(format: "%064lx", 100 + index),
+                      constructionConfigurationSHA256: hash("2")),
+                .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: layout.layerCount, stagePlanSHA256: String(format: "%064lx", 200 + index),
+                      constructionConfigurationSHA256: hash("4"))])
+        }
+        let adapter = ClusterRuntimeAdapter.glm5NextLayerStage
+        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: build, adapterID: adapter.rawValue, adapterVersion: adapter.version,
+            runtimeModelID: layout.runtimeModelID, artifactSHA256: layout.artifactSHA256, configurationSHA256: layout.configurationSHA256,
+            manifestSHA256: hash("d"), profile: .init(id: ClusterGLMImageCandidate.textProfileID, vocabularySize: 154_880,
+                maximumPromptTokens: 1_048_575, maximumOutputTokens: 65_536, maximumChunkTokens: 2048, maximumContextTokens: 1_048_576),
+            profileFingerprint: hash("e"), partitions: partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+            arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial], supportedGenerationModes: [.pipeline, .tensorParallel])
+        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: "fixture",
+            publicModelID: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp",
+            capabilitySHA256: ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability)),
+            chunkTokens: 2048, requestTimeoutSeconds: 900, coordinatorPort: 5577, members: ["ultra-a", "ultra-b"].enumerated().map { index, id in
+                .init(id: id, host: "192.0.2.\(index + 1)", port: 22, user: "fixture", ownerExecutable: "/fixture/darkbloom",
+                    workerExecutable: "/fixture/darkbloom-cluster-worker", modelDirectory: "/fixture/model", runtimeBinarySHA256: build,
+                    jacclDevice: "rdma_en\(index + 1)", linkAddress: "192.0.2.\(index + 1)", trust: nil, linkSecretFile: "/fixture/\(id).secret")
+            }, tokenizerFiles: [.init(path: "tokenizer.json", sha256: hash("6"), purpose: .tokenizer)],
+            linkControl: .init(port: 5578, linkEpoch: "00000000-0000-4000-8000-000000000001", edgeID: "00000000-0000-4000-8000-000000000002"))
+        let measured = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 167, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_622,
+            allSumSmallBytes: 20_480, allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296),
+            measuredUTC: "2026-10-25T09:00:00Z")!
+        for (name, link) in [("a new pair, before any load measured the link", ClusterLinkCosts.unmeasured),
+                             ("after the first load's keyed probe", measured)] {
+            let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
+                localProfile: m5, peerProfile: m5, layout: layout, link: link, environment: [:], benchDebugBuild: false)
+            let chosen = decided.result.chosen
+            let saved = try decided.setup.map { setup in try setup.configurations.values.map {
+                try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+            require("glm pair, 2x M5 Ultra 256 GB, \(name): tensor parallel 1:1 with the NextN layer on both ranks, both setups saved so",
+                chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.ranks.count == 2
+                    && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && saved.count == 2
+                    && saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
+        }
     }
 
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`, chip-agnostic since
@@ -694,6 +932,8 @@ import Foundation
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
+        try servedBuildScope(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
+        try servedBuildRegression()
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,
@@ -880,6 +1120,7 @@ import Foundation
         syntheticQualificationRecords()
         modeBoundGrants()
         recordedSpeculativeCredit()
+        try glmTensorParallelPair()
         // Leader-first onboarding: the Mac where `darkbloom cluster` started leads the cluster (model, sync, start),
         // but which Mac runs rank 0 and which decodes is the planner's, from detected hardware and the model's grant.
         // Synthetic hardware, each pair planned from both Macs: the placement must not follow who asks.

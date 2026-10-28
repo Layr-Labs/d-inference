@@ -18,7 +18,7 @@ Four more rules cover what the saved setup selects:
 
 - Generation mode. A setup that names none starts its workers with the command line it always had and keeps its saved bytes. A named mode reaches both ranks as `--generation-mode` only when the pinned capability record advertises it; one that is not advertised is refused when the setup is read, naming the mode and the worker. The status binding shows the selected mode and what each worker's record advertises.
 - Time budgets. Startup, first-token, admission and shutdown waits come from the selected registered model's row. The 9B's row is pinned to the figures the path has always used, and the mode does not change it. Every model with a pair-serving grant has one row and a model whose grant is withheld has none; each row's allowances cover what the pair measured across the cable for that model (slowest start in any mode, the slower Mac's prefill rate alone, the first token of the longest prompt run).
-- Pair serving is granted per registered model with the chip classes each role may run on (owner decision D4). The registered 27B is granted on the M3 Ultra and the M5 Max for either role: its setups prepare in every mode under its own budgets and grant, whatever the public name, and the plan refuses rank 0 on an unlisted class or a chip with no class. The 9B's rank 0 is granted on the M3 Ultra only. A registered model without a row or a grant is refused.
+- Pair serving is granted per registered model with the chip classes each role may run on (owner decision D4). The registered 27B is granted on the M3 Ultra and the M5 Max for either role: its setups prepare in tensor parallel under its own budgets and grant, whatever the public name (a pipeline setup, which cannot keep its images, video and committed-token logprobs, is refused when saved and when planned), and the plan refuses rank 0 on an unlisted class or a chip with no class. The 9B's rank 0 is granted on the M3 Ultra only. A registered model without a row or a grant is refused.
 - Adapters. The installed path starts workers for the adapter of every granted model (dense Qwen, Qwen with routed experts, the Prism Hadamard pack, Nemotron-H) and for no other; each rank's environment is the ten fixed values plus what that adapter's arithmetic policy requires, and an adapter value cannot replace a fixed one. A withheld model is refused before its adapter is looked at.
 - A worker description this build cannot read (a mode or a field from a newer worker) is explained as a mixed install, not as a difference.
 
@@ -34,3 +34,10 @@ Seven actual local owner/stand-in lifecycle scenarios follow:
 - Fixed lifetime expiry removes readiness and refuses admission; elapsed time never replaces cleanup proof.
 
 The command protocol, filesystem gates and subprocess supervision are real; the metadata producer and model workers are fabricated CPU children. Fixtures contain no weights or usable credentials. The absent fake payload confirms that metadata preflight does not read weights. These checks do not qualify native inference, real SSH authentication, a two-host deployment, the HTTP server, or the full Provider/CLI build. The test executable has an outer alarm to bound a broken regression.
+
+`InstalledBatchLanesCheck.swift` verifies the fixed owner child receives only its
+locally resolved optional lane count (1...8), using an actual spawned environment
+probe. Provider admission, owner lease and native-worker settings agree; nil,
+unsupported modes, image gates and unchanged defaults stay covered. Both rank
+constructors in coordinator-member installation use the same launch boundary.
+This remains CPU control-path evidence, separate from native batch qualification.

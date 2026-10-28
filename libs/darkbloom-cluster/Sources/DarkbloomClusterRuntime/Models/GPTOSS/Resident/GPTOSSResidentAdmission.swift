@@ -65,7 +65,7 @@ struct GPTOSSResidentAdmission {
         guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling)
+            sampling: value.sampling, prefixCache: value.prefixCache)
     }
 
     /// Rank, local path and local uptime are intentionally absent. Everything
@@ -78,7 +78,7 @@ struct GPTOSSResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue, configuration.prefillSchedule.rawValue,
             mode.rawValue, transport.rawValue,
-        ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
+        ] + GPTOSSPagedKVLayout.agreementFields + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
     }
 
     var wireProfile: ClusterWorkerProfile {

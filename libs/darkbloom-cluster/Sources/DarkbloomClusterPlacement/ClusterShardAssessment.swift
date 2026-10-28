@@ -273,8 +273,6 @@ extension ClusterPlacementPlanner {
         for (index, stage) in stages.enumerated() {
             let range = layout.range(bounds[index]..<bounds[index + 1])
             let k = stage.count, share = range.cost / total
-            let reductions = k > 1 ? tp.family.reductionsPerLayer * range.layers.count
-                + (range.layers.upperBound == layout.layerCount ? tp.family.reductionsPerStep : 0) : 0
             var stageDecode = 0.0, stagePrefill = 0.0
             for member in stage {
                 let device = context.devices[member], memory = device.profile.memory
@@ -298,18 +296,28 @@ extension ClusterPlacementPlanner {
                         tensors += layout.egress.tensorCount; largest = max(largest, layout.egress.largestTensorBytes)
                     }
                 }
-                let load = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let textLoad = context.loadNeed([(loaded: weights, tensors: tensors, largest: largest)], memory: memory)
+                let additional = tp.family.additionalResidentBytes ?? 0
+                let assistant = k > 1 ? context.policy.tensorParallelBatchQuote?.assistant : nil
+                let load = (need: textLoad.need + 3 * additional + (assistant?.loadBytes ?? 0),
+                            held: textLoad.held + additional + (assistant?.residentBytes ?? 0),
+                            largest: max(textLoad.largest, additional, assistant?.largestAllocationBytes ?? 0))
                 func part(_ bytes: Int) -> Int { k > 1 && tp.family.stateDividesByHeads ? (bytes + k - 1) / k : bytes }
                 let state = max(context.policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context_),
                                 part(range.stateBytes(tokens: context_)))
-                let request = max(memory.minimumAdmissibleBytes, state + part(range.requestWorkBytes)
+                let components = state + part(range.requestWorkBytes)
                     + part(range.transientBytes(chunk: memoryChunk, context: context_)) + (layout.allowanceEveryRankBytes ?? 0)
-                    + memory.loadingHeadroomBytes)
-                let need = max(load.need, load.held + request)
-                let fit = device.profile.fit(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                let batchFloor = k > 1 ? context.policy.tensorParallelBatchQuote?.allowance.reservedBytes ?? 0 : 0
+                let request = max(memory.minimumAdmissibleBytes, max(components, batchFloor) + memory.loadingHeadroomBytes)
+                // The native batch reservation remains future live memory
+                // throughout shard loading, including its host read buffers.
+                let need = max(load.need + batchFloor, load.held + request)
+                let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
+                let allocatorHeld = load.held + batchFloor + assistantTransient
+                let fit = device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 tier = max(tier, fit.tier)
                 hardwareFits = hardwareFits
-                    && device.profile.hardwareFits(needBytes: need, weightsBytes: load.held, largestTensorBytes: load.largest)
+                    && device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest)
                 members.append(.init(device: device.label, firstLayer: range.layers.lowerBound, endLayer: range.layers.upperBound,
                     share: k > 1 ? 1 / Double(k) : nil, weightsBytes: load.held, needBytes: need, tier: fit.tier))
                 let split = ClusterDecodeSplit(rates: rates)
@@ -317,14 +325,15 @@ extension ClusterPlacementPlanner {
                 let shard = k > 1 ? (rates.tensorShardPrefillTokensPerSecond ?? rates.prefillTokensPerSecond) : rates.prefillTokensPerSecond
                 stagePrefill = max(stagePrefill, share / shard)
             }
-            decode.append(stageDecode + Double(reductions) * reduction.seconds(bytes: tp.family.partialBytesPerToken))
-            prefill.append(stagePrefill + (k > 1 ? Double(tp.family.reductionsPerLayer * range.layers.count)
-                * reduction.seconds(bytes: chunk * tp.family.partialBytesPerToken) / Double(chunk) : 0))
+            decode.append(stageDecode + (k > 1 ? tp.family.decodeReductionSeconds(layers: range.layers.count,
+                head: range.layers.upperBound == layout.layerCount, reduction: reduction) : 0))
+            prefill.append(stagePrefill + (k > 1 ? tp.family.prefillReductionSeconds(chunks: 1, chunk: chunk,
+                layers: range.layers.count, reduction: reduction) / Double(chunk) : 0))
         }
         let chunks = (context.prompt + chunk - 1) / chunk
         let slowest = prefill.max() ?? 0, sum = prefill.reduce(0, +)
         let first = Double(context.prompt) * slowest + Double(chunk) * (sum - slowest)
-            + Double(chunks * (stages.count - 1)) * context.link.perChunkSeconds
+            + Double(chunks * (stages.count - 1)) * context.link.chunkHopSeconds(bytes: chunk * layout.boundaryBytesPerToken)
         let step = decode.reduce(0, +) + (context.link.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0)
         return (members, tier, hardwareFits, .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
             prefillTokensPerSecond: Double(context.prompt) / first, decodeTokensPerSecond: 1 / step,

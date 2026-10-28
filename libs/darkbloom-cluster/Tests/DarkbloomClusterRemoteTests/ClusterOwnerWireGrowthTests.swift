@@ -77,7 +77,7 @@ final class ClusterOwnerWireGrowthTests: XCTestCase {
             let epoch = Self.epoch, lease = Self.lease, incarnation = Self.incarnation
             let now = DispatchTime.now().uptimeNanoseconds
             let reservation = ClusterWorkerReservation(profileID: "invented", promptTokenIDs: prompt, stopTokenIDs: [2],
-                outputCount: 64, chunkSize: 256, deadlineUptimeNanoseconds: now + 60_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil)
+                outputCount: 64, chunkSize: 256, deadlineUptimeNanoseconds: now + 60_000_000_000, capacityLimitBytes: 1 << 30, sampling: nil, prefixCache: nil)
             let reserve = try OwnerWire.command(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(index + 1),
                 requestID: UUID(), command: .reserve(reservation)), lease: lease, incarnation: incarnation,
                 sequence: UInt64(2 * index + 1), now: now, deliveryDeadline: now + 5_000_000_000)

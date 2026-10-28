@@ -109,13 +109,13 @@ struct GLM5NextTensorParallelPagedKVTests {
         init(stage: GLM5NextTextStage, mtp: GLM5NextMTP, pool: GLM5NextDSAPagePool?, prompt: [Int],
              outputs: Int, restoring: (cache: GLM5NextTextStageCache, mtp: GLM5NextMTPCheckpoint?, length: Int)? = nil,
              embeddings: MLXArray? = nil,
-             store: ((Int, GLM5NextTextStageCache, GLM5NextMTPCheckpoint) -> Void)? = nil) throws {
+             store: ((Int, GLM5NextTextStageCache, GLM5NextMTPCheckpoint) -> Void)? = nil, depth: Int = 2) throws {
             pages = try pool.map { pool in
                 GLM5NextPageReservation(pool: pool, account: try pool.reserve(pages:
                     Runtime.historyPages(pool: pool, configuration: stage.plan.configuration,
-                        contextTokens: prompt.count + outputs + 3, speculative: true)))
+                        contextTokens: prompt.count + outputs + depth + 1, speculative: true)))
             }
-            let speculation = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: 2, rank: 0, ranks: 1,
+            let speculation = try GLM5NextTensorParallelSpeculation(mtp: mtp, depth: depth, rank: 0, ranks: 1,
                 primeRows: 512, pagePool: pool, pageAccount: pages?.account, agree: { $0 })
             self.speculation = speculation
             // The stage makes paged caches while it has the pool.

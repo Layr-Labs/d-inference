@@ -193,20 +193,19 @@ where Inner.Context == BasicRequestContext {
         // Its owner splits its own reasoning channel and refuses a request
         // parser, so the inferred parser applies only to the generic service
         // (the coordinator path likewise sets none for a Super owner).
-        // A raw-body owner returns logprobs on its own channel; any other
-        // request that asks for them gets the request-owned plumbing
-        // (`serviceForLogprobs`). The generic service ignores them.
+        // A raw-body owner returns logprobs on its own channel, spliced here;
+        // any other request that asks for them gets the request-owned
+        // plumbing (`serviceForLogprobs`), whose entries the service encodes
+        // in stream order. The generic service ignores them.
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
-        var requestLogprobs: EngineV2LogprobsPlumbing?
         let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
             logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil
         } else if let serviceForLogprobs, let spec = ProviderLoop.extractLogprobsSpec(from: raw) {
             await resolveReasoningParser(&item)
-            let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs, channel: EngineV2LogprobsChannel())
-            requestLogprobs = plumbing
+            let plumbing = EngineV2LogprobsPlumbing(topLogprobs: spec.topLogprobs)
             requestService = serviceForLogprobs(item.templateControls, plumbing)
             logprobs = nil
         } else {
@@ -239,7 +238,7 @@ where Inner.Context == BasicRequestContext {
                             request: item.request, frameGenerationErrors: true)
                     }
                     return DistributedHTTPEventStream.response(
-                        Self.decorating(frames, logprobs: requestLogprobs, countTokens: countTokens), control: response)
+                        Self.decorating(frames, countTokens: countTokens), control: response)
                 } catch {
                     response.disconnect(); response.finish(); throw error
                 }
@@ -247,36 +246,25 @@ where Inner.Context == BasicRequestContext {
             let frames = try await requestService.streamChatCompletionFrames(
                 request: item.request, frameGenerationErrors: true)
             // A raw-body owner's entries are spliced as the coordinator relay
-            // splices them; every other response takes the request-owned
-            // decorations, as the collected path below does.
+            // splices them; every other response takes the usage decoration,
+            // as the collected path below does.
             if let logprobs { return Self.sseResponse(Self.splicingLogprobs(frames, from: logprobs)) }
-            return Self.sseResponse(Self.decorating(frames, logprobs: requestLogprobs, countTokens: countTokens))
+            return Self.sseResponse(Self.decorating(frames, countTokens: countTokens))
         }
-        let response = try await requestService.createChatCompletion(request: item.request)
-        if let logprobs { return try Self.jsonResponse(response, logprobs: logprobs.drain()) }
-        if requestLogprobs != nil || countTokens != nil {
-            return try Self.jsonResponse(response, logprobs: requestLogprobs, countTokens: countTokens)
+        let completion = try await requestService.createChatCompletion(request: item.request)
+        if let logprobs { return try Self.jsonResponse(completion, logprobs: logprobs.drain()) }
+        if countTokens != nil {
+            return try Self.jsonResponse(completion, countTokens: countTokens)
         }
-        return try Self.jsonResponse(response)
+        return try Self.jsonResponse(completion)
     }
 
-    /// The OpenAI entries a request asked for: `top_logprobs` alternatives
-    /// (none for `logprobs: true` alone, though the engine gathers one).
-    static func requested(_ entries: [SSETokenLogprob], top: Int?) -> [SSETokenLogprob] {
-        entries.map { .init(token: $0.token, logprob: $0.logprob, bytes: $0.bytes,
-                            topLogprobs: Array($0.topLogprobs.prefix(max(0, top ?? 0)))) }
-    }
-
-    /// The coordinator path's frame decorations on either local API's frames:
-    /// each token's logprobs spliced into the next content-bearing frame
-    /// (`ProviderLoop.injectLogprobs`), and the usage frame's reasoning tokens
-    /// (`ProviderLoop.injectReasoningTokens`).
-    static func decorating(_ frames: AsyncThrowingStream<String, Error>, logprobs: EngineV2LogprobsPlumbing?,
+    /// Usage decoration preserves the canonical service's event-bound logprobs.
+    static func decorating(_ frames: AsyncThrowingStream<String, Error>,
                            countTokens: (@Sendable (String) -> Int)?) -> AsyncThrowingStream<String, Error> {
-        guard logprobs != nil || countTokens != nil else { return frames }
+        guard countTokens != nil else { return frames }
         return AsyncThrowingStream { continuation in
             let task = Task {
-                var pending: [SSETokenLogprob] = []
                 var reasoning = ""
                 do {
                     for try await frame in frames {
@@ -288,13 +276,7 @@ where Inner.Context == BasicRequestContext {
                                     reasoningTokens: min(countTokens(reasoning), max(0, usage.completionTokens)))
                             }
                         }
-                        if let logprobs { pending += requested(logprobs.channel.drain(), top: logprobs.topLogprobs) }
-                        if !pending.isEmpty, let decorated = ProviderLoop.injectLogprobs(into: frame, entries: pending) {
-                            pending = []
-                            continuation.yield(decorated)
-                        } else {
-                            continuation.yield(frame)
-                        }
+                        continuation.yield(frame)
                     }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
@@ -305,25 +287,20 @@ where Inner.Context == BasicRequestContext {
 
     /// A collected completion with every token's logprobs on its choice and
     /// its reasoning tokens in the usage.
-    static func jsonResponse(_ completion: OpenAIChatCompletionResponse, logprobs: EngineV2LogprobsPlumbing?,
+    static func jsonResponse(_ completion: OpenAIChatCompletionResponse,
                              countTokens: (@Sendable (String) -> Int)?) throws -> Response {
-        guard let bytes = try decoratedJSON(completion, logprobs: logprobs, countTokens: countTokens) else {
+        guard let bytes = try decoratedJSON(completion, countTokens: countTokens) else {
             return try jsonResponse(completion)
         }
         return Response(status: .ok, headers: [.contentType: "application/json"],
                         body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
     }
 
-    static func decoratedJSON(_ completion: OpenAIChatCompletionResponse, logprobs: EngineV2LogprobsPlumbing?,
+    static func decoratedJSON(_ completion: OpenAIChatCompletionResponse,
                               countTokens: (@Sendable (String) -> Int)?) throws -> Data? {
         let data = try JSONEncoder.openAIServer.encode(completion)
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              var choices = object["choices"] as? [[String: Any]], !choices.isEmpty else { return nil }
-        if let logprobs {
-            let entries = requested(logprobs.channel.drain(), top: logprobs.topLogprobs)
-            choices[0]["logprobs"] = ["content": entries.map(\.jsonObject)]
-            object["choices"] = choices
-        }
+              let choices = object["choices"] as? [[String: Any]], !choices.isEmpty else { return nil }
         if let countTokens, let reasoning = completion.choices.first?.message.reasoningContent, !reasoning.isEmpty,
            var usage = object["usage"] as? [String: Any] {
             usage["completion_tokens_details"] = ["reasoning_tokens":

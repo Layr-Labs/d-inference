@@ -87,7 +87,13 @@ struct QwenResidentAdmission {
     /// The closed resident row of `specification.model`: profile, cuts, schedules.
     let definition: QwenResidentModelDefinition
     let plan: QwenLayerStagePlan
+    /// What the pair advertises and a reservation is held to.
     let profile: QwenLayerStageGenerationProfile
+    /// What every LOAD gate charges (`QwenResidentAdapterDefinition.memoryProfile`):
+    /// the profile, or the standard request for a row that serves its native
+    /// context. The pipeline modes serve up to it; tensor parallel charges a
+    /// longer request at its own context when it is reserved.
+    let memoryProfile: QwenLayerStageGenerationProfile
     let arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt
     let arithmeticSHA256: String
     let jaccl: QwenResidentJACCLConfiguration
@@ -125,6 +131,7 @@ struct QwenResidentAdmission {
         plan = try QwenLayerStagePlan(configuration: configBytes,
             ranges: [0..<configuration.stageCut, configuration.stageCut..<spec.layers], activeMTP: false)
         profile = try QwenResidentAdapterDefinition.profile(specification: spec)
+        memoryProfile = try QwenResidentAdapterDefinition.memoryProfile(specification: spec)
         guard configuration.runtimeProfile == nil || configuration.runtimeProfile == profile.identifier else {
             throw ProbeError("Runtime profile does not match the native text adapter")
         }
@@ -139,15 +146,23 @@ struct QwenResidentAdmission {
     }
 
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
+        try request(value, id: id, now: now, allowsQwenMedia: false)
+    }
+
+    func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64,
+                 allowsQwenMedia: Bool) throws -> QwenLayerStageGenerationRequest {
         guard value.profileID == profile.identifier, value.capacityLimitBytes > 0,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
         guard value.mimoImages == nil else { throw ProbeError("Encoded MiMo images cannot enter a foreign model") }
+        guard value.qwenMedia == nil || allowsQwenMedia else {
+            throw ProbeError("This Qwen native generation path has no media owner")
+        }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling, route: value.route)
+            sampling: value.sampling, route: value.route, qwenMedia: value.qwenMedia, prefixCache: value.prefixCache)
     }
 
     /// Rank, local path and local uptime are intentionally absent. The explicit
@@ -160,7 +175,10 @@ struct QwenResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue,
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
-            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)))
+            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)
+            // Both ranks size LOAD for one memory plan. Only a memory profile
+            // below the profile changes the bytes a load always agreed on.
+            + (memoryProfile == profile ? [] : ["memory=" + memoryProfile.fingerprint])))
     }
 
     var wireProfile: ClusterWorkerProfile {

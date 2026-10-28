@@ -25,6 +25,8 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     var acceptsPrefixSSDKeyInput = false
     var acceptsMiMoImageCandidate = false
     var acceptsGLMImageCandidate = false
+    var acceptsTensorAssistantPolicy = false
+    var acceptsTensorAssistantCohort = false
 
     /// `executable` was just hashed against its pin; the caller re-checks that
     /// it did not change after this read.
@@ -53,7 +55,11 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
             acceptsDataPlane: contains(ClusterDataPlaneLaunch.workerMarker),
             acceptsPrefixSSDKeyInput: contains(ClusterWorkerPrefixSSDKey.argument),
             acceptsMiMoImageCandidate:contains(ClusterMiMoImageCandidate.runtimeProfileArgument) && contains(ClusterMiMoImageCandidate.schema),
-            acceptsGLMImageCandidate: contains(ClusterGLMImageCandidate.schema) && contains(ClusterGLMImageCandidate.profileID))
+            acceptsGLMImageCandidate: contains(ClusterGLMImageCandidate.schema) && contains(ClusterGLMImageCandidate.profileID),
+            acceptsTensorAssistantPolicy: contains(ClusterQwenTensorAssistantPolicy.schemaName)
+                && contains(ClusterQwenTensorAssistantPolicy.inventoryArgument),
+            acceptsTensorAssistantCohort: contains(ClusterQwenTensorAssistantPolicy.verificationArgument)
+                && contains(ClusterQwenTensorAssistantPolicy.Verification.admittedCohort.rawValue))
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result
@@ -76,6 +82,16 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     func requireGLMImageCandidate(required: Bool) throws {
         guard !required || (acceptsGLMImageCandidate && hasProgressGuard && acceptsStartupDeadline && acceptsDataPlane) else {
             throw ClusterConfigurationError.invalid("Installed worker lacks the GLM image profile or required guards")
+        }
+    }
+
+    /// A binary marker is compatibility evidence only; the owner still requires
+    /// actual READY to match the saved policy and capacity after native LOAD.
+    func requireTensorAssistantPolicy(required: Bool, cohortRequired: Bool = false) throws {
+        guard !cohortRequired || required,
+              !required || (acceptsTensorAssistantPolicy && hasProgressGuard && acceptsStartupDeadline && acceptsDataPlane
+                && (!cohortRequired || acceptsTensorAssistantCohort)) else {
+            throw ClusterConfigurationError.invalid("Installed worker lacks the tensor assistant policy or required guards")
         }
     }
 

@@ -30,8 +30,14 @@ import Foundation
             let now = DispatchTime.now().uptimeNanoseconds
             let configuration = try WorkerConfiguration(arguments: arguments, now: now)
             // Before anything native: tensor parallel's collective wait (MLX reads it once).
-            if let line = WorkerCollectiveSynchronization.apply(mode: configuration.generationMode,
+            if let line = try WorkerCollectiveSynchronization.apply(mode: configuration.generationMode,
+                                                                modelID: configuration.load.identity.modelID,
                                                                 environment: ProcessInfo.processInfo.environment) {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
+            // Evidence only: do not change MLX's eager-fence-commit default.
+            if let line = WorkerEagerFenceCommit.report(mode: configuration.generationMode,
+                                                       environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
             // Before anything native: tensor parallel's command-buffer budget (read once too).
@@ -39,11 +45,15 @@ import Foundation
                                                           environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
-            // Before anything native: GLM tensor parallel's fused sum fences (read once too).
+            // Before anything native: where a tensor-parallel family's kernels wait for their sums (read once too).
             if let line = WorkerFenceFusion.apply(mode: configuration.generationMode, family: configuration.family,
                                                   environment: ProcessInfo.processInfo.environment) {
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
+            // Before anything native: every mode keeps a few quantized rows on the
+            // per-vector kernels, so a request's bytes do not depend on how many
+            // rows share its launch (read once too).
+            FileHandle.standardError.write(Data((ClusterQuantizedRowRouting.apply(source: "worker") + "\n").utf8))
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment
@@ -135,6 +145,7 @@ import Foundation
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
                 } ?? NativeWorkerRuntime(configuration.load, family: family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
+                        tensorAssistantPolicy: configuration.tensorAssistantPolicy,
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
                         tensorShares: configuration.tensorShares)
             }

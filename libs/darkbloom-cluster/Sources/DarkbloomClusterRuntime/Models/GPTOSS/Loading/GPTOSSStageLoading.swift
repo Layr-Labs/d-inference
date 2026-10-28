@@ -225,6 +225,6 @@ private func materializeGPTOSSStage(source: GPTOSSResidentSource, stageIndex: In
         storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)),
         selectedPayloadReadAccounting: readAccounting)
     return LoadedGPTOSSLayerStage(model: model, head: head, plan: source.plan, stageIndex: stageIndex,
-        receipt: receipt, activationDType: source.activationDType, residualDType: .float32,
+        receipt: receipt, activationDType: source.activationDType, residualDType: source.activationDType,
         vocabularySize: source.specification.vocabulary)
 }

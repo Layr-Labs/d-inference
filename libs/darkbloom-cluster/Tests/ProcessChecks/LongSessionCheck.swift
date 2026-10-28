@@ -30,7 +30,7 @@ private func require(_ condition: Bool, _ message: String) throws { if !conditio
             do {
                 lease = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
                     promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                    deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+                    deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
             } catch {
                 throw Failure(message: "request \(served + 1) at \(Int(Date().timeIntervalSince(started))) s refused (\(error)): "
                     + "\(pair.admissionState), exited \(workers.map(\.observedExit)), renewals \(workers.map(\.renewalsSent))")

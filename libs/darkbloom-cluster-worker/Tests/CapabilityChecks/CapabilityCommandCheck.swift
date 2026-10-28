@@ -15,7 +15,11 @@ import Foundation
             let manifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen35-9b.manifest.json"))
             let golden = try ClusterRuntimeCapabilityCodec.decode(Data(contentsOf: URL(fileURLWithPath: args[1])))
             let binary = String(repeating: "1", count: 64)
-            try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
+            // The retained protocol vector predates the standard 32K/32K
+            // request scope. Pin today's profile independently and preserve
+            // that vector as the authority for unchanged identities/plans.
+            let currentProfileFingerprint = "fc11ff677896ab33897564a8c2aaafe966b0e1414acf73ad15d76ee3dbfeb0d1"
+            try checks.yes("actual-native-metadata-matches-current-profile-and-golden-identities-and-plans") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
                 try capabilityCheck(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead], "Adapter schedules differ")
                 // The dense Qwen rows run tensor parallel too (`QwenTensorParallelResidentRuntime`, round 6e).
@@ -24,7 +28,14 @@ import Foundation
                     "Adapter generation modes differ (\(value.supportedGenerationModes.map(\.rawValue)))")
                 try capabilityCheck(value.speculation == ClusterRuntimeCapability.decodingRankSpeculation,
                     "A row with the speculative phase split must advertise the decoding rank's speculation")
+                try capabilityCheck(value.profile.maximumPromptTokens == 32_768
+                    && value.profile.maximumOutputTokens == 32_768 && value.profile.maximumContextTokens == 65_536
+                    && value.profile.maximumChunkTokens == 512 && value.profileFingerprint == currentProfileFingerprint,
+                    "Native metadata differs from the standard request scope")
+                let retained = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(golden)) as! [String: Any]
                 var current = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(value)) as! [String: Any]
+                current["profile"] = retained["profile"]
+                current["profileFingerprint"] = retained["profileFingerprint"]
                 current.removeValue(forKey: "supportedPrefillSchedules")
                 current.removeValue(forKey: "supportedGenerationModes")
                 // The speculation field follows from the modes: a record without them says "off".
@@ -32,7 +43,7 @@ import Foundation
                 var legacy = try JSONSerialization.data(withJSONObject: current, options: [.sortedKeys, .withoutEscapingSlashes])
                 legacy.append(10)
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(legacy) == golden,
-                    "Native metadata changed beyond advertised prefill schedules and generation modes")
+                    "Native metadata changed beyond the standard request scope, schedules and generation modes")
             }
             // The 27B's row carries the same modes; nothing else in its record depends on them.
             try checks.yes("registered-27b-advertises-its-own-rows-modes") {
@@ -46,6 +57,26 @@ import Foundation
                     && large.partitions.count == 15, "The 27B capability differs from its resident row")
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(large)) == large,
                     "The 27B capability does not round-trip within the byte bound")
+            }
+            try checks.yes("registered-qwen35-and-qwen36-moe-advertise-tensor-parallel") {
+                for (fixture, model, expectedModes) in [
+                    ("qwen35-35b-a3b", "registered_qwen35_35b_a3b", [ClusterGenerationMode.pipeline, .pipelineCompactDecode,
+                        .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP]),
+                    ("qwen36-35b-a3b", "registered_qwen36_35b_a3b", [.pipeline, .pipelineCompactDecode,
+                        .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP])
+                ] {
+                    let value = try QwenResidentCapabilityMetadata.describe(
+                        configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-\(fixture).configuration.json")),
+                        manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-\(fixture).manifest.json")),
+                        runtimeBinarySHA256: binary)
+                    try capabilityCheck(value.runtimeModelID == model
+                        && value.adapterID == ClusterRuntimeAdapter.qwen35RoutedExperts.rawValue
+                        && value.arithmeticPolicyID == ClusterRuntimeAdapter.qwen35RoutedExperts.arithmeticPolicyID
+                        && value.supportedGenerationModes == expectedModes && value.partitions.count == 9,
+                        "Routed capability differs from its registered row: \(model)")
+                    try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(value)) == value,
+                        "Routed capability does not round-trip: \(model)")
+                }
             }
             // The Prism Hadamard pack has the 27B's geometry and cuts under its own adapter
             // and arithmetic policy; its Plans are its own because its configuration is.
@@ -111,7 +142,7 @@ import Foundation
             // A second adapter, through the one catalog the worker's command asks: MiMo's own
             // row, its own session bound, the pipeline modes, the speculative rounds and the phase split
             // (a hand-off mode the planner considers only behind the explicit opt-in), serial and
-            // lookahead prefill. Described without MLX, like the others.
+            // lookahead prefill. Only metadata executes, even though MLX is linked.
             try checks.yes("registered-mimo-is-described-from-its-own-row") {
                 let mimoConfiguration = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json"))
                 let mimoManifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.manifest.json"))
@@ -177,7 +208,7 @@ import Foundation
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
                 try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions
-                    && value.profileFingerprint == golden.profileFingerprint, "Binary identity substituted model identity")
+                    && value.profileFingerprint == currentProfileFingerprint, "Binary identity substituted model identity")
             }
             try checks.no("changed-config") { _ = try QwenResidentCapabilityMetadata.describe(configuration: configuration + Data([32]), manifest: manifest, runtimeBinarySHA256: binary) }
             try checks.no("changed-manifest") { _ = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest + Data([32]), runtimeBinarySHA256: binary) }

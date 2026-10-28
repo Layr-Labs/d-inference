@@ -73,7 +73,9 @@ public struct PairDriver: Sendable {
         "darkbloom-stage-loaded-range-v1 ", "darkbloom-prefix-v1 ", "darkbloom-prefix-ssd-v1 ",
         // Tensor parallel: the load (plan, shares, sealed all-sum), each request, the link probe and the collective wait.
         "darkbloom-tensor-parallel-load-v1 ", "darkbloom-tensor-parallel-request-v1 ", "darkbloom-link-probe-v1 ",
-        "darkbloom-collective-sync-v1 "]
+        "darkbloom-collective-sync-v1 ",
+        // Diagnostic (`DARKBLOOM_QWEN_TP_PREFILL_FRAME_TIMING=1`): each prompt's frames on a Qwen TP rank.
+        "qwen-tp-prefill-v1 "]
     /// The two workers' credential lines for one run (S16).
     static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
         let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]
@@ -370,8 +372,7 @@ public struct PairDriver: Sendable {
             pair = try ClusterWorkerPair(workers: endpoints,
                 startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
                 keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck, lanes: c.batchLanes,
-                // GLM tensor parallel's lane loop retires a cancelled lane alone.
-                lanesRetireAlone: c.generationMode == PairConfiguration.tensorParallelMode)
+                lanesRetireAlone: c.lanesRetireAlone)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         timing.servingContextAtReady = endpoints.map { $0.readiness?.servingContextTokens }
@@ -425,7 +426,8 @@ public struct PairDriver: Sendable {
                     promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
                     outputCount: current.outputCount, chunkSize: current.chunkSize,
                     deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity,
-                    sampling: current.sampling?.wire, route: current.route.flatMap(ClusterWorkerRoute.init(rawValue:))))
+                    sampling: current.sampling?.wire, prefixCache: current.prefixPartition,
+                    route: current.route.flatMap(ClusterWorkerRoute.init(rawValue:))))
             } catch ClusterWorkerOwnerError.refused(let why) {
                 // This request alone: refused up front (longer than the
                 // serving context) or by a rank's live gate and given back by
@@ -678,8 +680,8 @@ public struct PairDriver: Sendable {
                         deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity,
                         // A batch request's own sampling, as the single request's
                         // (before the reservation's sampling was required, a
-                        // sampled batch request ran greedy here).
-                        sampling: request.sampling?.wire))
+                        // sampled batch request ran greedy here), and its own prefix partition.
+                        sampling: request.sampling?.wire, prefixCache: request.prefixPartition))
                 } catch {
                     var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
                 }

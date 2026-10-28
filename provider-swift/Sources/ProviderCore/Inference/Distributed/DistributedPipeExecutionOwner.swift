@@ -35,7 +35,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     public func readiness() -> DistributedResidentReadiness? {
         guard let value = pair.readiness else { return nil }
         return .init(identity: identity, profileID: profile.id, requestCapacityBytes: value.requestCapacityBytes,
-            servingContextTokens: value.servingContextTokens, media: value.media)
+            servingContextTokens: value.servingContextTokens, media: value.media, tensorAssistant: value.tensorAssistant)
     }
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)
@@ -95,11 +95,25 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             && pair.readiness?.media == ClusterGLMMedia.contract) else {
             throw DistributedEngineError.refused(.mediaUnsupported)
         }
+        let qwenMedia = try request.clusterQwenMedia.map { try ClusterQwenMedia.decodeBounded($0) }
+        guard qwenMedia == nil || (identity.modelID == "registered_qwen38_27b"
+            && qwenMedia?.artifactSHA256 == identity.artifactSHA256
+            && qwenMedia?.configurationSHA256 == identity.configurationSHA256
+            && qwenMedia?.carriesEncodedBytes == true && stillImages == nil && media == nil && glmMedia == nil
+            && pair.readiness?.media == ClusterQwenMedia.contract) else {
+            throw DistributedEngineError.refused(.mediaUnsupported)
+        }
+        // Both ranks key and gate their prompt-prefix caches by the request's
+        // own partition, as the single-Mac engine does: a tenant's salt (as a
+        // digest; the salt never leaves this process) or its cache off.
+        let prefixCache = ClusterWorkerPrefixCache.partition(prefixCacheEnabled: request.prefixCacheEnabled,
+            cacheSalt: request.cacheSalt)
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
-            route: media == nil && stillImages == nil && glmMedia == nil ? decided?.workerRoute : nil,
-            mimoImages:media, stillImages:stillImages, glmMedia: glmMedia)
+            prefixCache: prefixCache,
+            route: media == nil && stillImages == nil && glmMedia == nil && qwenMedia == nil ? decided?.workerRoute : nil,
+            mimoImages:media, stillImages:stillImages, glmMedia: glmMedia, qwenMedia: qwenMedia)
         // Encode the COMPLETE bounded command before sending either rank.
         // Use largest legal sequence metadata so a later pipe header cannot
         // exceed the command bound (a GLM media reservation's own bound)

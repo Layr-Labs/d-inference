@@ -30,6 +30,14 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// saved before this field keeps its bytes. Passed to both workers
     /// (`--tensor-shares`), which bind it into their load agreement.
     public private(set) var tensorShares: [Int]?
+    /// A locally planned pipeline or Qwen TP width. Omission keeps the existing
+    /// family default and old configuration bytes; it is never inferred from
+    /// a remote memory advertisement. Both installed owners use the same
+    /// pinned value, and still run their own native memory/admission gates.
+    public private(set) var batchLanes: Int? = nil
+    /// A fully priced resident assistant, identical on both members. Omission
+    /// preserves existing setups and does not activate speculation.
+    public private(set) var tensorAssistant: ClusterQwenTensorAssistantPolicy? = nil
     public let chunkTokens: Int
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
@@ -123,6 +131,32 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         try require(tensorShares.map { shares in selectedGenerationMode == .tensorParallel && shares.count == 2
             && shares.allSatisfy({ (1...64).contains($0) }) && Set(shares).count > 1 } ?? true,
             "Tensor-parallel shares are two unequal weights of 1...64, and only under tensor_parallel_v1")
+        if let batchLanes {
+            let tensor = selectedGenerationMode == .tensorParallel
+                && ClusterRuntimeAdapter(rawValue: capability.adapterID)?
+                    .servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID) == true
+            let pipeline = selectedGenerationMode == .pipeline
+                && ClusterRuntimeAdapter(rawValue: capability.adapterID).map {
+                    switch $0 {
+                    case .qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,
+                         .gemma4LayerStage, .gptossLayerStage, .nemotronH, .mimoV26LayerStage: true
+                    default: false
+                    }
+                } == true
+            // Six lanes are a tensor-parallel owner's width (pipeline stages price
+            // 2, 4 and 8; `ClusterPlacementBatchScope` lists both).
+            try require([2, 4, 6, 8].contains(batchLanes) && (pipeline || tensor) && (tensor || batchLanes != 6)
+                && selectedPrefillSchedule == .serial && !capability.hasPrivateImages,
+                "A planned batch width requires a supported pipeline or Qwen tensor mode with serial prefill")
+        }
+        if let tensorAssistant {
+            try tensorAssistant.validate()
+            try require(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(capability.runtimeModelID)
+                && capability.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
+                && selectedGenerationMode == .tensorParallel && selectedPrefillSchedule == .serial
+                && !capability.hasPrivateImages && nativeMember == nil,
+                "A tensor assistant requires Qwen TP on a row with an inline head, serial prefill and a local cluster setup")
+        }
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {
             // A coordinator-paired setup (`nativeMember`) may carry it too: the

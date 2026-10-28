@@ -107,9 +107,12 @@ struct QwenLongPrefillTensorBudget: Encodable, Equatable {
     let isWholeProcessMemoryBound = false
     let includesWeightsOrNativeWorkspaces = false
 
+    /// Up to the wire's longest context: a row that serves its native context
+    /// is charged at it (`QwenResidentContextLimits.Ceiling.native`); every
+    /// other row's profile keeps its requests within the standard one.
     static func estimate(geometry g: QwenLongPrefillBudgetGeometry,
                          maximumTokens: Int, chunkSize: Int) throws -> Self {
-        guard (1...ClusterWorkerLimits.contextTokens).contains(maximumTokens), (1...512).contains(chunkSize), chunkSize <= maximumTokens else {
+        guard (1...ClusterWorkerLimits.wireContextTokens).contains(maximumTokens), (1...512).contains(chunkSize), chunkSize <= maximumTokens else {
             throw QwenLongPrefillBudgetError.invalid("Budget token/chunk geometry is outside explicit bounds")
         }
         let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum

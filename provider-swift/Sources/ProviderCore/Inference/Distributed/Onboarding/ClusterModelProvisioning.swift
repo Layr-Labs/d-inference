@@ -286,6 +286,18 @@ public enum ClusterModelStore {
     }
     private static let prefetching = ClusterModelPrefetchFolders()
 
+    /// The snapshot a model folder's refs select, read in `refNames` order (this install's ref, then production's:
+    /// `ModelScanner.revisionRefNames`). The first ref that exists decides; one that names no plain folder selects none.
+    static func activeRevision(model: URL, refNames: [String]) -> String? {
+        for name in refNames {
+            guard let ref = readSmall(model.appendingPathComponent("refs").appendingPathComponent(name)) else { continue }
+            guard let revision = String(data: ref, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !revision.isEmpty, !revision.contains("/") else { return nil }
+            return revision
+        }
+        return nil
+    }
+
     /// A small regular file (no symbolic link) of at most 1 MiB.
     static func readSmall(_ url: URL) -> Data? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -418,11 +430,13 @@ public enum ClusterModelProvisioning {
     static func stepLines(_ plan: ClusterModelProvisioningPlan) -> [String] {
         plan.steps.compactMap { step in
             let eta = step.seconds.map { ", " + duration($0) } ?? ""
+            // The Mac starts the line ("The other Mac (…): copy from this Mac …").
+            let mac = step.mac.prefix(1).uppercased() + step.mac.dropFirst()
             let line: String
             switch step.source {
             case .present: return nil
-            case .copy(let from): line = "\(step.mac): copy from \(from) over the Thunderbolt cable (\(gigabytes(step.bytes))\(eta))"
-            case .download: line = "\(step.mac): download from Darkbloom's catalog (\(gigabytes(step.bytes))\(eta))"
+            case .copy(let from): line = "\(mac): copy from \(from) over the Thunderbolt cable (\(gigabytes(step.bytes))\(eta))"
+            case .download: line = "\(mac): download from Darkbloom's catalog (\(gigabytes(step.bytes))\(eta))"
             }
             return step.blocker.map { line + " — cannot start: " + $0 } ?? line
         }

@@ -24,6 +24,10 @@ import Foundation
 /// - `..._STOP_MARGIN_MS`: the plan's stop margin, which the installed owner
 ///   passes so the close before the model's release fits in it
 ///   (`QwenStagePrefixDiskPolicy.closeBounds`).
+/// - `..._QUANTIZATION`: how records store attention rows, read by the load
+///   itself because both ranks bind it into their load agreement
+///   (`QwenStagePrefixDiskEncoding`, `balanced` by default; `native` keeps
+///   restores byte-exact).
 ///
 /// The write-behind byte bound is derived from this Mac's memory
 /// (`QwenStagePrefixDiskPolicy.queuedBytesBound`). This file needs nothing

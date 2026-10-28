@@ -107,35 +107,28 @@ struct CBv2PagedMTPWindowTests {
     }
 }
 
-// Every stage stores its KV paged unless the launch names a backend (owner
-// rule 2026-10-22: paged only), one-request MTP stages included. Model-free.
-@Suite("Stage KV backend default is paged")
+// Every stage stores its KV paged (owner rule 2026-10-22: paged only), one-request
+// MTP stages included; the former contiguous diagnosis switch stops the load by
+// name. Model-free.
+@Suite("Stage KV backend is paged only")
 struct ClusterStageKVBackendDefaultTests {
-    @Test func everyStageDefaultsToPaged() throws {
-        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: 1) == .paged)
-        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: false, batchLanes: 1) == .paged)
-        for lanes in 2...8 {
-            #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: lanes) == .paged)
-            #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: false, batchLanes: lanes) == .paged)
-        }
-        // The plain default the other tools read is unchanged.
+    @Test func everyStageIsPaged() throws {
+        let name = ClusterStageKVBackendKind.environmentName
         #expect(try ClusterStageKVBackendKind.fromEnvironment([:]) == .paged)
+        #expect(try ClusterStageKVBackendKind.fromEnvironment([name: "  "]) == .paged)
+        #expect(try ClusterStageKVBackendKind.fromEnvironment([name: " Paged "]) == .paged)
     }
 
-    @Test func aNamedBackendAlwaysWinsAndAnUnknownOneStopsTheLoad() throws {
+    @Test func theRemovedContiguousSwitchAndUnknownValuesStopTheLoad() throws {
         let name = ClusterStageKVBackendKind.environmentName
-        for speculative in [true, false] {
-            for lanes in [1, 4] {
-                #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "paged"], speculative: speculative,
-                    batchLanes: lanes) == .paged)
-                #expect(try ClusterStageKVBackendKind.resolved(environment: [name: " Contiguous "], speculative: speculative,
-                    batchLanes: lanes) == .contiguous)
-                #expect(throws: (any Error).self) {
-                    _ = try ClusterStageKVBackendKind.resolved(environment: [name: "ring"], speculative: speculative,
-                        batchLanes: lanes)
-                }
+        for raw in ["contiguous", " Contiguous ", "ring"] {
+            do {
+                _ = try ClusterStageKVBackendKind.fromEnvironment([name: raw])
+                Issue.record("\(raw) was accepted")
+            } catch let error as ProbeError {
+                #expect(error.description.contains(name))
+                #expect(raw.lowercased().contains("contiguous") == error.description.contains("removed"))
             }
         }
-        #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "  "], speculative: true, batchLanes: 1) == .paged)
     }
 }

@@ -190,7 +190,12 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
             throw ProbeError("GLM configuration geometry differs from the registered row")
         }
         tensorParallelPlan = imageCandidate ? nil : Self.tensorParallelPlan(specification: specification,
-            configuration: self.configuration, modes: specification.supportedGenerationModes)
+            configuration: self.configuration, modes: specification.supportedGenerationModes,
+            speculativeHead: try Self.tensorParallelSpeculativeHead(configuration: self.configuration, profile: profile,
+                executionPolicy: specification.executionPolicy, allocationBound: { bytes in
+                    guard let bound = allocation.upperBound(byteCount: bytes) else { throw ProbeError("GLM buffer bound overflow") }
+                    return bound
+                }))
     }
 
     var runtimeModelID: String { specification.model.rawValue }
@@ -269,24 +274,59 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
     /// projections' bfloat16 outputs at the residual width
     /// (`GLM5NextTensorParallelResidentRuntime.partialsTransport`); each
     /// step sums the ranks' token and stop flags once. The DSA latent cache
-    /// is replicated, so request state is held whole on every rank.
-    ///
-    /// Not in this plan yet: the runtime's speculative decode
-    /// (`GLM5NextTensorParallelResidentRuntime.mtpDepth`). It loads the NextN
-    /// layer whole on every rank (about 4.2 GB, which this layout leaves to
-    /// no rank) and charges it, its history and the captured verification
-    /// windows to its own load gate and request reserve; a greedy step then
-    /// verifies up to `mtpDepth + 1` rows per round of sums. The planner
-    /// still prices one token per step and no NextN bytes, so it can admit a
-    /// pair the load gate then refuses, and it underestimates greedy decode.
+    /// is replicated, so request state is held whole on every rank. Every
+    /// rank decodes in speculative rounds with the NextN layer, which it holds
+    /// whole beside its share (`speculativeHead`; the layout's
+    /// `speculativeHead` part, which no range loads).
     static func tensorParallelPlan(specification: GLM5NextRegisteredSpecification,
                                    configuration: GLM5NextTextConfiguration,
-                                   modes: [ClusterGenerationMode]) -> ClusterTensorParallelFamilyPlan? {
+                                   modes: [ClusterGenerationMode],
+                                   speculativeHead: ClusterTensorParallelSpeculativeHead?) -> ClusterTensorParallelFamilyPlan? {
         guard modes.contains(.tensorParallel),
               (try? GLM5NextTensorShard(rank: 0, size: 2).localConfiguration(configuration)) != nil else { return nil }
         return ClusterTensorParallelFamilyPlan(plan: GLM5NextTensorParallelResidentRuntime.planName, ranks: [2],
             reductionsPerLayer: 2, reductionsPerStep: 1,
-            partialBytesPerToken: specification.hidden * 2, stateDividesByHeads: false)
+            partialBytesPerToken: specification.hidden * 2, stateDividesByHeads: false, speculativeHead: speculativeHead)
+    }
+
+    /// Decode the pair measured at each speculative depth of the
+    /// tensor-parallel runtime, depth 0 being one token per step
+    /// (`GLM5NextTensorParallelResidentRuntime.mtpDepth`: sealed, 3,931-token
+    /// prompt, 256 tokens), in tokens per second.
+    static let measuredTensorParallelDecode: [Int: Double] = [0: 62.6, 1: 68.7, 2: 76.0, 3: 71.8]
+
+    /// The runtime's speculative decode as the planner prices it, at
+    /// `GLM5NextTensorParallelResidentRuntime.mtpDepth`: the NextN layer whole
+    /// on every rank; the request memory its rounds add there at the memory
+    /// plan's context (`profile`), as `GLM5NextTensorParallelRequestCharge`
+    /// charges it at LOAD (`speculationRequestBytes`, plus the NextN history's
+    /// own pages when histories are paged), the larger of the paged and the
+    /// contiguous charge, since a plan does not know which a worker runs; and
+    /// the decode the pair measured at that depth over one token per step
+    /// (`measuredTensorParallelDecode`). Nil at depth 0, when no NextN layer
+    /// loads.
+    static func tensorParallelSpeculativeHead(configuration c: GLM5NextTextConfiguration,
+                                              profile: QwenLayerStageGenerationProfile,
+                                              executionPolicy: GLM5NextExecutionPolicy,
+                                              allocationBound: (Int) throws -> Int) throws -> ClusterTensorParallelSpeculativeHead? {
+        let depth = GLM5NextTensorParallelResidentRuntime.mtpDepth
+        guard depth > 0 else { return nil }
+        guard let rounds = measuredTensorParallelDecode[depth], let plain = measuredTensorParallelDecode[0] else {
+            throw ProbeError("GLM tensor-parallel speculative depth \(depth) has no measured decode")
+        }
+        typealias Bytes = QwenLongPrefillCheckedBytes
+        let context = profile.maximumContextTokens
+        // The history columns a request holds: its context and one verification window past its last output.
+        let tokens = try Bytes.sum([context, depth, 1])
+        func charge(_ history: GLM5NextRequestStateBudget.HistoryBound) throws -> Int {
+            try GLM5NextTensorParallelResidentRuntime.speculationRequestBytes(configuration: c, profile: profile, depth: depth,
+                executionPolicy: executionPolicy, allocationBound: allocationBound, contextTokens: context, history: history)
+        }
+        let pages = GLM5NextTensorParallelRequestCharge.PagedHistory(configuration: c,
+            pageTokens: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+        let paged = try Bytes.sum([charge(.paged(tokens: tokens)), Bytes.product([pages.pages(tokens: tokens), pages.pageBytes])])
+        return .init(depth: depth, requestBytes: max(try charge(.reserved(tokens: tokens)), paged),
+            decodeSpeedup: max(1, rounds / plain))
     }
 
     /// The SDK's split rule for a text layer's tensor (`GLM5NextTensorShard.splitAxis`);

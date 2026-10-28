@@ -12,7 +12,6 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
@@ -29,7 +28,6 @@ extension EngineV2Bridge {
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
                 stopSequences: stopSequences,
-                logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
@@ -61,7 +59,6 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         stopSequences: [String] = [],
-        logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
@@ -116,20 +113,17 @@ extension EngineV2Bridge {
                         generatedTokens.append(token)
                     }
                 }
-                // Logprobs passthrough: convert to the OpenAI streaming
-                // entry shape and publish to the per-request channel BEFORE
-                // yielding the chunk, so by the time the SSE frame carrying
-                // this delta's text reaches the frame decorator its entries
-                // are already drainable (happens-before via the yield).
-                if let logprobsChannel, let logprobs, !logprobs.isEmpty {
-                    logprobsChannel.append(
+                // Keep captured metadata in the same ordered stream as its
+                // delta. A producer may run ahead of the HTTP consumer.
+                if let logprobs, !logprobs.isEmpty {
+                    continuation.yield(.logprobs(
                         EngineV2Translation.sseTokenLogprobs(
                             logprobs,
                             decodeToken: { [inner = tokenizer.inner] id in
                                 inner.decode(tokenIds: [id], skipSpecialTokens: false)
                             }
                         )
-                    )
+                    ))
                 }
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
@@ -162,7 +156,7 @@ extension EngineV2Bridge {
                         generatedTokens: generatedTokens
                     ))
                 }
-                // Out-of-band usage detail (logprobs-channel pattern): the
+                // Out-of-band usage detail: the
                 // engine's prefix-cache detail has no seat in the shared
                 // `GenerationEvent.info` shape, so the frames loop reads it
                 // from this per-request signal and splices

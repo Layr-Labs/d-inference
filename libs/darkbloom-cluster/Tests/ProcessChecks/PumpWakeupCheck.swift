@@ -110,7 +110,7 @@ private final class Tokens: @unchecked Sendable {
         let pair = try ClusterWorkerPair(workers: workers, startupDeadline: now + 3_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 128, chunkSize: 2,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 4_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 4_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         let captured = Tokens()
         try request.start { captured.accept($0) }; await request.waitUntilRetired()
         request.releaseResources()

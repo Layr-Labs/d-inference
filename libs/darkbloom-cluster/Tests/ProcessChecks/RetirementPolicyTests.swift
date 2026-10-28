@@ -112,7 +112,7 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         }
         func reservation() -> ClusterWorkerReservation {
             .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                  deadlineUptimeNanoseconds: now() + seconds(10), capacityLimitBytes: 1800, sampling: nil)
+                  deadlineUptimeNanoseconds: now() + seconds(10), capacityLimitBytes: 1800, sampling: nil, prefixCache: nil)
         }
         func settle(_ pair: ClusterWorkerPair) {
             let done = DispatchSemaphore(value: 0)

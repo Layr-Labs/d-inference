@@ -16,8 +16,8 @@ public enum ClusterWorkerLimits {
     /// each, 5 1/3 in base64): 8 MiB holds a `wirePromptTokens` prompt with its
     /// stop tokens, sampling and routes.
     public static let commandBytes = 8 * 1024 * 1024
-    /// The one larger command: a reservation carrying GLM media bytes to the
-    /// rank on the leader's own Mac (`ClusterGLMMedia`). Every other command,
+    /// The one larger command: a reservation carrying GLM or Qwen media bytes to the
+    /// rank on the leader's own Mac (`ClusterGLMMedia`, `ClusterQwenMedia`). Every other command,
     /// and every record that crosses the link, stays within `commandBytes`.
     public static let mediaCommandBytes = commandBytes + ClusterGLMMedia.maximumEnvelopeBytes
     /// One command inside its owner envelope (`ClusterOwnerWire`) or as a pipe
@@ -130,6 +130,21 @@ public struct ClusterWorkerProfile: Equatable, Sendable {
         self.maximumPromptTokens = maximumPromptTokens; self.maximumOutputTokens = maximumOutputTokens
         self.maximumChunkTokens = maximumChunkTokens; self.maximumContextTokens = maximumContextTokens
     }
+
+    /// The request a pair's memory plan, every quote and every LOAD gate size
+    /// for: the standard request (`ClusterWorkerLimits.contextTokens`,
+    /// `promptTokens` and `outputTokens`) cut to this profile, each leaving
+    /// room for one token of the other. It is the profile itself for every
+    /// profile within the standard request; a row that serves a longer native
+    /// context charges each longer request at its own context when a rank
+    /// reserves it.
+    public var memoryScope: ClusterWorkerProfile {
+        let context = min(maximumContextTokens, ClusterWorkerLimits.contextTokens)
+        let prompt = min(maximumPromptTokens, ClusterWorkerLimits.promptTokens, context - 1)
+        return .init(id: id, vocabularySize: vocabularySize, maximumPromptTokens: prompt,
+            maximumOutputTokens: min(maximumOutputTokens, ClusterWorkerLimits.outputTokens, context - 1),
+            maximumChunkTokens: min(maximumChunkTokens, prompt), maximumContextTokens: context)
+    }
 }
 
 /// The data-plane credential of one worker (S16): its per-epoch signing key,
@@ -208,12 +223,12 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
     public var encryptedAndVerified: Bool { protection == Self.encrypted && peerVerified }
 }
 
-/// What a tensor-parallel worker measured of its link to the peer at load,
-/// the way the sharded modes use it (`keyed`: over the keyed data plane, the
-/// all-sums sealed): one-way point-to-point records, small and large, and the
-/// all-sum at a decode step's width and at a prefill chunk's. Medians, in
-/// microseconds. The pair's owner keeps the latest per pair; a placement
-/// planner derives the link's costs from it.
+/// What a worker measured of its link to the peer at load, pipeline or tensor
+/// parallel, the way the sharded modes use it (`keyed`: over the keyed data
+/// plane, the all-sums sealed): one-way point-to-point records, small and
+/// large, and the all-sum at a decode step's width and at a prefill chunk's.
+/// Medians, in microseconds. The pair's owner keeps the pair's recent ones; a
+/// placement planner derives the link's costs from their median.
 public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     public static let transports: Set<String> = ["jaccl"]
     public let transport: String
@@ -245,6 +260,39 @@ public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     }
 }
 
+/// What a tensor-parallel rank measured of its own share at load, alone:
+/// every reduction local, so nothing crossed the cable and the outputs were
+/// not a tensor-parallel result. `sharePerMille` is this rank's share of every
+/// divided part; the plain decode step is one request's one-token step and,
+/// when the load serves the model's speculative head, the verify window is one
+/// request's window of `windowColumns` tokens (verified and settled). Medians
+/// of `rounds` timed rounds, in microseconds. The pair's owner keeps each
+/// member's recent ones per model; a placement planner reads them as that
+/// Mac's share steps, so the next plan balances the shares by them.
+public struct ClusterWorkerShareProbe: Codable, Equatable, Sendable {
+    public let sharePerMille: Int
+    public let plainStepMicroseconds: Int
+    public let windowColumns: Int?
+    public let windowStepMicroseconds: Int?
+    public let rounds: Int
+    public init(sharePerMille: Int, plainStepMicroseconds: Int, windowColumns: Int? = nil,
+                windowStepMicroseconds: Int? = nil, rounds: Int) {
+        self.sharePerMille = sharePerMille; self.plainStepMicroseconds = plainStepMicroseconds
+        self.windowColumns = windowColumns; self.windowStepMicroseconds = windowStepMicroseconds
+        self.rounds = rounds
+    }
+    /// A share strictly between none and all, positive steps within the link
+    /// probe's bounds, a window of the speculative head's widths (depth 1 to 4
+    /// plus the committed token) exactly when its step is given, a few rounds.
+    public var valid: Bool {
+        (1...999).contains(sharePerMille) && (1...60_000_000).contains(plainStepMicroseconds)
+            && (windowColumns == nil) == (windowStepMicroseconds == nil)
+            && (windowColumns.map { (2...5).contains($0) } ?? true)
+            && (windowStepMicroseconds.map { (1...60_000_000).contains($0) } ?? true)
+            && (3...64).contains(rounds)
+    }
+}
+
 /// This worker's local readiness. The owner must aggregate both workers.
 public struct ClusterWorkerReady: Equatable, Sendable {
     public let identity: ClusterWorkerIdentity
@@ -263,20 +311,29 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// A rank re-derives it while idle and reports it on every keep-warm
     /// answer (`ClusterWorkerEvent.keptWarm`).
     public let servingContextTokens: Int?
-    /// The link as a tensor-parallel load measured it; nil from other modes.
+    /// The link as this load measured it before reading a weight (every load
+    /// over the cable, pipeline or tensor parallel); nil from a load that
+    /// measured none.
     public let linkProbe: ClusterWorkerLinkProbe?
     /// The media contract this rank serves (`ClusterGLMMedia.contract`); nil:
     /// text only, and then the record's bytes are those of a worker without it.
     public let media: String?
+    public let tensorAssistant: ClusterQwenTensorAssistantReady?
+    /// This rank's own share as its tensor-parallel load timed it; nil from
+    /// other modes and from a load whose probe did not run (then the record's
+    /// bytes are those of a worker without it).
+    public let shareProbe: ClusterWorkerShareProbe?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
-                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil) {
+                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil, media: String? = nil,
+                tensorAssistant: ClusterQwenTensorAssistantReady? = nil, shareProbe: ClusterWorkerShareProbe? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
         self.linkProbe = linkProbe
-        self.media = media
+        self.media = media; self.tensorAssistant = tensorAssistant
+        self.shareProbe = shareProbe
     }
 }
 
@@ -287,7 +344,7 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let outputCount: Int
     public let chunkSize: Int
     /// Same-Mac DispatchTime uptime deadline. Never forward this to another Mac.
-    public let deadlineUptimeNanoseconds: UInt64
+    public private(set) var deadlineUptimeNanoseconds: UInt64
     /// Additional owner ceiling, not a native resource grant.
     public let capacityLimitBytes: Int
     /// How the decoding rank selects tokens; nil is greedy text, and then the
@@ -296,24 +353,45 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// from another (a hop, a codec, a local copy) that forgot it would
     /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
+    /// How both ranks' prompt-prefix caches treat the request: its cache off,
+    /// or its tenant's digest; nil is the cache on without a tenant, and then
+    /// the reservation's bytes are exactly those of a worker without it.
+    /// Required at every construction, with no default, for the reason
+    /// `sampling` is: a hop or copy that forgot it would let one tenant's
+    /// request reuse another's prompt prefixes.
+    public let prefixCache: ClusterWorkerPrefixCache?
     public let mimoImages: ClusterMiMoImages?
     public let stillImages: ClusterStillImages?
     /// GLM image and video input on the tensor-parallel pair; nil is text, and
     /// then the reservation's bytes are exactly those of a worker without media.
     public let glmMedia: ClusterGLMMedia?
+    /// Artifact-bound Qwen/Bonsai image/video request on a tensor-parallel pair.
+    public let qwenMedia: ClusterQwenMedia?
     /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
     /// placed, and then the reservation's bytes are exactly those of a worker
     /// without routes.
     public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
-                glmMedia: ClusterGLMMedia? = nil) {
+                sampling: ClusterWorkerSampling?, prefixCache: ClusterWorkerPrefixCache?,
+                route: ClusterWorkerRoute? = nil, mimoImages: ClusterMiMoImages? = nil, stillImages: ClusterStillImages? = nil,
+                glmMedia: ClusterGLMMedia? = nil, qwenMedia: ClusterQwenMedia? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
-        self.sampling = sampling; self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
-        self.glmMedia = glmMedia
+        self.sampling = sampling; self.prefixCache = prefixCache
+        self.route = route; self.mimoImages = mimoImages; self.stillImages = stillImages
+        self.glmMedia = glmMedia; self.qwenMedia = qwenMedia
+    }
+
+    /// This reservation on another clock, every other field kept: how a hop
+    /// (a link, an owner, a remote worker's launch clock) re-times one. A copy
+    /// rebuilt through `init` drops any media or route it forgets, since those
+    /// default to nil there; this copies the value and cannot.
+    public func withDeadline(_ deadlineUptimeNanoseconds: UInt64) -> Self {
+        var copy = self
+        copy.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+        return copy
     }
 }
 

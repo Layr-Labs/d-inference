@@ -420,8 +420,16 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
     private(set) var shortFramesBetweenSlices = 0
     var prefillShortestFirst = true
     private var lanes: [ObjectIdentifier: Lane] = [:]
+    /// The decode policy this rank runs; nil: the protocol's fixed depth.
+    var policy: GLM5NextTensorParallelDecodePolicy?
+    /// Every speculating unit: the units of its step, its tokens still to come and its window.
+    private(set) var windows: [(lanes: Int, outputLeft: Int, window: Int)] = []
 
     init(rank: Int, link: FakeLink) { self.rank = rank; self.link = link }
+
+    func window(lanes: Int, outputLeft: Int) -> Int {
+        policy?.window(maximum: depth, lanes: lanes, outputLeft: outputLeft) ?? max(0, min(depth, outputLeft - 1))
+    }
 
     /// The request's tokens alone: never the stop token unless its prompt
     /// asks for one at a position (`prompt[0] - 1000`).
@@ -492,6 +500,9 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
             let lane = unit.lane, solo = lane.solo, n = lane.agreed
             guard unit.last == solo[n - 1], (unit.window != nil) == speculates(lane) else {
                 throw ProbeError("fake unit decodes after a token the request did not agree")
+            }
+            if let window = unit.window {
+                windows.append((units.count, lane.request.outputCount - n, window))
             }
             // One sum per unit, as a round's or a step's agreement.
             _ = try link.exchange(rank: rank, kind: "unit", [Float(unit.window ?? -1)])

@@ -71,6 +71,43 @@ import DarkbloomClusterProtocol
         try require(configuration.generationMode == nil && configuration.selectedGenerationMode == .pipeline, "Omitted mode must be the pipeline")
         var plain = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]); plain.append(10)
         try require(canonical == plain, "A setup without a mode gained or lost bytes")
+        try require(configuration.batchLanes == nil, "An old setup gained a planned batch width")
+        for width in [2, 4, 8] {
+            for rank in [0, 1] {
+                var batch = object; batch["batchLanes"] = width
+                batch["role"] = rank == 0 ? "leader" : "follower"; batch["memberID"] = "peer-\(rank)"
+                let planned = try decode(batch)
+                let encoded = try ClusterConfigurationCodec.encode(planned, capability: capability, capabilitySHA256: capabilityHash)
+                try require(planned.batchLanes == width && planned.localRank == rank
+                    && (try ClusterConfigurationCodec.decode(encoded, capability: capability, capabilitySHA256: capabilityHash)) == planned,
+                    "Planned width did not round-trip for both ranks")
+            }
+        }
+        for adapter in [ClusterRuntimeAdapter.gptossLayerStage, .mimoV26LayerStage] {
+            let otherProfile = ClusterWorkerProfile(id: adapter.profileID, vocabularySize: profile.vocabularySize,
+                maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+                maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens)
+            let other = try ClusterRuntimeCapability(runtimeBinarySHA256: capability.runtimeBinarySHA256,
+                adapterID: adapter.rawValue, adapterVersion: adapter.version, runtimeModelID: adapter.runtimeModelID,
+                artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
+                manifestSHA256: capability.manifestSHA256, profile: otherProfile, profileFingerprint: capability.profileFingerprint,
+                partitions: capability.partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+                arithmeticPolicySHA256: capability.arithmeticPolicySHA256)
+            let otherHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(other))
+            for width in [2, 4, 8] {
+                for rank in [0, 1] {
+                    var batch = object; batch["batchLanes"] = width; batch["capabilitySHA256"] = otherHash
+                    batch["role"] = rank == 0 ? "leader" : "follower"; batch["memberID"] = "peer-\(rank)"
+                    let parsed = try ClusterConfigurationCodec.decode(bytes(batch), capability: other, capabilitySHA256: otherHash)
+                    try require(parsed.batchLanes == width && parsed.localRank == rank,
+                        "Priced native family rejected its persisted planned width")
+                }
+            }
+        }
+        // Six lanes are a tensor-parallel width; this pipeline setup refuses it.
+        for invalid: Any in [NSNull(), true, false, 0, 1, 3, 6, 7, 9, Int.max, "8", [8]] {
+            var bad = object; bad["batchLanes"] = invalid; try rejected { _ = try decode(bad) }
+        }
         var namedPipeline = object; namedPipeline["generationMode"] = "pipeline_v1"
         var canonicalPipeline = try decode(namedPipeline)
         try require(canonicalPipeline.generationMode == .pipeline, "Explicit pipeline was not read")
@@ -96,6 +133,8 @@ import DarkbloomClusterProtocol
         let modesHash = ClusterConfigurationCodec.sha256(modesData)
         selectedSplit["capabilitySHA256"] = modesHash
         let split = try ClusterConfigurationCodec.decode(bytes(selectedSplit), capability: modesCapability, capabilitySHA256: modesHash)
+        var splitBatch = selectedSplit; splitBatch["batchLanes"] = 2
+        try rejected { _ = try ClusterConfigurationCodec.decode(bytes(splitBatch), capability: modesCapability, capabilitySHA256: modesHash) }
         let splitBytes = try ClusterConfigurationCodec.encode(split, capability: modesCapability, capabilitySHA256: modesHash)
         try require(split.selectedGenerationMode == .phaseSplit && String(decoding: splitBytes, as: UTF8.self).contains("\"generationMode\":\"phase_split_v1\"")
             && (try ClusterConfigurationCodec.decode(splitBytes, capability: modesCapability, capabilitySHA256: modesHash)) == split, "Advertised mode lost")
@@ -139,6 +178,8 @@ import DarkbloomClusterProtocol
         let advertisedHash = ClusterConfigurationCodec.sha256(advertisedData)
         selectedLookahead["capabilitySHA256"] = advertisedHash
         let lookahead = try ClusterConfigurationCodec.decode(bytes(selectedLookahead), capability: advertised, capabilitySHA256: advertisedHash)
+        var lookaheadBatch = selectedLookahead; lookaheadBatch["batchLanes"] = 2
+        try rejected { _ = try ClusterConfigurationCodec.decode(bytes(lookaheadBatch), capability: advertised, capabilitySHA256: advertisedHash) }
         try require(lookahead.selectedPrefillSchedule == .oneChunkLookahead, "Advertised selection lost")
         try require(try ClusterConfigurationCodec.decode(ClusterConfigurationCodec.encode(lookahead, capability: advertised,
             capabilitySHA256: advertisedHash), capability: advertised, capabilitySHA256: advertisedHash) == lookahead,

@@ -176,6 +176,12 @@ final class WorkerCoordinator: @unchecked Sendable {
             ready = value; session = fresh; laneSession = freshLanes
             condition.unlock()
             try publish(.ready(value), requestID: nil)
+            if let assistant = value.tensorAssistant {
+                let line = "darkbloom-tensor-parallel-mtp-ready-v1 rank=\(value.rank) capacity=\(assistant.capacity)"
+                    + " depth=\(assistant.policy.depth) maximum_speculative_width=\(assistant.maximumSpeculativeWidth)"
+                    + " inventory_sha256=\(assistant.policy.inventorySHA256) verification=\(assistant.policy.verification.rawValue)"
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             startReading()
             if lanes > 1 {
                 // Continuous batching: control is applied as it arrives, and
@@ -209,6 +215,10 @@ final class WorkerCoordinator: @unchecked Sendable {
                 case .reserve(let value):
                     do {
                         try Self.requireLogprobCapture(value, runtime: runtime)
+                        guard WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) else {
+                            throw ClusterResidentRequestRefusal(reason: .unsupported,
+                                message: "This loaded worker does not serve the bound Qwen media request")
+                        }
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
                         admittedNotStarted = command.requestID
@@ -552,13 +562,18 @@ final class WorkerCoordinator: @unchecked Sendable {
     private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
         switch command.command {
         case .reserve(let value):
-            if value.sampling?.capturedLogprobs != nil, !runtime.capturesLogprobs {
+            if (value.sampling?.capturedLogprobs != nil && !runtime.capturesLogprobs)
+                || !WorkerQwenMediaAdmission.accepts(value, ready: runtime.readiness) {
                 try publish(.refused(.unsupported), requestID: command.requestID)
                 return false
             }
             do {
                 let bytes = try runtime.reserveLane(command.requestID!, value)
                 try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
+            } catch let refusal as ClusterResidentRequestRefusal where runtime.readiness != nil {
+                // This request alone, for the reason the runtime named (its own
+                // log line says why); the lanes that run go on.
+                try publish(.refused(refusal.reason), requestID: command.requestID)
             } catch {
                 let available = runtime.readiness != nil
                 try publish(.refused(available ? .capacity : .unavailable), requestID: command.requestID)
@@ -567,8 +582,12 @@ final class WorkerCoordinator: @unchecked Sendable {
         case .start:
             try runtime.startLane(command.requestID!)
         case .keepWarm(let ordinal):
+            // The pair asks only while no lane is held: a runtime that
+            // re-derives its serving context between batches answers it too.
             let elapsed = try runtime.dataPlanePing()
-            try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max)))), requestID: nil)
+            let serving = runtime.refreshLaneServingContext().map { min($0, ready?.profile.maximumContextTokens ?? $0) }
+            try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max))),
+                servingContextTokens: serving), requestID: nil)
         case .shutdown:
             condition.lock(); keepWarmArmed = false; condition.unlock()
             try runtime.shutdown()

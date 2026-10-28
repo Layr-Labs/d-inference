@@ -67,7 +67,10 @@ final class OnboardingLive: @unchecked Sendable {
     private var peerReportAt: Date?
     private var partsStoppedAt: Date?
     private let readPairing: @Sendable () throws -> ClusterSetupLinkExchange.Pairing?
-    private var choices: [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)] = []
+    /// What adopting a listed choice needs: its folder, plan key, model id, the members that hold it alone, its
+    /// deployment line and plan.
+    typealias ChoiceKey = (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)
+    private var choices: [ChoiceKey] = []
     /// Choices that are catalog models no Mac has yet (by choice index).
     private var catalogChoices: [Int: CatalogModel] = [:]
     /// Choices that only the other Mac has (by choice index): it sends them here first.
@@ -75,13 +78,23 @@ final class OnboardingLive: @unchecked Sendable {
     private var chosenTitle: String?
     /// The list `planModels` last returned on this Mac (from the leader when forwarded), so a choice names its model.
     private var listedChoices: [ClusterOnboardingModelChoice] = []
-    /// Set while this (leader) Mac answers a command forwarded from another member: its lines name this Mac by its
-    /// name instead of "this Mac", which would mean the Mac that shows them.
+    /// Set while this (leader) Mac answers a command forwarded from the other Mac: its lines are shown on that Mac, so
+    /// they name the two Macs the other way round (`here`, `there`).
     private var answeringForward = false
     private lazy var ownName: String = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
 
-    /// "this Mac", or this Mac's name in an answer shown on another member.
-    var here: String { lock.withLock { answeringForward } ? ownName : "this Mac" }
+    /// How this Mac's lines name the two Macs (`ClusterOnboardingMacName`), for the screen that shows them: this Mac
+    /// is "this Mac" and the other "the other Mac (<its hardware name>)" on its own screen; in an answer to a command
+    /// the other Mac forwarded, which that Mac shows, the other way round. The short forms leave the hardware name out
+    /// where a nearby line gives it.
+    var here: String { answering ? ClusterOnboardingMacName.other(named: ownName) : ClusterOnboardingMacName.this }
+    var hereShort: String { answering ? ClusterOnboardingMacName.other : ClusterOnboardingMacName.this }
+    var there: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other(named: peerName) }
+    var thereShort: String { answering ? ClusterOnboardingMacName.this : ClusterOnboardingMacName.other }
+    private var answering: Bool { lock.withLock { answeringForward } }
+
+    /// `text` at the start of a sentence.
+    static func sentence(_ text: String) -> String { ClusterOnboardingMacName.sentence(text) }
 
     init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings,
          readPairing: @escaping @Sendable () throws -> ClusterSetupLinkExchange.Pairing? = { try ClusterSetupLinkExchange.pairing() }) {
@@ -165,7 +178,7 @@ final class OnboardingLive: @unchecked Sendable {
                   currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID else { return nil }
             if let control = ClusterService.publishedLive()?.control, control.leads, control.confirmed == true { return nil }
             guard Date() < deadline else {
-                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(peerName) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `darkbloom cluster` again in a moment.")
+                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(there) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `darkbloom cluster` again in a moment.")
             }
             usleep(250_000)
         }
@@ -216,20 +229,31 @@ final class OnboardingLive: @unchecked Sendable {
         guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerMemberID == to else {
             return .failure(.init("The control leader is not the Mac this one paired with (forwarding to a third Mac is not built)."))
         }
+        // The control leader is the Mac this one paired with (checked above).
+        let leader = ClusterOnboardingMacName.other(named: leaderName)
         do {
             let data = try command(.init(op: .control, control: request), seconds: seconds)
             return .success(try JSONDecoder().decode(ClusterControlReply.self, from: data))
         } catch let failure as ClusterSetupFailure {
-            return .failure(.init(["\(leaderName) did not answer over the cable: \(failure.text)", Self.localNetworkHint(leaderName)]))
+            return .failure(.init(["\(Self.sentence(leader)) did not answer over the cable: \(failure.text)", Self.localNetworkHint(leader)]))
         } catch {
-            return .failure(.init(["\(leaderName) did not answer over the cable: \(error)", Self.localNetworkHint(leaderName)]))
+            return .failure(.init(["\(Self.sentence(leader)) did not answer over the cable: \(error)", Self.localNetworkHint(leader)]))
         }
+    }
+
+    /// Runs `body` as the answer to a command the other Mac forwarded: its lines are worded for that Mac's screen.
+    func answeringForwarded<T>(_ body: () -> T) -> T {
+        lock.withLock { answeringForward = true }
+        defer { lock.withLock { answeringForward = false } }
+        return body()
     }
 
     /// The leader's half: one forwarded command, run here as `darkbloom cluster` would run it on this Mac.
     func execute(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
-        lock.withLock { answeringForward = true }
-        defer { lock.withLock { answeringForward = false } }
+        answeringForwarded { executeForwarded(request, leaderID: leaderID) }
+    }
+
+    private func executeForwarded(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
         func lines(_ result: Result<[String], ClusterOnboardingFailure>) -> ClusterControlReply {
             switch result {
             case .success(let lines): return .init(lines: lines, failed: false, leaderID: leaderID)
@@ -509,7 +533,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     func reachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
-        return routed(.init(op: .reachMembers), seconds: 150, acting: true, forwarding: { say("Asking the control leader, \(self.leaderName), over the cable…") },
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true,
+                      forwarding: { say("Asking the control leader, \(ClusterOnboardingMacName.other(named: self.leaderName)), over the cable…") },
                       local: { localReachMembers(say) }) { reply in
             (reply.machines ?? []).map { machine in
                 var machine = machine
@@ -527,16 +552,16 @@ final class OnboardingLive: @unchecked Sendable {
             switch context.reachPeer() {
             case .reached(let report, let seconds): reached = (report, seconds)
             case .failed(let reason):
-                if reason != lastReason { say("Waiting for \(peerName)'s cluster service: \(reason)"); lastReason = reason }
+                if reason != lastReason { say("Waiting for \(thereShort)'s cluster service: \(reason)"); lastReason = reason }
                 guard Date() < deadline else {
-                    return .failure(.init(["\(peerName) did not answer over the cable within 2 minutes: \(reason)", Self.localNetworkHint(peerName)]))
+                    return .failure(.init(["\(Self.sentence(there)) did not answer over the cable within 2 minutes: \(reason)", Self.localNetworkHint(there)]))
                 }
                 sleep(3)
             }
         }
         let (peer, seconds) = reached!
         rememberPeerReport(peer, memberID: context.peerFacts?.memberID)
-        say("\(peerName) answered over the cable in \(String(format: "%.1f", seconds)) s.")
+        say("\(Self.sentence(there)) answered over the cable in \(String(format: "%.1f", seconds)) s.")
         let local = context.snapshot().local
         func machine(_ report: ClusterSetupReport, name: String, leads: Bool, memberID: String?, here: Bool) -> ClusterOnboardingMachine {
             .init(name: name, memoryGB: report.mac.physicalMemoryBytes >> 30, gpuCores: report.mac.profile?.gpuCores, leads: leads,
@@ -558,10 +583,14 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    func planShares(_ ranks: [ClusterSetupPlanSummary.Rank], localName: String) -> [ClusterOnboardingDeployment.Share] {
-        ranks.sorted { $0.rank < $1.rank }.map { rank in
-            .init(name: rank.local ? localName : peerName, layers: rank.endLayer - rank.firstLayer,
-                  weightsBytes: rank.weightsBytes)
+    /// Each Mac's share in rank order, by hardware name; `perspective` adds how the screen names each Mac ("this Mac",
+    /// "the other Mac"), for a line shown now rather than recorded for both Macs.
+    func planShares(_ ranks: [ClusterSetupPlanSummary.Rank], localName: String, perspective: Bool = false) -> [ClusterOnboardingDeployment.Share] {
+        let peer = peerName
+        let labels = perspective ? (local: hereShort, peer: thereShort) : nil
+        return ranks.sorted { $0.rank < $1.rank }.map { rank in
+            .init(name: rank.local ? localName : peer, layers: rank.endLayer - rank.firstLayer,
+                  weightsBytes: rank.weightsBytes, label: labels.map { rank.local ? $0.local : $0.peer })
         }
     }
 
@@ -604,7 +633,7 @@ final class OnboardingLive: @unchecked Sendable {
             // bytes when its aggregate is the entry's: it is shown by that entry's name.
             let namesByArtifact = Dictionary(catalogAll.compactMap { model in model.aggregateSHA256.map { ($0, model.displayName) } },
                                              uniquingKeysWith: { first, _ in first })
-            var keys = [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)]()
+            var keys = [ChoiceKey]()
             let choices = options.map { option -> ClusterOnboardingModelChoice in
                 let gigabytes = String(format: "%.1f GB", Double(option.model.totalBytes) / 1e9)
                 let modelID = option.model.modelID
@@ -614,27 +643,31 @@ final class OnboardingLive: @unchecked Sendable {
                     keys.append((option.model.folder, "", modelID, [], nil, nil))
                     return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.", modelID: modelID)
                 }
-                let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer, localName: localName)
+                let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer)
                 // One line: size, how it is split (the planner's choice), each Mac's share, the expected speed.
-                let shares = planShares(plan.ranks, localName: localName)
                 let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s\(plan.measured ? "" : " (estimate)")" : nil
-                let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode, shares: shares, speed: speed)
-                let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: shares)
+                let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode,
+                    shares: planShares(plan.ranks, localName: localName, perspective: true), speed: speed)
+                // Recorded and carried by the start for both Macs, so each Mac is named by its hardware.
+                let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: planShares(plan.ranks, localName: localName))
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),
                              deployment, plan))
                 // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
-                let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, localName: localName, peerName: peerName)
+                let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, local: here, peer: there)
                 // Served for the owner either way. Once chosen: the planner's one-line reason for tensor parallel or
-                // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet.
+                // a pipeline, and (serving through Darkbloom) whether public traffic may reach it yet. In the list,
+                // under the line: why not tensor parallel, for a model that has it and was split otherwise.
                 return .init(title: title, lines: [line] + (plan.modeReason.map { [$0] } ?? []),
                              blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID,
                              publicTraffic: context.settings.privateImageQualification
-                                ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic)
+                                ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
+                             tensorParallelNote: plan.tensorParallelNote)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
-            var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()
-            let pairs = Array(zip(choices, keys))
-            ordered += pairs.filter { $0.0.blocker == nil }
+            typealias Listed = (choice: ClusterOnboardingModelChoice, key: ChoiceKey, artifact: ListedArtifact?)
+            var ordered = [Listed]()
+            let planned = zip(zip(choices, keys), options).map { pair, option -> Listed in (pair.0, pair.1, ListedArtifact(option.model)) }
+            ordered += planned.filter { $0.choice.blocker == nil }
             var catalog = [Int: CatalogModel](), fromPeer = [Int: ClusterSetupLocalModel]()
             var held = Set((options.map(\.model.artifactSHA256)))
             // Models only the other Mac has: it copies them here over the cable, then this Mac plans them. Only those a
@@ -647,30 +680,83 @@ final class OnboardingLive: @unchecked Sendable {
                 offered.append(model)
                 fromPeer[ordered.count] = model
                 let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
-                    leader: .init(name: leaderLabel(localName), holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
-                    members: [.init(name: peerName, holding: .complete(folder: model.folder), freeBytes: nil)],
+                    leader: .init(name: here, holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
+                    members: [.init(name: there, holding: .complete(folder: model.folder), freeBytes: nil)],
                     linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
                 ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
-                    lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(peerName): copied over the cable first"], blocker: nil,
+                    lines: ["\(ClusterModelProvisioning.gigabytes(model.totalBytes)) · only on \(thereShort): copied over the cable first"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
                         quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID),
-                    (model.folder, "", model.modelID, [], nil, nil)))
+                    (model.folder, "", model.modelID, [], nil, nil), ListedArtifact(model)))
             }
             for model in catalogModels(catalogAll, peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
                 && ClusterModelCopyTrust.servableArtifacts.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
-                ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id, [], nil, nil)))
+                ordered.append((downloadChoice(model, peer: peer), ("", "", model.id, [], nil, nil),
+                                model.aggregateSHA256.map { ListedArtifact(aggregate: $0, files: nil) }))
             }
-            ordered += pairs.filter { $0.0.blocker != nil }
-            lock.withLock { self.choices = ordered.map(\.1); self.catalogChoices = catalog; self.peerChoices = fromPeer }
-            return .success(ordered.map(\.0))
+            ordered += planned.filter { $0.choice.blocker != nil }
+            // The list keeps one line per artifact and name; the copies and downloads above keep their choices.
+            let presented = Self.presentedChoices(ordered.map(\.choice), artifacts: ordered.map(\.artifact),
+                                                  servable: ClusterModelCopyTrust.servableArtifacts)
+            let position = Dictionary(uniqueKeysWithValues: presented.enumerated().map { ($0.element.index, $0.offset) })
+            catalog = Dictionary(uniqueKeysWithValues: catalog.compactMap { index, model in position[index].map { ($0, model) } })
+            fromPeer = Dictionary(uniqueKeysWithValues: fromPeer.compactMap { index, model in position[index].map { ($0, model) } })
+            lock.withLock { self.choices = presented.map { ordered[$0.index].key }; self.catalogChoices = catalog; self.peerChoices = fromPeer }
+            return .success(presented.map(\.choice))
         }
     }
 
-    /// What frees the memory a plan needs, in plain words, per Mac that is short now (from the planner's fit).
-    static func fitRemedy(_ plan: ClusterSetupPlanSummary, localName: String, peerName: String) -> String? {
+    /// An artifact as the model list compares it: the manifest's aggregate digest, and its files digest when reported.
+    struct ListedArtifact: Sendable, Equatable {
+        var aggregate: String
+        var files: String?
+
+        init(aggregate: String, files: String?) { self.aggregate = aggregate; self.files = files }
+        init(_ model: ClusterSetupLocalModel) { self.init(aggregate: model.artifactSHA256, files: model.filesSHA256) }
+
+        func same(_ other: ListedArtifact) -> Bool {
+            aggregate == other.aggregate && (files == nil || other.files == nil || files == other.files)
+        }
+    }
+
+    /// One line per artifact and name (2026-10-25: the catalog's GLM-5.3-Flash, cloned in from the product's store with
+    /// the catalog's encoding of the manifest, which the cluster worker does not take, was listed as "not supported on a
+    /// cluster yet" under the same model offered from the folder whose manifest the worker pins). A choice that cannot
+    /// be served is left out when another choice shows the same name for the same artifact and is offered, or cannot be
+    /// served either for a reason that is not the copy itself (the first of equals is kept). A model this build serves
+    /// on a cluster (`servable`, by aggregate digest) is never called unsupported for a copy the worker did not take.
+    /// Returns the kept choices with their indices, in order.
+    static func presentedChoices(_ choices: [ClusterOnboardingModelChoice], artifacts: [ListedArtifact?],
+                                 servable: Set<String>) -> [(index: Int, choice: ClusterOnboardingModelChoice)] {
+        let unsupported = ClusterSetupPlanning.notClusterModel
+        func twins(_ first: Int, _ second: Int) -> Bool {
+            guard first != second, choices[first].title == choices[second].title,
+                  let one = artifacts[first], let other = artifacts[second] else { return false }
+            return one.same(other)
+        }
+        return choices.indices.compactMap { index -> (index: Int, choice: ClusterOnboardingModelChoice)? in
+            var choice = choices[index]
+            guard let blocker = choice.blocker else { return (index, choice) }
+            let others = choices.indices.filter { twins(index, $0) }
+            if others.contains(where: { choices[$0].blocker == nil }) { return nil }
+            let said = others.contains { other in
+                let theirs = choices[other].blocker == unsupported, mine = blocker == unsupported
+                return theirs == mine ? other < index : !theirs
+            }
+            if said { return nil }
+            if blocker == unsupported, let artifact = artifacts[index], servable.contains(artifact.aggregate) {
+                choice.blocker = ClusterSetupPlanning.copyNotTaken
+            }
+            return (index, choice)
+        }
+    }
+
+    /// What frees the memory a plan needs, in plain words, per Mac that is short now (from the planner's fit). `local`
+    /// and `peer` name the two Macs as the screen does.
+    static func fitRemedy(_ plan: ClusterSetupPlanSummary, local: String, peer: String) -> String? {
         let words = plan.ranks.compactMap { rank -> String? in
-            let mac = rank.local ? localName : peerName
+            let mac = rank.local ? local : peer
             switch rank.fit {
             // The gate counts less than macOS would give (files it keeps in memory): the part's load lets the kernel
             // drop that cache first (`QwenDenseStageLoadReclaim`), so it fits. A restart is said only when nothing
@@ -701,17 +787,16 @@ final class OnboardingLive: @unchecked Sendable {
     func recheckFit(_ index: Int) -> String? {
         guard !forwards, leadership?.serving != true,
               let plan = lock.withLock({ choices.indices.contains(index) ? choices[index].plan : nil }) else { return nil }
-        let local = context.snapshot().local.mac
-        let localName = ClusterPairingProvider.displayName(chipName: local.chip)
-        let localProfile = local.profile
+        let localProfile = context.snapshot().local.mac.profile
         var peerProfile: ClusterDeviceProfile?
         if case .reached(let report, _) = context.reachPeer() {
             rememberPeerReport(report, memberID: context.peerFacts?.memberID)
             peerProfile = report.mac.profile
         }
+        let macs = (local: here, peer: there)
         let words = plan.ranks.compactMap { rank -> String? in
             guard let profile = rank.local ? localProfile : peerProfile else { return nil }
-            return Self.remedy(profile.memory.fit(rank.needBytes), mac: rank.local ? localName : peerName)
+            return Self.remedy(profile.memory.fit(rank.needBytes), mac: rank.local ? macs.local : macs.peer)
         }
         return words.isEmpty ? nil : words.joined(separator: " ")
     }
@@ -731,27 +816,22 @@ final class OnboardingLive: @unchecked Sendable {
         report.models.first { $0.sameEntry(model) }.map { .complete(folder: $0.folder) } ?? .missing
     }
 
-    /// The leading Mac as a copy or download line names it: "(this Mac)" only on its own screen, never in an answer a
-    /// member shows (that screen is the other Mac).
-    func leaderLabel(_ localName: String) -> String {
-        here == "this Mac" ? "\(localName) (this Mac)" : localName
-    }
-
-    func copyOffer(model: ClusterSetupLocalModel, peer: ClusterSetupReport, localName: String) -> ClusterOnboardingProvisionOffer {
+    /// The copy and download lines name the leading Mac `here` and the other `there` (for the screen that shows them).
+    func copyOffer(model: ClusterSetupLocalModel, peer: ClusterSetupReport) -> ClusterOnboardingProvisionOffer {
         let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
-            leader: .init(name: leaderLabel(localName), holding: .complete(folder: model.folder), freeBytes: nil),
-            members: [.init(name: peerName, holding: holding(model, in: peer), freeBytes: peer.modelStoreFreeBytes)],
+            leader: .init(name: here, holding: .complete(folder: model.folder), freeBytes: nil),
+            members: [.init(name: there, holding: holding(model, in: peer), freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: false, blocker: plan.blocker,
             quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))
     }
 
-    func downloadChoice(_ model: CatalogModel, peer: ClusterSetupReport, localName: String) -> ClusterOnboardingModelChoice {
+    func downloadChoice(_ model: CatalogModel, peer: ClusterSetupReport) -> ClusterOnboardingModelChoice {
         let bytes = model.totalSizeBytes ?? Int64(model.sizeGb * 1e9)
         let local = ClusterModelStoreLocation.defaultDirectory()
         let plan = ClusterModelProvisioning.plan(totalBytes: bytes,
-            leader: .init(name: leaderLabel(localName), holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
-            members: [.init(name: peerName, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
+            leader: .init(name: here, holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
+            members: [.init(name: there, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(title: ClusterOnboardingDeployment.title(modelID: model.id, displayNames: [model.id: model.displayName]),
             lines: ["\(ClusterModelProvisioning.gigabytes(bytes)) · not on these Macs: downloaded from Darkbloom's catalog first"],
@@ -823,19 +903,19 @@ final class OnboardingLive: @unchecked Sendable {
             if let peer = lock.withLock({ peerReport }),
                peer.models.contains(where: { artifact.sameEntry(modelID: $0.modelID, version: $0.version, aggregate: $0.artifactSHA256)
                    && ($0.filesSHA256 == nil || $0.filesSHA256 == artifact.filesDigest) }) {
-                lines.append("\(peerName) has it already (same catalog digest).")
+                lines.append("\(Self.sentence(there)) has it already (same catalog digest).")
                 return .success(lines)
             }
             guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterSetupFailure("This Mac is not paired.") }
             let selection = try context.linkSelection()
-            let name = peerName
+            let name = there
             let started = Date()
             let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
                 source: store.appendingPathComponent(folder), folder: folder) { sent, total in
                     progress(Self.copyLine(model: artifact.modelID, to: name, sent: sent, total: total, seconds: Date().timeIntervalSince(started)))
                 }
             if outcome.alreadyThere {
-                lines.append("\(name) has it already (same catalog digest).")
+                lines.append("\(Self.sentence(name)) has it already (same catalog digest).")
             } else {
                 let rate = outcome.seconds > 0 ? Double(outcome.sentBytes) / outcome.seconds : 0
                 if rate > 0 { try? Data(String(format: "%.0f", rate).utf8).write(to: copyRateFile, options: .atomic) }
@@ -851,7 +931,8 @@ final class OnboardingLive: @unchecked Sendable {
         }
     }
 
-    /// "Copying Qwen3.5-9B to Apple M5 Ultra, 256 GB over the Thunderbolt cable: 3.1 of 6.1 GB, 2.40 GB/s, about 1 s left".
+    /// "Copying Qwen3.5-9B to the other Mac (Apple M5 Ultra, 256 GB) over the Thunderbolt cable: 3.1 of 6.1 GB, 2.40 GB/s,
+    /// about 1 s left".
     static func copyLine(model: String, to peer: String, sent: Int64, total: Int64, seconds: Double) -> String {
         let rate = seconds > 0 ? Double(sent) / seconds : 0
         let left = rate > 0 && total > sent ? ", " + ClusterModelProvisioning.duration(Double(total - sent) / rate) + " left" : ""
@@ -863,6 +944,7 @@ final class OnboardingLive: @unchecked Sendable {
     func receiveFromPeer(_ model: ClusterSetupLocalModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
         // The other Mac answers once this Mac's service took (or refused) the copy, so a refusal shows at once.
         _ = try command(.init(op: .sendModel, model: model.folder, text: model.artifactSHA256), seconds: 30)
+        let sender = there
         let started = Date()
         var lastBytes: Int64 = -1, lastChange = Date()
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
@@ -874,7 +956,7 @@ final class OnboardingLive: @unchecked Sendable {
                artifact.sameEntry(modelID: model.modelID, version: model.version, aggregate: model.artifactSHA256),
                model.filesSHA256 == nil || model.filesSHA256 == artifact.filesDigest {
                 let seconds = Date().timeIntervalSince(started)
-                return "\(peerName) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to this Mac over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
+                return "\(Self.sentence(sender)) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to \(hereShort) over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
             }
             if Date().timeIntervalSince(lastLine) >= 1 {
                 lastLine = Date()
@@ -882,17 +964,17 @@ final class OnboardingLive: @unchecked Sendable {
                 if bytes != lastBytes { lastBytes = bytes; lastChange = Date() }
                 // Nothing new staged for 90 s: the other Mac stopped sending (its `darkbloom cluster` service says why).
                 if Date().timeIntervalSince(lastChange) > 90 {
-                    throw ClusterSetupFailure("\(peerName) stopped sending \(model.modelID) (nothing arrived for 90 s); run `darkbloom cluster` here again (the copy resumes)")
+                    throw ClusterSetupFailure("\(Self.sentence(sender)) stopped sending \(model.modelID) (nothing arrived for 90 s); run `darkbloom cluster` here again (the copy resumes)")
                 }
                 let seconds = Date().timeIntervalSince(started), rate = seconds > 0 ? Double(bytes) / seconds : 0
                 let left = rate > 0 && model.totalBytes > bytes ? ", " + ClusterModelProvisioning.duration(Double(model.totalBytes - bytes) / rate) + " left" : ""
                 if bytes > 0 {
-                    progress("Receiving \(model.modelID) from \(peerName) over the Thunderbolt cable: \(String(format: "%.1f", Double(bytes) / 1e9)) of \(ClusterModelProvisioning.gigabytes(model.totalBytes)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)")
+                    progress("Receiving \(model.modelID) from \(sender) over the Thunderbolt cable: \(String(format: "%.1f", Double(bytes) / 1e9)) of \(ClusterModelProvisioning.gigabytes(model.totalBytes)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)")
                 }
             }
             usleep(250_000)
         }
-        throw ClusterSetupFailure("\(model.modelID) did not arrive from \(peerName) in time; run `darkbloom cluster` here again (the copy resumes)")
+        throw ClusterSetupFailure("\(model.modelID) did not arrive from \(sender) in time; run `darkbloom cluster` here again (the copy resumes)")
     }
 
     static func stagedBytes(_ directory: URL) -> Int64 {
@@ -985,7 +1067,7 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The list of models is out of date; run `darkbloom cluster` again to choose."))
         }
         var lines = [String]()
-        if leadership?.serving == true {
+        if leadership?.serving == true || (try? store.readRecord().stopDrain) != nil {
             // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
             // (each part releases its memory), then changes the setup; `serve` starts the new one.
             if case .failure(let failure) = localStop() { return .failure(failure) }
@@ -994,11 +1076,12 @@ final class OnboardingLive: @unchecked Sendable {
                 return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
             }
         }
-        var result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+        let macs = (here: hereShort, there: thereShort)
+        var result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer, here: macs.here, there: macs.there)
         // The device lease is released a moment after the part's process ends.
         for _ in 0..<10 where !result.succeeded && result.lines.joined(separator: " ").contains("lease is currently held") {
             sleep(3)
-            result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+            result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer, here: macs.here, there: macs.there)
         }
         guard result.succeeded else { return .failure(.init(lines + result.lines)) }
         lock.withLock { chosenTitle = choice.title }
@@ -1047,7 +1130,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// cluster serves, the Mac that runs rank 0 starts its part again that way (its service keys the part by the
     /// scope); this waits until that part started again, so the readiness asked next is the new part's.
     func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
-        guard let current = leadership else { return .failure(.init("This Mac is not paired with a cluster.")) }
+        guard let current = leadership else { return .failure(.init("\(Self.sentence(hereShort)) is not paired with a cluster.")) }
         let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
             : "Saved on \(here): the cluster serves through Darkbloom (its leading Mac registers with the coordinator)."
         if current.scope == scope { return .success([saved]) }
@@ -1055,7 +1138,7 @@ final class OnboardingLive: @unchecked Sendable {
         do {
             try store.updateRecord { $0.leadership?.scope = scope }
         } catch {
-            return .failure(.init("This Mac's setup record could not be saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
+            return .failure(.init("\(Self.sentence(hereShort))'s setup record could not be saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
         }
         guard current.serving else { return .success([saved]) }
         // The member records the scope from a start of the model it already runs (it needs it only if control moves).
@@ -1079,6 +1162,9 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func localServe() -> Result<[String], ClusterOnboardingFailure> {
+        guard (try? store.readRecord().stopDrain) == nil else {
+            return .failure(.init("\(Self.sentence(hereShort)) is still finishing a stop. Run `darkbloom cluster stop` again before serving."))
+        }
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
@@ -1087,15 +1173,15 @@ final class OnboardingLive: @unchecked Sendable {
             try store.updateRecord { $0.leadership?.deployment = deployment }
             _ = try command(.init(op: .serve, model: title, deployment: deployment, scope: leadership?.scope))
         } catch let failure as ClusterSetupFailure {
-            return .failure(.init(["\(peerName) was not started yet: \(failure.text)", Self.startsWhenItAnswers(peerName)]))
+            return .failure(.init(["\(Self.sentence(there)) was not started yet: \(failure.text)", startsWhenItAnswers]))
         } catch {
-            return .failure(.init(["\(peerName) was not started yet: \(error)", Self.startsWhenItAnswers(peerName)]))
+            return .failure(.init(["\(Self.sentence(there)) was not started yet: \(error)", startsWhenItAnswers]))
         }
-        return .success(["Started \(peerName)'s part over the cable (its cluster service runs it); this Mac's service runs its own."])
+        return .success(["Started \(thereShort)'s part over the cable (its cluster service runs it); \(hereShort)'s service runs its own."])
     }
 
-    static func startsWhenItAnswers(_ peer: String) -> String {
-        "This Mac's cluster service starts \(peer)'s part as soon as it answers; run `darkbloom cluster` here to see how it is going."
+    var startsWhenItAnswers: String {
+        "\(Self.sentence(hereShort))'s cluster service starts \(thereShort)'s part as soon as it answers; run `darkbloom cluster` here to see how it is going."
     }
 
     /// The Mac that runs rank 0 and the serving API, and its session.
@@ -1161,12 +1247,13 @@ final class OnboardingLive: @unchecked Sendable {
             if let end = child.lastEnd, !child.running { return "\(mac): its part ended (\(end))." }
             return "\(mac): " + (child.running ? "its part is running, no error reported." : "its part is not running.")
         }
-        var lines = [line(ownName, ClusterService.published()?.child)]
+        let macs = (here: Self.sentence(here), there: Self.sentence(there))
+        var lines = [line(macs.here, ClusterService.published()?.child)]
         do {
             let status = try JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10))
-            lines.append(line(peerName, status.child))
+            lines.append(line(macs.there, status.child))
         } catch {
-            lines.append(line(peerName, nil, unreachable: (error as? ClusterSetupFailure)?.text ?? "\(error)"))
+            lines.append(line(macs.there, nil, unreachable: (error as? ClusterSetupFailure)?.text ?? "\(error)"))
         }
         if let fallback { lines.append("Last progress: \(fallback).") }
         return lines.map { ClusterConsoleText.bounded(context.clean($0), maximum: 300) }
@@ -1209,7 +1296,9 @@ final class OnboardingLive: @unchecked Sendable {
     /// The deployment line of the setup this Mac saved (what runs), from that setup's own Plan and the members' names:
     /// never a line recorded for an earlier start. Control can move between the adopt (on one Mac) and the start (on
     /// the rank 0 Mac), and the recorded line then named the earlier split (2x M4 Max / M5 Max, 2026-10-15).
-    func savedDeployment() -> String? {
+    /// `perspective`: the line is shown now, so the screen's words name the Macs; a line recorded for both names each
+    /// by its hardware.
+    func savedDeployment(perspective: Bool = false) -> String? {
         guard case .success(let reference?) = context.savedConfiguration().reference,
               let saved = try? ClusterConfigurationStore(paths: context.paths).load(reference: reference),
               let stages = try? saved.capability.selection(planSHA256: saved.configuration.selectedPlanSHA256).stages
@@ -1217,9 +1306,11 @@ final class OnboardingLive: @unchecked Sendable {
               stages.allSatisfy({ saved.configuration.peers.indices.contains($0.rank) }) else { return nil }
         let members = (try? store.readRecord())?.control?.members ?? []
         let names = Dictionary(members.map { ($0.memberID, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let labels = perspective ? (local: hereShort, peer: thereShort) : nil
         let shares = stages.map { stage -> ClusterOnboardingDeployment.Share in
             let id = saved.configuration.peers[stage.rank].id
-            return .init(name: names[id] ?? id, layers: stage.sourceLayerEnd - stage.sourceLayerStart)
+            return .init(name: names[id] ?? id, layers: stage.sourceLayerEnd - stage.sourceLayerStart,
+                         label: labels.map { stage.rank == saved.configuration.localRank ? $0.local : $0.peer })
         }
         let modelID = saved.configuration.publicModelID
         let catalog = (ClusterModelStore.readSmall(store.paths.directory.appendingPathComponent("catalog.json"))
@@ -1235,8 +1326,8 @@ final class OnboardingLive: @unchecked Sendable {
                port: Int) -> ClusterOnboardingReady {
         let notice = now.local ? ClusterService.servingNotice() : now.child?.notice
         let byChoice = notice == ClusterLocalServing.localOnlyNotice
-        return .init(servedBy: now.local ? here : peerName, port: port, deployment: savedDeployment() ?? leadership?.deployment, notice: notice,
-                     network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil)
+        return .init(servedBy: now.local ? here : there, port: port, deployment: savedDeployment(perspective: true) ?? leadership?.deployment,
+                     notice: notice, network: byChoice ? (leadership?.scope.reachableFromNetwork ?? false) : nil)
     }
 
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
@@ -1245,9 +1336,9 @@ final class OnboardingLive: @unchecked Sendable {
         if let control = published?.control, control.mode == "alone" {
             // Only THIS service's solo server counts as ready, never whatever answers on the port.
             switch ClusterService.soloReadiness(published) {
-            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort, deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while the other Mac is away"), control.line)
+            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort, deployment: "Serving \(leadership?.modelName ?? "the model") on \(here) alone while \(thereShort) is away"), control.line)
             case .loading: return (nil, control.line + " (loading)")
-            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(here)'s solo server cannot serve there)")
+            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(hereShort)'s solo server cannot serve there)")
             }
         }
         if let updating = published?.updating { return (nil, updating) }
@@ -1261,20 +1352,20 @@ final class OnboardingLive: @unchecked Sendable {
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
         } else if let child = now.child, let end = child.lastEnd, !child.running {
-            line = "rank 0 on \(peerName) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
+            line = "rank 0 on \(there) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
         } else if let error = now.error {
-            line = "waiting for \(peerName): \(error)"
+            line = "waiting for \(there): \(error)"
         } else {
             line = "starting"
         }
         // This Mac's own part, when it is the one that keeps ending.
         if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, end != "stopped" {
-            line += "; this Mac's part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+            line += "; \(hereShort)'s part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         // Members are asked for their own part only when rank 0 is here.
         if now.local, let member = try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)),
            !member.child.running, let end = member.child.lastEnd {
-            line += "; \(peerName)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+            line += "; \(thereShort)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
         }
         return (nil, line)
     }
@@ -1289,7 +1380,7 @@ final class OnboardingLive: @unchecked Sendable {
         if ClusterService.published()?.control?.mode == "alone" {
             // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
             guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
-                return .failure(.init("\(here) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
+                return .failure(.init("\(Self.sentence(here)) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
             }
             answer = ClusterService.prompt(context, text: text, port: ClusterService.soloPort)
         } else if context.savedConfiguration().configuration?.role == .leader {
@@ -1298,7 +1389,7 @@ final class OnboardingLive: @unchecked Sendable {
             do {
                 answer = try JSONDecoder().decode(ClusterServicePromptAnswer.self, from: try command(.init(op: .prompt, text: text), seconds: 200))
             } catch {
-                return .failure(.init("The test request did not reach \(peerName): \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
+                return .failure(.init("The test request did not reach \(there): \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
             }
         }
         if let error = answer.error { return .failure(.init("The test request failed: \(error)")) }
@@ -1326,8 +1417,9 @@ final class OnboardingLive: @unchecked Sendable {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.
         if let updating = ClusterService.publishedLive()?.updating { lines.append(updating) }
+        let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
-            lines.append((here == "this Mac" ? "" : here + ": ") + control.line + ".")
+            lines.append((answering ? Self.sentence(here) + ": " : "") + control.line + ".")
             lines.append("Commands typed here are handled by \(here).")
             return lines
         }
@@ -1343,51 +1435,92 @@ final class OnboardingLive: @unchecked Sendable {
                 // that Mac's API, as the API line above names it.
                 let ready = ready(now, port: session.port ?? 0)
                 lines.append(ready.lines(model: model)[0] + ".")
-                lines.append(ready.apiLine + " (\(session.readyRanks) of \(session.ranks) parts ready).")
+                lines.append(ready.apiLine + "; \(session.readyRanks) of \(session.ranks) parts ready.")
                 if let notice = ready.noticeLine { lines.append(notice + ".") }
             } else {
                 lines.append("\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }
         } else if let error = now.error {
-            lines.append("\(peerName) does not answer over the cable now (\(error)); it rejoins by itself when it is back.")
+            lines.append("\(Self.sentence(there)) does not answer over the cable now (\(error)); it rejoins by itself when it is back.")
         } else {
             lines.append("\(model) is starting (both Macs keep trying by themselves).")
         }
-        lines.append(here == "this Mac" ? "Member: \(peerName). This Mac leads." : "Members: \(here) (leads), \(peerName).")
+        lines.append(answering ? "Leader: \(here). This Mac is a member." : "Member: \(there). This Mac leads.")
         // On the leader's own screen only: a member that forwarded this already says where its commands go.
-        if let control = ClusterService.published()?.control, control.leads, here == "this Mac" {
+        if let control = ClusterService.published()?.control, control.leads, !answering {
             lines.append("Commands typed here are handled by this Mac.")
         }
         return lines
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
-        routed(.init(op: .stop), acting: true, local: { localStop() }) { $0.lines }
+        routed(.init(op: .stop), seconds: 330, acting: true, local: { localStop() }) { $0.lines }
     }
 
     func verifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
         routed(.init(op: .verifyTeardown), seconds: 60, acting: false, local: { localVerifyTeardown() }) { $0.lines }
     }
 
-    /// Each Mac's verify-teardown summary: this one's, and the other's over the link.
+    /// Each Mac's verify-teardown summary: this one's, and the other's over the link, each named as the screen names it.
     func localVerifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
-        var lines = ClusterService.teardownLines()
+        let macs = (here: Self.sentence(here), there: Self.sentence(there))
+        var lines = ClusterService.teardownLines(mac: macs.here)
         do {
+            // The other Mac names itself by its hardware.
             lines += try JSONDecoder().decode([String].self, from: try command(.init(op: .teardown), seconds: 30))
+                .map { Self.teardownLine($0, mac: macs.there) }
         } catch {
-            lines.append("\(peerName): did not answer (\((error as? ClusterSetupFailure)?.text ?? "\(error)"))")
+            lines.append("\(macs.there): did not answer (\((error as? ClusterSetupFailure)?.text ?? "\(error)"))")
         }
         return .success(lines)
     }
 
+    /// A teardown summary ("<Mac>: nothing left running") with the Mac named `mac`.
+    static func teardownLine(_ line: String, mac: String) -> String {
+        guard let colon = line.range(of: ": ") else { return line }
+        return mac + line[colon.lowerBound...]
+    }
+
     func localStop() -> Result<[String], ClusterOnboardingFailure> {
+        localStop(seconds: 300) { _ = try command(.init(op: .stop)) }
+    }
+
+    /// The transport remains separate from local process custody so every
+    /// caller (CLI, model switch, or update) uses the same retirement ordering.
+    func localStop(seconds: Double, stopPeer: () throws -> Void) -> Result<[String], ClusterOnboardingFailure> {
+        let stopID = UUID()
+        // Named for the screen that shows the lines (the other Mac's, when it forwarded the stop).
+        let mac = Self.sentence(hereShort), other = thereShort
         do {
-            try store.updateRecord { $0.leadership?.serving = false }
+            try store.updateRecord { record in
+                record.stopDrain = .init(id: stopID,
+                    keepPeerRunning: record.leadership?.serving == true || record.stopDrain?.keepPeerRunning == true)
+                record.leadership?.serving = false
+            }
             lock.withLock { partsStoppedAt = Date() }
-            _ = try command(.init(op: .stop))
+        } catch {
+            return .failure(.init("\(mac) could not save the stop request: \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
+        }
+        guard ClusterService.stopLocalPart(in: store.paths.directory, seconds: seconds) else {
+            return .failure(.init("\(mac)'s part has not finished releasing its memory, so \(other) was not asked to stop yet. The stop request is saved; run `darkbloom cluster stop` again to check it."))
+        }
+        do {
+            // The service normally clears this after its matching cycle. A
+            // missing service can also leave an exact owned part we retired.
+            let record = try store.updateRecord {
+                if $0.stopDrain?.id == stopID { $0.stopDrain = nil }
+            }
+            guard record.stopDrain == nil, record.leadership?.serving != true else {
+                return .failure(.init("The stop request changed while \(hereShort) drained; \(other) was not asked to stop."))
+            }
+        } catch {
+            return .failure(.init("\(mac) drained but could not finish saving the stop request; \(other) was not asked to stop."))
+        }
+        do {
+            try stopPeer()
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
-            return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(reason)). This Mac's cluster service tells it to stop as soon as it answers again."))
+            return .failure(.init("\(mac) stopped serving; \(there) did not answer (\(reason)). \(mac)'s cluster service tells it to stop as soon as it answers again."))
         }
         return .success(["Both Macs stop their parts now (each releases its memory first). Run `darkbloom cluster` here to serve again."])
     }

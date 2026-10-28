@@ -33,6 +33,10 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Support/BoundedProbeInput.swift" \
   "$R/Checkpoints/CheckpointAlignedReadAccounting.swift" \
   "$R/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
+  "$R/Models/Qwen/Resources/QwenTensorParallelRequestBudget.swift" \
+  "$R/Models/Qwen/Metadata/QwenVisionResidentBudget.swift" \
+  "$R/Models/Qwen/Resources/QwenResidentPrefillTransient.swift" \
+  "$R/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
   "$R/Models/Qwen/Resources/QwenDenseStageLoadPolicy.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift" \
@@ -61,7 +65,15 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSPagedKVLayout.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSBatchWorkspace.swift" \
+  "$R/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift" \
+  "$R/Models/Qwen/Batch/QwenBatchWire.swift" \
+  "$R/Models/Qwen/Generation/QwenLayerStageGenerationSchedule.swift" \
+  "$R/Models/MiMo/Metadata/MiMoPagedKVAllowance.swift" \
+  "$R/Models/MiMo/Metadata/MiMoBatchMemory.swift" \
+  "$R/Models/Placement/ClusterPlacementBatchBudget.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
   "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
   "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
@@ -75,6 +87,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
   "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
   "$R/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
+  "$R/Models/Qwen/TensorParallel/QwenTensorParallelRankLedger.swift" \
   "$R/Models/Qwen/TensorParallel/QwenTensorParallelQualification.swift" \
   "$R/Models/Placement/QwenDensePlacementFamily.swift" \
   "$R/Models/Placement/ClusterPlacementArtifact.swift" \

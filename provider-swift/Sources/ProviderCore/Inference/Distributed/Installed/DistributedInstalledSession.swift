@@ -287,9 +287,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         expectedIdentity = .init(membershipEpoch: wireIdentity.membershipEpoch, modelID: wireIdentity.modelID,
             artifactSHA256: wireIdentity.artifactSHA256, configurationSHA256: wireIdentity.configurationSHA256,
             peers: wireIdentity.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) })
-        let p = capability.profile
-        profile = try .init(id: p.id, vocabularySize: p.vocabularySize, maxPromptTokens: p.maximumPromptTokens,
-            maxOutputTokens: p.maximumOutputTokens, maxContextTokens: p.maximumContextTokens,
+        profile = try .init(capability: capability, generationMode: configuration.selectedGenerationMode,
             requestTimeout: .seconds(configuration.requestTimeoutSeconds))
     }
 
@@ -375,10 +373,24 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 throw DistributedEngineError.unavailable
             }
         }
+        guard let assistantReadiness = pair.readiness else { throw DistributedEngineError.unavailable }
+        try ClusterQwenTensorAssistantReady.require(assistantReadiness.tensorAssistant,
+            policy: configuration.tensorAssistant, capacity: prepared.plan.batchLanes() ?? 1)
         // The link as this load measured it (every load over the cable measures it, pipeline or tensor parallel):
-        // the next plan of this pair uses it, with no user step.
+        // kept with the pair's other recent loads, whose median the next plan of this pair uses, with no user step.
         if let probe = values.compactMap({ $0.readiness?.linkProbe }).first {
             ClusterLinkProbeHistory.record(probe, members: wireIdentity.peers.map(\.id),
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        }
+        // Each rank's own share as this load timed it (a tensor-parallel load times it alone before it is ready):
+        // kept per member and model, so the next plan of this pair balances the shares by them, with no user step.
+        let shareProbes = values.compactMap { $0.readiness }.compactMap { ready -> ClusterShareProbeHistory.Recorded? in
+            guard let probe = ready.shareProbe, wireIdentity.peers.indices.contains(ready.rank) else { return nil }
+            let peer = wireIdentity.peers[ready.rank]
+            return .init(member: peer.id, buildSHA256: peer.buildSHA256, probe: probe)
+        }
+        if !shareProbes.isEmpty {
+            ClusterShareProbeHistory.record(shareProbes, artifactSHA256: wireIdentity.artifactSHA256,
                 homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
         }
         try lock.withLock {
@@ -405,15 +417,15 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let peer = plan.configuration.peers[rank]
         let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
-            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
+            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: plan.localOwnerConfiguration(),
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
         } else if let link {
             // No SSH: the follower member serves this rank over the link.
-            // The private image candidate carries only this rank's credential
-            // over the existing authenticated encrypted control channel. Text
-            // setups keep their legacy nil credential and plaintext native path.
+            // Only this rank's credential crosses the authenticated encrypted
+            // control channel; every installed paired-link session uses the
+            // keyed native path and requires verified encrypted readiness.
             let trust = try ClusterMiMoPrivateImagePolicy.followerDataPlaneTrust(plan.capability,
                 line: dataPlaneTrust, epoch: wireIdentity.membershipEpoch, rank: rank)
             endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime,

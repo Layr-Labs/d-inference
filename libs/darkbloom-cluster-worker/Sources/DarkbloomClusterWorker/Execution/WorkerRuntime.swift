@@ -36,6 +36,9 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// Re-derives, while idle, the longest context this rank's host memory
     /// gate admits now; nil when it does not derive one or cannot now.
     func refreshServingContext() -> Int?
+    /// The same for a batching runtime between batches (a keep-warm answer
+    /// while no lane is held); nil for one that keeps its readiness's value.
+    func refreshLaneServingContext() -> Int?
     /// The last started request's own measurements (hand-off, MTP), when any.
     /// Read after `start` returns, on the same executor.
     var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { get }
@@ -75,6 +78,7 @@ extension WorkerRuntime {
         throw WorkerFailure.invalid("This runtime cannot give back a reservation")
     }
     func refreshServingContext() -> Int? { nil }
+    func refreshLaneServingContext() -> Int? { nil }
     func releaseIdleMemory(underPressure: Bool) -> Int? { nil }
     var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { nil }
     var batchLanes: Int { 1 }

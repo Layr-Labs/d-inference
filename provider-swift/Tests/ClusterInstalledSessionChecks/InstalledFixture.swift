@@ -21,7 +21,8 @@ struct InstalledFixture: Sendable {
                      generationMode: String? = nil, advertisedModes: [ClusterGenerationMode] = [.pipeline],
                      registered: (model: String, profile: String, publicID: String) = ("registered_qwen35_9b",
                         "registered_qwen35_9b_greedy_generation_v1", "fixture/public-model"),
-                     adapter: ClusterRuntimeAdapter = .qwen35Dense, standsForRegisteredArtifact: Bool = true) throws -> Self {
+                     adapter: ClusterRuntimeAdapter = .qwen35Dense, standsForRegisteredArtifact: Bool = true,
+                     batchLanes: Int? = nil) throws -> Self {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let model = root.appendingPathComponent("model", isDirectory: true)
         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -74,6 +75,7 @@ struct InstalledFixture: Sendable {
             "trust":["identityFile":key.path,"knownHostsFile":hosts.path,"knownHostsSHA256":hash(known)],
             "tokenizerFiles":named.filter{$0.1 != "config"}.map{["path":$0.0,"sha256":hash($0.2),"purpose":$0.1 == "template" ? "chatTemplate":"tokenizer"]}]
         if let generationMode { object["generationMode"]=generationMode }
+        if let batchLanes { object["batchLanes"] = batchLanes }
         if pairing {
             let approval:[String:Any]=["id":"installed-fixture-approval","model":"fixture/public-model","generation":1,
                 "plan_sha256":pin("f"),"artifact_sha256":artifact,"native_runtime_sha256":binary,"metallib_sha256":pin("6"),

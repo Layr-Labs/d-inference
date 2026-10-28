@@ -38,7 +38,7 @@ extension DistributedInstalledSession: DistributedLocalServerSession {
 }
 
 public enum DistributedLocalServerPhase: String, Sendable {
-    case prepared, starting, serving, draining, stopping, quarantined, stopped
+    case prepared, starting, serving, draining, stopping, quarantined, stopped, reconfiguring
 }
 
 public struct DistributedLocalServerStatus: Sendable {
@@ -54,5 +54,5 @@ public struct DistributedLocalServerStatus: Sendable {
 
 public enum DistributedLocalServerError: Error, Sendable {
     case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut
-    case replacementIdentityChanged
+    case replacementIdentityChanged, replacementCapacityChanged, replacementCleanupUnresolved
 }

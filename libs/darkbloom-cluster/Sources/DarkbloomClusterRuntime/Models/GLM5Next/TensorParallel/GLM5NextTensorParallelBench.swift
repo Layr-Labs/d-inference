@@ -1,4 +1,5 @@
 import Cmlx
+import DarkbloomClusterProtocol
 import Foundation
 import MLX
 import MLXLLM
@@ -67,6 +68,16 @@ public enum GLM5NextTensorParallelBench {
         /// Lanes' NextN heads in one launch per step
         /// (`GLM5NextTensorParallelSpeculation.batchesProposalHeads`, the runtime's).
         public var mtpBatchHeads = true
+        /// The runtime's decode policy (`GLM5NextTensorParallelDecodePolicy`):
+        /// `fixed` or `load` (one proposal a round from `mtpLoadLanes` lanes),
+        /// and `widthInvariant` (no window of one row; implied by `load`).
+        public var mtpDepthPolicy = "fixed"
+        public var mtpLoadLanes = 3
+        public var widthInvariant = false
+        /// Diagnostic, one request: `random` verifies 1 to `mtpDepth`
+        /// proposals a round, a pseudo-random sequence by round (the same on
+        /// every rank), within the output limit; `fixed` the policy's depth.
+        public var mtpDepthSchedule = "fixed"
         /// How the prompt is prefilled.
         public enum PrefillSchedule: String, Sendable {
             /// Chunks of `chunkSize`, each as `microBatches` micro-batches.
@@ -140,6 +151,10 @@ public enum GLM5NextTensorParallelBench {
         /// lane has `outputCount` tokens.
         public var lanes = 1
         public var lanesBatched = true
+        /// Lanes mode: afterwards every lane's prompt is decoded again alone
+        /// (one lane, the policy's depth for one lane) and its tokens compared
+        /// with the lane's: what the product's c1 = cN gate checks.
+        public var lanesCheckSolo = false
         /// Batched rounds also evaluate the NextN proposals before the forward
         /// is built, to time them alone (serializes what otherwise overlaps).
         public var lanesSplitEval = false
@@ -189,6 +204,11 @@ public enum GLM5NextTensorParallelBench {
         public var laneTokenIDs: [[Int]]? = nil
         public var lanesRoundP50Milliseconds: Double? = nil
         public var lanesPhasesP50Milliseconds: [String: Double]? = nil
+        /// `lanesCheckSolo`: per lane, the first output index where its tokens
+        /// differ from its prompt decoded alone (nil: equal).
+        public var lanesFirstDifferenceFromSolo: [Int?]? = nil
+        /// Rounds by the proposals they verified (index = window).
+        public var mtpRoundsByWindow: [Int]? = nil
     }
 
     public struct Report: Codable, Sendable {
@@ -214,6 +234,25 @@ public enum GLM5NextTensorParallelBench {
             throw ProbeError("GLM bench MTP early submission must be none, proposals or layers")
         }
         return mode
+    }
+
+    /// The options' decode policy, as the runtime's environment would set it.
+    static func decodePolicy(_ options: Options) throws -> GLM5NextTensorParallelDecodePolicy {
+        guard ["fixed", "random"].contains(options.mtpDepthSchedule) else {
+            throw ProbeError("GLM bench MTP depth schedule must be fixed or random")
+        }
+        typealias Switches = ClusterGLMTensorParallel
+        return try GLM5NextTensorParallelDecodePolicy(environment: [Switches.depthPolicySwitch: options.mtpDepthPolicy,
+            Switches.loadLanesSwitch: String(options.mtpLoadLanes),
+            Switches.widthInvariantSwitch: options.widthInvariant ? "1" : "0"])
+    }
+
+    /// `mtpDepthSchedule == "random"`: round `round`'s depth, 1 through
+    /// `maximum`, from a fixed pseudo-random sequence (the same on every rank).
+    static func scheduledDepth(round: Int, maximum: Int) -> Int {
+        var state = UInt64(truncatingIfNeeded: round) &* 0x9E37_79B9_7F4A_7C15 &+ 0x2545_F491_4F6C_DD1D
+        state ^= state >> 29; state = state &* 0xBF58_476D_1CE4_E5B9; state ^= state >> 32
+        return 1 + Int(state % UInt64(max(1, maximum)))
     }
 
     public static func run(_ options: Options, log: (String) -> Void) throws -> Report {
@@ -313,6 +352,7 @@ public enum GLM5NextTensorParallelBench {
             _ = try group.exchangeIntegers([1])
         }
         var runs: [Run] = []
+        let policy = try decodePolicy(options)
         if let tokens = options.divergenceTokens {
             for start in options.divergenceStarts {
                 try divergenceProbe(stage: stage, prompt: options.promptTokenIDs, start: start,
@@ -346,6 +386,16 @@ public enum GLM5NextTensorParallelBench {
                             " phases p50 ms " + ["proposals", "proposal_wait", "forward", "agreement", "encode", "wait", "total"]
                                 .map { String(format: "%@=%.2f", $0, phases[$0] ?? 0) }.joined(separator: " ")
                         } ?? "")
+                } ?? "")
+                + (r.mtpRoundsByWindow.map { counts in
+                    " policy \(options.mtpDepthPolicy) load-lanes \(options.mtpLoadLanes) padded "
+                        + (policy.widthInvariant ? "yes" : "no")
+                        + " schedule \(options.mtpDepthSchedule) rounds by window "
+                        + counts.map(String.init).joined(separator: "/")
+                } ?? "")
+                + (r.lanesFirstDifferenceFromSolo.map { firsts in
+                    firsts.allSatisfy { $0 == nil } ? " lanes EQUAL solo"
+                        : " lanes DIFFER from solo at " + firsts.map { $0.map(String.init) ?? "-" }.joined(separator: ",")
                 } ?? ""))
         }
         try residency.end()
@@ -372,6 +422,8 @@ public enum GLM5NextTensorParallelBench {
         // Each rank proposes and verifies itself; with a peer, every round's
         // tokens are summed and compared as the product does (unsealed unless
         // `sealed`).
+        let policy = try decodePolicy(options)
+        stage.widthInvariantWindows = policy.widthInvariant
         let speculation = try mtp.map { head in
             let value = try GLM5NextTensorParallelSpeculation(mtp: head, depth: options.mtpDepth,
                 rank: group?.rank ?? 0, ranks: group == nil ? 1 : 2, primeRows: min(chunk, 2048),
@@ -381,9 +433,12 @@ public enum GLM5NextTensorParallelBench {
             value.earlySubmission = try earlySubmission(options)
             value.splitsVocabulary = options.mtpVocabularySplit
             value.batchesProposalHeads = options.mtpBatchHeads
+            // `one-token` compares one-row windows with plain steps: never padded.
+            value.padsSingleRowWindows = policy.widthInvariant && options.mtpCheck != .oneToken
             value.recordsPhases = true
             return value
         }
+        var windows: [Int] = []
         var logits: MLXArray?, lastHidden: MLXArray?
         var graphs: [Int] = []
         var rows: [(start: Int, hidden: MLXArray)] = []
@@ -458,11 +513,14 @@ public enum GLM5NextTensorParallelBench {
             try speculation.begin(carry: Int(token), lastHidden: lastHidden)
             while tokens.count < options.outputCount {
                 let roundStart = DispatchTime.now().uptimeNanoseconds
+                let maximum = options.mtpDepthSchedule == "random"
+                    ? scheduledDepth(round: windows.count, maximum: speculation.depth) : speculation.depth
                 let window = options.mtpCheck == .oneToken
-                    ? 0 : min(speculation.depth, options.outputCount - tokens.count - 1)
+                    ? 0 : policy.window(maximum: maximum, lanes: 1, outputLeft: options.outputCount - tokens.count)
                 let round = try speculation.round(stage: stage, cache: cache, last: tokens[tokens.count - 1],
                     window: window, stop: 0)
                 tokens += round.tokens
+                windows.append(window)
                 steps.append(seconds(since: roundStart))
             }
         } else if options.pipelinedDecode {
@@ -530,7 +588,7 @@ public enum GLM5NextTensorParallelBench {
         func percentile(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] * 1000 }
         // Decoded tokens after the prefill's (one per step; one or more per speculative round).
         let decoded = tokens.count - 1
-        return Run(prefillSeconds: prefillSeconds,
+        var run = Run(prefillSeconds: prefillSeconds,
             prefillTokensPerSecond: Double(prompt.count) / prefillSeconds,
             decodeTokensPerSecond: steps.isEmpty ? 0 : Double(decoded) / decodeSeconds,
             stepP50Milliseconds: percentile(0.5), stepP90Milliseconds: percentile(0.9), tokenIDs: tokens,
@@ -541,6 +599,13 @@ public enum GLM5NextTensorParallelBench {
             mtpWaitP50Milliseconds: speculation.map { median($0.phases.map(\.wait)) },
             prefillGraphs: graphs, prefillPeakTransientBytes: peakTransient, promptNLL: scored?.nll,
             promptPerplexity: scored.map { exp($0.nll) }, promptGreedyTokenIDs: scored?.greedy)
+        if speculation != nil { run.mtpRoundsByWindow = roundsByWindow(windows, depth: options.mtpDepth) }
+        return run
+    }
+
+    /// Rounds counted by the proposals they verified (index = window).
+    static func roundsByWindow(_ windows: [Int], depth: Int) -> [Int] {
+        (0...max(0, depth)).map { window in windows.filter { $0 == window }.count }
     }
 
     /// `Options.lanes`: several requests' greedy MTP decode, batched or time-sliced.
@@ -555,9 +620,11 @@ public enum GLM5NextTensorParallelBench {
             let speculation: Speculation
             var tokens: [Int]
         }
+        let policy = try decodePolicy(options)
+        stage.widthInvariantWindows = policy.widthInvariant
         let prefillStart = DispatchTime.now().uptimeNanoseconds
-        var lanes: [Lane] = []
-        for index in 0 ..< options.lanes {
+        /// Lane `index`'s request, prefilled alone: its prompt is the prompt rotated by `index * 977`.
+        func lane(_ index: Int) throws -> Lane {
             let base = options.promptTokenIDs
             let shift = (index * 977) % max(1, base.count)
             let prompt = Array(base[shift...] + base[..<shift])
@@ -575,6 +642,7 @@ public enum GLM5NextTensorParallelBench {
             speculation.earlySubmission = try earlySubmission(options)
             speculation.splitsVocabulary = options.mtpVocabularySplit
             speculation.batchesProposalHeads = options.mtpBatchHeads
+            speculation.padsSingleRowWindows = policy.widthInvariant
             var offset = 0
             var last: (logits: MLXArray, hidden: MLXArray)?
             while offset < prompt.count {
@@ -595,11 +663,13 @@ public enum GLM5NextTensorParallelBench {
             guard let last else { throw ProbeError("GLM bench prefill produced no logits") }
             let first = Int(argMax(last.logits.asType(.float32), axis: -1).item(Int32.self))
             try speculation.begin(carry: first, lastHidden: last.hidden)
-            lanes.append(.init(cache: cache, pages: pages, speculation: speculation, tokens: [first]))
+            return .init(cache: cache, pages: pages, speculation: speculation, tokens: [first])
         }
+        var lanes = try (0 ..< options.lanes).map { try lane($0) }
         let prefillSeconds = seconds(since: prefillStart)
         var steps: [Double] = []
         var phases: [Speculation.RoundsTiming] = []
+        var verified: [Int] = []
         let decodeStart = DispatchTime.now().uptimeNanoseconds
         // Decode encodes under the runtime's command-buffer limits, as the lanes do.
         try GPU.withCommandBufferLimits(GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
@@ -607,7 +677,12 @@ public enum GLM5NextTensorParallelBench {
             let active = lanes.indices.filter { lanes[$0].tokens.count < options.outputCount }
             if active.isEmpty { break }
             let roundStart = DispatchTime.now().uptimeNanoseconds
-            let windows = active.map { min(options.mtpDepth, options.outputCount - lanes[$0].tokens.count - 1) }
+            // The runtime's window rule: the policy's depth for this many decoding lanes.
+            let windows = active.map {
+                policy.window(maximum: options.mtpDepth, lanes: active.count,
+                    outputLeft: options.outputCount - lanes[$0].tokens.count)
+            }
+            verified += windows
             if options.lanesBatched {
                 let rounds = try Speculation.rounds(stage: stage, lanes: zip(active, windows).map { index, window in
                     .init(speculation: lanes[index].speculation, cache: lanes[index].cache,
@@ -635,7 +710,7 @@ public enum GLM5NextTensorParallelBench {
             "encode": p50(phases.map(\.encode)), "wait": p50(phases.map(\.wait)), "total": p50(phases.map(\.total)),
         ]
         let promptCount = options.promptTokenIDs.count * options.lanes
-        return Run(prefillSeconds: prefillSeconds, prefillTokensPerSecond: Double(promptCount) / prefillSeconds,
+        var run = Run(prefillSeconds: prefillSeconds, prefillTokensPerSecond: Double(promptCount) / prefillSeconds,
             decodeTokensPerSecond: Double(decoded) / decodeSeconds, stepP50Milliseconds: percentile(0.5),
             stepP90Milliseconds: percentile(0.9), tokenIDs: lanes[0].tokens, topLogits: [],
             mtpRounds: lanes.reduce(0) { $0 + $1.speculation.rounds },
@@ -643,7 +718,30 @@ public enum GLM5NextTensorParallelBench {
             mtpAcceptedTokens: lanes.reduce(0) { $0 + $1.speculation.acceptedTokens },
             prefillGraphs: nil, prefillPeakTransientBytes: nil, promptNLL: nil, promptPerplexity: nil,
             promptGreedyTokenIDs: nil, lanes: options.lanes, laneTokenIDs: lanes.map(\.tokens),
-            lanesRoundP50Milliseconds: percentile(0.5), lanesPhasesP50Milliseconds: phaseMedians)
+            lanesRoundP50Milliseconds: percentile(0.5), lanesPhasesP50Milliseconds: phaseMedians,
+            mtpRoundsByWindow: roundsByWindow(verified, depth: options.mtpDepth))
+        if options.lanesCheckSolo {
+            // Each lane's request again, alone: its own rounds (`round`) at the
+            // policy's window for one decoding lane, as the runtime serves it at c1.
+            let tokens = lanes.map(\.tokens)
+            lanes.removeAll()
+            run.lanesFirstDifferenceFromSolo = try GPU.withCommandBufferLimits(
+                GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers) {
+                try tokens.indices.map { index -> Int? in
+                    var alone = try lane(index)
+                    while alone.tokens.count < options.outputCount {
+                        let round = try alone.speculation.round(stage: stage, cache: alone.cache,
+                            last: alone.tokens[alone.tokens.count - 1],
+                            window: policy.window(maximum: options.mtpDepth, lanes: 1,
+                                outputLeft: options.outputCount - alone.tokens.count), stop: 0)
+                        alone.tokens += round.tokens
+                    }
+                    return zip(alone.tokens, tokens[index]).enumerated().first { $1.0 != $1.1 }?.offset
+                        ?? (alone.tokens.count == tokens[index].count ? nil : min(alone.tokens.count, tokens[index].count))
+                }
+            }
+        }
+        return run
     }
 
     /// Mean negative log-likelihood of prompt tokens 1 ... n-1 from the

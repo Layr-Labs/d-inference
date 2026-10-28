@@ -15,7 +15,8 @@ extension DistributedLocalServer {
                            phase expected: DistributedLocalServerPhase) async throws {
         try requirePreparing(target, phase: expected)
         let session = target.session
-        guard DistributedLocalSessionBinding(session) == binding else {
+        let candidate = DistributedLocalSessionBinding(session)
+        guard target.permitsPlacementChange ? binding.permitsPlacementChange(to: candidate) : candidate == binding else {
             throw DistributedLocalServerError.replacementIdentityChanged
         }
         try session.validateModelInputs()
@@ -38,12 +39,13 @@ extension DistributedLocalServer {
             ResidentPrefixCacheEvidence(modelId: session.model.publicModelID,
                 modelAggregateHash: session.expectedIdentity.artifactSHA256, promptContractID: $0)
         }
-        // Per-request pair telemetry for `cluster status` (S24).
+        // Per-request pair telemetry for `cluster status` (S24); speed records name the worker build each rank
+        // serves with (the session's identity peers, rank order).
         let telemetry: DistributedPairTelemetryContext? = observability.flatMap { observability in
             session.httpObservabilityFacts.map { facts in
                 DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
                     log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()),
-                    ranks: facts.ranks)
+                    ranks: facts.ranks, rankBuildSHA256: session.expectedIdentity.peers.map(\.buildSHA256))
             }
         }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(
@@ -52,6 +54,7 @@ extension DistributedLocalServer {
             tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
             firstTokenBudgetPolicy: firstTokenBudgetPolicy, residentPrefixEvidence: evidence,
             modelDirectory: session.model.directory, pairTelemetry: telemetry)
+        stableTokenizer = .init(tokenizer: tokenizer, modelType: session.model.modelType)
     }
 
     func prepareAndBind(_ target: DistributedLocalServerGeneration, timeout: Duration) async throws {

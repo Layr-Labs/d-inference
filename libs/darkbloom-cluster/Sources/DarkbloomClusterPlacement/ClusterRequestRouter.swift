@@ -152,6 +152,8 @@ public enum ClusterRequestRouter {
         guard promptTokens >= 1, outputTokens >= 1 else { throw ClusterPlacementError("A routed request has a prompt and an output") }
         var policy = ClusterPlacementPolicy()
         policy.regime = setup.regime
+        // A tensor-parallel setup the product chose before a load measured its link is priced as it was planned.
+        policy.tensorParallelFirst = true; policy.tensorParallelAssumesUnmeasuredLink = true
         func pairPrediction(prompt: Int, outputs: Int) throws -> ClusterPlacementPrediction {
             policy.promptTokens = prompt; policy.outputTokens = outputs
             return try ClusterPlacementPlanner.evaluate(devices: setup.devices, cuts: setup.cuts, mode: setup.mode,
@@ -300,11 +302,13 @@ public final class ClusterRequestRouting: @unchecked Sendable {
 extension ClusterServedSample {
     /// A served sample from what a leader's telemetry record carries (route
     /// `pair` or `alone:<member>`); nil when the record is no speed record:
-    /// failed, restored from a prefix cache, or without a first token.
+    /// failed, restored from a prefix cache, without a first token, or a
+    /// probe-sized answer (`ClusterServedSpeedRule.minimumCompletionTokens`).
     public static func fromTelemetry(route: String?, promptTokens: Int, cachedTokens: Int, completionTokens: Int,
                                      firstTokenMilliseconds: Double?, decodeTokensPerSecond: Double?, outcome: String,
                                      finishedAt: Double) -> ClusterServedSample? {
-        guard cachedTokens == 0, outcome == "stop" || outcome == "length", let first = firstTokenMilliseconds else { return nil }
+        guard cachedTokens == 0, outcome == "stop" || outcome == "length", let first = firstTokenMilliseconds,
+              completionTokens >= ClusterServedSpeedRule.minimumCompletionTokens else { return nil }
         let label = route ?? "pair"
         let member = label.hasPrefix("alone:") ? String(label.dropFirst(6)) : nil
         guard member != nil || label == "pair" else { return nil }

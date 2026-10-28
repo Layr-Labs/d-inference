@@ -2,6 +2,7 @@ import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 extension QwenResidentRuntime {
@@ -41,10 +42,13 @@ extension QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
         // Graph-shaping terms both ranks bind into the load agreement: the
-        // stages' KV storage (paged unless the diagnosis switch names contiguous) and the batch lanes.
+        // stages' KV storage (paged), its live precision (main's policy, as
+        // the owner resolved it) and the batch lanes.
         let batch = try QwenBatchSettings.fromEnvironment(launchEnvironment)
-        let kvKind = try ClusterStageKVBackendKind.resolved(environment: launchEnvironment,
-            speculative: mode.usesSpeculativeHead, batchLanes: batch.lanes)
+        let kvKind = try ClusterStageKVBackendKind.fromEnvironment(launchEnvironment)
+        let kvQuantization = try PagedKVQuantizationSelection.clusterLive(launchEnvironment)
+        // A hand-off moves the producer's rows as native arrays.
+        if mode.isPhaseSplit { try kvQuantization.requireNative("the \(mode.rawValue) hand-off") }
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         // A recording request may be asked to commit this; fixed here, once.
@@ -80,6 +84,11 @@ extension QwenResidentRuntime {
         guard admission.supportedGenerationModes.contains(mode) else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
+        // How the SSD tier's records store attention rows: the Qwen 3.5
+        // family's keys and values under main's checkpoint precision, as the
+        // owner resolved it; other rows of this runtime store native records.
+        let prefixRecords = try QwenStagePrefixDiskEncoding.fromEnvironment(launchEnvironment,
+            family: QwenStagePrefixDiskFamily.layerStage(runtimeModelID: admission.runtimeModelID))
         // Tensor parallel has its own resident owner (`QwenTensorParallelResidentRuntime`).
         guard !mode.usesTensorParallelDecode else {
             throw ProbeError("Generation mode \(mode.rawValue) runs on the tensor-parallel resident owner, not the stage runtime")
@@ -152,10 +161,15 @@ extension QwenResidentRuntime {
             // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`,
             // the sealed all-sum on a keyed plane), so the planner can choose tensor parallel for this pair next.
             let probesLink = transport != .localSocketTest
+            // Records exist only with the prefix cache on and native live rows (below).
+            let keepsPrefixes = kvQuantization == .native && QwenStagePrefixCache.fromEnvironment(launchEnvironment).enabled
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
-                + kvKind.loadAgreementFields + batch.loadAgreementFields
+                + kvKind.loadAgreementFields + kvQuantization.loadAgreementFields
+                + batch.loadAgreementFields(runtimeModelID: admission.runtimeModelID)
+                + Gemma4BatchArithmeticAgreement.fields(runtimeModelID: admission.runtimeModelID, lanes: batch.lanes)
                 + (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
+                + (keepsPrefixes ? prefixRecords.loadAgreementFields : [])
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
             if let credential {
@@ -180,7 +194,7 @@ extension QwenResidentRuntime {
                         // The link, before any weight is read: both ranks agreed above that they measure it.
                         linkProbe = try QwenTensorParallelLinkProbe.measure(onPipeline: collective, keyed: credential != nil,
                             loadAgreement: loadAgreement, hiddenSize: admission.profile.hiddenSize,
-                            chunkTokens: admission.profile.maximumChunkTokens, check: checked)
+                            chunkTokens: admission.memoryProfile.maximumChunkTokens, check: checked)
                         if let linkProbe { log(QwenTensorParallelLinkProbe.line(linkProbe, rank: collective.rank)) }
                     }
                     let beforeLoad = Memory.snapshot()
@@ -281,15 +295,15 @@ extension QwenResidentRuntime {
                     // families keep their per-request contiguous storage).
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
                         try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
-                            maximumTokensPerRequest: admission.profile.maximumContextTokens,
-                            maximumChunkTokens: admission.profile.maximumChunkTokens)
+                            maximumTokensPerRequest: admission.memoryProfile.maximumContextTokens,
+                            maximumChunkTokens: admission.memoryProfile.maximumChunkTokens, quantization: kvQuantization)
                     }
                     if batch.batching, loaded.loaded.kvHost.host == nil {
                         throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
                     }
                     let maximum = try loaded.requestAllowance(plan: admission.plan,
-                        rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
-                        chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
+                        rank: collective.rank, maximumTokens: admission.memoryProfile.maximumContextTokens,
+                        chunkSize: admission.memoryProfile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
                     try configuration.allocatorPolicy.prepareReady(
                         synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                         snapshot: {
@@ -299,12 +313,12 @@ extension QwenResidentRuntime {
                         }, clearCache: { Memory.clearCache() }, check: checked)
                     let prefill = try QwenResidentPrefillSelection.allowance(
                         QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
-                        promptCount: admission.profile.maximumPromptTokens, chunkSize: admission.profile.maximumChunkTokens,
+                        promptCount: admission.memoryProfile.maximumPromptTokens, chunkSize: admission.memoryProfile.maximumChunkTokens,
                         hiddenSize: admission.profile.hiddenSize,
                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                         bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
-                        stage: loaded, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens,
+                        stage: loaded, rank: collective.rank, promptCount: admission.memoryProfile.maximumPromptTokens,
                         speculativeTerms: speculativeTerms)
                     // The gate at load: the largest context this Mac admits now,
                     // with the stage resident. Refused only below the smallest
@@ -318,7 +332,7 @@ extension QwenResidentRuntime {
                     log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
                         + " room_bytes=\(admitted.roomBytes)")
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.runtimeModelID)"
-                        + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.contextTokens)"
+                        + " limit=\(admission.memoryProfile.maximumContextTokens) admitted=\(admitted.contextTokens)"
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
                         + " transient_at_admitted=\(admitted.allowance.transientBytes)")
                     try checked()
@@ -348,8 +362,11 @@ extension QwenResidentRuntime {
             }
             // The prompt-prefix cache and, when the owner configured one, its
             // SSD tier for this plan and rank. Opening it sweeps the directories
-            // of other plans under the tier's root on this rank.
-            let prefixCache = QwenStagePrefixCache.fromEnvironment(launchEnvironment)
+            // of other plans under the tier's root on this rank. Packed rows
+            // have no exact snapshot to keep, so a quantized stage keeps no
+            // prefixes, as main keeps no snapshot prefixes for packed storage.
+            let prefixCache = kvQuantization == .native ? QwenStagePrefixCache.fromEnvironment(launchEnvironment)
+                : QwenStagePrefixCache(enabled: false)
             if prefixCache.enabled, let loadedStage = stage {
                 prefixCache.disk = QwenStagePrefixDiskTier.open(
                     configuration: .fromEnvironment(launchEnvironment, key: prefixSSDKey),
@@ -358,7 +375,7 @@ extension QwenResidentRuntime {
                         storageCommitmentSHA256: loadedStage.loaded.receipt.storageCommitmentSHA256,
                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
                         generationMode: mode.rawValue, prefillSchedule: configuration.prefillSchedule.rawValue),
-                    rank: collective.rank,
+                    rank: collective.rank, encoding: prefixRecords,
                     stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased(),
                     fault: fault?.prefixDisk)
             }

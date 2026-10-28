@@ -5,10 +5,13 @@ import Foundation
 /// a whole-process peak and grants nothing.
 ///
 /// A full-attention layer keeps keys and values `[1, heads, tokens, width]` in
-/// the residual dtype (float32); the class's growing cache extends them in steps of
-/// 256 tokens (a prompt chunk extends by the chunk rounded up to a step) and
-/// holds the old and the new buffer while it does. A sliding-window layer
-/// keeps at most the window plus the chunk just appended, the same way. There
+/// native BF16 dtype, charged conservatively at four bytes per element, in
+/// demand-grown 64-token pages. The full
+/// history charges each page allocation separately, its gathered attention
+/// view and partial-page copies, never less than the previous contiguous
+/// allowance. Sliding layers also charge old/repacked pages and partial-page
+/// versions together. Allocator bounds apply per buffer, not to an aggregate
+/// of many independently allocated pages. There
 /// is no recurrent state. A stage also holds one residual chunk coming or
 /// going, and stage 1 one vocabulary row. The workspace term is the largest
 /// transient a forward is known to build: one full-attention layer's score
@@ -40,12 +43,22 @@ struct GPTOSSRequestStateBudget: Encodable, Equatable {
         // The growing cache can overshoot the frontier by one rounded chunk.
         let capacity = steps(maximumTokens) + steps(chunkSize)
         let window = spec.slidingWindow + chunkSize
-        func pair(_ tokens: Int) throws -> Int {
-            // Keys and values, each held twice while the cache grows or reorders.
-            try allowance(try product([spec.keyValueHeads, tokens, spec.headDimension, activationBytes]), 4)
+        func pair(_ tokens: Int, copies: Int = 4) throws -> Int {
+            try allowance(try product([spec.keyValueHeads, tokens, spec.headDimension, activationBytes]), copies)
         }
-        let fullState = full == 0 ? 0 : try product([try pair(capacity), full])
-        let slidingState = sliding == 0 ? 0 : try product([try pair(window), sliding])
+        func paged(_ tokens: Int, pageCopies: Int) throws -> Int {
+            let pageTokens = GPTOSSPagedKVLayout.pageTokens
+            let pages = (tokens + pageTokens - 1) / pageTokens
+            let pageBytes = try product([spec.keyValueHeads, pageTokens, spec.headDimension, activationBytes])
+            // One extra page covers a partial-tail rewrite. Sliding repacking
+            // can keep old/new pages and an intermediate partial page version.
+            return try sum([try allowance(pageBytes, product([pages + 1, pageCopies])),
+                try pair(tokens, copies: 2)])
+        }
+        let fullPerLayer = try max(pair(capacity), paged(maximumTokens, pageCopies: 2))
+        let slidingPerLayer = try max(pair(window), paged(window, pageCopies: 6))
+        let fullState = try product([fullPerLayer, full])
+        let slidingState = try product([slidingPerLayer, sliding])
         let boundary = try allowance(try product([chunkSize, spec.hidden, activationBytes]), 2)
         let row = rank == 1 ? try allowance(try product([spec.vocabulary, 4]), 2) : 0
         let workspace = full == 0 ? 0 : try allowance(try product([spec.queryHeads, chunkSize, capacity, 4]), 1)

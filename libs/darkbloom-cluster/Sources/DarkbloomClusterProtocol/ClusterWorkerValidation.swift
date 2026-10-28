@@ -31,7 +31,17 @@ enum ClusterWorkerValidation {
         try workerRequire(value.servingContextTokens.map { (1...p.maximumContextTokens).contains($0) } ?? true,
             "Invalid serving context")
         try workerRequire(value.linkProbe?.valid ?? true, "Invalid link probe")
-        try workerRequire(value.media.map { $0 == ClusterGLMMedia.contract } ?? true, "Unknown worker media contract")
+        try workerRequire(value.shareProbe?.valid ?? true, "Invalid share probe")
+        try workerRequire(value.media.map { $0 == ClusterGLMMedia.contract || $0 == ClusterQwenMedia.contract } ?? true, "Unknown worker media contract")
+        if let assistant = value.tensorAssistant {
+            try assistant.validate()
+            // The 27B's assistant keeps its media readiness; the 9B has no TP media.
+            let media = id.modelID == ClusterQwenTensorAssistantPolicy.runtimeModelID ? ClusterQwenMedia.contract : nil
+            try workerRequire(ClusterQwenTensorAssistantPolicy.runtimeModelIDs.contains(id.modelID)
+                && p.id == id.modelID + "_greedy_generation_v1"
+                && value.dataPlane?.encryptedAndVerified == true && value.media == media,
+                "Tensor assistant readiness requires a keyed Qwen TP row with its inline head (and the 27B's media)")
+        }
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)
@@ -63,7 +73,16 @@ enum ClusterWorkerValidation {
                 "MiMo images require the private image pipeline profile")
             try media.validate(prompt: value.promptTokenIDs)
         }
+        if let media = value.qwenMedia {
+            try workerRequire(value.stillImages == nil && value.mimoImages == nil && value.glmMedia == nil
+                && value.route == nil && value.promptTokenIDs.count == media.promptLength,
+                "Qwen media requires its own contract on the pair as placed")
+            try media.validateStructure()
+            try workerRequire(ClusterQwenMedia.int32SHA256(value.promptTokenIDs.map(Int32.init)) == media.promptSHA256,
+                "Qwen media reservation prompt differs")
+        }
         if let sampling = value.sampling { try ClusterWorkerSamplingCodec.validate(sampling) }
+        try value.prefixCache?.validate()
     }
     static func command(_ frame: ClusterWorkerCommandFrame) throws {
         try workerRequire(frame.sequence < UInt64(Int64.max), "Invalid command sequence")

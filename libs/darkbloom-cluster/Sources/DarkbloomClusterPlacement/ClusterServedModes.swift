@@ -49,7 +49,8 @@ public enum ClusterServedModes {
     /// `fastShare` and the first token of the samples nearest the reference prompt (scaled to it) at
     /// `1 - fastShare`; a mode's figure is its fastest setup. Rough for the first token, which is why the
     /// comparison needs a `margin`; what decides a decode-heavy request is the decode rate. `entries` are one
-    /// model's on one pair (the caller filters them, as the planner does).
+    /// model's on one pair, served by the worker builds the plan is for (the caller filters them, as the planner
+    /// does: `ClusterServedSpeedRecords.servedBy`).
     public static func figures(_ entries: [ClusterServedSpeedRecords.Entry], promptTokens: Int,
                                outputTokens: Int) -> [Figure] {
         guard promptTokens >= 1, outputTokens >= 1 else { return [] }

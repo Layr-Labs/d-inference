@@ -86,6 +86,29 @@ func checkGateAgreement(_ checks: PlacementChecks) {
     let warned = ClusterDeviceMemory.gate(warnedMac.observation, now: SyntheticMac.now)
     checks.require("at warning pressure the same Mac counts none of its file cache",
         warned.judged && warned.countedFileCacheBytes == 0 && warned.admissibleNowBytes == warned.actualFreeBytes)
+    // A later observation withdraws cache only once measured harm crosses
+    // its bound. Test the last admitted page and first refused page separately.
+    let baseline = QwenDenseStageLoadBaseline(heavyMac.observation)
+    for kind in ["compression", "live compression", "swap-out", "swap growth"] {
+        let limit = kind.contains("compression") ? Policy.maximumCompressedSinceFirstSampleBytes
+            : Policy.maximumSwappedOutSinceFirstSampleBytes
+        for extraPages in [0, 1] {
+            let pages = limit / SyntheticMac.page + extraPages
+            var observed = heavyMac
+            switch kind {
+            case "compression": observed.compressionPages = pages
+            case "live compression": observed.liveCompressionPages = pages
+            case "swap-out": observed.swapoutPages = pages
+            default: observed.swapGiB = Double(pages * SyntheticMac.page) / Double(gib)
+            }
+            checks.require("\(kind): \(extraPages == 0 ? "at the bound cache remains available" : "the first excess page withdraws cache")", try {
+                let decision = try Policy.decide(observed.observation, requiredBytes: 170 * gib,
+                    purpose: "harm boundary", now: SyntheticMac.now, since: baseline)
+                return decision.admitted == (extraPages == 0)
+                    && decision.countedReclaimableBytes == (extraPages == 0 ? 180 * gib : 0)
+            }())
+        }
+    }
     checks.require("within free pages plus cache above the kernel's minimum, beyond what the gate counts: the gate's rule refuses, not memory",
         { if case .gateCountsLess = warned.fit(80 * gib) { return true } else { return false } }())
     checks.require("beyond the cache the kernel would give up: applications must release memory, and protected cache is not promised",
@@ -341,9 +364,10 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let full = [try SyntheticMac(physicalGiB: 12, freeGiB: 0.4, inactiveCacheGiB: 0.2, wiredGiB: 2.5).device("tiny"),
                     try SyntheticMac.idle(512).device("huge")]
         let crowded = try checkRule("12 (nearly full) + 512, 27B", full, big, checks)
-        checks.require("12 (nearly full) + 512: divided as the idle pair is, the tiny Mac's rank saying it does not fit now; not refused",
-            crowded.chosen?.cuts == result.chosen?.cuts && crowded.chosen?.ranks.map(\.device) == result.chosen?.ranks.map(\.device)
-                && crowded.refusal == nil && (crowded.chosen?.ranks.first { $0.device == "tiny" }?.fit.tier ?? 0) > 0
+        checks.require("12 (nearly full) + 512: the tiny Mac retains the smallest hardware-fitting share and reports the memory it needs",
+            crowded.chosen.map { layers($0, "tiny") == 4 && layers($0, "huge") == 60 } == true
+                && crowded.refusal == nil && crowded.chosen?.ranks.first { $0.device == "tiny" }?.hardwareFits == true
+                && crowded.chosen?.ranks.first { $0.device == "tiny" }?.fit.tier == 2
                 && crowded.alone.first { $0.device == "huge" }?.fit == .now)
         checks.require("12 (nearly full) + 512: the output still says what each Mac alone needs",
             ClusterPlacementExplanation.describe(crowded, devices: full, layout: big).joined(separator: "\n").contains("Each Mac alone, for comparison\n  tiny: needs"))
@@ -389,22 +413,30 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let small = try checkRule("cache-heavy 128 + 256, 27B", devices, big, checks)
         checks.require("cache-heavy pair, 27B: placed now on counted file cache", small.chosen?.tier == 0)
         let large = try checkRule("cache-heavy 128 + 256, surveyed 173 GB model", devices, mimo, checks)
-        // The cut chosen at rest. The 256 GiB Mac's share is within its free pages and unprotected
-        // cache; the 128 GiB Mac's is not, since the kernel keeps 45 GiB of its 90 GiB of cache.
-        checks.require("cache-heavy pair, 173 GB model: not refused; each rank says what is in its way, and they differ",
-            large.refusal == nil && large.chosen?.cut == 28 && large.chosen?.tier == 2
-                && { if case .gateCountsLess = large.chosen!.ranks[0].fit { return true } else { return false } }()
-                && { if case .afterApplicationsRelease = large.chosen!.ranks[1].fit { return true } else { return false } }())
+        // Normal pressure counts every file-backed page, including cache
+        // below the kernel's diagnostic minimum and on the active queue.
+        checks.require("cache-heavy pair, 173 GB model: the even cut loads now on both Macs",
+            large.refusal == nil && large.chosen?.cut == 24 && large.chosen?.tier == 0
+                && large.chosen?.ranks.allSatisfy { $0.fit == .now } == true
+                && devices.allSatisfy { $0.profile.memory.countedFileCacheBytes == $0.profile.memory.fileBackedBytes })
         let text = ClusterPlacementExplanation.describe(large, devices: devices, layout: mimo).joined(separator: "\n")
-        checks.require("cache-heavy pair: the output names free pages, applications and the kernel's cache minimum apart, and says the gate decides at load",
-            text.contains("Nothing has to close") && text.contains("applications would have to release")
-                && text.contains("as its minimum now (a share of the memory that is not wired: it falls as memory is wired, not when applications close)")
-                && !text.contains("short of a restart") && text.contains("The load gate on each Mac decides when it loads"))
-        // Cache that is in use (active) is not counted by the gate, and the plan says the same.
-        let busy = [try SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 20, activeCacheGiB: 170, wiredGiB: 8).device("a"), devices[1]]
+        checks.require("cache-heavy pair: the output distinguishes free pages, applications and cache, with the load gate deciding",
+            text.contains("held by applications") && text.contains("of file cache")
+                && text.contains("The load gate would admit")
+                && text.contains("The load gate on each Mac decides when it loads"))
+        let active = SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 20, activeCacheGiB: 170, wiredGiB: 8)
+        let busy = [try active.device("a"), devices[1]]
         let busyResult = try checkRule("256 GiB Mac whose cache is active, 27B", busy, big, checks)
-        checks.require("active cache: the 256 GiB Mac counts none of it",
-            busy[0].profile.memory.countedFileCacheBytes == 0 && (busyResult.chosen?.tier ?? 0) >= 1)
+        checks.require("active cache at normal pressure: all 190 GiB count and both ranks load now",
+            busy[0].profile.memory.countedFileCacheBytes == 190 * gib && busyResult.chosen?.tier == 0)
+        var pressured = active; pressured.pressure = 2
+        let warned = [try pressured.device("a"), devices[1]]
+        let warningResult = try checkRule("the same active-cache Mac at warning pressure, 27B", warned, big, checks)
+        checks.require("warning pressure withdraws the active and inactive cache and the rank no longer loads now",
+            warned[0].profile.memory.countedFileCacheBytes == 0
+                && warningResult.chosen?.ranks.first { $0.device == "a" }?.fit != .now
+                && (warningResult.chosen?.tier ?? 0) > 0)
+
     }
 
     // Memory wired by a running program (another account's model server held 222.9 GiB of
@@ -439,8 +471,8 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
     // fewest Macs for memory).
     do {
         // The large Mac admits 87 GiB and the small one 44: no cut of the 173 GB model fits both now.
-        let devices = [try SyntheticMac(physicalGiB: 256, freeGiB: 87, inactiveCacheGiB: 60, wiredGiB: 10).device("a"),
-                       try SyntheticMac(physicalGiB: 128, freeGiB: 41, inactiveCacheGiB: 47, wiredGiB: 10).device("b")]
+        let devices = [try SyntheticMac(physicalGiB: 256, freeGiB: 27, inactiveCacheGiB: 60, wiredGiB: 10).device("a"),
+                       try SyntheticMac(physicalGiB: 128, freeGiB: 41, inactiveCacheGiB: 3, wiredGiB: 10).device("b")]
         var family = SyntheticFamily(runtimeModelID: "surveyed_mimo_v26_flash", layerCount: 48, admittedCuts: Array(stride(from: 24, through: 44, by: 2)))
         family.generationModes = [.pipeline]; family.stateBytesPerToken = 538
         let wide = try ClusterModelLayoutBuilder.build(family: family,
@@ -676,8 +708,8 @@ func checkProfiles(_ checks: PlacementChecks) throws {
 }
 
 /// A placement is planned for the requested context, and the split is chosen
-/// from hardware and measured speed alone (owner, 2026-10-18): the same Macs
-/// get the same split whether one of them is idle or busy with applications.
+/// from hardware, measured speed and whether a candidate loads now. If no
+/// candidate loads now, the hardware-fitting split still reports each rank's needs.
 func checkRequestedContext(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     // Mac B 15 % faster at prefill, so the fastest cut gives it more layers.
     func speed(_ prefill: Double) -> ClusterDeviceSpeed {
@@ -687,7 +719,7 @@ func checkRequestedContext(_ big: ClusterModelLayout, _ checks: PlacementChecks)
     let a = try SyntheticMac.idle(256).device("a", speed: speed(1000))
     let idle = try SyntheticMac.idle(128).device("b", speed: speed(1150))
     // The same Mac with desktop applications holding most of its memory, too much for its share now.
-    let busy = try SyntheticMac(physicalGiB: 128, freeGiB: 10, inactiveCacheGiB: 4).device("b", speed: speed(1150))
+    let busy = try SyntheticMac(physicalGiB: 128, freeGiB: 2, inactiveCacheGiB: 2).device("b", speed: speed(1150))
     var policy = ClusterPlacementPolicy()
     policy.leader = "a"; policy.promptTokens = 20_480; policy.outputTokens = 128; policy.modes = [.pipeline]
     var refused = false
@@ -709,10 +741,15 @@ func checkRequestedContext(_ big: ClusterModelLayout, _ checks: PlacementChecks)
     }
     checks.require("requested context: the fastest placement gives the faster Mac more layers",
         share(atRest.chosen, "b") > share(atRest.chosen, "a"))
-    checks.require("requested context: live memory does not move the split",
+    checks.require("requested context: when no cut loads now the hardware and speed still choose the split",
         atRest.chosen?.cuts == whileBusy.chosen?.cuts && atRest.chosen?.mode == whileBusy.chosen?.mode
             && atRest.chosen?.ranks.map(\.device) == whileBusy.chosen?.ranks.map(\.device))
     checks.require("requested context: the busy Mac's live memory is still reported",
         atRest.chosen?.tier == 0 && (whileBusy.chosen?.tier ?? 0) > 0
             && whileBusy.chosen?.ranks.first { $0.device == "b" }?.fit != .now && whileBusy.chosen?.ranks.first { $0.device == "b" }?.hardwareFits == true)
+    let partlyBusy = try SyntheticMac(physicalGiB: 128, freeGiB: 10, inactiveCacheGiB: 4).device("b", speed: speed(1150))
+    let fitting = try ClusterPlacementPlanner.plan(devices: [a, partlyBusy], layout: big, policy: policy)
+    checks.require("requested context: a smaller share that loads now takes priority over a faster split waiting for memory",
+        fitting.chosen?.tier == 0 && fitting.chosen?.ranks.allSatisfy { $0.fit == .now } == true
+            && share(fitting.chosen, "b") < share(atRest.chosen, "b"))
 }

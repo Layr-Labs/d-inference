@@ -1,44 +1,24 @@
 import Foundation
 import MLX
-import MLXLLM
-import MLXLMCommon
 
-/// One rank's prompt-prefix cache under tensor parallel: the request state of
-/// this rank's own heads (attention keys and values of its key/value heads,
-/// Gated DeltaNet convolution and recurrent state of its heads) at a prompt's
-/// last whole chunk boundary, kept in memory. The state divides by heads, so
-/// a rank's entry never crosses the cable and is useless to the other rank.
+/// The prompt-prefix vote of a tensor-parallel owner whose entries a rank
+/// keeps at chunk boundaries (`GLM5NextTensorParallelPrefixCache`). A rank's
+/// entry holds its own heads' state, never crosses the cable and is useless
+/// to the other rank. The Qwen TP owner's request-owned lanes keep theirs in
+/// `QwenTensorParallelBatchPrefixCache`.
 ///
 /// Scope: an entry is found only under the scope it was stored with (the
 /// load agreement, which binds the model, plan, shares and both builds, and
 /// this rank's verified storage commitment) and the exact prompt tokens up to
 /// its length. Restore is both-or-neither (`agree`): the ranks vote the
 /// boundaries each holds for the prompt in one sealed reduction and restore
-/// the longest one BOTH hold; with none, both prefill cold. Every failure
-/// sweeps the cache (the peer may hold something else now).
-///
-/// Memory: entries give way first (`yieldingMemory`) before a reservation or
-/// a running request is refused, oldest first. The SSD tier is not wired for
-/// tensor parallel yet (each rank would keep its own shard's records under
-/// the same scope; see STATUS).
-final class QwenTensorParallelPrefixCache {
-    private struct Entry {
-        let key: String
-        let length: Int
-        let state: [any KVCache]
-        let bytes: Int
-        var used: UInt64
-    }
-    private let lock = NSLock()
-    private var entries: [String: Entry] = [:]
-    private var clock: UInt64 = 0
-    let budgetBytes: Int
-    var enabled: Bool { budgetBytes > 0 }
-    private(set) var bytesInUse = 0
+/// the longest one BOTH hold; with none, both prefill cold. A boundary a rank
+/// holds only on its SSD tier (`GLM5NextTensorParallelPrefixDisk`) counts
+/// too, and is then restored only after a second sealed exchange (`confirm`)
+/// shows both ranks have it.
+enum QwenTensorParallelPrefixCache {
     /// At most this many boundaries are voted (the last ones before the final token).
     static let maximumVotedBoundaries = 32
-
-    init(budgetBytes: Int) { self.budgetBytes = max(0, budgetBytes) }
 
     /// A conservative default: an eighth of what the allocator may hold beyond
     /// the loaded model, at most 8 GiB.
@@ -76,12 +56,6 @@ final class QwenTensorParallelPrefixCache {
         }
     }
 
-    /// The chunk boundaries before the final token that this rank holds for `prompt`.
-    func heldBoundaries(scope: String, prompt: [Int], chunk: Int) -> [Bool] {
-        let candidates = Self.candidates(promptCount: prompt.count, chunk: chunk)
-        return lock.withLock { candidates.map { entries[Self.key(scope: scope, prompt: prompt, length: $0)] != nil } }
-    }
-
     /// Ascending chunk boundaries before the final token (the last `maximumVotedBoundaries`).
     static func candidates(promptCount: Int, chunk: Int) -> [Int] {
         guard chunk > 0, promptCount > 1 else { return [] }
@@ -89,63 +63,38 @@ final class QwenTensorParallelPrefixCache {
         return Array(all.suffix(maximumVotedBoundaries))
     }
 
-    /// Both ranks: the longest boundary both hold, or nil. One sealed
-    /// reduction of a fixed-size vote (each rank adds 1 where it holds one).
-    static func agree(held: [Bool], group: QwenTensorParallelReduction, candidates: [Int]) throws -> Int? {
+    /// One rank's vote for a candidate boundary: 1 held in memory, 3 held
+    /// only as a complete SSD record, 0 not held. Without SSD records the
+    /// words are the memory-only vote's.
+    static func offer(inMemory: Bool, onDisk: Bool) -> Float { inMemory ? 1 : onDisk ? 3 : 0 }
+
+    /// The longest candidate both of two ranks offer, and whether either
+    /// offers it only from its SSD tier; nil when none. `sums`: the ranks'
+    /// offers summed per candidate, so 2 (both in memory), 4 or 6 (both, from
+    /// SSD at least once); 1 and 3 are one rank's alone.
+    static func agreed(sums: [Float], candidates: [Int]) -> (boundary: Int, ssd: Bool)? {
+        let both = sums.indices.filter { $0 < candidates.count && [Float(2), 4, 6].contains(sums[$0]) }
+        return both.last.map { (candidates[$0], sums[$0] > 2) }
+    }
+
+    /// Both ranks: the longest boundary both hold (`agreed`), or nil. One
+    /// sealed reduction of a fixed-size vote of `offers` (`offer`, per candidate).
+    static func agree(offers: [Float], group: QwenTensorParallelReduction, candidates: [Int]) throws
+        -> (boundary: Int, ssd: Bool)? {
+        guard group.size == 2 else { throw ProbeError("The tensor-parallel prefix vote takes two ranks") }
         var votes = [Float](repeating: 0, count: maximumVotedBoundaries)
-        for (index, value) in held.enumerated() where value && index < votes.count { votes[index] = 1 }
+        for (index, value) in offers.enumerated() where index < votes.count { votes[index] = value }
         let summed = group.allSum(MLXArray(votes))
         try MLX.withError { error in eval(summed); try error.check() }
-        let all = summed.asArray(Float.self)
-        let both = all.indices.filter { $0 < candidates.count && all[$0] >= Float(group.size) }
-        return both.last.map { candidates[$0] }
+        return agreed(sums: summed.asArray(Float.self), candidates: candidates)
     }
 
-    func restore(scope: String, prompt: [Int], length: Int) -> [any KVCache]? {
-        lock.withLock {
-            let key = Self.key(scope: scope, prompt: prompt, length: length)
-            guard var entry = entries[key] else { return nil }
-            clock += 1; entry.used = clock; entries[key] = entry
-            return entry.state.map { $0.copy() }
-        }
+    /// The second exchange of a boundary agreed from an SSD record: true when
+    /// both ranks have its state (`local`, this rank's), else both prefill
+    /// from zero.
+    static func confirm(_ local: Bool, group: QwenTensorParallelReduction) throws -> Bool {
+        let summed = group.allSum(MLXArray([Float(local ? 1 : 0)]))
+        try MLX.withError { error in eval(summed); try error.check() }
+        return summed.asArray(Float.self) == [Float(group.size)]
     }
-
-    /// Keeps a copy of `cache` (evaluated) at `length`, evicting the oldest
-    /// entries beyond the budget; nothing when it alone exceeds the budget.
-    func store(scope: String, prompt: [Int], length: Int, cache: [any KVCache]) {
-        guard enabled else { return }
-        let state = cache.map { $0.copy() }
-        let arrays = state.flatMap { $0.innerState() }
-        eval(arrays)
-        // Paged attention histories share the request's pages (their roots
-        // are fences): the entry counts every page it holds.
-        let bytes = arrays.reduce(0) { $0 + $1.nbytes }
-            + state.reduce(0) { $0 + (($1 as? PagedAttentionKVCache)?.pagedBytes ?? 0) }
-        guard bytes <= budgetBytes else { return }
-        lock.withLock {
-            let key = Self.key(scope: scope, prompt: prompt, length: length)
-            if let old = entries[key] { bytesInUse -= old.bytes }
-            clock += 1
-            entries[key] = .init(key: key, length: length, state: state, bytes: bytes, used: clock)
-            bytesInUse += bytes
-            evict(toFit: 0)
-        }
-    }
-
-    private func evict(toFit extra: Int) {
-        while bytesInUse + extra > budgetBytes, let oldest = entries.values.min(by: { $0.used < $1.used }) {
-            entries[oldest.key] = nil; bytesInUse -= oldest.bytes
-        }
-    }
-
-    /// Runs `body`; on a refusal, drops every entry and runs it once more.
-    func yieldingMemory<T>(_ body: () throws -> T) throws -> T {
-        do { return try body() } catch {
-            guard lock.withLock({ !entries.isEmpty }) else { throw error }
-            sweep(); Memory.clearCache()
-            return try body()
-        }
-    }
-
-    func sweep() { lock.withLock { entries.removeAll(); bytesInUse = 0 } }
 }

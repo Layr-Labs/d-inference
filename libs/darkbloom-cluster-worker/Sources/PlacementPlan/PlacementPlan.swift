@@ -12,7 +12,9 @@ import Foundation
             let output = try ClusterPlacementTool.run(Array(CommandLine.arguments.dropFirst()),
                                                       sampleDevice: ClusterDeviceProfileSampler.sample,
                                                       glmCandidates: GLM5NextAutomaticPlacement.scan,
-                                                      measureIndex: { try ClusterDeviceIndexBenchmark.measure() })
+                                                      measureIndex: { try ClusterDeviceIndexBenchmark.measure() },
+                                                      savedLinkProbes: ClusterPlacementTool.defaultLinkProbes,
+                                                      savedShareProbes: ClusterPlacementTool.defaultShareProbes)
             FileHandle.standardOutput.write(Data((output + "\n").utf8))
         } catch {
             FileHandle.standardError.write(Data("\(error)\n".utf8))

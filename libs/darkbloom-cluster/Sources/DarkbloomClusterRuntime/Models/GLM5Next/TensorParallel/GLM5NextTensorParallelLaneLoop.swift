@@ -39,6 +39,10 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
     var rank: Int { get }
     /// NextN proposals an MTP round verifies at most (0: no NextN layer).
     var depth: Int { get }
+    /// The proposals a speculating lane's round verifies when `lanes` lanes
+    /// decode in the step and `outputLeft` (at least 1) of its tokens are
+    /// still to come. Both ranks derive it from the agreed plan.
+    func window(lanes: Int, outputLeft: Int) -> Int
     var prefixEnabled: Bool { get }
     /// The step's one sealed all-sum (`GLM5NextTensorParallelLaneWire`), evaluated.
     func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float]
@@ -83,6 +87,8 @@ protocol GLM5NextTensorParallelLaneNative: AnyObject {
 }
 
 extension GLM5NextTensorParallelLaneNative {
+    /// The fixed depth, cut at the request's output limit.
+    func window(lanes: Int, outputLeft: Int) -> Int { max(0, min(depth, outputLeft - 1)) }
     func takeLogprobs(_ lane: Lane, ordinal: Int) throws -> ClusterWorkerTokenLogprobs? { nil }
     func telemetry(_ lane: Lane) -> ClusterWorkerRequestTelemetry? { nil }
 }
@@ -277,7 +283,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 tokens: lane.tokens.count)
             if decoding.contains(slot) {
                 let window = native.speculates(lane.native!)
-                    ? min(native.depth, lane.request.outputCount - lane.tokens.count - 1) : nil
+                    ? native.window(lanes: decoding.count, outputLeft: lane.request.outputCount - lane.tokens.count)
+                    : nil
                 value.role = .decode; value.last = lane.tokens.last!; value.window = window; windows[slot] = window
             } else if let prefilling, prefilling === lane, let frame {
                 value.role = .prefill; value.frame = frame
@@ -462,7 +469,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 guard let lane = slots[slot], let state = lane.native, lane.prefilled, !lane.ended,
                       value.last == lane.tokens.last,
                       value.window == (native.speculates(state)
-                        ? min(native.depth, lane.request.outputCount - lane.tokens.count - 1) : nil) else {
+                        ? native.window(lanes: decoding.count, outputLeft: lane.request.outputCount - lane.tokens.count)
+                        : nil) else {
                     throw ProbeError("GLM lane decode unit differs from this rank's lane")
                 }
                 return lane

@@ -46,7 +46,7 @@ func directory() throws -> URL {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
         let original = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 2, requestID: request,
             command: .reserve(.init(profileID: "cpu", promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2,
-                chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil)))
+                chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil, prefixCache: nil)))
         let wire = try OwnerWire.command(original, lease: lease, incarnation: inc, sequence: 3, now: 8_000, deliveryDeadline: 8_200)
         let data = try wire.encoded(commandStream: true)
         try require(!String(decoding: data, as: UTF8.self).contains("deadlineUptimeNanoseconds"), "Foreign uptime leaked")
@@ -289,7 +289,7 @@ func directory() throws -> URL {
         _ = try event(e)
         let id = UUID(), deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
         try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil)), requestID: id, deadline: deadline)
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil)), requestID: id, deadline: deadline)
         if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
         try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
         for i in 0..<2 {
@@ -364,7 +364,7 @@ func directory() throws -> URL {
         _ = try event(e)
         let id = UUID(), deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
         try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil)), requestID: id, deadline: deadline)
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil)), requestID: id, deadline: deadline)
         if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
         try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
         if case .committedToken = try event(e).event {} else { throw OwnerWire.invalid("Expected the first token") }
@@ -436,7 +436,7 @@ func directory() throws -> URL {
         _ = try event(e)
         let now = DispatchTime.now().uptimeNanoseconds
         try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
-            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: now + 8_000_000_000, capacityLimitBytes: 1024, sampling: nil)),
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: now + 8_000_000_000, capacityLimitBytes: 1024, sampling: nil, prefixCache: nil)),
             requestID: UUID(), deadline: now + 100_000_000)
         try rejects { _ = try event(e) }
         let end = now + 3_000_000_000
@@ -451,7 +451,7 @@ func directory() throws -> URL {
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 10_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         let entered = DispatchSemaphore(value: 0), unblock = DispatchSemaphore(value: 0)
         defer { unblock.signal(); first.requestNativeCleanup(); second.requestNativeCleanup() }
         try request.start { event in
@@ -481,7 +481,7 @@ func directory() throws -> URL {
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         try request.start { _ in true }
         let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
@@ -541,7 +541,7 @@ func directory() throws -> URL {
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 8_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
         try request.start { _ in true }
         let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }

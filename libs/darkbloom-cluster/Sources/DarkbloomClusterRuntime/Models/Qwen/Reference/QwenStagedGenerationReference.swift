@@ -1,6 +1,7 @@
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 /// One Mac, both stages of the registered artifact, no collective. It runs the
@@ -263,7 +264,7 @@ public enum QwenStagedGenerationReference {
         let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                 promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                 outputCount: value.outputCount, chunkSize: value.chunkSize,
-                deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
+                deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil, prefixCache: nil),
             id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
 
         let control = QwenResidentControl(deadline: deadlineUptimeNanoseconds)
@@ -315,13 +316,14 @@ public enum QwenStagedGenerationReference {
                       receipts[0].sourceParameterLayoutSHA256 == receipts[1].sourceParameterLayoutSHA256 else {
                     throw ProbeError("Staged reference stages did not load matching verified commitments")
                 }
-                // The same KV storage as the workers: the oracle must attend as they do.
+                // The same KV storage and live precision as the workers: the oracle must attend as they do.
                 // Two lanes: a phase split adopts into stage 0 while its producer is open.
-                let kvKind = try ClusterStageKVBackendKind.resolved(environment: processEnvironment,
-                    speculative: speculativeDepth != nil, batchLanes: 1)
+                let kvKind = try ClusterStageKVBackendKind.fromEnvironment(processEnvironment)
+                let kvQuantization = try PagedKVQuantizationSelection.clusterLive(processEnvironment)
                 for stage in stages {
                     try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 2,
-                        maximumTokensPerRequest: request.maximumTokens, maximumChunkTokens: request.chunkSize)
+                        maximumTokensPerRequest: request.maximumTokens, maximumChunkTokens: request.chunkSize,
+                        quantization: kvQuantization)
                 }
                 let loadedBytes = Memory.snapshot().activeMemory
                 // Each rank's named request allowance, checked live as the worker does.

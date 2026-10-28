@@ -166,14 +166,24 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
         first == predicted && cached == predicted && refreshed?.path == .alone && box.reads == 2
             && refreshed?.workerRoute == .decodingRankAlone && first?.workerRoute == nil)
     checks.require("a telemetry record becomes a served sample only when it computed its whole prompt and completed",
-        ClusterServedSample.fromTelemetry(route: "alone:m5ultra", promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+        ClusterServedSample.fromTelemetry(route: "alone:m5ultra", promptTokens: 400, cachedTokens: 0, completionTokens: 90,
             firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "stop", finishedAt: 1)?.member == "m5ultra"
-            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 0, completionTokens: 90,
                 firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "length", finishedAt: 1)?.route == .pair
-            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 12, completionTokens: 9,
+            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 12, completionTokens: 90,
                 firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "stop", finishedAt: 1) == nil
-            && ClusterServedSample.fromTelemetry(route: "pair", promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+            && ClusterServedSample.fromTelemetry(route: "pair", promptTokens: 400, cachedTokens: 0, completionTokens: 90,
                 firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "engine_error", finishedAt: 1) == nil)
+    // A probe-sized answer (a readiness probe, the onboarding's test answer, a short chat) is no sample, whatever
+    // else it did right; from the rule's minimum on it is one (`ClusterServedSpeedRule`).
+    let minimum = ClusterServedSpeedRule.minimumCompletionTokens
+    checks.require("a probe-sized answer (8, 16, 48 or \(minimum - 1) tokens) is no served sample; one of \(minimum) tokens is",
+        [8, 16, 48, minimum - 1].allSatisfy { tokens in
+            ClusterServedSample.fromTelemetry(route: "pair", promptTokens: 400, cachedTokens: 0, completionTokens: tokens,
+                firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "length", finishedAt: 1) == nil
+        } && ClusterServedSample.fromTelemetry(route: "pair", promptTokens: 400, cachedTokens: 0, completionTokens: minimum,
+            firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "length", finishedAt: 1)?.outputTokens == minimum
+            && minimum == 64)
 
     // Speed records from served requests, recovering absolute rates from the
     // model-free index's ratios alone (the fresh-install case, F1).

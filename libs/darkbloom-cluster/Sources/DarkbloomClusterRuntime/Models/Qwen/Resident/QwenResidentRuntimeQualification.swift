@@ -35,6 +35,8 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
     public static let tamperEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"
     /// A short rekey interval on the keyed data plane (S16), to cross key generations in one request.
     public static let rekeyEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_REKEY"
+    public static let batchTraceEnvironmentName = "DARKBLOOM_CLUSTER_BATCH_TRACE"
+    public static let batchLogitDirectoryEnvironmentName = "DARKBLOOM_CLUSTER_BATCH_LOGIT_DIRECTORY"
     public static let stageResidencyValue = "stage_wired_residency_v1"
     /// The worker argument that permits the two switches, with the value `yes`.
     public static let permittingArgument = "--qualification-switches"
@@ -54,7 +56,8 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
         }
         guard !permitted else { return }
         for name in [Self.transportEnvironmentName, Self.faultEnvironmentName, Self.memoryGateEnvironmentName,
-                     Self.stageResidencyEnvironmentName, Self.tamperEnvironmentName, Self.rekeyEnvironmentName]
+                     Self.stageResidencyEnvironmentName, Self.tamperEnvironmentName, Self.rekeyEnvironmentName,
+                     Self.batchTraceEnvironmentName, Self.batchLogitDirectoryEnvironmentName]
             where environment[name] != nil {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(Self.permittingArgument) yes; it is refused, not ignored")

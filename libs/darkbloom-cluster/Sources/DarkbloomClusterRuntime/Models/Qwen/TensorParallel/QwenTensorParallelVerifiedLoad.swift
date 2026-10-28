@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLMCommon
 import MLXNN
+import MLXVLM
 
 /// What one rank of a product tensor-parallel load read and holds: the
 /// verified artifact and storage commitment it was read from (equal on both
@@ -30,20 +31,33 @@ struct QwenTensorParallelShardReceipt: Equatable {
 /// pinned descriptor, checked against its inventory entry, asked of the host
 /// memory gate first (`QwenTensorParallelLoadGate`), cut to this rank's share
 /// and materialized at once; the whole tensor is released before the next is
-/// read. A tensor no rank keeps (none in a registered dense text checkpoint)
+/// read. A tensor no rank keeps (none in a registered text checkpoint)
 /// is not read.
 enum QwenTensorParallelVerifiedLoad {
     static func load(_ admission: QwenResidentAdmission, rank: Int, shares: [Int],
-                     reduction: QwenTensorParallelReduction, partialDType: DType = .float32,
+                     reduction: QwenTensorParallelReduction, partialDType: DType = .float32, includeVision: Bool = false,
+                     requestAllowance: ((QwenRegisteredDenseModelProfile, QwenTensorParallelPlan) throws -> Int)? = nil,
+                     additionalResidentBytes: Int = 0,
                      check: () throws -> Void) throws
-        -> (model: QwenTensorParallelModel, receipt: QwenTensorParallelShardReceipt, profile: QwenRegisteredDenseModelProfile) {
+        -> (model: QwenTensorParallelModel, receipt: QwenTensorParallelShardReceipt, profile: QwenRegisteredDenseModelProfile,
+            visionInventory: QwenStageVisionInventory?, vision: QwenStageVision?) {
+        guard additionalResidentBytes >= 0 else { throw ProbeError("Negative tensor-parallel resident supplement") }
         let started = DispatchTime.now().uptimeNanoseconds
         try admission.definition.arithmetic.requireNativeRoute()
-        guard admission.definition.arithmetic == .dense, admission.specification.routedExperts == nil else {
-            throw ProbeError("Tensor parallel serves the dense Qwen rows only")
-        }
+        try requireSupportedProduct(admission.definition, shares: shares)
         let local = try prepareQwenResidentSource(admission, check: check)
         let source = local.metadata.source, plan = admission.plan
+        guard !includeVision || admission.specification.model == .qwen38TwentySevenB else {
+            throw ProbeError("Native TP media is currently bound to the registered Qwen3.8 27B artifact")
+        }
+        let visionInventory = includeVision ? try QwenStageVisionInventory(source: local,
+            configurationData: admission.configBytes, specification: admission.specification) : nil
+        let futureVision: Int
+        if rank == 0, let visionInventory {
+            futureVision = try QwenLongPrefillCheckedBytes.sum([visionInventory.allocationBytes,
+                visionInventory.largestTensorBytes, visionInventory.largestTensorBytes,
+                CheckpointAlignedReadPlan.maximumScratchAllocationBytes])
+        } else { futureVision = 0 }
         // Both stages' inventories, validated as the pipeline validates them.
         let inventories = try (0..<plan.stages.count).map { index -> QwenStagePreparedInventory in
             let inventory = try withRandomState(MLXRandom.RandomState(seed: 7)) {
@@ -57,10 +71,12 @@ enum QwenTensorParallelVerifiedLoad {
         let commitment = try qwenLayerStageStorageCommitment(source: source, originalConfiguration: admission.configBytes,
             plan: plan, inventories: inventories)
         let entries = inventories.flatMap(\.active)
-        var receiptPlanName = "", shardBytes = 0
+        var receiptPlanName = "", shardBytes = 0, futureRequest = 0
         let model = try QwenTensorParallelModel.assemble(configurationData: admission.configBytes,
             role: .shard(rank: rank, size: 2), reduction: reduction, partialDType: partialDType, shares: shares) { tpPlan, keep in
             receiptPlanName = tpPlan.name
+            futureRequest = try requestAllowance?(local.metadata.profile, tpPlan) ?? 0
+            guard futureRequest >= 0 else { throw ProbeError("Negative tensor-parallel load request allowance") }
             // The entries this rank keeps, and what each will hold after its cut.
             var kept: [(entry: QwenStageActiveTensor, bytes: Int)] = []
             for entry in entries {
@@ -69,7 +85,8 @@ enum QwenTensorParallelVerifiedLoad {
                 case .load(let cut): kept.append((entry, Self.shareBound(entry.byteCount, cut: cut, plan: tpPlan, rank: rank)))
                 }
             }
-            let gate = try QwenTensorParallelLoadGate(entries: kept.map(\.entry), shardBounds: kept.map(\.bytes))
+            let gate = try QwenTensorParallelLoadGate(entries: kept.map(\.entry), shardBounds: kept.map(\.bytes),
+                additionalResidentBytes: QwenLongPrefillCheckedBytes.sum([futureVision, futureRequest, additionalResidentBytes]))
             try local.payload.begin(kept.map(\.entry), gate: gate)
             for (entry, _) in kept {
                 try autoreleasepool {
@@ -92,11 +109,28 @@ enum QwenTensorParallelVerifiedLoad {
             try local.payload.finish()
         }
         shardBytes = model.loadedParameterBytes
+        let vision: QwenStageVision?
+        if rank == 0, let visionInventory {
+            vision = try QwenStageVision(source: local, inventory: visionInventory,
+                remainingResidentAllowanceBytes: QwenLongPrefillCheckedBytes.sum([futureRequest, additionalResidentBytes]), check: check)
+        } else { vision = nil }
         try check()
         return (model, .init(verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,
             storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)), planName: receiptPlanName, shares: shares,
             rank: rank, sourceTensors: entries.count, sourceBytes: source.sourceBytes, shardBytes: shardBytes,
-            loadNanoseconds: DispatchTime.now().uptimeNanoseconds - started), local.metadata.profile)
+            loadNanoseconds: DispatchTime.now().uptimeNanoseconds - started), local.metadata.profile, visionInventory, vision)
+    }
+
+    /// Product coverage is deliberately narrower than the diagnostic plan:
+    /// dense rows keep their existing path; the registered Qwen3.5/3.6 MoE
+    /// rows use equal shares only, including Qwen3.6's replicated affine8 gates.
+    static func requireSupportedProduct(_ definition: QwenResidentModelDefinition, shares: [Int]) throws {
+        if definition.arithmetic == .dense, definition.specification.routedExperts == nil { return }
+        guard [.qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(definition.specification.model),
+              definition.arithmetic == .routedExperts, shares.count == 2,
+              shares.allSatisfy({ (1...64).contains($0) }), shares[0] == shares[1] else {
+            throw ProbeError("Tensor parallel serves dense Qwen rows and equal shares of registered Qwen3.5/3.6 35B A3B")
+        }
     }
 
     /// An upper bound of what `cut` keeps of a tensor of `bytes`: the whole
@@ -117,15 +151,17 @@ enum QwenTensorParallelVerifiedLoad {
 /// limit is checked.
 final class QwenTensorParallelLoadGate: QwenLayerStageGate {
     private let entries: [QwenStageActiveTensor], bounds: [Int], host: Int
+    private let additionalResidentBytes: Int
     private var next = 0
     private var failed = false
     private let watch = QwenDenseStageLoadWatch("Tensor-parallel shard load")
 
-    init(entries: [QwenStageActiveTensor], shardBounds: [Int]) throws {
-        guard entries.count == shardBounds.count, !entries.isEmpty else {
+    init(entries: [QwenStageActiveTensor], shardBounds: [Int], additionalResidentBytes: Int = 0) throws {
+        guard entries.count == shardBounds.count, !entries.isEmpty, additionalResidentBytes >= 0 else {
             throw ProbeError("Tensor-parallel shard load has no tensors")
         }
         self.entries = entries
+        self.additionalResidentBytes = additionalResidentBytes
         host = entries.map(\.byteCount).max() ?? 0
         bounds = try shardBounds.map { try Memory.allocationFootprintUpperBound(byteCount: max(1, $0)) }
         let maximum = GPU.deviceInfo().maxBufferSize
@@ -143,9 +179,9 @@ final class QwenTensorParallelLoadGate: QwenLayerStageGate {
             let h = next < entries.count ? host : 0
             let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
             let required = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-                try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+                try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, additionalResidentBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
             let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
-                remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+                remaining, h, additionalResidentBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
             let os = try QwenDenseStageLoadResources.observeOS()
             guard try watch.admits(os, bytes: required), Memory.memoryLimit >= allocator else {
                 throw ProbeError("Tensor-parallel shard load exceeds the allocator limit")

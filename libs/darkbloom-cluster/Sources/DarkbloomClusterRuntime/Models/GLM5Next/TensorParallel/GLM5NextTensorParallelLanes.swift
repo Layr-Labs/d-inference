@@ -136,7 +136,8 @@ extension GLM5NextTensorParallelResidentRuntime {
             }
             let request = try QwenLayerStageGenerationRequest(profile: descriptor.profile, requestID: requestID,
                 promptTokenIDs: value.promptTokenIDs, chunkSize: value.chunkSize, outputCount: value.outputCount,
-                stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil)
+                stopTokenIDs: Set(value.stopTokenIDs), sampling: value.sampling, stillImages: nil,
+                prefixCache: value.prefixCache)
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             let media = try reservedMedia(value)
             let mediaBytes = media?.requestBytes ?? 0
@@ -276,6 +277,11 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
 
     var rank: Int { runtime.collective.rank }
     var depth: Int { runtime.mtp == nil ? 0 : Runtime.mtpDepth }
+    /// The decode policy's window (`GLM5NextTensorParallelDecodePolicy`): with
+    /// `load`, one proposal a round while enough lanes decode in the step.
+    func window(lanes: Int, outputLeft: Int) -> Int {
+        Runtime.decodePolicy.window(maximum: depth, lanes: lanes, outputLeft: outputLeft)
+    }
     var prefixEnabled: Bool { runtime.prefix.enabled }
 
     func exchange(_ words: [Float], check: () throws -> Void) throws -> [Float] {
@@ -350,7 +356,7 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         try slices.advance(layers: frame.layers.count)
         guard frame.finishes else { try check(); return nil }
         lane.slices = nil
-        let result = try runtime.finishPrefillFrame(slices, prompt: prompt)
+        let result = try runtime.finishPrefillFrame(slices, prompt: prompt, opened: lane.opened)
         if let at = result.stored { lane.stored.append(at) }
         lane.offset = frame.end
         try check()
@@ -488,6 +494,11 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
 
     func close(_ lane: Lane, kept: Int, leave: GLM5NextTensorParallelLaneWire.Leave) -> (reused: Int, stored: [Int]) {
         let speculation = lane.opened.speculation
+        // Both ranks retire a lane in the same step for the same reason: one
+        // that finished leaves its kept boundary to the SSD tier, behind serving.
+        if leave.finish != nil, let at = lane.stored.last {
+            runtime.persistPrefix(lane.request.promptTokenIDs, opened: lane.opened, boundary: at)
+        }
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(lane.request.requestID.uuidString.lowercased())"
             + " lane=1 prompt=\(lane.request.promptTokenIDs.count) reused=\(lane.opened.start)"
             + " stored=\(lane.stored.map(String.init).joined(separator: "_")) prefix_entries=\(runtime.prefix.count) prefix_bytes=\(runtime.prefix.bytesInUse)"

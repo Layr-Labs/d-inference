@@ -2,11 +2,14 @@ import Foundation
 import Testing
 @testable import DarkbloomClusterRuntime
 
-// Version 3 of the host memory gate: free pages plus part of the file cache.
-// Every observation is constructed; the policy is pure. Each test names the
-// boundary of the rule it stands on. The suites beside this one cover the
-// second kernel bound, the compression guard, the per-load record and the
-// real sampler.
+// Version 3 of the host memory gate: free pages plus the file cache. At normal
+// pressure, with no compression or swap-out past its limits since the first
+// sample, every file-backed page counts (owner decision, 2026-10-21: the
+// kernel drops clean file pages on demand); the kernel's reserve and its
+// second bound stay in the record as diagnostics. Every observation is
+// constructed; the policy is pure. Each test names the boundary of the rule it
+// stands on. The suites beside this one cover the second kernel bound, the
+// compression guard, the per-load record and the real sampler.
 
 /// A constructed Mac: 16 KiB pages and, unless said otherwise, 128 GiB with
 /// 108 GiB of non-compressed pageable memory, so the kernel's file-cache
@@ -88,42 +91,54 @@ struct StageLoadFileCacheAdmissionTests {
         // 75.75 GiB of the 80 is inactive: 71.5 GiB could go before half is active.
         #expect(decision.fileCacheBeforeAnonymousBytes == 71 * Self.gib + 512 * Self.mib)
         #expect(decision.countableFileCacheBytes == 40 * Self.gib && !decision.structural)
-        #expect(decision.countedReclaimableBytes == 30 * Self.gib)
-        #expect(decision.admissibleBytes == 30 * Self.gib + 256 * Self.mib)
+        // Those bounds are recorded; all 80 GiB of the file cache is counted.
+        #expect(decision.countedReclaimableBytes == 80 * Self.gib)
+        #expect(decision.admissibleBytes == 80 * Self.gib + 256 * Self.mib)
         #expect(decision.fileBackedBytes == 80 * Self.gib && decision.anonymousBytes == 27 * Self.gib)
         // The entry check every gate starts with passes on the same state.
         try QwenDenseStageLoadPolicy.requireInitial(value, now: 1_100)
     }
 
-    @Test func threeQuartersOfTheCacheAboveTheReserveIsTheExactLimit() throws {
+    @Test func allOfTheFileCachePlusFreePagesIsTheExactLimit() throws {
         let value = Self.observation()
-        let limit = 30 * Self.gib + 256 * Self.mib
+        let limit = 80 * Self.gib + 256 * Self.mib
         #expect(try Self.decide(value, required: limit).admitted)
         let over = try Self.decide(value, required: limit + 1)
         #expect(!over.admitted && !over.reclaimableUsedForAdmission)
-        // All of the cache above the reserve would have covered this.
-        #expect(over.fileCacheAboveReserveBytes + over.actualFreeBytes > limit + 1)
+        #expect(over.countedReclaimableBytes == over.fileBackedBytes)
+        // The cache below the kernel's reserve counts too: the part above it
+        // alone would not have covered even the limit.
+        #expect(over.fileCacheAboveReserveBytes + over.actualFreeBytes < limit)
     }
 
-    @Test func noDecisionCountsMoreThanTheCap() throws {
-        // 100 GiB of cache is 60 GiB above the reserve; three quarters is 45.
+    @Test func noCapLimitsTheCountedFileCache() throws {
+        // 100 GiB of cache, 60 GiB of it above the reserve: all 100 GiB count,
+        // past the 32 GiB an earlier edition of the rule stopped at.
         let value = Self.observation(fileBackedGiB: 100, anonymousGiB: 7)
-        let decision = try Self.decide(value, required: 32 * Self.gib + 256 * Self.mib)
-        #expect(decision.admitted && decision.countedReclaimableBytes == 32 * Self.gib)
+        let decision = try Self.decide(value, required: 100 * Self.gib + 256 * Self.mib)
+        #expect(decision.admitted && decision.countedReclaimableBytes == 100 * Self.gib)
         #expect(decision.fileCacheAboveReserveBytes == 60 * Self.gib)
-        #expect(!(try Self.decide(value, required: 32 * Self.gib + 256 * Self.mib + 1).admitted))
+        #expect(!(try Self.decide(value, required: 100 * Self.gib + 256 * Self.mib + 1).admitted))
     }
 
-    @Test func fileCacheAtOrBelowTheKernelReserveCountsNothing() throws {
-        // Exactly the reserve: nothing is above it.
+    @Test func fileCacheAtOrBelowTheKernelReserveCountsToo() throws {
+        // Exactly the reserve: nothing is above it, and all of it counts.
         let atReserve = try Self.decide(Self.observation(fileBackedGiB: 40, anonymousGiB: 67), required: 0)
-        #expect(!atReserve.admitted && atReserve.countedReclaimableBytes == 0)
-        #expect(!(try Self.decide(Self.observation(fileBackedGiB: 20, anonymousGiB: 87), required: 0).admitted))
-        // 8 GiB above it counts 6 GiB, which with 0.25 GiB free meets the 6 GiB floor.
+        #expect(atReserve.admitted && atReserve.countedReclaimableBytes == 40 * Self.gib)
+        #expect(atReserve.fileCacheAboveReserveBytes == 0)
+        let below = try Self.decide(Self.observation(fileBackedGiB: 20, anonymousGiB: 87), required: 0)
+        #expect(below.admitted && below.countedReclaimableBytes == 20 * Self.gib)
+        // 8 GiB above it: all 48 GiB count against the 6 GiB floor.
         let above = try Self.decide(Self.observation(fileBackedGiB: 48, anonymousGiB: 59), required: 0)
-        #expect(above.admitted && above.countedReclaimableBytes == 6 * Self.gib && above.requiredBytes == 6 * Self.gib)
-        // 7 GiB above it counts 5.25 GiB: under the floor.
-        #expect(!(try Self.decide(Self.observation(fileBackedGiB: 47, anonymousGiB: 60), required: 0).admitted))
+        #expect(above.admitted && above.countedReclaimableBytes == 48 * Self.gib && above.requiredBytes == 6 * Self.gib)
+        #expect(try Self.decide(Self.observation(fileBackedGiB: 47, anonymousGiB: 60), required: 0).admitted)
+        // The floor is the boundary now: 5.75 GiB of cache and 0.25 GiB free
+        // meet it exactly, one page of cache less does not.
+        let atFloor = (6 * Self.gib - 256 * Self.mib) / Self.page
+        let floor = try Self.decide(ConstructedMac.observation(anonymousGiB: 102, fileBackedPages: atFloor), required: 0)
+        #expect(floor.admitted && floor.admissibleBytes == 6 * Self.gib && floor.requiredBytes == 6 * Self.gib)
+        #expect(!(try Self.decide(ConstructedMac.observation(anonymousGiB: 102, fileBackedPages: atFloor - 1),
+                                  required: 0).admitted))
     }
 
     @Test func anonymousInactivePagesDoNotCount() throws {
@@ -132,7 +147,10 @@ struct StageLoadFileCacheAdmissionTests {
         let anonymous = Self.observation(fileBackedGiB: 10, anonymousGiB: 97)
         #expect(anonymous.estimatedReclaimableBytes > 75 * Self.gib)
         let refused = try Self.decide(anonymous, required: 16 * Self.gib)
-        #expect(!refused.admitted && refused.countedReclaimableBytes == 0)
+        // The 10 GiB of file cache counts; none of the 65.75 GiB of inactive anonymous pages does.
+        #expect(!refused.admitted && refused.countedReclaimableBytes == 10 * Self.gib)
+        #expect(refused.admissibleBytes == 10 * Self.gib + 256 * Self.mib)
+        #expect(refused.inactiveAnonymousBytes == 65 * Self.gib + 768 * Self.mib)
         // The same queues with that memory file-backed are admitted.
         #expect(try Self.decide(Self.observation(fileBackedGiB: 80, anonymousGiB: 27), required: 16 * Self.gib).admitted)
     }
@@ -155,10 +173,10 @@ struct StageLoadFileCacheAdmissionTests {
     }
 
     @Test func theTrulyFreeFloorRefusesWhateverTheCache() throws {
-        // 8 MiB free with 100 GiB of cache: the kernel is not keeping up.
+        // 8 MiB free with 100 GiB of cache, all of it counted: the kernel is not keeping up.
         let starved = try Self.decide(Self.observation(freeBytes: 8 * Self.mib, fileBackedGiB: 100, anonymousGiB: 7),
                                       required: 0)
-        #expect(!starved.admitted && starved.countedReclaimableBytes == 32 * Self.gib)
+        #expect(!starved.admitted && starved.countedReclaimableBytes == 100 * Self.gib)
         #expect(starved.refusal == "Test load refused: 8 MiB truly free, below the 16 MiB floor; "
             + "the kernel is not freeing pages fast enough")
         let below = try Self.decide(Self.observation(freeBytes: 16 * Self.mib - Self.page), required: 0)
@@ -178,23 +196,29 @@ struct StageLoadFileCacheAdmissionTests {
                 speculativeBytes: 60 * Self.gib, inactiveFileBackedBytes: 26 * Self.gib,
                 reportsInactive: reportsInactive, activeGiB: 10)
         }
-        // Counted as inactive file pages: 2 x (26 + 60) - 90 = 82 GiB before
-        // half the cache is active; 50 GiB above the 40 GiB reserve; three
-        // quarters of 50 is over the 32 GiB cap. Without them the bound is 0.
+        // Counted as inactive file pages in the recorded second bound: 2 x
+        // (26 + 60) - 90 = 82 GiB before half the cache is active; 50 GiB above
+        // the 40 GiB reserve. Without them that bound is 0. Speculative pages
+        // are file-backed, so all 90 GiB count.
         let decision = try Self.decide(mac(), required: 24 * Self.gib)
         #expect(decision.admitted && decision.fileCacheBeforeAnonymousBytes == 82 * Self.gib)
-        #expect(decision.countableFileCacheBytes == 50 * Self.gib && decision.countedReclaimableBytes == 32 * Self.gib)
-        #expect(decision.admissibleBytes == 34 * Self.gib && decision.actualFreeBytes == 2 * Self.gib)
-        #expect(!(try Self.decide(mac(), required: 35 * Self.gib).admitted))
-        // A kernel that does not report its inactive file pages still counts nothing.
-        #expect(!(try Self.decide(mac(reportsInactive: false), required: 6 * Self.gib).admitted))
+        #expect(decision.countableFileCacheBytes == 50 * Self.gib && decision.countedReclaimableBytes == 90 * Self.gib)
+        #expect(decision.admissibleBytes == 92 * Self.gib && decision.actualFreeBytes == 2 * Self.gib)
+        #expect(try Self.decide(mac(), required: 92 * Self.gib).admitted)
+        #expect(!(try Self.decide(mac(), required: 92 * Self.gib + 1).admitted))
+        // A kernel that does not report its inactive file pages counts the same
+        // file cache: the inactive counters only feed the recorded bound.
+        let unreported = try Self.decide(mac(reportsInactive: false), required: 92 * Self.gib)
+        #expect(unreported.admitted && unreported.countedReclaimableBytes == 90 * Self.gib)
+        #expect(unreported.fileCacheBeforeAnonymousBytes == nil)
+        #expect(!(try Self.decide(mac(reportsInactive: false), required: 92 * Self.gib + 1).admitted))
     }
 
     @Test func freePagesAloneAreAdmittedWithoutUsingTheCache() throws {
         let free = try Self.decide(Self.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), required: 16 * Self.gib)
         #expect(free.admitted && !free.reclaimableUsedForAdmission)
         // The cache is still reported, so the receipt shows it was not needed.
-        #expect(free.countedReclaimableBytes == 15 * Self.gib)
+        #expect(free.countedReclaimableBytes == 60 * Self.gib)
         // An observation without the new counters is judged exactly as version 2 judged it.
         let old = QwenDenseStageLoadOSObservation(startedNanoseconds: 900, completedNanoseconds: 1_000,
             timestampUTC: "2026-10-09T00:00:00Z", physicalMemoryBytes: 128 * Self.gib, pageSizeBytes: Self.page,
@@ -205,27 +229,33 @@ struct StageLoadFileCacheAdmissionTests {
     }
 
     @Test func theLargerOfTheComputedAndTheKernelReportedReserveIsUsed() throws {
-        // The kernel reports 60 GiB: 20 GiB is above it and 15 GiB is counted.
+        // The kernel reports 60 GiB: 20 GiB is above it. The reserve is a
+        // recorded figure; all 80 GiB of the cache is counted either way.
         let larger = try Self.decide(Self.observation(kernelMinimumGiB: 60), required: 0)
-        #expect(larger.fileCacheReserveBytes == 60 * Self.gib && larger.countedReclaimableBytes == 15 * Self.gib)
+        #expect(larger.fileCacheReserveBytes == 60 * Self.gib && larger.fileCacheAboveReserveBytes == 20 * Self.gib)
+        #expect(larger.countedReclaimableBytes == 80 * Self.gib)
         #expect(larger.kernelFileCacheMinimumBytes == 60 * Self.gib)
         // A stale, smaller kernel figure never lowers the reserve.
         let smaller = try Self.decide(Self.observation(kernelMinimumGiB: 30), required: 0)
-        #expect(smaller.fileCacheReserveBytes == 40 * Self.gib && smaller.countedReclaimableBytes == 30 * Self.gib)
+        #expect(smaller.fileCacheReserveBytes == 40 * Self.gib && smaller.fileCacheAboveReserveBytes == 40 * Self.gib)
+        #expect(smaller.countedReclaimableBytes == 80 * Self.gib)
         #expect(try Self.decide(Self.observation(), required: 0).kernelFileCacheMinimumBytes == nil)
     }
 
     @Test func aRefusalNamesTheRequirementTheFreePagesAndTheCacheCounted() throws {
-        let decision = try Self.decide(Self.observation(fileBackedGiB: 50, anonymousGiB: 57), required: 16 * Self.gib)
-        #expect(decision.refusal == "Test load needs 16.00 GiB of admissible memory and has 7.75 GiB: 0.25 GiB free plus "
-            + "7.50 GiB of file cache counted (three quarters of the 10.00 GiB the kernel can take before anonymous "
-            + "memory: 10.00 GiB above the 40.00 GiB reserve, 50.00 GiB before half of the cache is active; "
-            + "at most 32.00 GiB; 50.00 GiB file-backed). More file cache cannot change this: with 57.00 GiB of "
-            + "anonymous memory in use this Mac can count at most 8.06 GiB, so 7.93 GiB of the requirement has to be free pages")
+        let decision = try Self.decide(Self.observation(fileBackedGiB: 10, anonymousGiB: 97), required: 16 * Self.gib)
+        #expect(decision.refusal == "Test load needs 16.00 GiB of admissible memory and has 10.25 GiB: 0.25 GiB free plus "
+            + "10.00 GiB of file cache counted (all of the file-backed pages; the kernel drops them on demand). "
+            + "More file cache cannot change this: with 97.00 GiB of anonymous memory in use this Mac can count at most "
+            + "10.75 GiB, so 5.25 GiB of the requirement has to be free pages")
         #expect(throws: ProbeError.self) {
-            try QwenDenseStageLoadPolicy.requireAdmissible(Self.observation(fileBackedGiB: 50, anonymousGiB: 57),
+            try QwenDenseStageLoadPolicy.requireAdmissible(Self.observation(fileBackedGiB: 10, anonymousGiB: 97),
                 requiredBytes: 16 * Self.gib, purpose: "Test load", now: 1_100)
         }
+        // A refusal that more file cache could cure names the counted cache alone.
+        let short = try Self.decide(Self.observation(), required: 80 * Self.gib + 512 * Self.mib)
+        #expect(short.refusal == "Test load needs 80.50 GiB of admissible memory and has 80.25 GiB: 0.25 GiB free plus "
+            + "80.00 GiB of file cache counted (all of the file-backed pages; the kernel drops them on demand)")
         // More than the Mac has is refused whatever is free.
         let huge = try Self.decide(Self.observation(freeBytes: 60 * Self.gib, fileBackedGiB: 40, anonymousGiB: 7),
                                    required: 129 * Self.gib)

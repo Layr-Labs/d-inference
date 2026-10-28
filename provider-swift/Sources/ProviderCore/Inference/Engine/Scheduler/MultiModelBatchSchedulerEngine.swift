@@ -121,8 +121,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let engineV2Usage: EngineV2RequestUsageSignal?
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
-    /// the engine captures them, and the bridge publishes OpenAI-shaped
-    /// entries to `engineV2Logprobs.channel` for the caller's SSE frame decorator.
+    /// the engine captures them, and the bridge yields OpenAI-shaped entries
+    /// in stream order. This engine forwards them to the SDK's encoder, or
+    /// appends them to `engineV2Logprobs.relay` for the coordinator's frame
+    /// splicer (see `EngineV2Logprobs.swift`).
     private let engineV2Logprobs: EngineV2LogprobsPlumbing?
     /// OpenAI `logit_bias`/`seed` decoded out-of-band from the sealed body
     /// (the upstream `OpenAIChatCompletionRequest` models neither — same
@@ -589,6 +591,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
             } catch { await releaseBox.fire(); throw error }
         }
+        if MediaIngest.hasMedia(request), let bridge = engineV2Bridge,
+            bridge.clusterQwenMediaIngress != nil {
+            do {
+                return try await prepareClusterQwenMedia(request: request, templateControls: templateControls,
+                    requestUsage: requestUsage, prepared: prepared, toolHandler: toolHandler, acquired: consume acquired)
+            } catch { await releaseBox.fire(); throw error }
+        }
         if modelType == "mimo_v2", MediaIngest.hasMedia(request) {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
@@ -699,15 +708,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
-            // Five throws are NOT refusals: `CancellationError` (the
+            // These throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
-            // (deterministic input fault — keeps its 4xx mapping), and
-            // `noProcessedMedia` (media on non-user roles only — a
-            // deterministic 400; rerouting would fail identically
-            // everywhere), plus `unsupportedMedia` (the loaded family rejects
-            // this shape on every equivalent provider) and the bridge's
-            // `tokenBudgetExhausted` admission refusal (capacity, not a
-            // construction fault).
+            // (deterministic input fault — keeps its 4xx mapping), the
+            // bridge's `tokenBudgetExhausted` admission refusal (capacity,
+            // not a construction fault), and every media fault
+            // `EngineV2VisionPrefill.clientFault(for:)` answers with 400:
+            // `noProcessedMedia` (media on non-user roles only),
+            // `unsupportedMedia` (the loaded family rejects this shape) and
+            // the processor's refusal of the media itself (e.g. an image side
+            // below Qwen's resize factor). Rerouting those would fail
+            // identically on every equivalent provider, one Mac or a pair.
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 // Vision eval precedes bridge admission and has no text-token
@@ -788,7 +799,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
-                        logprobsChannel: engineV2Logprobs?.channel,
                         // Media requests are prefix-cache-excluded engine-
                         // side (hit tokens always 0), but the signal still
                         // reaches its terminal so the frames loop never
@@ -852,19 +862,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if error is CancellationError { throw CancellationError() }
                     if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
                     if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-                    if let visionError = error as? EngineV2VisionPrefillError {
-                        switch visionError {
-                        case .noProcessedMedia:
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                                "multimodal_rejected: media parts must be attached to user "
-                                    + "messages; none of this request's media was consumable")
-                        case .unsupportedMedia(let detail):
-                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                                "multimodal_rejected: \(detail)")
-                        default:
-                            break
-                        }
-                    }
+                    if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
                     // Construction failures are retryable; deterministic input faults,
                     // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
@@ -1038,7 +1036,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // funds the cache).
                     cacheScope: requestCacheScope,
                     cacheEnabled: cacheEnabled,
-                    logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
                     donationDemand: donationDemand,
@@ -1221,17 +1218,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if error is CancellationError { throw CancellationError() }
             if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
             if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
-            if let visionError = error as? EngineV2VisionPrefillError {
-                switch visionError {
-                case .noProcessedMedia:
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                        "multimodal_rejected: media parts must be attached to user "
-                            + "messages; none of this request's media was consumable")
-                case .unsupportedMedia(let detail):
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("multimodal_rejected: \(detail)")
-                default: break
-                }
-            }
+            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
             let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
             (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
                 modelId: request.model, mediaKind: mediaKind, error: error))
@@ -1245,7 +1232,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             request: Self.translate(openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
                 logprobs: engineV2Logprobs != nil ? true : nil, topLogprobs: engineV2Logprobs?.topLogprobs,
                 logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed),
-            requestId: id, cacheScope: cacheScope, cacheEnabled: false, logprobsChannel: engineV2Logprobs?.channel,
+            requestId: id, cacheScope: cacheScope, cacheEnabled: false,
             usageSignal: requestUsage, clusterGLMMedia: host.wire, mediaKind: host.mediaKind,
             firstContentDeadline: firstContentDeadline, profile: profile, measurementPurpose: measurementPurpose)
         do {
@@ -1266,6 +1253,81 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                     .init(modelId: request.model, modelType: modelType)),
                 withholdReasoning: withheld != nil)
+        } catch { await bridge.cancel(requestId: id); throw error }
+    }
+
+    /// The loaded pair explicitly owns Qwen's actual vision tower and MRoPE.
+    /// Preprocessing stays in the admitted host scope; encoded inputs remain
+    /// charged through both submission completion and native retirement.
+    private func prepareClusterQwenMedia(request: OpenAIChatCompletionRequest,
+        templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
+        prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
+        acquired: consuming AcquiredModel
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try checkFirstContentDeadline()
+        guard let bridge = acquired.engineV2Bridge, let ingress = bridge.clusterQwenMediaIngress,
+            let hostBudget = bridge.clusterQwenMediaHostBudget else {
+            throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(request.model)
+        }
+        // JSON/schema prompt preparation and response validation are shared with
+        // standalone serving. They do not require a native token constraint.
+        guard prepared.mode == .auto || prepared.mode == .none else {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "inference-enforced tool_choice is not supported for multimodal requests")
+        }
+        var visionRequest = request
+        visionRequest.tools = prepared.tools
+        visionRequest.messages = ChatTemplateFixes.normalizeMessages(prepared.messages,
+            context: ChatTemplateFixContext(modelId: request.model, modelType: acquired.modelType))
+        let host: DistributedQwenMediaIngress.Prepared
+        do {
+            profile?.mark(.promptPrepStart)
+            let started = SuspendingClock.now
+            host = try await ingress.prepare(request: visionRequest, controls: templateControls,
+                tokenizer: acquired.tokenizer.inner, hostBudget: hostBudget)
+            if let profile {
+                let micros = RequestProfileBuilder.microseconds(SuspendingClock.now - started)
+                let count = Int64(host.tokens.count)
+                profile.update { f, now in
+                    f.mark(.promptPrepEnd, offsetUs: now); f.set(.promptTokens, count); f.add(.visionPrep, us: micros)
+                }
+            }
+        } catch {
+            if let failure = error as? PreContentDeadlineFailure { throw failure }
+            if error is CancellationError { throw CancellationError() }
+            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
+            if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
+            throw MultiModelBatchSchedulerEngineError.requestRejected(
+                "engine_v2 media prefill construction failed: "
+                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started")
+        }
+        defer { host.lifetime.releaseIfUnsubmitted() }
+        try checkFirstContentDeadline()
+        let id = "req-" + UUID().uuidString
+        let translated = Self.translate(openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
+            logprobs: engineV2Logprobs != nil ? true : nil, topLogprobs: engineV2Logprobs?.topLogprobs,
+            logitBias: engineV2Sampling?.logitBias, seed: engineV2Sampling?.seed)
+        let upstream = try await host.lifetime.withSubmission(requestID: id) { wire, _ in
+            try await bridge.submitTokenized(promptTokens: host.tokens, request: translated,
+                requestId: id, cacheScope: cacheScope, cacheEnabled: false,
+                usageSignal: requestUsage, clusterQwenMedia: wire, qwenMediaLifetime: host.lifetime,
+                mediaKind: host.mediaKind, firstContentDeadline: firstContentDeadline,
+                profile: profile, measurementPurpose: measurementPurpose)
+        }
+        do {
+            try checkFirstContentDeadline()
+            let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
+                reasoningParser: visionRequest.reasoningParser, stream: visionRequest.stream,
+                promptTokens: host.tokens,
+                decodeTail: { acquired.tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+            ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+            return try await makeDeadlineCheckedEventStream(
+                upstream: upstream, cancelUpstream: { await bridge.cancel(requestId: id) },
+                toolHandler: toolHandler, prepared: prepared, releaseBox: acquired.releaseToken, usageSignal: requestUsage,
+                reasoningPrefix: reasoningPrefix,
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                    .init(modelId: request.model, modelType: acquired.modelType)))
         } catch { await bridge.cancel(requestId: id); throw error }
     }
 
@@ -1503,6 +1565,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                // Withheld reasoning must not return as logprob entry tokens. A
+                // prompt that opens the thought (GLM with thinking on, which
+                // seeds the native channel with an open block) starts inside it.
+                var reasoningLogprobs = withholdReasoning && engineV2Logprobs != nil
+                    ? WithheldReasoningLogprobsFilter(
+                        startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
+                    : nil
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -1553,9 +1622,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     #endif
                     if nativeMediaTerminalDrain,
-                       (releaseBox.nativeConsumerLease?.snapshot().phase != .active || mediaParserFailure != nil),
-                       case .chunk = event {
-                        continue
+                       (releaseBox.nativeConsumerLease?.snapshot().phase != .active || mediaParserFailure != nil) {
+                        switch event {
+                        case .chunk, .logprobs: continue
+                        default: break
+                        }
                     }
                     if Task.isCancelled {
                         // Preserve already-observed engine terminal/error
@@ -1575,6 +1646,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         }
                     }
                     switch event {
+                    case .logprobs(let entries):
+                        guard let engineV2Logprobs else { continue }
+                        let requested = engineV2Logprobs.requested(entries)
+                        let visible = reasoningLogprobs?.visible(requested) ?? requested
+                        // Before the chunk these entries precede, as the frames
+                        // loop expects of its relay.
+                        if let relay = engineV2Logprobs.relay { relay.append(visible) }
+                        else { continuation.yield(.logprobs(visible)) }
                     case .chunk(let generated):
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()

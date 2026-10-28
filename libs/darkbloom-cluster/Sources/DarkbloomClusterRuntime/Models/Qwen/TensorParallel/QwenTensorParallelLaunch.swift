@@ -51,8 +51,11 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
          Int32(clamping: shares.count)] + shares.map { Int32(clamping: $0) } + [sealedReduction ? 2 : 1]
     }
 
-    /// Version of the first exchange; change it whenever `agreement` changes meaning.
-    public static let agreementVersion = "darkbloom-tp-launch-v4"
+    /// Version of the first exchange; change it whenever `agreement` changes
+    /// meaning or a build changes the collectives a launch issues (v5: a
+    /// routed-expert layer packs its expert and shared partials into one
+    /// collective, two per layer instead of three).
+    public static let agreementVersion = "darkbloom-tp-launch-v5"
 
     /// 64-bit FNV-1a of the version and `agreement`: what the ranks compare first.
     public var digest: UInt64 {

@@ -97,7 +97,7 @@ public enum GPTOSSStagedGenerationReference {
         let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                 promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                 outputCount: value.outputCount, chunkSize: value.chunkSize,
-                deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
+                deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil, prefixCache: nil),
             id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
 
         let control = QwenResidentControl(deadline: deadlineUptimeNanoseconds)
@@ -387,7 +387,7 @@ public enum GPTOSSStagedGenerationReference {
                     let request = try admissions[0].request(.init(profileID: admissions[0].profile.identifier,
                             promptTokenIDs: value.promptTokenIDs, stopTokenIDs: value.stopTokenIDs,
                             outputCount: value.outputCount, chunkSize: value.chunkSize,
-                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil),
+                            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: 1, sampling: nil, prefixCache: nil),
                         id: value.requestID, now: DispatchTime.now().uptimeNanoseconds)
                     let allowances = try (0...1).map {
                         try GPTOSSResidentRequestAllowance.derive(plan: plan, rank: $0,

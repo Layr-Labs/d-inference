@@ -13,9 +13,15 @@ public struct DistributedPairTelemetryContext: Sendable {
     public let log: ClusterPairTelemetryLog
     /// The members in rank order (their setup IDs): a speed record names which Mac held which range.
     public let ranks: [String]?
+    /// Each rank's worker build in rank order, as the pair's admission identity names it
+    /// (`DistributedResidentIdentity.peers[].buildSHA256`): a speed record names the builds that served it, and
+    /// planning and routing use it only for those builds.
+    public let rankBuildSHA256: [String]?
 
-    public init(modelID: String, mode: String, cut: String, log: ClusterPairTelemetryLog, ranks: [String]? = nil) {
+    public init(modelID: String, mode: String, cut: String, log: ClusterPairTelemetryLog, ranks: [String]? = nil,
+                rankBuildSHA256: [String]? = nil) {
         self.modelID = modelID; self.mode = mode; self.cut = cut; self.log = log; self.ranks = ranks
+        self.rankBuildSHA256 = rankBuildSHA256
     }
 
     /// A record for a retired request; nil for every other phase. `concurrentRequests`: the most other requests in
@@ -31,7 +37,8 @@ public struct DistributedPairTelemetryContext: Sendable {
             decodeTokensPerSecond: observation.decodeTokensPerSecond, handoffMilliseconds: rank?.handoffMilliseconds,
             handoffBytes: rank?.handoffBytes, mtpDrafted: rank?.mtpDrafted, mtpAccepted: rank?.mtpAccepted,
             outcome: observation.outcome ?? "unknown", route: observation.route?.label,
-            routeReason: observation.route?.reason, ranks: ranks, concurrentRequests: concurrentRequests)
+            routeReason: observation.route?.reason, ranks: ranks, concurrentRequests: concurrentRequests,
+            rankBuildSHA256: rankBuildSHA256)
     }
 
     /// The observer the engine calls: logs every observation, records retired ones with how many other requests

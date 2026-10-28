@@ -113,7 +113,7 @@ enum EngineV2Translation {
             minP: 0,
             repetitionPenalty: request.repetition_penalty ?? defaults.repetitionPenalty ?? 1.0,
             frequencyPenalty: request.frequency_penalty ?? 0,
-            presencePenalty: request.presence_penalty ?? 0,
+            presencePenalty: request.presence_penalty ?? defaults.presencePenalty ?? 0,
             seed: request.seed,
             logitBias: logitBias,
             topLogprobs: topLogprobs(

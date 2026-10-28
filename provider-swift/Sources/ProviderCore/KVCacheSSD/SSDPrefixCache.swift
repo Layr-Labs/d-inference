@@ -1078,8 +1078,9 @@ public final class SSDPrefixCache:
         // covers boundaries no earlier donation could; skipping it would leave
         // permanent holes in the window tiling.
         //
-        // Order is load-bearing: `SSDWriteBehind.consume` charges the daily
-        // endurance bucket per entry IN ARRAY ORDER, and one sidecar is an
+        // Order is load-bearing: when the whole donation does not fit,
+        // `SSDWriteBehind.consume` charges the daily endurance bucket per
+        // entry IN ARRAY ORDER, and one sidecar is an
         // order of magnitude larger than a block (52 MB vs 5 MB on gemma-4).
         // Queued first, a sidecar could spend the last of the allowance and
         // starve the very prefix blocks it can only accelerate.
